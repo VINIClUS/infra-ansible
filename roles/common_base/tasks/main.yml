@@ -1,0 +1,16 @@
+---
+- name: Validate common base contract
+  ansible.builtin.assert:
+    that:
+      - common_base_timezone | length > 0
+      - common_base_packages is iterable
+    fail_msg: "common_base requires timezone and package list variables."
+
+- name: Install baseline packages when explicitly enabled
+  ansible.builtin.package:
+    name: "{{ common_base_packages }}"
+    state: present
+  become: true
+  when:
+    - common_base_manage_packages | bool
+    - common_base_packages | length > 0

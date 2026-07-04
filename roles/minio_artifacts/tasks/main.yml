@@ -1,0 +1,38 @@
+---
+- name: Validate MinIO contract variables
+  ansible.builtin.assert:
+    that:
+      - minio_artifacts_endpoint_url | length > 0
+      - minio_artifacts_region | length > 0
+      - minio_artifacts_buckets is mapping
+      - minio_artifacts_buckets.artifacts is defined
+      - minio_artifacts_buckets.backups is defined
+      - minio_artifacts_buckets.validation is defined
+    fail_msg: >-
+      MinIO endpoint, region, and artifacts/backups/validation buckets must be
+      declared.
+
+- name: Validate MinIO credentials presence when access check is enabled
+  ansible.builtin.assert:
+    that:
+      - >-
+        lookup('ansible.builtin.env', minio_artifacts_access_key_env_var) |
+        length > 0
+      - >-
+        lookup('ansible.builtin.env', minio_artifacts_secret_key_env_var) |
+        length > 0
+    fail_msg: >-
+      MinIO credential environment variables are required for live access
+      validation.
+  no_log: true
+  when: minio_artifacts_validate_access | bool
+
+- name: Record redacted MinIO validation summary
+  ansible.builtin.set_fact:
+    minio_artifacts_contract_summary:
+      endpoint_configured: "{{ minio_artifacts_endpoint_url | length > 0 }}"
+      region: "{{ minio_artifacts_region }}"
+      bucket_count: "{{ minio_artifacts_buckets | length }}"
+      live_validation_enabled: "{{ minio_artifacts_validate_access | bool }}"
+      publish_validation_report: >-
+        {{ minio_artifacts_publish_validation_report | bool }}

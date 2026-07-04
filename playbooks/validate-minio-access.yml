@@ -1,0 +1,6 @@
+---
+- name: Validate MinIO runtime contract
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - minio_artifacts

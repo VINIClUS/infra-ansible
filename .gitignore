@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+
+.ansible/
+*.retry
+
+vault-password*
+*.vault-password
+*.pem
+*.key
+*.pfx
+*.p12

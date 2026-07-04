@@ -1,0 +1,11 @@
+---
+infisical_runtime_project_slug: "{{ infisical_project_slug | default('') }}"
+infisical_runtime_environment: "{{ infisical_environment | default('') }}"
+infisical_runtime_api_url: >-
+  {{ infisical_api_url | default('https://app.infisical.com') }}
+infisical_runtime_token_env_var: >-
+  {{ infisical_token_env_var | default('INFISICAL_TOKEN') }}
+infisical_runtime_validate_access: >-
+  {{ infisical_validate_access | default(false) }}
+infisical_runtime_secret_paths: "{{ infisical_secret_paths | default({}) }}"
+infisical_runtime_required_keys: "{{ infisical_required_keys | default([]) }}"

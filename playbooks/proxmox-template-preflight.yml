@@ -1,0 +1,6 @@
+---
+- name: Validate expected Proxmox template contract
+  hosts: proxmox_nodes
+  gather_facts: false
+  roles:
+    - proxmox_readonly

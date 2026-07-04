@@ -1,0 +1,45 @@
+---
+- name: Require bootstrap repository path and ref
+  ansible.builtin.assert:
+    that:
+      - bootstrap_bridge_repo_path | length > 0
+      - bootstrap_bridge_repo_ref | length > 0
+    fail_msg: "bootstrap_repo_path and bootstrap_repo_ref are required."
+
+- name: Check bootstrap repository path
+  ansible.builtin.stat:
+    path: "{{ bootstrap_bridge_repo_path }}"
+  register: bootstrap_bridge_repo_stat
+
+- name: Require bootstrap repository to exist
+  ansible.builtin.assert:
+    that:
+      - bootstrap_bridge_repo_stat.stat.exists
+      - bootstrap_bridge_repo_stat.stat.isdir
+    fail_msg: "Bootstrap repository path was not found."
+
+- name: Read bootstrap repository current ref
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: git -C "{{ bootstrap_bridge_repo_path }}" rev-parse --abbrev-ref HEAD
+  register: bootstrap_bridge_git_branch
+  changed_when: false
+  failed_when: false
+  when: bootstrap_bridge_check_git_ref | bool
+
+- name: Read bootstrap repository current commit
+  ansible.builtin.command:  # noqa: command-instead-of-module
+    cmd: git -C "{{ bootstrap_bridge_repo_path }}" rev-parse HEAD
+  register: bootstrap_bridge_git_commit
+  changed_when: false
+  failed_when: false
+  when: bootstrap_bridge_check_git_ref | bool
+
+- name: Validate bootstrap ref when repository is on a branch
+  ansible.builtin.assert:
+    that:
+      - bootstrap_bridge_git_branch.rc == 0
+      - >-
+        bootstrap_bridge_git_branch.stdout == bootstrap_bridge_repo_ref or
+        bootstrap_bridge_git_commit.stdout == bootstrap_bridge_repo_ref
+    fail_msg: "Bootstrap repository is not at the expected ref."
+  when: bootstrap_bridge_check_git_ref | bool

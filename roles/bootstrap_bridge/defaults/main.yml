@@ -1,0 +1,4 @@
+---
+bootstrap_bridge_repo_path: "{{ bootstrap_repo_path | default('') }}"
+bootstrap_bridge_repo_ref: "{{ bootstrap_repo_ref | default('main') }}"
+bootstrap_bridge_check_git_ref: "{{ bootstrap_check_git_ref | default(true) }}"

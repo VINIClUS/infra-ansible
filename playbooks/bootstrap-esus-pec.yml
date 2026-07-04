@@ -1,0 +1,10 @@
+---
+- name: Validate e-SUS PEC bootstrap bridge
+  hosts: esus_pec
+  gather_facts: false
+  vars:
+    bootstrap_bridge_repo_path: "{{ esus_bootstrap_repo_path | default('') }}"
+    bootstrap_bridge_repo_ref: >-
+      {{ esus_bootstrap_repo_ref | default(bootstrap_repo_ref) }}
+  roles:
+    - bootstrap_bridge

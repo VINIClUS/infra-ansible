@@ -1,0 +1,13 @@
+---
+- name: Validate firewall base contract
+  ansible.builtin.assert:
+    that:
+      - firewall_base_profile in ['observe', 'staging', 'production']
+      - firewall_base_manage_rules is boolean
+    fail_msg: "Firewall variables are invalid."
+
+- name: Refuse firewall changes by default
+  ansible.builtin.assert:
+    that:
+      - not firewall_base_manage_rules | bool
+    fail_msg: "Firewall changes require a dedicated approved rollout."

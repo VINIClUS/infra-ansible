@@ -1,0 +1,8 @@
+---
+- name: Publish validation report metadata
+  hosts: localhost
+  gather_facts: false
+  vars:
+    minio_publish_validation_report: false
+  roles:
+    - minio_artifacts

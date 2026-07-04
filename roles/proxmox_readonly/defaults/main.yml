@@ -1,0 +1,4 @@
+---
+proxmox_readonly_expected_templates: >-
+  {{ proxmox_expected_templates | default([]) }}
+proxmox_readonly_mode: true

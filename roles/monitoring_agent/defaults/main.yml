@@ -1,0 +1,4 @@
+---
+monitoring_agent_enabled: "{{ monitoring_enabled | default(false) }}"
+monitoring_agent_profile: observe
+monitoring_agent_targets: "{{ monitoring_targets | default([]) }}"

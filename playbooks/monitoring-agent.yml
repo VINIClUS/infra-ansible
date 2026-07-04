@@ -1,0 +1,6 @@
+---
+- name: Validate monitoring agent contract
+  hosts: linux_guests
+  gather_facts: true
+  roles:
+    - monitoring_agent

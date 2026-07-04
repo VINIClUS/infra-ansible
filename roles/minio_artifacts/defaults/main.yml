@@ -1,0 +1,12 @@
+---
+minio_artifacts_endpoint_url: "{{ minio_endpoint_url | default('') }}"
+minio_artifacts_region: "{{ minio_region | default('us-east-1') }}"
+minio_artifacts_use_path_style: "{{ minio_use_path_style | default(true) }}"
+minio_artifacts_validate_access: "{{ minio_validate_access | default(false) }}"
+minio_artifacts_access_key_env_var: >-
+  {{ minio_access_key_env_var | default('MINIO_ACCESS_KEY') }}
+minio_artifacts_secret_key_env_var: >-
+  {{ minio_secret_key_env_var | default('MINIO_SECRET_KEY') }}
+minio_artifacts_buckets: "{{ minio_buckets | default({}) }}"
+minio_artifacts_publish_validation_report: >-
+  {{ minio_publish_validation_report | default(false) }}

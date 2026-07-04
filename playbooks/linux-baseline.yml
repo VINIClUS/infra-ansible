@@ -1,0 +1,8 @@
+---
+- name: Apply Linux baseline contract
+  hosts: linux_guests
+  gather_facts: true
+  roles:
+    - common_base
+    - ssh_hardening
+    - firewall_base

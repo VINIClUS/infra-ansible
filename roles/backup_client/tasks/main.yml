@@ -1,0 +1,8 @@
+---
+- name: Validate backup client contract
+  ansible.builtin.assert:
+    that:
+      - backup_client_enabled is boolean
+      - backup_client_profile in ['observe', 'file', 'database']
+      - backup_client_targets is iterable
+    fail_msg: "Backup client variables are invalid."

@@ -1,0 +1,10 @@
+---
+- name: Validate SUS/SIHA bootstrap bridge
+  hosts: sus_siha
+  gather_facts: false
+  vars:
+    bootstrap_bridge_repo_path: "{{ siha_bootstrap_repo_path | default('') }}"
+    bootstrap_bridge_repo_ref: >-
+      {{ siha_bootstrap_repo_ref | default(bootstrap_repo_ref) }}
+  roles:
+    - bootstrap_bridge

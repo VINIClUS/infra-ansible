@@ -1,0 +1,21 @@
+---
+- name: Require read-only Proxmox mode
+  ansible.builtin.assert:
+    that:
+      - proxmox_readonly_mode | bool
+    fail_msg: "This preflight role must remain read-only."
+
+- name: Require expected template list
+  ansible.builtin.assert:
+    that:
+      - proxmox_readonly_expected_templates is iterable
+      - proxmox_readonly_expected_templates | length > 0
+    fail_msg: >-
+      Declare proxmox_expected_templates before running template preflight.
+
+- name: Record expected template summary
+  ansible.builtin.set_fact:
+    proxmox_readonly_template_preflight_summary:
+      expected_template_count: >-
+        {{ proxmox_readonly_expected_templates | length }}
+      readonly: true

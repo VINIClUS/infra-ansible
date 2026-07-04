@@ -1,0 +1,16 @@
+---
+- name: Validate SSH hardening contract
+  ansible.builtin.assert:
+    that:
+      - >-
+        ssh_hardening_permit_root_login in
+        ['yes', 'no', 'prohibit-password', 'forced-commands-only']
+      - ssh_hardening_password_authentication is boolean
+    fail_msg: "SSH hardening variables are invalid."
+
+- name: Refuse unmanaged SSH config changes by default
+  ansible.builtin.assert:
+    that:
+      - not ssh_hardening_manage_config | bool
+    fail_msg: >-
+      Set ssh_hardening_manage_config only in an approved implementation task.

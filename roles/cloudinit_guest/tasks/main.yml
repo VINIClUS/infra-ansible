@@ -1,0 +1,6 @@
+---
+- name: Validate cloud-init guest contract
+  ansible.builtin.assert:
+    that:
+      - cloudinit_guest_enabled is boolean
+    fail_msg: "cloudinit_guest_enabled must be boolean."

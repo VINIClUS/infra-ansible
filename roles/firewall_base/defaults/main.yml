@@ -1,0 +1,3 @@
+---
+firewall_base_manage_rules: "{{ firewall_manage_rules | default(false) }}"
+firewall_base_profile: "{{ firewall_profile | default('observe') }}"

@@ -1,0 +1,8 @@
+---
+- name: Validate monitoring agent contract
+  ansible.builtin.assert:
+    that:
+      - monitoring_agent_enabled is boolean
+      - monitoring_agent_profile in ['observe', 'node', 'application']
+      - monitoring_agent_targets is iterable
+    fail_msg: "Monitoring variables are invalid."

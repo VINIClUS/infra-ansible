@@ -1,0 +1,13 @@
+.git
+.git/
+.ansible/
+.env
+.env.*
+vault/
+*.vault-password
+vault-password*
+*.pem
+*.key
+*.pfx
+*.p12
+*.log

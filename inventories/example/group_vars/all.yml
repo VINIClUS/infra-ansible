@@ -1,0 +1,39 @@
+---
+env_name: example
+timezone: America/Sao_Paulo
+
+infisical_project_slug: example-project
+infisical_environment: staging
+infisical_api_url: https://app.infisical.com
+infisical_token_env_var: INFISICAL_TOKEN
+infisical_validate_access: false
+infisical_secret_paths:
+  proxmox: /staging/proxmox
+  edge_proxy: /staging/edge-proxy
+  esus_pec: /staging/esus-pec
+  sus_siha: /staging/sus-siha
+  minio: /staging/minio
+infisical_required_keys:
+  - PROXMOX_API_TOKEN_SECRET
+  - MINIO_ACCESS_KEY
+  - MINIO_SECRET_KEY
+
+minio_endpoint_url: https://minio.example.invalid
+minio_region: us-east-1
+minio_use_path_style: true
+minio_validate_access: false
+minio_access_key_env_var: MINIO_ACCESS_KEY
+minio_secret_key_env_var: MINIO_SECRET_KEY
+minio_buckets:
+  artifacts: infra-artifacts
+  backups: infra-backups
+  validation: infra-validation
+
+bootstrap_repo_ref: main
+bootstrap_check_git_ref: false
+
+proxmox_expected_templates:
+  - tpl-debian-13-cloudinit
+  - tpl-almalinux-10-cloudinit
+  - tpl-ubuntu-26-04-cloudinit
+  - tpl-win11-24h2

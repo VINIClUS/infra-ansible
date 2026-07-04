@@ -1,0 +1,51 @@
+# infra-ansible
+
+## Objetivo
+
+Este repositorio contem codigo Ansible generico para operar a infraestrutura:
+
+- baseline de servidores;
+- hardening SSH;
+- usuarios e sudo;
+- firewall;
+- backup;
+- monitoramento;
+- provisionamento Proxmox;
+- integracao com bootstraps externos;
+- validacoes operacionais.
+
+## Limites
+
+- Nao manter inventario real de producao neste repositorio.
+- Nao manter segredos, IPs sensiveis ou vault real neste repositorio.
+- Usar exemplos em `inventories/example` e `docs`.
+- Nao duplicar logica interna dos repos `esus-pec-bootstrap` e
+  `sus-siha-bootstrap`; integra-los por versao, tag ou commit.
+- Tratar `packer-proxmox-templates` como fonte dos templates Proxmox/Packer.
+
+## Segredos e buckets
+
+- Infisical e o vault primario.
+- MinIO e o destino operacional para artefatos, backups e evidencias.
+- Este repositorio guarda contratos, paths e nomes de chaves, nunca valores.
+- Tokens e access keys devem vir do runtime seguro ou do inventory privado.
+
+## Validacao
+
+Sempre que criar ou alterar Ansible:
+
+- rodar `yamllint` se disponivel;
+- rodar `ansible-lint` se disponivel;
+- rodar `ansible-playbook --syntax-check` quando houver inventario de exemplo;
+- rodar o validador local do scaffold.
+
+```powershell
+rtk powershell -NoProfile -ExecutionPolicy Bypass -File tests\Validate-InfraAnsibleScaffold.ps1
+rtk powershell -NoProfile -ExecutionPolicy Bypass -File tests\Validate-AnsibleContainer.ps1
+```
+
+Para usar Ansible sem instalar no host, construa o container local:
+
+```powershell
+rtk docker build -t infra-ansible-tools:local -f tools\ansible\Dockerfile .
+```

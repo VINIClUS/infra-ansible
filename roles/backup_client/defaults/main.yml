@@ -1,0 +1,4 @@
+---
+backup_client_enabled: false
+backup_client_profile: observe
+backup_client_targets: "{{ backup_targets | default([]) }}"

@@ -1,0 +1,6 @@
+---
+ssh_hardening_manage_config: false
+ssh_hardening_permit_root_login: >-
+  {{ ssh_permit_root_login | default('prohibit-password') }}
+ssh_hardening_password_authentication: >-
+  {{ ssh_password_authentication | default(false) }}

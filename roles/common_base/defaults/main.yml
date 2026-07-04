@@ -1,0 +1,4 @@
+---
+common_base_packages: []
+common_base_manage_packages: false
+common_base_timezone: "{{ timezone | default('America/Sao_Paulo') }}"
