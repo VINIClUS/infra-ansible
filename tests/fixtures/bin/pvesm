@@ -1,5 +1,12 @@
 #!/bin/sh
-if [ -n "${FAKE_PVESM_MARKER:-}" ]; then
-  : > "${FAKE_PVESM_MARKER}"
+expected='add dir infra-backups --path /mnt/infra-backups/proxmox --content backup --prune-backups keep-last=2 --is_mountpoint 1 --nodes localhost'
+if [ "$*" != "$expected" ]; then
+  printf '%s\n' "unexpected pvesm argv: $*" >&2
+  exit 98
 fi
-exit 99
+if [ -n "${FAKE_PVESM_MARKER:-}" ]; then
+  printf '%s\n' "$*" >> "${FAKE_PVESM_MARKER}"
+fi
+if [ -n "${FAKE_STORAGE_STATE:-}" ]; then
+  : > "${FAKE_STORAGE_STATE}"
+fi

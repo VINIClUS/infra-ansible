@@ -28,6 +28,9 @@ function Assert-Contains {
 
 $defaults = Read-RequiredFile "roles\proxmox_backup_storage\defaults\main.yml"
 $tasks = Read-RequiredFile "roles\proxmox_backup_storage\tasks\main.yml"
+$storageTasks = Read-RequiredFile "roles\proxmox_backup_storage\tasks\storage.yml"
+$assertStorageTasks = Read-RequiredFile "roles\proxmox_backup_storage\tasks\assert_storage.yml"
+$tasks = "$tasks`n$storageTasks`n$assertStorageTasks"
 $playbook = Read-RequiredFile "playbooks\proxmox-backup-storage.yml"
 $readme = Read-RequiredFile "roles\proxmox_backup_storage\README.md"
 $combined = "$defaults`n$tasks`n$playbook`n$readme"
@@ -39,7 +42,7 @@ Assert-Contains $tasks 'ansible_limit' "Role must require an explicit Ansible li
 Assert-Contains $tasks 'ansible_play_hosts_all\s*\|\s*length\s*==\s*1' "Role must target exactly one effective host."
 Assert-Contains $tasks 'proxmox_backup_storage_nodes\s*==\s*\[inventory_hostname\]' "Storage node scope must equal the validated host."
 Assert-Contains $tasks 'ansible_run_tags\s*\|\s*list\s*\|\s*sort\s*==\s*\[''proxmox_backup_storage''\]' "Role must require only the narrow execution tag."
-Assert-Contains $tasks 'proxmox_backup_existing_storage\.is_mountpoint\s*==\s*proxmox_backup_mount_path' "Readback must accept Proxmox's canonical mount path representation."
+Assert-Contains $tasks 'proxmox_backup_storage_candidate\.is_mountpoint\s*==\s*proxmox_backup_mount_path' "Readback must accept Proxmox's canonical mount path representation."
 Assert-Contains $tasks 'check_mode:\s*false' "Read-only command checks must execute in check mode."
 Assert-Contains $tasks 'ansible\.posix\.mount' "Role must persist the mount with ansible.posix.mount."
 Assert-Contains $tasks 'findmnt' "Role must verify the live mount with findmnt."
@@ -63,14 +66,18 @@ if ($tasks -match 'meta:\s*end_host') {
 
 $fixtureInventory = Join-Path $RepoRoot "tests/fixtures/proxmox-backup-storage-hosts.yml"
 $fixturePlaybook = Join-Path $RepoRoot "tests/fixtures/proxmox-backup-storage-validation.yml"
+$registrationPlaybook = Join-Path $RepoRoot "tests/fixtures/proxmox-backup-storage-registration.yml"
 $fixtureBin = Join-Path $RepoRoot "tests/fixtures/bin"
 $marker = Join-Path ([System.IO.Path]::GetTempPath()) "proxmox-backup-storage-pvesm-marker"
+$state = Join-Path ([System.IO.Path]::GetTempPath()) "proxmox-backup-storage-state"
 $originalPath = $env:PATH
 
 try {
     $env:PATH = "$fixtureBin$([System.IO.Path]::PathSeparator)$originalPath"
     $env:FAKE_PVESM_MARKER = $marker
+    $env:FAKE_STORAGE_STATE = $state
     Remove-Item -Force -ErrorAction SilentlyContinue $marker
+    Remove-Item -Force -ErrorAction SilentlyContinue $state
 
     $env:FAKE_STORAGE_MODE = "compliant"
     & ansible-playbook -i $fixtureInventory $fixturePlaybook --check --limit localhost --tags proxmox_backup_storage *> $null
@@ -106,12 +113,31 @@ try {
     if ($LASTEXITCODE -eq 0) {
         throw "Role accepted inline mount credentials."
     }
+
+    $env:FAKE_STORAGE_MODE = "absent-then-created"
+    Remove-Item -Force -ErrorAction SilentlyContinue $marker
+    Remove-Item -Force -ErrorAction SilentlyContinue $state
+    & ansible-playbook -i $fixtureInventory $registrationPlaybook --limit localhost --tags proxmox_backup_storage *> $null
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $state)) {
+        throw "Absent storage was not registered through the isolated fake API."
+    }
+    $firstMutationCount = @(Get-Content -LiteralPath $marker).Count
+    if ($firstMutationCount -ne 1) {
+        throw "Expected exactly one pvesm add invocation."
+    }
+
+    & ansible-playbook -i $fixtureInventory $registrationPlaybook --limit localhost --tags proxmox_backup_storage *> $null
+    if ($LASTEXITCODE -ne 0 -or @(Get-Content -LiteralPath $marker).Count -ne 1) {
+        throw "Second storage reconciliation was not idempotent."
+    }
 }
 finally {
     $env:PATH = $originalPath
     Remove-Item Env:FAKE_STORAGE_MODE -ErrorAction SilentlyContinue
     Remove-Item Env:FAKE_PVESM_MARKER -ErrorAction SilentlyContinue
+    Remove-Item Env:FAKE_STORAGE_STATE -ErrorAction SilentlyContinue
     Remove-Item -Force -ErrorAction SilentlyContinue $marker
+    Remove-Item -Force -ErrorAction SilentlyContinue $state
 }
 
 Write-Output "proxmox backup storage role validation passed"

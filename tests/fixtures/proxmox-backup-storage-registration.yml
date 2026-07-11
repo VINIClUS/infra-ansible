@@ -1,0 +1,20 @@
+---
+- name: Exercise isolated Proxmox storage registration
+  hosts: proxmox_nodes
+  gather_facts: false
+  become: false
+  vars:
+    proxmox_backup_storage_id: infra-backups
+    proxmox_backup_mount_path: /mnt/infra-backups/proxmox
+    proxmox_backup_storage_nodes:
+      - localhost
+  tasks:
+    - name: Run the production storage reconciliation tasks
+      ansible.builtin.include_role:
+        name: proxmox_backup_storage
+        tasks_from: storage
+        apply:
+          tags:
+            - proxmox_backup_storage
+      tags:
+        - proxmox_backup_storage
