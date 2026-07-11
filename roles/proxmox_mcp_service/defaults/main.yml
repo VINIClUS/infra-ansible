@@ -36,18 +36,13 @@ proxmox_mcp_service_required_env_names:
   - MCP_OAUTH_JWKS_URL
 
 proxmox_mcp_service_optional_env_names:
+  - PVE_PORT
   - PVE_API_URL
+  - PVE_TIMEOUT_MS
   - PVE_CA_FILE
   - PVE_POOL
   - PVE_VLAN
   - PVE_VMID_MIN
   - PVE_VMID_MAX
   - PVE_AGENT_READY_TIMEOUT_MS
-  - OPENAI_API_KEY
-  - OPENAI_MODEL
-  - OWNER
-  - TEAM
-  - COST_CENTER
-  - RESOURCE_LIFECYCLE
-  - TTL_HOURS
   - MCP_HTTP_BODY_LIMIT_BYTES

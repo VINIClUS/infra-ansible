@@ -14,6 +14,12 @@ The repository default binds port 3100 to loopback. Public/LAN binding is not
 implemented by this role until an explicit Nginx source and host firewall
 contract are available.
 
+The deployed HTTP service receives only variables consumed by its runtime.
+Operator-only recovery inputs, OpenAI placeholders, lifecycle metadata, and
+Infisical bootstrap credentials are not copied into the service environment.
+Backup and restore remain local CLI operations and stay disabled while the
+persistent Proxmox storage contract is incomplete.
+
 ```bash
 ansible-playbook \
   -i <private-inventory> \
