@@ -42,6 +42,12 @@ Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "ansible-g
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "ansible-core"
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "ansible-lint"
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "yamllint"
+Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.proxmox"
+Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.postgresql"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern 'proxmoxer>=2\.3'
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "psycopg"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "requests"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "age"
 Assert-FileContains -RelativePath "tools\ansible\Invoke-AnsibleContainer.ps1" -Pattern "Invoke-Docker"
 Assert-FileContains -RelativePath "tools\ansible\Invoke-AnsibleContainer.ps1" -Pattern "ANSIBLE_CONFIG=/work/ansible.cfg"
 Assert-FileContains -RelativePath "tools\ansible\Invoke-AnsibleContainer.ps1" -Pattern "infra-ansible-tools:local"

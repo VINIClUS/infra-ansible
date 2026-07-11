@@ -116,6 +116,12 @@ if ($dockerfile -match "allow-untrusted") {
     throw "Infisical CLI installation must verify the release checksum"
 }
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "boto3>=1\.35\.0"
+Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.proxmox"
+Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.postgresql"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern 'proxmoxer>=2\.3'
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "psycopg"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "requests"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "age"
 Assert-FileContains -RelativePath "roles\minio_artifacts\tasks\main.yml" -Pattern "amazon\.aws\.s3_bucket_info"
 $exampleHosts = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "inventories\example\hosts.yml")
 foreach ($projectGroup in @("esus_pec:", "sus_siha:")) {

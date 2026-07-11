@@ -8,6 +8,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     ANSIBLE_FORCE_COLOR=0
 
 RUN apk add --no-cache \
+        age \
         bash \
         git \
         openssh-client \
@@ -19,6 +20,9 @@ RUN apk add --no-cache \
         ansible-lint \
         yamllint \
         "boto3>=1.35.0" \
+        "proxmoxer>=2.3.0" \
+        "psycopg[binary]>=3.2.0" \
+        "requests>=2.32.0" \
         "botocore>=1.35.0" \
     && case "${TARGETARCH}" in \
         amd64) INFISICAL_SHA256="64a47155083c7b8042de64e67eee5629bf894903c102f7239f69c7ed93fdbfc5" ;; \
