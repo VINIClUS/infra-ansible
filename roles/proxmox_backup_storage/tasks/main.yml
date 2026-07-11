@@ -5,8 +5,8 @@
       - proxmox_backup_storage_enabled is boolean
     fail_msg: "proxmox_backup_storage_enabled must be a boolean."
 
-- name: Stop the backup storage role when it is disabled
-  ansible.builtin.meta: end_host
+- name: Stop only the backup storage role when it is disabled
+  ansible.builtin.meta: end_role
   when: not proxmox_backup_storage_enabled | bool
 
 - name: Validate Proxmox backup storage contract
@@ -23,10 +23,11 @@
       - proxmox_backup_is_mountpoint is sameas true
       - proxmox_backup_storage_nodes is sequence
       - proxmox_backup_storage_nodes is not string
-      - proxmox_backup_storage_nodes | length > 0
+      - proxmox_backup_storage_nodes == [inventory_hostname]
       - ansible_limit is defined
-      - ansible_limit | trim | length > 0
-      - inventory_hostname in proxmox_backup_storage_nodes
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
     fail_msg: >-
       Backup storage variables are incomplete or unsafe. Use the private
       inventory and an explicit --limit matching one declared Proxmox node.

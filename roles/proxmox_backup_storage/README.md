@@ -28,6 +28,9 @@ ansible-playbook -i <private-inventory> \
   --tags proxmox_backup_storage
 ```
 
+The limit must be the exact current inventory hostname, not `all` or a group
+pattern, and `proxmox_backup_storage_nodes` must contain only that hostname.
+
 Run the same command a second time and require zero changes. During a separately
 approved maintenance window, reboot and confirm the mount returns. An isolated
 unmount test must prove Proxmox marks the storage offline and never writes to

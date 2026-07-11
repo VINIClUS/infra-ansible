@@ -36,6 +36,8 @@ Assert-Contains $defaults 'proxmox_backup_storage_enabled:\s*false' "Role must b
 Assert-Contains $defaults 'proxmox_backup_prune_keep_last:\s*2' "Retention must default to two backups."
 Assert-Contains $defaults 'proxmox_backup_is_mountpoint:\s*true' "Mountpoint guard must default to true."
 Assert-Contains $tasks 'ansible_limit' "Role must require an explicit Ansible limit."
+Assert-Contains $tasks 'ansible_play_hosts_all\s*\|\s*length\s*==\s*1' "Role must target exactly one effective host."
+Assert-Contains $tasks 'proxmox_backup_storage_nodes\s*==\s*\[inventory_hostname\]' "Storage node scope must equal the validated host."
 Assert-Contains $tasks 'ansible\.posix\.mount' "Role must persist the mount with ansible.posix.mount."
 Assert-Contains $tasks 'findmnt' "Role must verify the live mount with findmnt."
 Assert-Contains $tasks 'pvesh' "Role must use the supported local Proxmox API for reads."
@@ -50,6 +52,10 @@ Assert-Contains $readme '--limit' "Runbook must require an explicit host limit."
 
 if ($tasks -match 'pvesm\s+config|pvesm\s+remove|storage\.cfg') {
     throw "Role must not remove storage or edit storage.cfg directly."
+}
+
+if ($tasks -match 'meta:\s*end_host') {
+    throw "A disabled role must not terminate later roles for the host."
 }
 
 Write-Output "proxmox backup storage role validation passed"
