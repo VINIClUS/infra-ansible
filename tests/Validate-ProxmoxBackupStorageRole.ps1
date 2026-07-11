@@ -81,6 +81,11 @@ try {
         throw "Check-mode scenario unexpectedly invoked pvesm mutation."
     }
 
+    & ansible-playbook -i $fixtureInventory $fixturePlaybook --check --limit localhost --tags proxmox_backup_storage *> $null
+    if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $marker)) {
+        throw "Repeated compliant check was not safely idempotent."
+    }
+
     & ansible-playbook -i $fixtureInventory $fixturePlaybook --check --limit localhost *> $null
     if ($LASTEXITCODE -eq 0) {
         throw "Role accepted execution without the narrow tag."
