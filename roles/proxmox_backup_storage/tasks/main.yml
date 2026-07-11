@@ -156,9 +156,9 @@
 - name: Read existing Proxmox storage configuration
   ansible.builtin.command:
     argv:
-      - pvesm
-      - config
-      - "{{ proxmox_backup_storage_id }}"
+      - pvesh
+      - get
+      - "/storage/{{ proxmox_backup_storage_id }}"
       - --output-format
       - json
   register: proxmox_backup_existing_storage_command
@@ -221,9 +221,9 @@
 - name: Read final Proxmox storage configuration
   ansible.builtin.command:
     argv:
-      - pvesm
-      - config
-      - "{{ proxmox_backup_storage_id }}"
+      - pvesh
+      - get
+      - "/storage/{{ proxmox_backup_storage_id }}"
       - --output-format
       - json
   register: proxmox_backup_final_storage_command

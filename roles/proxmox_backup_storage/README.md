@@ -34,3 +34,7 @@ unmount test must prove Proxmox marks the storage offline and never writes to
 the empty mountpoint on the root filesystem. This role never removes storage,
 unmounts a filesystem, prunes backups manually, or edits
 `/etc/pve/storage.cfg`.
+
+Configuration reads and final readback use the supported local Proxmox API via
+`pvesh get /storage/<id> --output-format json`; `pvesm` is used only to add an
+absent `dir` storage.

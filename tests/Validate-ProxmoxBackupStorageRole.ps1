@@ -38,8 +38,9 @@ Assert-Contains $defaults 'proxmox_backup_is_mountpoint:\s*true' "Mountpoint gua
 Assert-Contains $tasks 'ansible_limit' "Role must require an explicit Ansible limit."
 Assert-Contains $tasks 'ansible\.posix\.mount' "Role must persist the mount with ansible.posix.mount."
 Assert-Contains $tasks 'findmnt' "Role must verify the live mount with findmnt."
-Assert-Contains $tasks 'pvesm' "Role must use the supported pvesm interface."
-Assert-Contains $tasks 'config' "Role must read existing storage configuration."
+Assert-Contains $tasks 'pvesh' "Role must use the supported local Proxmox API for reads."
+Assert-Contains $tasks '/storage/' "Role must read the exact storage configuration endpoint."
+Assert-Contains $tasks 'pvesm' "Role must use the supported pvesm add interface."
 Assert-Contains $tasks 'add' "Role must support adding an absent directory storage."
 Assert-Contains $tasks 'is_mountpoint' "Role must enable the Proxmox mountpoint guard."
 Assert-Contains $tasks 'keep-last=2' "Role must configure exact keep-last retention."
@@ -47,7 +48,7 @@ Assert-Contains $tasks 'no_log:' "Sensitive mount data must be protected from ta
 Assert-Contains $playbook 'proxmox_backup_storage' "Playbook must use the narrow storage role/tag."
 Assert-Contains $readme '--limit' "Runbook must require an explicit host limit."
 
-if ($tasks -match 'pvesm\s+remove|storage\.cfg') {
+if ($tasks -match 'pvesm\s+config|pvesm\s+remove|storage\.cfg') {
     throw "Role must not remove storage or edit storage.cfg directly."
 }
 
