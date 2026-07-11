@@ -1,0 +1,53 @@
+---
+proxmox_mcp_service_enabled: false
+
+proxmox_mcp_service_repo_url: https://github.com/VINIClUS/ProxmoxMCP.git
+proxmox_mcp_service_repo_ref: ""
+proxmox_mcp_service_release_root: /opt/proxmox-mcp/releases
+proxmox_mcp_service_current_path: /opt/proxmox-mcp/current
+proxmox_mcp_service_config_path: /etc/proxmox-mcp
+proxmox_mcp_service_data_volume: proxmox_mcp_data
+proxmox_mcp_service_listen_address: 127.0.0.1
+proxmox_mcp_service_listen_port: 3100
+proxmox_mcp_service_ssh_public_key_file: >-
+  {{ lookup('ansible.builtin.env', 'PVE_SSH_PUBLIC_KEY_FILE') }}
+
+proxmox_mcp_service_packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+
+proxmox_mcp_service_required_env_names:
+  - PVE_HOST
+  - PVE_TOKEN_ID
+  - PVE_TOKEN_SECRET
+  - PVE_VERIFY_TLS
+  - PVE_DEFAULT_NODE
+  - PVE_SOURCE_NODE
+  - PVE_TARGET_NODE
+  - PVE_TEMPLATE_VMID
+  - PVE_STORAGE
+  - PVE_BRIDGE
+  - APPROVAL_SIGNING_SECRET
+  - IAC_ENV
+  - MCP_PUBLIC_URL
+  - MCP_OAUTH_ISSUER
+  - MCP_OAUTH_AUDIENCE
+  - MCP_OAUTH_JWKS_URL
+
+proxmox_mcp_service_optional_env_names:
+  - PVE_API_URL
+  - PVE_CA_FILE
+  - PVE_POOL
+  - PVE_VLAN
+  - PVE_VMID_MIN
+  - PVE_VMID_MAX
+  - PVE_AGENT_READY_TIMEOUT_MS
+  - OPENAI_API_KEY
+  - OPENAI_MODEL
+  - OWNER
+  - TEAM
+  - COST_CENTER
+  - RESOURCE_LIFECYCLE
+  - TTL_HOURS
+  - MCP_HTTP_BODY_LIMIT_BYTES

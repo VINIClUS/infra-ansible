@@ -1,0 +1,17 @@
+[Unit]
+Description=Proxmox MCP Compose service
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ proxmox_mcp_service_current_path }}
+ExecStart=/usr/bin/docker compose --project-name proxmox-mcp --file compose.mcp.yml up --detach --no-build
+ExecStop=/usr/bin/docker compose --project-name proxmox-mcp --file compose.mcp.yml stop
+TimeoutStartSec=180
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

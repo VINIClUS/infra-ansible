@@ -1,0 +1,10 @@
+---
+- name: Deploy the Proxmox MCP service
+  hosts: linux_guests
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_mcp_service
+      tags:
+        - proxmox_mcp_service
