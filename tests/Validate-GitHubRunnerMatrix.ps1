@@ -83,8 +83,8 @@ try {
             "--volume", "/sys/fs/cgroup:/sys/fs/cgroup:rw",
             $Case.Image
         )
-        Invoke-Docker @RunArguments | Out-Null
         $Containers.Add($Case.Container)
+        Invoke-Docker @RunArguments | Out-Null
         Wait-Systemd -Container $Case.Container
 
         Invoke-Docker exec $Case.Container mkdir -p /tmp/ansible/roles/github_actions_runner | Out-Null
@@ -97,6 +97,25 @@ try {
         $FirstRun | Out-Host
         if (($FirstRun -join "`n") -notmatch "failed=0") {
             throw "$($Case.Name) first run did not report success"
+        }
+
+        $RunnerMetadataJson = Invoke-Docker exec $Case.Container cat /opt/github-actions-runner/.runner
+        $RunnerMetadata = (($RunnerMetadataJson -join "`n") | ConvertFrom-Json)
+        $ContainerArchitecture = ((Invoke-Docker exec $Case.Container dpkg --print-architecture) -join "`n").Trim()
+        $ExpectedRunnerArchitecture = switch ($ContainerArchitecture) {
+            "amd64" { "x64" }
+            "arm64" { "arm64" }
+            default { throw "$($Case.Name) reported unsupported architecture $ContainerArchitecture" }
+        }
+        $ExpectedRunnerLabels = "ansible-prod,linux,$ExpectedRunnerArchitecture"
+        if ($RunnerMetadata.name -ne "matrix-runner") {
+            throw "$($Case.Name) registered an unexpected runner name"
+        }
+        if ($RunnerMetadata.labels -ne $ExpectedRunnerLabels) {
+            throw "$($Case.Name) registered unexpected runner labels"
+        }
+        if ($RunnerMetadata.work -ne "/var/lib/github-actions-runner") {
+            throw "$($Case.Name) registered an unexpected runner work directory"
         }
 
         Write-Host "Proving idempotency on $($Case.Name) without a registration token"

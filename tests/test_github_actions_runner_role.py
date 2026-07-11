@@ -22,7 +22,10 @@ def test_runner_role_is_reusable_and_secret_safe():
     defaults = read("roles/github_actions_runner/defaults/main.yml")
     tasks = read("roles/github_actions_runner/tasks/main.yml")
     assert "github_actions_runner_version: 2.335.1" in defaults
-    assert "4ef2f25285f0ae4477f1fe1e346db76" in defaults
+    assert (
+        "github_actions_runner_sha256_x64: "
+        "4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf"
+    ) in defaults
     assert "GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN" in tasks
     assert "no_log: true" in tasks
     assert "ansible_service_mgr == 'systemd'" in tasks
@@ -44,10 +47,23 @@ def test_runner_role_validates_supported_platforms_and_bootstrap_token():
 
 def test_runner_role_pins_archive_and_registers_only_once():
     defaults = read("roles/github_actions_runner/defaults/main.yml")
+    default_values = yaml.safe_load(defaults)
     tasks = read("roles/github_actions_runner/tasks/main.yml")
-    assert "github_actions_runner_architecture_map:" in defaults
-    assert "x86_64: x64" in defaults
-    assert "aarch64: arm64" in defaults
+    assert default_values["github_actions_runner_architecture_map"] == {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }
+    assert default_values["github_actions_runner_labels"] == [
+        "ansible-prod",
+        "linux",
+        "{{ github_actions_runner_architecture }}",
+    ]
+    assert default_values["github_actions_runner_checksum_map"] == {
+        "x64": "{{ github_actions_runner_sha256_x64 }}",
+        "arm64": "{{ github_actions_runner_sha256_arm64 }}",
+    }
     assert "checksum: sha256:{{ github_actions_runner_archive_sha256 }}" in tasks
 
     registration = task_named("Register repository runner once")
@@ -74,3 +90,21 @@ def test_runner_role_installs_and_manages_generated_systemd_service():
 
     start = task_named("Start runner through its generated service helper")
     assert start["ansible.builtin.command"]["argv"] == ["./svc.sh", "start"]
+
+
+def test_matrix_validates_registration_metadata_and_tracks_cleanup_before_start():
+    matrix = read("tests/Validate-GitHubRunnerMatrix.ps1")
+    assert "ConvertFrom-Json" in matrix
+    assert '$RunnerMetadata.name -ne "matrix-runner"' in matrix
+    assert '"amd64" { "x64" }' in matrix
+    assert '"arm64" { "arm64" }' in matrix
+    assert (
+        '$ExpectedRunnerLabels = "ansible-prod,linux,$ExpectedRunnerArchitecture"'
+        in matrix
+    )
+    assert "$RunnerMetadata.labels -ne $ExpectedRunnerLabels" in matrix
+    assert '$RunnerMetadata.work -ne "/var/lib/github-actions-runner"' in matrix
+
+    cleanup_tracking = matrix.index("$Containers.Add($Case.Container)")
+    container_start = matrix.index("Invoke-Docker @RunArguments")
+    assert cleanup_tracking < container_start

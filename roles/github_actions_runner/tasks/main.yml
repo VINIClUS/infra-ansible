@@ -9,7 +9,8 @@
       - github_actions_runner_archive_sha256 is match('^[0-9a-f]{64}$')
     fail_msg: >-
       The GitHub Actions runner role supports Debian or Ubuntu under systemd
-      on x86_64 or aarch64 only, with an exact SHA-256 archive checksum.
+      on x86_64/amd64 or aarch64/arm64 only, with an exact SHA-256 archive
+      checksum.
 
 - name: Install GitHub Actions runner native dependencies
   ansible.builtin.apt:

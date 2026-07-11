@@ -5,7 +5,10 @@ github_actions_runner_sha256_arm64: 6d1e85bfd1a506a8b17c1f1b9b57dba458ffed908987
 
 github_actions_runner_repository_url: https://github.com/VINIClUS/infra-ansible
 github_actions_runner_name: "{{ inventory_hostname }}"
-github_actions_runner_labels: [ansible-prod, linux, x64]
+github_actions_runner_labels:
+  - ansible-prod
+  - linux
+  - "{{ github_actions_runner_architecture }}"
 github_actions_runner_user: github-runner
 github_actions_runner_group: github-runner
 github_actions_runner_home: /opt/github-actions-runner
@@ -13,7 +16,9 @@ github_actions_runner_work: /var/lib/github-actions-runner
 
 github_actions_runner_architecture_map:
   x86_64: x64
+  amd64: x64
   aarch64: arm64
+  arm64: arm64
 github_actions_runner_checksum_map:
   x64: "{{ github_actions_runner_sha256_x64 }}"
   arm64: "{{ github_actions_runner_sha256_arm64 }}"

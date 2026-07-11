@@ -7,8 +7,9 @@ generated `svc.sh` helper.
 
 The default runner is repository-scoped to
 `https://github.com/VINIClUS/infra-ansible`, is named after the inventory host,
-and carries the labels `ansible-prod`, `linux`, and `x64`. Production inventory
-can set `github_actions_runner_name` to
+and carries the labels `ansible-prod`, `linux`, and its effective runner
+architecture (`x64` or `arm64`). Production inventory can set
+`github_actions_runner_name` to
 `ansible-prod-{{ ansible_controller_vmid }}`.
 
 Initial bootstrap requires `GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN` in the
