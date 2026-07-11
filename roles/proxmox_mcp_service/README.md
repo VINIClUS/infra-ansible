@@ -1,6 +1,7 @@
 # proxmox_mcp_service
 
-Deploys an exact `ProxmoxMCP` Git commit on one Debian guest. The role is
+Deploys an exact `ProxmoxMCP` Git commit on one approved, unprivileged Debian
+LXC guest. The role is
 disabled by default and requires an exact `--limit` plus the
 `proxmox_mcp_service` tag. Runtime values come from an allowlisted controller
 environment, normally populated by the Infisical Machine Identity launcher.
@@ -19,6 +20,10 @@ Operator-only recovery inputs, OpenAI placeholders, lifecycle metadata, and
 Infisical bootstrap credentials are not copied into the service environment.
 Backup and restore remain local CLI operations and stay disabled while the
 persistent Proxmox storage contract is incomplete.
+
+The LXC template may carry an inherited `mp1`, but this role does not mount or
+bind `/mnt/infra-backups/proxmox` into Compose. That volume is not treated as
+the host Proxmox backup storage.
 
 ```bash
 ansible-playbook \

@@ -1,5 +1,6 @@
 ---
 proxmox_mcp_service_enabled: false
+proxmox_mcp_service_resource_kind: lxc
 
 proxmox_mcp_service_repo_url: https://github.com/VINIClUS/ProxmoxMCP.git
 proxmox_mcp_service_repo_ref: ""
@@ -26,6 +27,7 @@ proxmox_mcp_service_required_env_names:
   - PVE_SOURCE_NODE
   - PVE_TARGET_NODE
   - PVE_TEMPLATE_VMID
+  - PVE_TEMPLATE_KIND
   - PVE_STORAGE
   - PVE_BRIDGE
   - APPROVAL_SIGNING_SECRET

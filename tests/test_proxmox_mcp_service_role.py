@@ -15,6 +15,7 @@ def test_role_is_disabled_and_requires_pinned_release_contract():
     assert "proxmox_mcp_service_release_root: /opt/proxmox-mcp/releases" in defaults
     assert "proxmox_mcp_service_data_volume: proxmox_mcp_data" in defaults
     assert "proxmox_mcp_service_listen_address: 127.0.0.1" in defaults
+    assert "proxmox_mcp_service_resource_kind: lxc" in defaults
     assert "  - PVE_PORT" in defaults
     assert "  - PVE_TIMEOUT_MS" in defaults
     assert "  - OPENAI_API_KEY" not in defaults
@@ -32,6 +33,12 @@ def test_role_requires_narrow_limit_tag_and_protects_runtime_material():
     assert "community.docker.docker_compose_v2" in tasks
     assert "proxmox_mcp_service_ssh_public_key_file" in tasks
     assert "state: absent" not in tasks
+    assert "proxmox_mcp_service_resource_kind == 'lxc'" in tasks
+
+
+def test_role_does_not_bind_the_inherited_backup_path():
+    compose = read("../ProxmoxMCP/compose.mcp.yml")
+    assert "/mnt/infra-backups/proxmox" not in compose
 
 
 def test_playbook_and_collection_are_explicit():
