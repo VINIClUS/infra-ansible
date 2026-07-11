@@ -29,3 +29,16 @@ intent. Access keys are read at runtime and must never be printed.
 Production is not a default target. Production playbooks require an explicit
 inventory, `--limit`, and operator approval for any action that changes network,
 firewall, reverse proxy, backups, restore, LXC/VM state, or service state.
+
+## Proxmox backup mount
+
+The persistent backup role must be invoked with a private inventory, an exact
+one-node `--limit`, and `--tags proxmox_backup_storage`. It validates `findmnt`
+before any storage registration and refuses an existing storage with a
+different backend, path, content, retention, mountpoint guard, or node scope.
+
+Proxmox `is_mountpoint=1` is mandatory: a missing external mount must make the
+storage unavailable instead of allowing backup payloads to fall through to the
+root filesystem. The role has no remove, unmount, manual prune, or direct
+`storage.cfg` edit path. After host-side validation, hand off to the broker's
+GET-only `recovery-preflight`; backup and restore approvals remain separate.

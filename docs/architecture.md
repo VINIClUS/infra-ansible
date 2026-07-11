@@ -26,3 +26,16 @@ Ansible consumes stable contracts from sibling repositories:
 The first implementation layer is intentionally read-only by default. Playbooks
 that can change real infrastructure must require explicit inventory variables,
 `--limit`, and a narrow tag.
+
+## Persistent Proxmox backup storage
+
+The `proxmox_backup_storage` role owns the host-side persistence boundary for
+full VM backups. It mounts the private inventory's verified source outside any
+application release directory and registers an absent Proxmox `dir` storage
+through `pvesm`. Proxmox receives `content backup`, `is_mountpoint=1`, and
+`prune-backups keep-last=2`.
+
+`infra-ansible-inventory` owns the source, filesystem type, options, node list,
+and protected credential-file reference. `ProxmoxMCP` owns only read-only
+contract verification and its existing approval-gated recovery execution. The
+broker never mounts filesystems or changes Proxmox storage configuration.
