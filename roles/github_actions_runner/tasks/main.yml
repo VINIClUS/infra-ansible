@@ -1,0 +1,207 @@
+---
+- name: Validate GitHub Actions runner platform
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Debian'
+      - ansible_distribution in ['Debian', 'Ubuntu']
+      - ansible_service_mgr == 'systemd'
+      - ansible_architecture in github_actions_runner_architecture_map
+      - github_actions_runner_archive_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      The GitHub Actions runner role supports Debian or Ubuntu under systemd
+      on x86_64 or aarch64 only, with an exact SHA-256 archive checksum.
+
+- name: Install GitHub Actions runner native dependencies
+  ansible.builtin.apt:
+    name: "{{ github_actions_runner_packages }}"
+    state: present
+    update_cache: true
+  become: true
+
+- name: Create GitHub Actions runner group
+  ansible.builtin.group:
+    name: "{{ github_actions_runner_group }}"
+    system: true
+    state: present
+  become: true
+
+- name: Create GitHub Actions runner user
+  ansible.builtin.user:
+    name: "{{ github_actions_runner_user }}"
+    group: "{{ github_actions_runner_group }}"
+    home: "{{ github_actions_runner_home }}"
+    shell: /bin/bash
+    create_home: false
+    system: true
+    state: present
+  become: true
+
+- name: Create runner cache, release, and work directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/cache/github-actions-runner
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ github_actions_runner_release_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ github_actions_runner_release_dir }}"
+      owner: "{{ github_actions_runner_user }}"
+      group: "{{ github_actions_runner_group }}"
+      mode: "0755"
+    - path: "{{ github_actions_runner_work }}"
+      owner: "{{ github_actions_runner_user }}"
+      group: "{{ github_actions_runner_group }}"
+      mode: "0755"
+  become: true
+
+- name: Download exact GitHub Actions runner archive
+  ansible.builtin.get_url:
+    url: "{{ github_actions_runner_archive_url }}"
+    dest: "{{ github_actions_runner_archive_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: sha256:{{ github_actions_runner_archive_sha256 }}
+  become: true
+
+- name: Extract runner into its versioned release directory
+  ansible.builtin.unarchive:
+    src: "{{ github_actions_runner_archive_path }}"
+    dest: "{{ github_actions_runner_release_dir }}"
+    remote_src: true
+    owner: "{{ github_actions_runner_user }}"
+    group: "{{ github_actions_runner_group }}"
+    creates: "{{ github_actions_runner_release_dir }}/run.sh"
+  become: true
+
+- name: Activate the exact runner release
+  ansible.builtin.file:
+    src: "{{ github_actions_runner_release_dir }}"
+    dest: "{{ github_actions_runner_home }}"
+    state: link
+    owner: "{{ github_actions_runner_user }}"
+    group: "{{ github_actions_runner_group }}"
+  become: true
+
+- name: Check whether the runner is already configured
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner_home }}/.runner"
+  register: github_actions_runner_configured
+
+- name: Validate registration token for an unconfigured runner
+  ansible.builtin.assert:
+    that:
+      - >-
+        lookup('ansible.builtin.env', 'GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN') |
+        length > 0
+      - >-
+        lookup('ansible.builtin.env', 'GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN')
+        is not search('[\r\n]')
+    fail_msg: >-
+      GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN is required only for initial
+      runner registration and must not contain a newline.
+  when: not github_actions_runner_configured.stat.exists
+  no_log: true
+
+- name: Register repository runner once
+  ansible.builtin.command:
+    argv:
+      - ./config.sh
+      - --unattended
+      - --url
+      - "{{ github_actions_runner_repository_url }}"
+      - --token
+      - "{{ lookup('ansible.builtin.env', 'GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN') }}"
+      - --name
+      - "{{ github_actions_runner_name }}"
+      - --labels
+      - "{{ github_actions_runner_labels | join(',') }}"
+      - --work
+      - "{{ github_actions_runner_work }}"
+      - --replace
+  args:
+    chdir: "{{ github_actions_runner_home }}"
+    creates: "{{ github_actions_runner_home }}/.runner"
+  become: true
+  become_user: "{{ github_actions_runner_user }}"
+  when: not github_actions_runner_configured.stat.exists
+  no_log: true
+
+- name: Check whether the generated service is installed
+  ansible.builtin.stat:
+    path: "{{ github_actions_runner_home }}/.service"
+  register: github_actions_runner_service_file
+
+- name: Install the runner through its generated service helper
+  ansible.builtin.command:
+    argv:
+      - ./svc.sh
+      - install
+      - "{{ github_actions_runner_user }}"
+  args:
+    chdir: "{{ github_actions_runner_home }}"
+    creates: "{{ github_actions_runner_home }}/.service"
+  become: true
+  when: not github_actions_runner_service_file.stat.exists
+  notify: Reload systemd for GitHub Actions runner
+
+- name: Apply pending GitHub Actions runner handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Start runner through its generated service helper
+  ansible.builtin.command:
+    argv:
+      - ./svc.sh
+      - start
+  args:
+    chdir: "{{ github_actions_runner_home }}"
+  become: true
+  when: not github_actions_runner_service_file.stat.exists
+
+- name: Read generated runner service name
+  ansible.builtin.slurp:
+    src: "{{ github_actions_runner_home }}/.service"
+  register: github_actions_runner_service_name_file
+  become: true
+
+- name: Record generated runner service name
+  ansible.builtin.set_fact:
+    github_actions_runner_service_name: >-
+      {{ github_actions_runner_service_name_file.content | b64decode | trim }}
+
+- name: Enable and start the generated runner service
+  ansible.builtin.systemd_service:
+    name: "{{ github_actions_runner_service_name }}"
+    enabled: true
+    state: started
+  register: github_actions_runner_service_result
+  become: true
+
+- name: Read effective runner version
+  ansible.builtin.command:
+    argv:
+      - ./bin/Runner.Listener
+      - --version
+  args:
+    chdir: "{{ github_actions_runner_home }}"
+  register: github_actions_runner_effective_version
+  become: true
+  become_user: "{{ github_actions_runner_user }}"
+  changed_when: false
+
+- name: Record non-secret runner state
+  ansible.builtin.debug:
+    msg:
+      name: "{{ github_actions_runner_name }}"
+      labels: "{{ github_actions_runner_labels }}"
+      service_state: >-
+        {{ github_actions_runner_service_result.status.ActiveState | default('active') }}
+      effective_version: "{{ github_actions_runner_effective_version.stdout | trim }}"
