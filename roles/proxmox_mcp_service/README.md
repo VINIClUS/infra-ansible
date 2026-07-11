@@ -11,6 +11,11 @@ SQLite database and audit log remain in the fixed Docker volume
 `proxmox_mcp_data`. Only a public SSH key is copied. The private key remains on
 the controller.
 
+`proxmox_mcp_service_release_source` defaults to `git`. A controlled local
+deployment may select `controller_archive`; the role then runs `git archive`
+for the exact 40-character commit and transfers only committed files. Local
+`.env`, `.broker`, `.git`, and other untracked files cannot enter the archive.
+
 The repository default binds port 3100 to loopback. Public/LAN binding is not
 implemented by this role until an explicit Nginx source and host firewall
 contract are available.

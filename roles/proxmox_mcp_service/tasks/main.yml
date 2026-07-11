@@ -16,6 +16,10 @@
       - proxmox_mcp_service_resource_kind == 'lxc'
       - proxmox_mcp_service_repo_url is match('^https://[^\n]+$')
       - proxmox_mcp_service_repo_ref is match('^[0-9a-f]{40}$')
+      - proxmox_mcp_service_release_source in ['git', 'controller_archive']
+      - >-
+        proxmox_mcp_service_release_source == 'git' or
+        proxmox_mcp_service_controller_repo_path is match('^/[^\n]+$')
       - proxmox_mcp_service_release_root is match('^/[^\n]+$')
       - proxmox_mcp_service_current_path is match('^/[^\n]+$')
       - proxmox_mcp_service_config_path is match('^/[^\n]+$')
@@ -91,6 +95,11 @@
     version: "{{ proxmox_mcp_service_repo_ref }}"
     single_branch: true
     update: false
+  when: proxmox_mcp_service_release_source == 'git'
+
+- name: Deploy exact committed release archive from controller
+  ansible.builtin.include_tasks: deploy_controller_archive.yml
+  when: proxmox_mcp_service_release_source == 'controller_archive'
 
 - name: Install the dedicated SSH public key only
   ansible.builtin.copy:

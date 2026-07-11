@@ -1,0 +1,98 @@
+---
+- name: Inspect controller archive release marker
+  ansible.builtin.stat:
+    path: >-
+      {{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.release-commit
+  register: proxmox_mcp_service_release_marker
+
+- name: Read existing controller archive release marker
+  ansible.builtin.slurp:
+    path: >-
+      {{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.release-commit
+  register: proxmox_mcp_service_existing_release_marker
+  when: proxmox_mcp_service_release_marker.stat.exists
+
+- name: Prove an existing controller archive has the requested commit
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_mcp_service_existing_release_marker.content |
+        b64decode | trim == proxmox_mcp_service_repo_ref
+    fail_msg: "Existing Proxmox MCP release marker differs from the requested commit."
+  when: proxmox_mcp_service_release_marker.stat.exists
+
+- name: Materialize exact committed controller archive
+  when: not proxmox_mcp_service_release_marker.stat.exists
+  block:
+    - name: Prove the requested commit exists on the controller
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ proxmox_mcp_service_controller_repo_path }}"
+          - rev-parse
+          - --verify
+          - "{{ proxmox_mcp_service_repo_ref }}^{commit}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: proxmox_mcp_service_controller_commit
+
+    - name: Confirm the controller resolved the exact commit
+      ansible.builtin.assert:
+        that:
+          - proxmox_mcp_service_controller_commit.stdout | trim == proxmox_mcp_service_repo_ref
+
+    - name: Allocate temporary controller archive
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .tar
+      delegate_to: localhost
+      become: false
+      register: proxmox_mcp_service_controller_archive
+
+    - name: Archive only files tracked by the exact commit
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ proxmox_mcp_service_controller_repo_path }}"
+          - archive
+          - --format=tar
+          - "--output={{ proxmox_mcp_service_controller_archive.path }}"
+          - "{{ proxmox_mcp_service_repo_ref }}"
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Create exact release directory
+      ansible.builtin.file:
+        path: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install exact committed controller archive
+      ansible.builtin.unarchive:
+        src: "{{ proxmox_mcp_service_controller_archive.path }}"
+        dest: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}"
+        owner: root
+        group: root
+
+    - name: Record exact installed commit
+      ansible.builtin.copy:
+        content: "{{ proxmox_mcp_service_repo_ref }}\n"
+        dest: >-
+          {{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.release-commit
+        owner: root
+        group: root
+        mode: "0644"
+  always:
+    - name: Remove temporary controller archive
+      ansible.builtin.file:
+        path: "{{ proxmox_mcp_service_controller_archive.path }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+      when: proxmox_mcp_service_controller_archive is defined

@@ -4,6 +4,8 @@ proxmox_mcp_service_resource_kind: lxc
 
 proxmox_mcp_service_repo_url: https://github.com/VINIClUS/ProxmoxMCP.git
 proxmox_mcp_service_repo_ref: ""
+proxmox_mcp_service_release_source: git
+proxmox_mcp_service_controller_repo_path: ""
 proxmox_mcp_service_release_root: /opt/proxmox-mcp/releases
 proxmox_mcp_service_current_path: /opt/proxmox-mcp/current
 proxmox_mcp_service_config_path: /etc/proxmox-mcp

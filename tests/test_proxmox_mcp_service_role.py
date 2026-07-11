@@ -16,6 +16,8 @@ def test_role_is_disabled_and_requires_pinned_release_contract():
     assert "proxmox_mcp_service_data_volume: proxmox_mcp_data" in defaults
     assert "proxmox_mcp_service_listen_address: 127.0.0.1" in defaults
     assert "proxmox_mcp_service_resource_kind: lxc" in defaults
+    assert "proxmox_mcp_service_release_source: git" in defaults
+    assert 'proxmox_mcp_service_controller_repo_path: ""' in defaults
     assert "  - PVE_PORT" in defaults
     assert "  - PVE_TIMEOUT_MS" in defaults
     assert "  - OPENAI_API_KEY" not in defaults
@@ -34,6 +36,16 @@ def test_role_requires_narrow_limit_tag_and_protects_runtime_material():
     assert "proxmox_mcp_service_ssh_public_key_file" in tasks
     assert "state: absent" not in tasks
     assert "proxmox_mcp_service_resource_kind == 'lxc'" in tasks
+    assert "deploy_controller_archive.yml" in tasks
+
+
+def test_controller_archive_contains_only_committed_release_files():
+    tasks = read("roles/proxmox_mcp_service/tasks/deploy_controller_archive.yml")
+    assert "git" in tasks
+    assert "archive" in tasks
+    assert "proxmox_mcp_service_repo_ref" in tasks
+    assert "ansible.builtin.unarchive" in tasks
+    assert "state: absent" in tasks
 
 
 def test_role_does_not_bind_the_inherited_backup_path():
