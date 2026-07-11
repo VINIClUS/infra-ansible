@@ -1,0 +1,248 @@
+---
+- name: Validate Proxmox backup storage enable flag
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_storage_enabled is boolean
+    fail_msg: "proxmox_backup_storage_enabled must be a boolean."
+
+- name: Stop the backup storage role when it is disabled
+  ansible.builtin.meta: end_host
+  when: not proxmox_backup_storage_enabled | bool
+
+- name: Validate Proxmox backup storage contract
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+      - proxmox_backup_mount_path is match('^/[^\n]+$')
+      - proxmox_backup_mount_source | length > 0
+      - proxmox_backup_mount_fstype in ['nfs', 'nfs4', 'cifs', 'xfs', 'ext4']
+      - proxmox_backup_mount_options is sequence
+      - proxmox_backup_mount_options is not string
+      - proxmox_backup_storage_content == ['backup']
+      - proxmox_backup_prune_keep_last | int == 2
+      - proxmox_backup_is_mountpoint is sameas true
+      - proxmox_backup_storage_nodes is sequence
+      - proxmox_backup_storage_nodes is not string
+      - proxmox_backup_storage_nodes | length > 0
+      - ansible_limit is defined
+      - ansible_limit | trim | length > 0
+      - inventory_hostname in proxmox_backup_storage_nodes
+    fail_msg: >-
+      Backup storage variables are incomplete or unsafe. Use the private
+      inventory and an explicit --limit matching one declared Proxmox node.
+
+- name: Validate mount credential handling
+  vars:
+    proxmox_backup_unsafe_mount_options: >-
+      {{ proxmox_backup_mount_options
+         | select('search', '(?i)(password|passwd|username|user|secret|token|credentials)\s*=')
+         | list }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_unsafe_mount_options | length == 0
+      - >-
+        proxmox_backup_mount_credentials_file | length == 0 or
+        (proxmox_backup_mount_fstype == 'cifs' and
+         proxmox_backup_mount_credentials_file is match('^/[^\n]+$'))
+    fail_msg: >-
+      Credentials must not appear in mount options. For CIFS, materialize a
+      protected credentials file from the secure runtime and reference its
+      absolute path with proxmox_backup_mount_credentials_file.
+  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+
+- name: Select the minimal mount client package
+  ansible.builtin.set_fact:
+    proxmox_backup_mount_package: >-
+      {{ {'nfs': 'nfs-common', 'nfs4': 'nfs-common', 'cifs': 'cifs-utils'}
+         .get(proxmox_backup_mount_fstype, '') }}
+    proxmox_backup_effective_mount_options: >-
+      {{ proxmox_backup_mount_options +
+         (['credentials=' ~ proxmox_backup_mount_credentials_file]
+          if proxmox_backup_mount_credentials_file | length > 0 else []) }}
+  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+
+- name: Install the required mount client only
+  ansible.builtin.package:
+    name: "{{ proxmox_backup_mount_package }}"
+    state: present
+  when: proxmox_backup_mount_package | length > 0
+
+- name: Create the persistent backup mountpoint
+  ansible.builtin.file:
+    path: "{{ proxmox_backup_mount_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Persist and activate the backup mount
+  ansible.posix.mount:
+    path: "{{ proxmox_backup_mount_path }}"
+    src: "{{ proxmox_backup_mount_source }}"
+    fstype: "{{ proxmox_backup_mount_fstype }}"
+    opts: "{{ proxmox_backup_effective_mount_options | join(',') }}"
+    state: mounted
+  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+
+- name: Read mounted backup source
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - SOURCE
+      - --mountpoint
+      - "{{ proxmox_backup_mount_path }}"
+  register: proxmox_backup_findmnt_source
+  changed_when: false
+
+- name: Resolve the declared backup source when possible
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --evaluate
+      - --noheadings
+      - --raw
+      - --output
+      - SOURCE
+      - --source
+      - "{{ proxmox_backup_mount_source }}"
+  register: proxmox_backup_findmnt_expected_source
+  changed_when: false
+  failed_when: false
+
+- name: Read mounted backup filesystem type
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - FSTYPE
+      - --mountpoint
+      - "{{ proxmox_backup_mount_path }}"
+  register: proxmox_backup_findmnt_fstype
+  changed_when: false
+
+- name: Read mounted backup target
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - --noheadings
+      - --raw
+      - --output
+      - TARGET
+      - --mountpoint
+      - "{{ proxmox_backup_mount_path }}"
+  register: proxmox_backup_findmnt_target
+  changed_when: false
+
+- name: Confirm exact live mount identity
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_findmnt_source.rc == 0
+      - >-
+        proxmox_backup_findmnt_source.stdout | trim == proxmox_backup_mount_source or
+        (proxmox_backup_findmnt_expected_source.rc == 0 and
+         proxmox_backup_findmnt_source.stdout | trim ==
+         proxmox_backup_findmnt_expected_source.stdout | trim)
+      - proxmox_backup_findmnt_fstype.stdout | trim == proxmox_backup_mount_fstype
+      - proxmox_backup_findmnt_target.stdout | trim == proxmox_backup_mount_path
+    fail_msg: >-
+      The live mount source, filesystem type, or target differs from private
+      inventory. Proxmox storage was not changed.
+
+- name: Read existing Proxmox storage configuration
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - config
+      - "{{ proxmox_backup_storage_id }}"
+      - --output-format
+      - json
+  register: proxmox_backup_existing_storage_command
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Reject unexpected Proxmox storage lookup failures
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_backup_existing_storage_command.rc == 0 or
+        proxmox_backup_existing_storage_command.stderr is search('(?i)(does not exist|not found)')
+    fail_msg: "Unable to read the existing Proxmox storage configuration safely."
+
+- name: Decode existing Proxmox storage configuration
+  ansible.builtin.set_fact:
+    proxmox_backup_existing_storage: >-
+      {{ (proxmox_backup_existing_storage_command.stdout | from_json)
+         if proxmox_backup_existing_storage_command.rc == 0 else none }}
+
+- name: Reject conflicting existing Proxmox storage
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_existing_storage.type == 'dir'
+      - proxmox_backup_existing_storage.path == proxmox_backup_mount_path
+      - proxmox_backup_existing_storage.content == 'backup'
+      - proxmox_backup_existing_storage['prune-backups'] == 'keep-last=2'
+      - proxmox_backup_existing_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
+      - >-
+        (proxmox_backup_existing_storage.nodes | default('')).split(',') | sort ==
+        proxmox_backup_storage_nodes | sort
+    fail_msg: >-
+      The storage ID already exists with a different or unsafe contract.
+      Resolve the conflict explicitly; the role will not overwrite it.
+  when: proxmox_backup_existing_storage is not none
+
+- name: Register absent Proxmox directory backup storage
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - add
+      - dir
+      - "{{ proxmox_backup_storage_id }}"
+      - --path
+      - "{{ proxmox_backup_mount_path }}"
+      - --content
+      - backup
+      - --prune-backups
+      - keep-last=2
+      - --is_mountpoint
+      - "1"
+      - --nodes
+      - "{{ proxmox_backup_storage_nodes | join(',') }}"
+  when:
+    - proxmox_backup_existing_storage is none
+    - not ansible_check_mode
+  changed_when: true
+
+- name: Read final Proxmox storage configuration
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - config
+      - "{{ proxmox_backup_storage_id }}"
+      - --output-format
+      - json
+  register: proxmox_backup_final_storage_command
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode or proxmox_backup_existing_storage is not none
+
+- name: Confirm final Proxmox storage contract
+  vars:
+    proxmox_backup_final_storage: "{{ proxmox_backup_final_storage_command.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - proxmox_backup_final_storage.type == 'dir'
+      - proxmox_backup_final_storage.path == proxmox_backup_mount_path
+      - proxmox_backup_final_storage.content == 'backup'
+      - proxmox_backup_final_storage['prune-backups'] == 'keep-last=2'
+      - proxmox_backup_final_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
+      - >-
+        (proxmox_backup_final_storage.nodes | default('')).split(',') | sort ==
+        proxmox_backup_storage_nodes | sort
+    fail_msg: "Final Proxmox storage readback does not match the approved contract."
+  when: not ansible_check_mode or proxmox_backup_existing_storage is not none

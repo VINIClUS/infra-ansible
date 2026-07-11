@@ -38,6 +38,7 @@ $requiredPaths = @(
     "playbooks\validate-infisical-access.yml",
     "playbooks\validate-minio-access.yml",
     "playbooks\proxmox-template-preflight.yml",
+    "playbooks\proxmox-backup-storage.yml",
     "playbooks\publish-validation-report.yml",
     "playbooks\bootstrap-esus-pec.yml",
     "playbooks\bootstrap-sus-siha.yml",
@@ -52,7 +53,11 @@ $requiredPaths = @(
     "roles\minio_artifacts\tasks\main.yml",
     "roles\monitoring_agent\tasks\main.yml",
     "roles\backup_client\tasks\main.yml",
-    "roles\proxmox_readonly\tasks\main.yml"
+    "roles\proxmox_readonly\tasks\main.yml",
+    "roles\proxmox_backup_storage\defaults\main.yml",
+    "roles\proxmox_backup_storage\tasks\main.yml",
+    "roles\proxmox_backup_storage\handlers\main.yml",
+    "roles\proxmox_backup_storage\README.md"
 )
 
 foreach ($relativePath in $requiredPaths) {

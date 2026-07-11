@@ -1,0 +1,2 @@
+---
+# The role performs explicit readback after mutation; no deferred handler is required.
