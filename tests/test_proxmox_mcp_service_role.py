@@ -14,6 +14,8 @@ def test_role_is_disabled_and_requires_pinned_release_contract():
     assert 'proxmox_mcp_service_repo_ref: ""' in defaults
     assert "proxmox_mcp_service_release_root: /opt/proxmox-mcp/releases" in defaults
     assert "proxmox_mcp_service_data_volume: proxmox_mcp_data" in defaults
+    assert "  - docker-compose\n" in defaults
+    assert "docker-compose-v2" not in defaults
     assert "proxmox_mcp_service_listen_address: 127.0.0.1" in defaults
     assert "proxmox_mcp_service_resource_kind: lxc" in defaults
     assert "proxmox_mcp_service_release_source: git" in defaults
