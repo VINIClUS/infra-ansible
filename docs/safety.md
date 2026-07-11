@@ -15,14 +15,26 @@ Infisical is the primary secret source. This repository stores only:
 - environment names;
 - validation logic that redacts sensitive values.
 
-Runtime tokens must come from the operator environment or a secure runner. Tasks
-that inspect token presence must use `no_log: true`.
+Automation authenticates with an Infisical Machine Identity through Universal
+Auth. Only the client ID and client secret are bootstrap inputs. The launcher
+creates a short-lived token inside the tools container and removes it and the
+bootstrap credentials before starting Ansible. Do not accept static
+`INFISICAL_TOKEN` values or pass credentials as command-line arguments.
+
+Grant each identity read access only to its project, environments, and secret
+paths. Rotate identities independently through the untracked `.env` or secure
+runner; no inventory change is required.
 
 ## MinIO
 
 MinIO is the object storage target for artifacts, backups, and validation
 reports. This repository stores only bucket names, prefixes, and retention
 intent. Access keys are read at runtime and must never be printed.
+
+Use a distinct MinIO service account and buckets for shared infrastructure and
+for every project. `https://s3.vinisantana.com` is the S3 API endpoint;
+`https://minio.vinisantana.com` and local port `9001` are administrative
+consoles and must not be configured as S3 endpoints.
 
 ## Production
 

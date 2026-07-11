@@ -59,7 +59,9 @@ $requiredPaths = @(
     "roles\proxmox_backup_storage\defaults\main.yml",
     "roles\proxmox_backup_storage\tasks\main.yml",
     "roles\proxmox_backup_storage\handlers\main.yml",
-    "roles\proxmox_backup_storage\README.md"
+    "roles\proxmox_backup_storage\README.md",
+    "tools\ansible\Invoke-InfisicalAnsible.ps1",
+    "tools\ansible\infisical_ansible.py"
 )
 
 foreach ($relativePath in $requiredPaths) {
@@ -69,8 +71,31 @@ foreach ($relativePath in $requiredPaths) {
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Infisical"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "MinIO"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "No secrets in Git"
-Assert-FileContains -RelativePath ".env.example" -Pattern "INFISICAL_WORKSPACE_ID="
+Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "Machine\s+Identity"
+Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "project\s+repositories"
+Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Universal\s+Auth"
 $envExample = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".env.example")
+foreach ($requiredVariable in @(
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=",
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=",
+        "OBJECT_STORAGE_ACCESS_KEY=",
+        "OBJECT_STORAGE_SECRET_KEY="
+    )) {
+    if ($envExample -notmatch [regex]::Escape($requiredVariable)) {
+        throw ".env.example does not declare $requiredVariable"
+    }
+}
+foreach ($legacyVariable in @(
+        "INFISICAL_TOKEN=",
+        "INFISICAL_PROJECT_SLUG=",
+        "INVENTORY_INFISICAL_",
+        "MINIO_ACCESS_KEY=",
+        "MINIO_SECRET_KEY="
+    )) {
+    if ($envExample -match [regex]::Escape($legacyVariable)) {
+        throw ".env.example still declares legacy variable $legacyVariable"
+    }
+}
 if ($envExample -match "(?m)^INFISICAL_SECRET_PATH=") {
     throw "INFISICAL_SECRET_PATH must be derived instead of configured"
 }
@@ -81,6 +106,23 @@ Assert-FileContains -RelativePath "docs\safety.md" -Pattern "--limit"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "recovery-preflight"
 Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "infisical_secret_paths"
 Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "minio_buckets"
+Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "infisical_project_id"
+Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "OBJECT_STORAGE_ACCESS_KEY"
+Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "OBJECT_STORAGE_SECRET_KEY"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "INFISICAL_CLI_VERSION=0\.43\.84"
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "sha256sum -c"
+$dockerfile = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "tools\ansible\Dockerfile")
+if ($dockerfile -match "allow-untrusted") {
+    throw "Infisical CLI installation must verify the release checksum"
+}
+Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "boto3>=1\.35\.0"
+Assert-FileContains -RelativePath "roles\minio_artifacts\tasks\main.yml" -Pattern "amazon\.aws\.s3_bucket_info"
+$exampleHosts = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "inventories\example\hosts.yml")
+foreach ($projectGroup in @("esus_pec:", "sus_siha:")) {
+    if ($exampleHosts -match [regex]::Escape($projectGroup)) {
+        throw "Shared example inventory still declares project group $projectGroup"
+    }
+}
 Assert-FileContains -RelativePath "roles\bootstrap_bridge\tasks\main.yml" -Pattern "bootstrap_bridge_repo_ref"
 
 Write-Output "infra-ansible scaffold validation passed"

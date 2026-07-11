@@ -27,6 +27,29 @@
   no_log: true
   when: minio_artifacts_validate_access | bool
 
+- name: Read MinIO bucket inventory
+  amazon.aws.s3_bucket_info:
+    endpoint_url: "{{ minio_artifacts_endpoint_url }}"
+    region: "{{ minio_artifacts_region }}"
+    access_key: >-
+      {{ lookup('ansible.builtin.env', minio_artifacts_access_key_env_var) }}
+    secret_key: >-
+      {{ lookup('ansible.builtin.env', minio_artifacts_secret_key_env_var) }}
+  register: minio_artifacts_bucket_info
+  changed_when: false
+  no_log: true
+  when: minio_artifacts_validate_access | bool
+
+- name: Validate declared MinIO buckets are accessible
+  ansible.builtin.assert:
+    that:
+      - >-
+        minio_artifacts_buckets.values() |
+        difference(minio_artifacts_bucket_info.buckets | map(attribute='name')) |
+        length == 0
+    fail_msg: One or more declared MinIO buckets are missing or inaccessible.
+  when: minio_artifacts_validate_access | bool
+
 - name: Record redacted MinIO validation summary
   ansible.builtin.set_fact:
     minio_artifacts_contract_summary:

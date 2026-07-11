@@ -23,6 +23,30 @@ Ansible consumes stable contracts from sibling repositories:
 - Infisical paths for runtime secrets;
 - MinIO buckets for artifacts, backups, and validation evidence.
 
+## Shared infrastructure and project ownership
+
+This repository provides reusable automation. The private
+`infra-ansible-inventory` repository owns only shared platform topology:
+Proxmox, edge networking, Cloudflare, MinIO, and operational infrastructure.
+Application hosts, variables, and secret paths belong to their project
+repositories.
+
+Each domain uses its own Infisical Machine Identity and MinIO service account.
+A project identity must not read the shared infrastructure project or another
+project's paths, and projects must not share infrastructure bucket credentials.
+
+## Runtime secret flow
+
+`Invoke-InfisicalAnsible.ps1` passes Universal Auth bootstrap variables to the
+tools container by environment-variable name, never by value on the command
+line. The container exchanges them for an ephemeral token, exports only the
+requested project, environment, and paths, allowlists required keys, removes
+the bootstrap credentials, and then replaces itself with `ansible-playbook`.
+
+The public contract is project ID, environment, secret paths, and required key
+names. Static `INFISICAL_TOKEN`, project slugs, and implicit access to all
+project secrets are unsupported.
+
 The first implementation layer is intentionally read-only by default. Playbooks
 that can change real infrastructure must require explicit inventory variables,
 `--limit`, and a narrow tag.

@@ -2,28 +2,24 @@
 env_name: example
 timezone: America/Sao_Paulo
 
-infisical_project_slug: example-project
+infisical_project_id: 00000000-0000-0000-0000-000000000000
 infisical_environment: staging
-infisical_api_url: https://app.infisical.com
-infisical_token_env_var: INFISICAL_TOKEN
-infisical_validate_access: false
+infisical_api_url: https://infisical.example.invalid
 infisical_secret_paths:
   proxmox: /staging/proxmox
   edge_proxy: /staging/edge-proxy
-  esus_pec: /staging/esus-pec
-  sus_siha: /staging/sus-siha
   minio: /staging/minio
 infisical_required_keys:
   - PROXMOX_API_TOKEN_SECRET
-  - MINIO_ACCESS_KEY
-  - MINIO_SECRET_KEY
+  - OBJECT_STORAGE_ACCESS_KEY
+  - OBJECT_STORAGE_SECRET_KEY
 
 minio_endpoint_url: https://minio.example.invalid
 minio_region: us-east-1
 minio_use_path_style: true
 minio_validate_access: false
-minio_access_key_env_var: MINIO_ACCESS_KEY
-minio_secret_key_env_var: MINIO_SECRET_KEY
+minio_access_key_env_var: OBJECT_STORAGE_ACCESS_KEY
+minio_secret_key_env_var: OBJECT_STORAGE_SECRET_KEY
 minio_buckets:
   artifacts: infra-artifacts
   backups: infra-backups
