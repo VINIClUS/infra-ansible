@@ -70,7 +70,10 @@ Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Infisical"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "MinIO"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "No secrets in Git"
 Assert-FileContains -RelativePath ".env.example" -Pattern "INFISICAL_WORKSPACE_ID="
-Assert-FileContains -RelativePath ".env.example" -Pattern "INFISICAL_SECRET_PATH="
+$envExample = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".env.example")
+if ($envExample -match "(?m)^INFISICAL_SECRET_PATH=") {
+    throw "INFISICAL_SECRET_PATH must be derived instead of configured"
+}
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_backup_storage"
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "keep-last=2"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "is_mountpoint"
