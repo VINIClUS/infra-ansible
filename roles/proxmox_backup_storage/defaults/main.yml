@@ -2,16 +2,23 @@
 proxmox_backup_storage_enabled: false
 
 proxmox_backup_storage_id: infra-backups
-proxmox_backup_mount_path: /mnt/infra-backups/proxmox
+proxmox_backup_storage_mount_path: >-
+  {{ proxmox_backup_mount_path | default('/mnt/infra-backups/proxmox') }}
 
-proxmox_backup_mount_source: ""
-proxmox_backup_mount_fstype: ""
-proxmox_backup_mount_options: []
-proxmox_backup_mount_credentials_file: ""
+proxmox_backup_storage_mount_source: >-
+  {{ proxmox_backup_mount_source | default('') }}
+proxmox_backup_storage_mount_fstype: >-
+  {{ proxmox_backup_mount_fstype | default('') }}
+proxmox_backup_storage_mount_options: >-
+  {{ proxmox_backup_mount_options | default([]) }}
+proxmox_backup_storage_mount_credentials_file: >-
+  {{ proxmox_backup_mount_credentials_file | default('') }}
 
 proxmox_backup_storage_content:
   - backup
 
-proxmox_backup_prune_keep_last: 2
-proxmox_backup_is_mountpoint: true
+proxmox_backup_storage_prune_keep_last: >-
+  {{ proxmox_backup_prune_keep_last | default(2) }}
+proxmox_backup_storage_is_mountpoint: >-
+  {{ proxmox_backup_is_mountpoint | default(true) }}
 proxmox_backup_storage_nodes: []

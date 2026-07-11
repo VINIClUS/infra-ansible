@@ -3,11 +3,11 @@
   ansible.builtin.assert:
     that:
       - proxmox_backup_storage_candidate.type == 'dir'
-      - proxmox_backup_storage_candidate.path == proxmox_backup_mount_path
+      - proxmox_backup_storage_candidate.path == proxmox_backup_storage_mount_path
       - proxmox_backup_storage_candidate.content == 'backup'
       - proxmox_backup_storage_candidate['prune-backups'] == 'keep-last=2'
       - >-
-        proxmox_backup_storage_candidate.is_mountpoint == proxmox_backup_mount_path or
+        proxmox_backup_storage_candidate.is_mountpoint == proxmox_backup_storage_mount_path or
         proxmox_backup_storage_candidate.is_mountpoint | string | lower in ['1', 'true', 'yes']
       - >-
         (proxmox_backup_storage_candidate.nodes | default('')).split(',') | sort ==

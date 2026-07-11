@@ -13,14 +13,14 @@
   ansible.builtin.assert:
     that:
       - proxmox_backup_storage_id is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
-      - proxmox_backup_mount_path is match('^/[^\n]+$')
-      - proxmox_backup_mount_source | length > 0
-      - proxmox_backup_mount_fstype in ['nfs', 'nfs4', 'cifs', 'xfs', 'ext4']
-      - proxmox_backup_mount_options is sequence
-      - proxmox_backup_mount_options is not string
+      - proxmox_backup_storage_mount_path is match('^/[^\n]+$')
+      - proxmox_backup_storage_mount_source | length > 0
+      - proxmox_backup_storage_mount_fstype in ['nfs', 'nfs4', 'cifs', 'xfs', 'ext4']
+      - proxmox_backup_storage_mount_options is sequence
+      - proxmox_backup_storage_mount_options is not string
       - proxmox_backup_storage_content == ['backup']
-      - proxmox_backup_prune_keep_last | int == 2
-      - proxmox_backup_is_mountpoint is sameas true
+      - proxmox_backup_storage_prune_keep_last | int == 2
+      - proxmox_backup_storage_is_mountpoint is sameas true
       - proxmox_backup_storage_nodes is sequence
       - proxmox_backup_storage_nodes is not string
       - proxmox_backup_storage_nodes == [inventory_hostname]
@@ -35,43 +35,43 @@
 
 - name: Validate mount credential handling
   vars:
-    proxmox_backup_unsafe_mount_options: >-
-      {{ proxmox_backup_mount_options
+    proxmox_backup_storage_unsafe_mount_options: >-
+      {{ proxmox_backup_storage_mount_options
          | select('search', '(?i)(password|passwd|username|user|secret|token|credentials)\s*=')
          | list }}
   ansible.builtin.assert:
     that:
-      - proxmox_backup_unsafe_mount_options | length == 0
+      - proxmox_backup_storage_unsafe_mount_options | length == 0
       - >-
-        proxmox_backup_mount_credentials_file | length == 0 or
-        (proxmox_backup_mount_fstype == 'cifs' and
-         proxmox_backup_mount_credentials_file is match('^/[^\n]+$'))
+        proxmox_backup_storage_mount_credentials_file | length == 0 or
+        (proxmox_backup_storage_mount_fstype == 'cifs' and
+         proxmox_backup_storage_mount_credentials_file is match('^/[^\n]+$'))
     fail_msg: >-
       Credentials must not appear in mount options. For CIFS, materialize a
       protected credentials file from the secure runtime and reference its
-      absolute path with proxmox_backup_mount_credentials_file.
-  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+      absolute path with proxmox_backup_storage_mount_credentials_file.
+  no_log: "{{ proxmox_backup_storage_mount_credentials_file | length > 0 }}"
 
 - name: Select the minimal mount client package
   ansible.builtin.set_fact:
-    proxmox_backup_mount_package: >-
+    proxmox_backup_storage_mount_package: >-
       {{ {'nfs': 'nfs-common', 'nfs4': 'nfs-common', 'cifs': 'cifs-utils'}
-         .get(proxmox_backup_mount_fstype, '') }}
-    proxmox_backup_effective_mount_options: >-
-      {{ proxmox_backup_mount_options +
-         (['credentials=' ~ proxmox_backup_mount_credentials_file]
-          if proxmox_backup_mount_credentials_file | length > 0 else []) }}
-  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+         .get(proxmox_backup_storage_mount_fstype, '') }}
+    proxmox_backup_storage_effective_mount_options: >-
+      {{ proxmox_backup_storage_mount_options +
+         (['credentials=' ~ proxmox_backup_storage_mount_credentials_file]
+          if proxmox_backup_storage_mount_credentials_file | length > 0 else []) }}
+  no_log: "{{ proxmox_backup_storage_mount_credentials_file | length > 0 }}"
 
 - name: Install the required mount client only
   ansible.builtin.package:
-    name: "{{ proxmox_backup_mount_package }}"
+    name: "{{ proxmox_backup_storage_mount_package }}"
     state: present
-  when: proxmox_backup_mount_package | length > 0
+  when: proxmox_backup_storage_mount_package | length > 0
 
 - name: Create the persistent backup mountpoint
   ansible.builtin.file:
-    path: "{{ proxmox_backup_mount_path }}"
+    path: "{{ proxmox_backup_storage_mount_path }}"
     state: directory
     owner: root
     group: root
@@ -79,12 +79,12 @@
 
 - name: Persist and activate the backup mount
   ansible.posix.mount:
-    path: "{{ proxmox_backup_mount_path }}"
-    src: "{{ proxmox_backup_mount_source }}"
-    fstype: "{{ proxmox_backup_mount_fstype }}"
-    opts: "{{ proxmox_backup_effective_mount_options | join(',') }}"
+    path: "{{ proxmox_backup_storage_mount_path }}"
+    src: "{{ proxmox_backup_storage_mount_source }}"
+    fstype: "{{ proxmox_backup_storage_mount_fstype }}"
+    opts: "{{ proxmox_backup_storage_effective_mount_options | join(',') }}"
     state: mounted
-  no_log: "{{ proxmox_backup_mount_credentials_file | length > 0 }}"
+  no_log: "{{ proxmox_backup_storage_mount_credentials_file | length > 0 }}"
 
 - name: Read mounted backup source
   ansible.builtin.command:
@@ -95,8 +95,8 @@
       - --output
       - SOURCE
       - --mountpoint
-      - "{{ proxmox_backup_mount_path }}"
-  register: proxmox_backup_findmnt_source
+      - "{{ proxmox_backup_storage_mount_path }}"
+  register: proxmox_backup_storage_findmnt_source
   changed_when: false
   check_mode: false
 
@@ -110,8 +110,8 @@
       - --output
       - SOURCE
       - --source
-      - "{{ proxmox_backup_mount_source }}"
-  register: proxmox_backup_findmnt_expected_source
+      - "{{ proxmox_backup_storage_mount_source }}"
+  register: proxmox_backup_storage_findmnt_expected_source
   changed_when: false
   failed_when: false
   check_mode: false
@@ -125,8 +125,8 @@
       - --output
       - FSTYPE
       - --mountpoint
-      - "{{ proxmox_backup_mount_path }}"
-  register: proxmox_backup_findmnt_fstype
+      - "{{ proxmox_backup_storage_mount_path }}"
+  register: proxmox_backup_storage_findmnt_fstype
   changed_when: false
   check_mode: false
 
@@ -139,22 +139,22 @@
       - --output
       - TARGET
       - --mountpoint
-      - "{{ proxmox_backup_mount_path }}"
-  register: proxmox_backup_findmnt_target
+      - "{{ proxmox_backup_storage_mount_path }}"
+  register: proxmox_backup_storage_findmnt_target
   changed_when: false
   check_mode: false
 
 - name: Confirm exact live mount identity
   ansible.builtin.assert:
     that:
-      - proxmox_backup_findmnt_source.rc == 0
+      - proxmox_backup_storage_findmnt_source.rc == 0
       - >-
-        proxmox_backup_findmnt_source.stdout | trim == proxmox_backup_mount_source or
-        (proxmox_backup_findmnt_expected_source.rc == 0 and
-         proxmox_backup_findmnt_source.stdout | trim ==
-         proxmox_backup_findmnt_expected_source.stdout | trim)
-      - proxmox_backup_findmnt_fstype.stdout | trim == proxmox_backup_mount_fstype
-      - proxmox_backup_findmnt_target.stdout | trim == proxmox_backup_mount_path
+        proxmox_backup_storage_findmnt_source.stdout | trim == proxmox_backup_storage_mount_source or
+        (proxmox_backup_storage_findmnt_expected_source.rc == 0 and
+         proxmox_backup_storage_findmnt_source.stdout | trim ==
+         proxmox_backup_storage_findmnt_expected_source.stdout | trim)
+      - proxmox_backup_storage_findmnt_fstype.stdout | trim == proxmox_backup_storage_mount_fstype
+      - proxmox_backup_storage_findmnt_target.stdout | trim == proxmox_backup_storage_mount_path
     fail_msg: >-
       The live mount source, filesystem type, or target differs from private
       inventory. Proxmox storage was not changed.

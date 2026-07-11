@@ -29,6 +29,7 @@ function Assert-FileContains {
 
 $requiredPaths = @(
     ".env.example",
+    ".yamllint",
     "ansible.cfg",
     "requirements.yml",
     "docs\architecture.md",
