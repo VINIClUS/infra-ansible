@@ -3,6 +3,7 @@
 !.env.example
 
 .ansible/
+.worktrees/
 *.retry
 
 vault-password*
