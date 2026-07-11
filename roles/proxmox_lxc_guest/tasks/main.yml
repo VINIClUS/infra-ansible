@@ -42,9 +42,11 @@
       - proxmox_lxc_guest_template.json.data.template | int == 1
       - proxmox_lxc_guest_template.json.data.unprivileged | int == 1
       - proxmox_lxc_guest_template.json.data.ostype == 'debian'
-      - proxmox_lxc_guest_template.json.data.rootfs is search('size=32G')
-      - proxmox_lxc_guest_template.json.data.net0 is search('bridge=vmbr0')
-      - proxmox_lxc_guest_template.json.data.net0 is search('ip=dhcp')
+      - proxmox_lxc_guest_template.json.data.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_template.json.data.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)ip=dhcp(,|$)')
 
 - name: Read existing target VMID
   community.proxmox.proxmox_vm_info:
@@ -67,12 +69,13 @@
       - proxmox_lxc_guest_existing.proxmox_vms[0].config.hostname == proxmox_lxc_guest_hostname
       - proxmox_lxc_guest_existing.proxmox_vms[0].node == proxmox_lxc_guest_node
       - proxmox_lxc_guest_existing.proxmox_vms[0].type == 'lxc'
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.ostype == 'debian'
       - proxmox_lxc_guest_existing.proxmox_vms[0].config.unprivileged | int == 1
-      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is search('local-lvm')
-      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is search('size=32G')
-      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('bridge=vmbr0')
-      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('firewall=1')
-      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('ip=dhcp')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
   when: proxmox_lxc_guest_existing.proxmox_vms | length > 0
 
 - name: Clone absent approved template
@@ -104,6 +107,18 @@
     memory: "{{ proxmox_lxc_guest_memory_mb }}"
     onboot: "{{ proxmox_lxc_guest_onboot }}"
     update: true
+    state: present
+  no_log: true
+
+- name: Start reconciled target
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    node: "{{ proxmox_lxc_guest_node }}"
     state: started
   no_log: true
 
@@ -128,12 +143,13 @@
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.hostname == proxmox_lxc_guest_hostname
       - proxmox_lxc_guest_postflight.proxmox_vms[0].node == proxmox_lxc_guest_node
       - proxmox_lxc_guest_postflight.proxmox_vms[0].type == 'lxc'
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.ostype == 'debian'
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.unprivileged | int == 1
-      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is search('local-lvm')
-      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is search('size=32G')
-      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('bridge=vmbr0')
-      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('firewall=1')
-      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('ip=dhcp')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
 
 - name: Record redacted LXC guest summary
   ansible.builtin.set_fact:

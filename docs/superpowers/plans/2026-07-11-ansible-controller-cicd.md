@@ -320,6 +320,18 @@ In `tasks/main.yml`, implement this sequence with `no_log: true` on every module
     memory: "{{ proxmox_lxc_guest_memory_mb }}"
     onboot: "{{ proxmox_lxc_guest_onboot }}"
     update: true
+    state: present
+  no_log: true
+
+- name: Start reconciled target
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    node: "{{ proxmox_lxc_guest_node }}"
     state: started
   no_log: true
 ```
