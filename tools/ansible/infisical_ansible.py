@@ -103,6 +103,7 @@ def main():
     for name in (*AUTH_VARIABLES, "INFISICAL_TOKEN"):
         ansible_env.pop(name, None)
     ansible_env["INFISICAL_PROJECT_ID"] = args.project_id
+    ansible_env["INFISICAL_ENVIRONMENT"] = args.environment
     for key in args.required_keys:
         ansible_env[key] = secrets[key]
 

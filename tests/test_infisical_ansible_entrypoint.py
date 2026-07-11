@@ -36,7 +36,7 @@ class InfisicalAnsibleEntrypointTests(unittest.TestCase):
             #!/usr/bin/env python3
             import json, os, sys
             with open(os.environ["MOCK_LOG"], "a", encoding="utf-8") as log:
-                log.write(json.dumps({"argv": sys.argv[1:], "selected": os.getenv("SELECTED"), "extra": os.getenv("EXTRA"), "client_secret": os.getenv("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"), "token": os.getenv("INFISICAL_TOKEN"), "project_id": os.getenv("INFISICAL_PROJECT_ID")}) + "\\n")
+                log.write(json.dumps({"argv": sys.argv[1:], "selected": os.getenv("SELECTED"), "extra": os.getenv("EXTRA"), "client_secret": os.getenv("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"), "token": os.getenv("INFISICAL_TOKEN"), "project_id": os.getenv("INFISICAL_PROJECT_ID"), "environment": os.getenv("INFISICAL_ENVIRONMENT")}) + "\\n")
             """,
         )
 
@@ -81,6 +81,7 @@ class InfisicalAnsibleEntrypointTests(unittest.TestCase):
         self.assertIsNone(calls[-1]["client_secret"])
         self.assertIsNone(calls[-1]["token"])
         self.assertEqual(calls[-1]["project_id"], "project-id")
+        self.assertEqual(calls[-1]["environment"], "prod")
         self.assertEqual(calls[-1]["argv"], ["site.yml", "--check"])
 
     def test_fails_without_required_secret_and_does_not_run_ansible(self):

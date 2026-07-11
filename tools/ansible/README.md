@@ -41,7 +41,7 @@ Put `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and
 rtk pwsh -NoProfile -File tools/ansible/Invoke-InfisicalAnsible.ps1 `
   -ProjectId $env:INFISICAL_PROJECT_ID `
   -Environment prod `
-  -SecretPath @('/prod/proxmox', '/prod/minio') `
+  -SecretPath @('/proxmox', '/minio') `
   -RequiredKey @('PROXMOX_API_TOKEN_SECRET', 'OBJECT_STORAGE_ACCESS_KEY', 'OBJECT_STORAGE_SECRET_KEY') `
   -Playbook playbooks/site.yml `
   -InventoryRoot ../infra-ansible-inventory `

@@ -3,12 +3,14 @@ env_name: example
 timezone: America/Sao_Paulo
 
 infisical_project_id: 00000000-0000-0000-0000-000000000000
-infisical_environment: staging
+infisical_environment: >-
+  {{ lookup('ansible.builtin.env', 'INFISICAL_ENVIRONMENT') |
+     default('staging', true) }}
 infisical_api_url: https://infisical.example.invalid
 infisical_secret_paths:
-  proxmox: /staging/proxmox
-  edge_proxy: /staging/edge-proxy
-  minio: /staging/minio
+  proxmox: /proxmox
+  edge_proxy: /edge-proxy
+  minio: /minio
 infisical_required_keys:
   - PROXMOX_API_TOKEN_SECRET
   - OBJECT_STORAGE_ACCESS_KEY
