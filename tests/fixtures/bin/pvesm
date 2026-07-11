@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ -n "${FAKE_PVESM_MARKER:-}" ]; then
+  : > "${FAKE_PVESM_MARKER}"
+fi
+exit 99

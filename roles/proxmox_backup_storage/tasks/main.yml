@@ -28,6 +28,7 @@
       - ansible_limit | trim == inventory_hostname
       - ansible_play_hosts_all | length == 1
       - ansible_play_hosts_all[0] == inventory_hostname
+      - ansible_run_tags | list | sort == ['proxmox_backup_storage']
     fail_msg: >-
       Backup storage variables are incomplete or unsafe. Use the private
       inventory and an explicit --limit matching one declared Proxmox node.
@@ -97,6 +98,7 @@
       - "{{ proxmox_backup_mount_path }}"
   register: proxmox_backup_findmnt_source
   changed_when: false
+  check_mode: false
 
 - name: Resolve the declared backup source when possible
   ansible.builtin.command:
@@ -112,6 +114,7 @@
   register: proxmox_backup_findmnt_expected_source
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: Read mounted backup filesystem type
   ansible.builtin.command:
@@ -125,6 +128,7 @@
       - "{{ proxmox_backup_mount_path }}"
   register: proxmox_backup_findmnt_fstype
   changed_when: false
+  check_mode: false
 
 - name: Read mounted backup target
   ansible.builtin.command:
@@ -138,6 +142,7 @@
       - "{{ proxmox_backup_mount_path }}"
   register: proxmox_backup_findmnt_target
   changed_when: false
+  check_mode: false
 
 - name: Confirm exact live mount identity
   ansible.builtin.assert:
@@ -188,7 +193,9 @@
       - proxmox_backup_existing_storage.path == proxmox_backup_mount_path
       - proxmox_backup_existing_storage.content == 'backup'
       - proxmox_backup_existing_storage['prune-backups'] == 'keep-last=2'
-      - proxmox_backup_existing_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
+      - >-
+        proxmox_backup_existing_storage.is_mountpoint == proxmox_backup_mount_path or
+        proxmox_backup_existing_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
       - >-
         (proxmox_backup_existing_storage.nodes | default('')).split(',') | sort ==
         proxmox_backup_storage_nodes | sort
@@ -241,7 +248,9 @@
       - proxmox_backup_final_storage.path == proxmox_backup_mount_path
       - proxmox_backup_final_storage.content == 'backup'
       - proxmox_backup_final_storage['prune-backups'] == 'keep-last=2'
-      - proxmox_backup_final_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
+      - >-
+        proxmox_backup_final_storage.is_mountpoint == proxmox_backup_mount_path or
+        proxmox_backup_final_storage.is_mountpoint | string | lower in ['1', 'true', 'yes']
       - >-
         (proxmox_backup_final_storage.nodes | default('')).split(',') | sort ==
         proxmox_backup_storage_nodes | sort

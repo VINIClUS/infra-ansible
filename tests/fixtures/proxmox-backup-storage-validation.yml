@@ -1,0 +1,22 @@
+---
+- name: Exercise Proxmox backup storage safety gates
+  hosts: proxmox_nodes
+  gather_facts: false
+  become: false
+  vars:
+    proxmox_backup_storage_enabled: true
+    proxmox_backup_storage_id: infra-backups
+    proxmox_backup_mount_path: /mnt/infra-backups/proxmox
+    proxmox_backup_mount_source: /dev/test-backup
+    proxmox_backup_mount_fstype: ext4
+    proxmox_backup_mount_options: []
+    proxmox_backup_storage_content:
+      - backup
+    proxmox_backup_prune_keep_last: 2
+    proxmox_backup_is_mountpoint: true
+    proxmox_backup_storage_nodes:
+      - localhost
+  roles:
+    - role: proxmox_backup_storage
+      tags:
+        - proxmox_backup_storage

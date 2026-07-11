@@ -1,0 +1,16 @@
+#!/bin/sh
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    output="$2"
+    shift
+  fi
+  shift
+done
+
+case "$output" in
+  SOURCE) printf '%s\n' '/dev/test-backup' ;;
+  FSTYPE) printf '%s\n' 'ext4' ;;
+  TARGET) printf '%s\n' '/mnt/infra-backups/proxmox' ;;
+  *) exit 2 ;;
+esac
