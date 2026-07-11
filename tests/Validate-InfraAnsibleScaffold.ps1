@@ -41,6 +41,7 @@ $requiredPaths = @(
     "playbooks\validate-minio-access.yml",
     "playbooks\proxmox-template-preflight.yml",
     "playbooks\proxmox-backup-storage.yml",
+    "playbooks\provision-ansible-controller.yml",
     "playbooks\publish-validation-report.yml",
     "playbooks\bootstrap-esus-pec.yml",
     "playbooks\bootstrap-sus-siha.yml",
@@ -60,6 +61,9 @@ $requiredPaths = @(
     "roles\proxmox_backup_storage\tasks\main.yml",
     "roles\proxmox_backup_storage\handlers\main.yml",
     "roles\proxmox_backup_storage\README.md",
+    "roles\proxmox_lxc_guest\defaults\main.yml",
+    "roles\proxmox_lxc_guest\tasks\main.yml",
+    "roles\proxmox_lxc_guest\README.md",
     "tools\ansible\Invoke-InfisicalAnsible.ps1",
     "tools\ansible\infisical_ansible.py"
 )
@@ -117,6 +121,9 @@ if ($dockerfile -match "allow-untrusted") {
 }
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "boto3>=1\.35\.0"
 Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.proxmox"
+Assert-FileContains -RelativePath "roles\proxmox_lxc_guest\defaults\main.yml" -Pattern "proxmox_lxc_guest_enabled:\s+false"
+Assert-FileContains -RelativePath "roles\proxmox_lxc_guest\tasks\main.yml" -Pattern "community\.proxmox\.proxmox"
+Assert-FileContains -RelativePath "playbooks\provision-ansible-controller.yml" -Pattern "ansible_controller_bootstrap"
 Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.postgresql"
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern 'proxmoxer>=2\.3'
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "psycopg"

@@ -1,0 +1,9 @@
+---
+- name: Provision the create-only Ansible controller LXC
+  hosts: ansible_controller_bootstrap
+  connection: local
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: proxmox_lxc_guest
+      tags: [proxmox_lxc_guest]
