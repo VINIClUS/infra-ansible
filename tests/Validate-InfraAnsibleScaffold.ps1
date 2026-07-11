@@ -28,6 +28,7 @@ function Assert-FileContains {
 }
 
 $requiredPaths = @(
+    ".env.example",
     "ansible.cfg",
     "requirements.yml",
     "docs\architecture.md",
@@ -67,6 +68,8 @@ foreach ($relativePath in $requiredPaths) {
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Infisical"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "MinIO"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "No secrets in Git"
+Assert-FileContains -RelativePath ".env.example" -Pattern "INFISICAL_WORKSPACE_ID="
+Assert-FileContains -RelativePath ".env.example" -Pattern "INFISICAL_SECRET_PATH="
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_backup_storage"
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "keep-last=2"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "is_mountpoint"
