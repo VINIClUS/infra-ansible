@@ -1,0 +1,33 @@
+---
+infra_ansible_deployer_public_repo_url: https://github.com/VINIClUS/infra-ansible.git
+infra_ansible_deployer_public_repo_dest: /srv/infra-ansible
+infra_ansible_deployer_public_sha: ""
+
+infra_ansible_deployer_inventory_repo_url: git@github.com:VINIClUS/infra-ansible-inventory.git
+infra_ansible_deployer_inventory_repo_dest: /srv/infra-ansible-inventory
+infra_ansible_deployer_inventory_sha: ""
+
+infra_ansible_deployer_user: github-runner
+infra_ansible_deployer_group: github-runner
+infra_ansible_deployer_config_dir: /etc/infra-ansible-deploy
+infra_ansible_deployer_inventory_key_path: >-
+  {{ infra_ansible_deployer_config_dir }}/inventory-deploy-key
+infra_ansible_deployer_config_path: /etc/infra-ansible-deploy.env
+infra_ansible_deployer_script_path: /usr/local/sbin/infra-ansible-deploy
+infra_ansible_deployer_state_dir: /var/lib/infra-ansible-deploy
+
+infra_ansible_deployer_infisical_domain: >-
+  {{ infisical_api_url | default('https://infisical.vinisantana.com') }}
+infra_ansible_deployer_infisical_project_id: >-
+  {{ infisical_project_id | default('') }}
+infra_ansible_deployer_infisical_environment: >-
+  {{ infisical_environment | default('prod') }}
+
+infra_ansible_deployer_packages:
+  - ansible-core
+  - git
+  - infisical
+  - openssh-client
+  - powershell
+  - python3
+  - sudo
