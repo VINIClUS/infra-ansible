@@ -55,6 +55,16 @@ def test_role_does_not_bind_the_inherited_backup_path():
     assert "/mnt/infra-backups/proxmox" not in compose
 
 
+def test_role_keeps_secrets_out_of_compose_project_dotenv():
+    runtime_env = read("roles/proxmox_mcp_service/templates/proxmox-mcp.env.j2")
+    project_env = read("roles/proxmox_mcp_service/templates/compose-project.env.j2")
+    tasks = read("roles/proxmox_mcp_service/tasks/main.yml")
+    assert "='" in runtime_env
+    assert "PVE_SSH_PUBLIC_KEY_FILE=" in project_env
+    assert "PVE_TOKEN_SECRET" not in project_env
+    assert ".proxmox-mcp.env" in tasks
+
+
 def test_playbook_and_collection_are_explicit():
     playbook = read("playbooks/proxmox-mcp-service.yml")
     requirements = read("requirements.yml")
