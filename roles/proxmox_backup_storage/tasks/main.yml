@@ -43,6 +43,10 @@
     that:
       - proxmox_backup_storage_unsafe_mount_options | length == 0
       - >-
+        not (proxmox_backup_storage_mount_source is search(
+          '(?i)(://[^/\s]*@|^//[^/@\s]+:[^/@\s]+@)'
+        ))
+      - >-
         proxmox_backup_storage_mount_credentials_file | length == 0 or
         (proxmox_backup_storage_mount_fstype == 'cifs' and
          proxmox_backup_storage_mount_credentials_file is match('^/[^\n]+$'))
@@ -50,7 +54,13 @@
       Credentials must not appear in mount options. For CIFS, materialize a
       protected credentials file from the secure runtime and reference its
       absolute path with proxmox_backup_storage_mount_credentials_file.
-  no_log: "{{ proxmox_backup_storage_mount_credentials_file | length > 0 }}"
+  no_log: >-
+    {{
+      proxmox_backup_storage_mount_credentials_file | length > 0 or
+      proxmox_backup_storage_mount_source is search(
+        '(?i)(://[^/\s]*@|^//[^/@\s]+:[^/@\s]+@)'
+      )
+    }}
 
 - name: Select the minimal mount client package
   ansible.builtin.set_fact:

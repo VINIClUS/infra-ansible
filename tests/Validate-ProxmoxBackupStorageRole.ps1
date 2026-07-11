@@ -115,6 +115,12 @@ try {
         throw "Role accepted inline mount credentials."
     }
 
+    $unsafeSource = '{"proxmox_backup_storage_mount_source":"//user:password@storage/share"}'
+    & ansible-playbook -i $fixtureInventory $fixturePlaybook --check --limit localhost --tags proxmox_backup_storage --extra-vars $unsafeSource *> $null
+    if ($LASTEXITCODE -eq 0) {
+        throw "Role accepted credentials embedded in the mount source."
+    }
+
     $env:FAKE_STORAGE_MODE = "absent-then-created"
     Remove-Item -Force -ErrorAction SilentlyContinue $marker
     Remove-Item -Force -ErrorAction SilentlyContinue $state
