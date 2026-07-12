@@ -65,7 +65,7 @@ try {
   roles:
     - role: github_actions_runner
   vars:
-    github_actions_runner_archive_url: file:///tmp/fake-runner.tar.gz
+    github_actions_runner_archive_url: file:///opt/ansible-test/fake-runner.tar.gz
     github_actions_runner_archive_sha256: $ArchiveSha256
     github_actions_runner_name: matrix-runner
 "@ | Set-Content -Path $PlaybookPath -Encoding utf8NoBOM
@@ -90,18 +90,18 @@ try {
         Wait-Systemd -Container $Case.Container
 
         Invoke-Docker -Arguments @(
-            "exec", $Case.Container, "mkdir", "-p", "/tmp/ansible/roles"
+            "exec", $Case.Container, "mkdir", "-p", "/opt/ansible-test/roles"
         ) | Out-Null
         Invoke-Docker -Arguments @(
             "cp",
             (Join-Path $Root "roles/github_actions_runner"),
-            "$($Case.Container):/tmp/ansible/roles/"
+            "$($Case.Container):/opt/ansible-test/roles/"
         ) | Out-Null
         Invoke-Docker -Arguments @(
-            "cp", $ArchivePath, "$($Case.Container):/tmp/fake-runner.tar.gz"
+            "cp", $ArchivePath, "$($Case.Container):/opt/ansible-test/fake-runner.tar.gz"
         ) | Out-Null
         Invoke-Docker -Arguments @(
-            "cp", $PlaybookPath, "$($Case.Container):/tmp/ansible/playbook.yml"
+            "cp", $PlaybookPath, "$($Case.Container):/opt/ansible-test/playbook.yml"
         ) | Out-Null
 
         Write-Host "Applying the role to $($Case.Name)"
@@ -109,7 +109,7 @@ try {
             "exec",
             "--env", "GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN=offline-fixture-token",
             $Case.Container,
-            "ansible-playbook", "-i", "localhost,", "/tmp/ansible/playbook.yml"
+            "ansible-playbook", "-i", "localhost,", "/opt/ansible-test/playbook.yml"
         )
         $FirstRun | Out-Host
         if (($FirstRun -join "`n") -notmatch "failed=0") {
@@ -143,7 +143,7 @@ try {
         $SecondRun = Invoke-Docker -Arguments @(
             "exec",
             $Case.Container,
-            "ansible-playbook", "-i", "localhost,", "/tmp/ansible/playbook.yml"
+            "ansible-playbook", "-i", "localhost,", "/opt/ansible-test/playbook.yml"
         )
         $SecondRun | Out-Host
         if (($SecondRun -join "`n") -notmatch "changed=0") {
