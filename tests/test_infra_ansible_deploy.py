@@ -328,6 +328,8 @@ def test_external_health_secrets_are_allowlisted_and_only_enter_child_env(
     assert health_env["CLOUDFLARE_ACCESS_CLIENT_SECRET"] == "health-client-secret"
     assert "UNRELATED" not in health_env
     assert "INFISICAL_TOKEN" not in health_env
+    health_program = calls[-1][0][2]
+    assert '"User-Agent": "infra-ansible-deploy/1"' in health_program
 
 
 def test_inventory_is_updated_and_validated_before_it_is_recorded():
