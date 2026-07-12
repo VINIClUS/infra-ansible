@@ -189,6 +189,7 @@
         mode: put
         overwrite: never
         encrypt: false
+        permission: []
       become: true
       no_log: true
 

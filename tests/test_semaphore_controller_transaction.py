@@ -138,6 +138,9 @@ def test_transaction_order_is_fail_closed_and_evidence_is_outside_rescue():
 
 def test_backup_is_encrypted_and_uploaded_before_state_allows_migration():
     backup = read(f"{ROLE}/tasks/backup.yml")
+    upload = nested_task_named(
+        "backup.yml", "Upload encrypted Semaphore pre-change backup"
+    )["amazon.aws.s3_object"]
 
     assert backup.index("pg_dump") < backup.index("age")
     assert backup.index("age") < backup.index("amazon.aws.s3_object")
@@ -146,6 +149,15 @@ def test_backup_is_encrypted_and_uploaded_before_state_allows_migration():
     assert "no_log: true" in backup
     assert "always:" in backup
     assert "state: absent" in backup
+    assert upload["permission"] == []
+
+
+def test_deployment_evidence_upload_does_not_request_object_acl_changes():
+    upload = task_named(
+        "deploy.yml", "Upload redacted Semaphore deployment evidence"
+    )["amazon.aws.s3_object"]
+
+    assert upload["permission"] == []
 
 
 def test_backup_and_rollback_keep_secrets_out_of_argv_and_restore_everything():
