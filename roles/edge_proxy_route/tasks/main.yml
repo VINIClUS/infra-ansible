@@ -5,13 +5,20 @@
       - edge_proxy_route_domain == 'ansible.vinisantana.com'
       - >-
         edge_proxy_route_controller_address is
-        match('^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$')
+        match('^(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$')
       - >-
         edge_proxy_route_controller_address.split('.') |
         map('int') | min >= 0
       - >-
         edge_proxy_route_controller_address.split('.') |
         map('int') | max <= 255
+      - >-
+        (edge_proxy_route_controller_address.split('.')[0] | int == 10) or
+        (edge_proxy_route_controller_address.split('.')[0] | int == 172 and
+         edge_proxy_route_controller_address.split('.')[1] | int >= 16 and
+         edge_proxy_route_controller_address.split('.')[1] | int <= 31) or
+        (edge_proxy_route_controller_address.split('.')[0] | int == 192 and
+         edge_proxy_route_controller_address.split('.')[1] | int == 168)
       - edge_proxy_route_upstream_port | int == 3000
       - >-
         edge_proxy_route_upstream ==
@@ -20,6 +27,7 @@
     fail_msg: >-
       The edge route requires ansible.vinisantana.com and an explicit stable
       controller IPv4 address on the pinned HTTP port 3000.
+  tags: [edge_proxy_route_validate]
 
 - name: Render Nginx route candidate
   ansible.builtin.template:

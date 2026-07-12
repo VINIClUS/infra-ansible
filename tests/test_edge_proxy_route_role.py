@@ -1,7 +1,10 @@
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import jinja2
+import pytest
 import yaml
 
 
@@ -19,6 +22,39 @@ def load_yaml(path: str):
 
 def task_named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task["name"] == name)
+
+
+def validate_controller_address(tmp_path: Path, address: str) -> subprocess.CompletedProcess:
+    playbook = tmp_path / "validate-edge-proxy-address.yml"
+    playbook.write_text(
+        """---
+- name: Validate edge proxy address fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Import edge proxy route validation
+      ansible.builtin.import_role:
+        name: edge_proxy_route
+""",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            str(playbook),
+            "--tags",
+            "edge_proxy_route_validate",
+            "--extra-vars",
+            json.dumps({"edge_proxy_route_controller_address": address}),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_route_is_explicit_websocket_safe_and_uses_both_origin_listeners():
@@ -59,8 +95,10 @@ def test_transaction_orders_candidate_backup_install_validation_and_reload():
     tasks = load_yaml(f"{ROLE}/tasks/main.yml")
     handlers = load_yaml(f"{ROLE}/handlers/main.yml")
     transaction = task_named(tasks, "Install and verify managed Nginx route")
-    block_names = [task["name"] for task in transaction["block"]]
+    block = transaction["block"]
+    block_names = [task["name"] for task in block]
     handler_names = [handler["name"] for handler in handlers]
+    install = task_named(block, "Atomically install Nginx route candidate")
 
     top_level_names = [task["name"] for task in tasks]
     assert top_level_names.index("Render Nginx route candidate") < top_level_names.index(
@@ -76,9 +114,57 @@ def test_transaction_orders_candidate_backup_install_validation_and_reload():
         "Validate installed Nginx configuration",
         "Reload Nginx after successful validation",
     ]
+    assert install["when"] == "edge_proxy_route_changed"
+    assert install["notify"] == "Validate and reload Nginx route"
     assert handlers[0]["ansible.builtin.command"]["argv"] == ["nginx", "-t"]
+    assert handlers[0]["changed_when"] is True
+    assert handlers[0]["listen"] == "Validate and reload Nginx route"
     assert handlers[0]["notify"] == "Reload Nginx after successful validation"
     assert handlers[1]["ansible.builtin.systemd_service"]["state"] == "reloaded"
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "10.0.0.0",
+        "10.255.255.255",
+        "172.16.0.0",
+        "172.31.255.255",
+        "192.168.0.0",
+        "192.168.255.255",
+    ],
+)
+def test_controller_address_accepts_rfc1918_private_ipv4(tmp_path, address):
+    result = validate_controller_address(tmp_path, address)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "",
+        "0.0.0.0",
+        "8.8.8.8",
+        "100.64.0.1",
+        "127.0.0.1",
+        "169.254.0.1",
+        "172.15.255.255",
+        "172.32.0.0",
+        "192.169.0.1",
+        "224.0.0.1",
+        "255.255.255.255",
+        "::1",
+        "010.0.0.1",
+        "10.0.0.1/24",
+        "10.0.0.1.evil",
+        "prefix10.0.0.1",
+    ],
+)
+def test_controller_address_rejects_non_rfc1918_or_trick_values(tmp_path, address):
+    result = validate_controller_address(tmp_path, address)
+
+    assert result.returncode != 0, result.stdout + result.stderr
 
 
 def test_rescue_restores_preceding_route_or_removes_new_route_then_revalidates():

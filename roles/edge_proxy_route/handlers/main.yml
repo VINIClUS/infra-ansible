@@ -5,7 +5,7 @@
     argv:
       - nginx
       - -t
-  changed_when: false
+  changed_when: true
   notify: Reload Nginx after successful validation
   listen: Validate and reload Nginx route
 
