@@ -37,6 +37,9 @@ semaphore_controller_web_root: ""
 
 semaphore_controller_rollback_mode: false
 semaphore_controller_rollback_backup_id: ""
+semaphore_controller_expected_run_tags:
+  - monitoring_agent
+  - semaphore_controller
 semaphore_controller_target_binary: >-
   {{ semaphore_controller_release_path }}/usr/bin/semaphore
 semaphore_controller_backup_root: >-

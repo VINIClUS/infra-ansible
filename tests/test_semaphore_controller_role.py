@@ -68,7 +68,10 @@ def test_role_requires_debian_13_amd64_one_host_limit_and_exact_tag():
     assert "ansible_limit | trim == inventory_hostname" in assertions
     assert "ansible_play_hosts_all | length == 1" in assertions
     assert "ansible_play_hosts_all[0] == inventory_hostname" in assertions
-    assert "ansible_run_tags | list | sort == ['semaphore_controller']" in assertions
+    assert (
+        "(ansible_run_tags | list | sort) == "
+        "(semaphore_controller_expected_run_tags | list | sort)"
+    ) in assertions
 
 
 def test_install_uses_native_pinned_deb_and_immutable_release():

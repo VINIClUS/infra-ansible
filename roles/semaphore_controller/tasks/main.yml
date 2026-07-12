@@ -32,11 +32,13 @@
       - ansible_limit | trim == inventory_hostname
       - ansible_play_hosts_all | length == 1
       - ansible_play_hosts_all[0] == inventory_hostname
-      - ansible_run_tags | list | sort == ['semaphore_controller']
+      - >-
+        (ansible_run_tags | list | sort) ==
+        (semaphore_controller_expected_run_tags | list | sort)
     fail_msg: >-
       Semaphore controller deployment requires Debian 13 amd64 under systemd,
       the pinned release contract with native postgresql, one exact --limit
-      host, and only the semaphore_controller tag.
+      host, and only the exact declared reconciliation tags.
   when: not semaphore_controller_rollback_mode | bool
 
 - name: Validate narrow Semaphore rollback contract

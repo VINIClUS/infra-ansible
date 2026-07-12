@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+from tools.deploy import infra_ansible_deploy as deploy
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +65,33 @@ def test_deploy_is_one_controller_play_with_only_reconciliation_roles():
     assert "github_actions_runner" not in playbook
     assert "edge_proxy_route" not in playbook
     assert "cloudflare_access_application" not in playbook
+
+
+def test_fixed_deploy_tags_match_the_semaphore_role_exact_allowlist():
+    defaults = yaml.safe_load(read("roles/semaphore_controller/defaults/main.yml"))
+    role_tasks = yaml.safe_load(read("roles/semaphore_controller/tasks/main.yml"))
+    wrapper_tags = sorted(deploy.FIXED_RUNS[0].tags.split(","))
+
+    assert wrapper_tags == ["monitoring_agent", "semaphore_controller"]
+    assert defaults["semaphore_controller_expected_run_tags"] == wrapper_tags
+    validation = next(
+        task
+        for task in role_tasks
+        if task["name"] == "Validate narrow Semaphore controller contract"
+    )
+    assert (
+        "(ansible_run_tags | list | sort) == "
+        "(semaphore_controller_expected_run_tags | list | sort)"
+    ) in validation["ansible.builtin.assert"]["that"]
+
+
+def test_bootstrap_declares_its_exact_controller_tag_contract():
+    controller_play = load_playbook("playbooks/bootstrap-ansible-controller.yml")[0]
+    expected_tags = [role["role"] for role in controller_play["roles"]]
+
+    assert controller_play["vars"]["semaphore_controller_expected_run_tags"] == (
+        expected_tags
+    )
 
 
 def test_privileged_edge_and_access_runs_remain_separate():

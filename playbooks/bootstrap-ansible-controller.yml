@@ -3,6 +3,14 @@
   hosts: ansible_controllers
   gather_facts: true
   serial: 1
+  vars:
+    semaphore_controller_expected_run_tags:
+      - common_base
+      - ssh_hardening
+      - github_actions_runner
+      - infra_ansible_deployer
+      - semaphore_controller
+      - monitoring_agent
   roles:
     - role: common_base
       tags: [common_base]
