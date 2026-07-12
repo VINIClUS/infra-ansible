@@ -1,0 +1,304 @@
+---
+- name: Validate path-scoped Cloudflare Access contract
+  ansible.builtin.assert:
+    that:
+      - cloudflare_access_api_base_url == 'https://api.cloudflare.com/client/v4'
+      - >-
+        (cloudflare_access_account_id | length > 0) !=
+        (cloudflare_access_zone_id | length > 0)
+      - cloudflare_access_api_token | length > 0
+      - cloudflare_access_service_token_id | length > 0
+      - cloudflare_access_human_domain == 'ansible.vinisantana.com'
+      - >-
+        cloudflare_access_health_domain ==
+        'ansible.vinisantana.com/api/ping'
+      - cloudflare_access_allowed_email == 'me@vinisantana.com'
+      - cloudflare_access_applications | length == 2
+      - >-
+        cloudflare_access_applications | map(attribute='key') | list ==
+        ['human', 'health']
+      - >-
+        cloudflare_access_applications | map(attribute='type') |
+        unique | list == ['self_hosted']
+      - >-
+        cloudflare_access_applications[0].policy.include ==
+        [{'email': {'email': cloudflare_access_allowed_email}}]
+      - >-
+        cloudflare_access_applications[1].policy.decision ==
+        'non_identity'
+      - >-
+        cloudflare_access_applications[1].policy.include ==
+        [{'service_token': {'token_id':
+        cloudflare_access_service_token_id}}]
+    fail_msg: >-
+      Cloudflare Access requires exactly one account or zone scope, an API
+      token, the exact Semaphore domains and operator email, and one exact
+      health service-token resource ID.
+  no_log: true
+  tags: [cloudflare_access_application_validate]
+
+- name: Select Cloudflare Access API scope
+  ansible.builtin.set_fact:
+    cloudflare_access_application_scope_url: >-
+      {{ cloudflare_access_api_base_url }}/{{
+         'accounts' if cloudflare_access_account_id | length > 0 else 'zones'
+      }}/{{ cloudflare_access_account_id
+            if cloudflare_access_account_id | length > 0
+            else cloudflare_access_zone_id }}
+  no_log: true
+
+- name: List exact Cloudflare Access application domains
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url }}/access/apps?domain={{
+         item.domain | urlencode }}&exact=true&per_page=100
+    method: GET
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    status_code: 200
+    return_content: false
+  loop: "{{ cloudflare_access_applications }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudflare_access_application_list
+  changed_when: false
+  failed_when: >-
+    cloudflare_access_application_list.json.success | default(false) != true
+  no_log: true
+
+- name: Reject duplicate exact Cloudflare Access application domains
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.json.result |
+        selectattr('domain', 'equalto', item.item.domain) |
+        list | length <= 1
+    fail_msg: >-
+      More than one Cloudflare Access application has the exact managed
+      domain; refusing an ambiguous update.
+  loop: "{{ cloudflare_access_application_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Initialize managed Cloudflare Access application IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_ids: {}
+  no_log: true
+
+- name: Record existing Cloudflare Access application IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_ids: >-
+      {{ cloudflare_access_application_ids | combine({
+           item.item.key: (
+             item.json.result |
+             selectattr('domain', 'equalto', item.item.domain) |
+             map(attribute='id') | first
+           ) | default('')
+         }) }}
+  loop: "{{ cloudflare_access_application_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Update drifted Cloudflare Access applications by exact domain
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url }}/access/apps/{{
+         cloudflare_access_application_ids[item.item.key] }}
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    body_format: json
+    body:
+      name: "{{ item.item.name }}"
+      domain: "{{ item.item.domain }}"
+      type: "{{ item.item.type }}"
+      session_duration: "{{ item.item.session_duration }}"
+    status_code: 200
+    return_content: false
+  vars:
+    cloudflare_access_current_application: >-
+      {{ item.json.result |
+         selectattr('domain', 'equalto', item.item.domain) | first }}
+  loop: "{{ cloudflare_access_application_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - cloudflare_access_application_ids[item.item.key] | length > 0
+    - >-
+      cloudflare_access_current_application.name != item.item.name or
+      cloudflare_access_current_application.domain != item.item.domain or
+      cloudflare_access_current_application.type != item.item.type or
+      cloudflare_access_current_application.session_duration |
+      default('') != item.item.session_duration
+  register: cloudflare_access_application_updates
+  changed_when: true
+  failed_when: >-
+    cloudflare_access_application_updates.json.success |
+    default(false) != true
+  no_log: true
+
+- name: Create missing Cloudflare Access applications
+  ansible.builtin.uri:
+    url: "{{ cloudflare_access_application_scope_url }}/access/apps"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    body_format: json
+    body:
+      name: "{{ item.item.name }}"
+      domain: "{{ item.item.domain }}"
+      type: "{{ item.item.type }}"
+      session_duration: "{{ item.item.session_duration }}"
+    status_code: 200
+    return_content: false
+  loop: "{{ cloudflare_access_application_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: cloudflare_access_application_ids[item.item.key] | length == 0
+  register: cloudflare_access_application_creates
+  changed_when: true
+  failed_when: >-
+    cloudflare_access_application_creates.json.success |
+    default(false) != true
+  no_log: true
+
+- name: Record created Cloudflare Access application IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_ids: >-
+      {{ cloudflare_access_application_ids | combine({
+           item.item.item.key: item.json.result.id
+         }) }}
+  loop: "{{ cloudflare_access_application_creates.results }}"
+  loop_control:
+    label: "{{ item.item.item.key }}"
+  when: not item.skipped | default(false)
+  no_log: true
+
+- name: List policies for managed Cloudflare Access applications
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url }}/access/apps/{{
+         cloudflare_access_application_ids[item.key] }}/policies?per_page=100
+    method: GET
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    status_code: 200
+    return_content: false
+  loop: "{{ cloudflare_access_applications }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: cloudflare_access_policy_list  # noqa var-naming[no-role-prefix]
+  changed_when: false
+  failed_when: >-
+    cloudflare_access_policy_list.json.success | default(false) != true
+  no_log: true
+
+- name: Reject duplicate exact Cloudflare Access policy names
+  ansible.builtin.assert:
+    that:
+      - >-
+        item.json.result |
+        selectattr('name', 'equalto', item.item.policy.name) |
+        list | length <= 1
+    fail_msg: >-
+      More than one Cloudflare Access policy has the exact managed name in
+      its application; refusing an ambiguous update.
+  loop: "{{ cloudflare_access_policy_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Initialize managed Cloudflare Access policy IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_policy_ids: {}
+  no_log: true
+
+- name: Record existing Cloudflare Access policy IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_policy_ids: >-
+      {{ cloudflare_access_application_policy_ids | combine({
+           item.item.key: (
+             item.json.result |
+             selectattr('name', 'equalto', item.item.policy.name) |
+             map(attribute='id') | first
+           ) | default('')
+         }) }}
+  loop: "{{ cloudflare_access_policy_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  no_log: true
+
+- name: Update drifted Cloudflare Access policies by exact name
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url }}/access/apps/{{
+         cloudflare_access_application_ids[item.item.key] }}/policies/{{
+         cloudflare_access_application_policy_ids[item.item.key] }}
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    body_format: json
+    body: "{{ item.item.policy }}"
+    status_code: 200
+    return_content: false
+  vars:
+    cloudflare_access_current_policy: >-
+      {{ item.json.result |
+         selectattr('name', 'equalto', item.item.policy.name) | first }}
+  loop: "{{ cloudflare_access_policy_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when:
+    - cloudflare_access_application_policy_ids[item.item.key] | length > 0
+    - >-
+      cloudflare_access_current_policy.decision !=
+      item.item.policy.decision or
+      cloudflare_access_current_policy.include | default([]) !=
+      item.item.policy.include or
+      cloudflare_access_current_policy.exclude | default([]) !=
+      item.item.policy.exclude or
+      cloudflare_access_current_policy.require | default([]) !=
+      item.item.policy.require or
+      cloudflare_access_current_policy.precedence | int !=
+      item.item.policy.precedence | int
+  register: cloudflare_access_policy_updates  # noqa var-naming[no-role-prefix]
+  changed_when: true
+  failed_when: >-
+    cloudflare_access_policy_updates.json.success | default(false) != true
+  no_log: true
+
+- name: Create missing Cloudflare Access policies
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url }}/access/apps/{{
+         cloudflare_access_application_ids[item.item.key] }}/policies
+    method: POST
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    body_format: json
+    body: "{{ item.item.policy }}"
+    status_code: 200
+    return_content: false
+  loop: "{{ cloudflare_access_policy_list.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+  when: cloudflare_access_application_policy_ids[item.item.key] | length == 0
+  register: cloudflare_access_policy_creates  # noqa var-naming[no-role-prefix]
+  changed_when: true
+  failed_when: >-
+    cloudflare_access_policy_creates.json.success | default(false) != true
+  no_log: true
+
+- name: Record created Cloudflare Access policy IDs
+  ansible.builtin.set_fact:
+    cloudflare_access_application_policy_ids: >-
+      {{ cloudflare_access_application_policy_ids | combine({
+           item.item.item.key: item.json.result.id
+         }) }}
+  loop: "{{ cloudflare_access_policy_creates.results }}"
+  loop_control:
+    label: "{{ item.item.item.key }}"
+  when: not item.skipped | default(false)
+  no_log: true

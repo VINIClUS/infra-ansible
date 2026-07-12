@@ -1,0 +1,49 @@
+---
+cloudflare_access_api_base_url: https://api.cloudflare.com/client/v4  # noqa var-naming[no-role-prefix]
+cloudflare_access_account_id: >-  # noqa var-naming[no-role-prefix]
+  {{ cloudflare_account_id |
+     default(lookup('ansible.builtin.env', 'CLOUDFLARE_ACCOUNT_ID'), true) }}
+cloudflare_access_zone_id: "{{ cloudflare_zone_id | default('', true) }}"  # noqa var-naming[no-role-prefix]
+cloudflare_access_api_token: >-  # noqa var-naming[no-role-prefix]
+  {{ lookup('ansible.builtin.env', 'CLOUDFLARE_API_TOKEN') }}
+cloudflare_access_service_token_id: ""  # noqa var-naming[no-role-prefix]
+
+cloudflare_access_human_domain: ansible.vinisantana.com  # noqa var-naming[no-role-prefix]
+cloudflare_access_health_domain: ansible.vinisantana.com/api/ping  # noqa var-naming[no-role-prefix]
+cloudflare_access_allowed_email: me@vinisantana.com  # noqa var-naming[no-role-prefix]
+cloudflare_access_session_duration: 24h  # noqa var-naming[no-role-prefix]
+
+cloudflare_access_human_application_name: Semaphore human OTP access  # noqa var-naming[no-role-prefix]
+cloudflare_access_health_application_name: Semaphore health service access  # noqa var-naming[no-role-prefix]
+cloudflare_access_human_policy_name: Allow exact Semaphore operator email  # noqa var-naming[no-role-prefix]
+cloudflare_access_health_policy_name: Allow exact Semaphore health token  # noqa var-naming[no-role-prefix]
+
+cloudflare_access_applications:  # noqa var-naming[no-role-prefix]
+  - key: human
+    name: "{{ cloudflare_access_human_application_name }}"
+    domain: "{{ cloudflare_access_human_domain }}"
+    type: self_hosted
+    session_duration: "{{ cloudflare_access_session_duration }}"
+    policy:
+      name: "{{ cloudflare_access_human_policy_name }}"
+      decision: allow
+      include:
+        - email:
+            email: "{{ cloudflare_access_allowed_email }}"
+      exclude: []
+      require: []
+      precedence: 1
+  - key: health
+    name: "{{ cloudflare_access_health_application_name }}"
+    domain: "{{ cloudflare_access_health_domain }}"
+    type: self_hosted
+    session_duration: "{{ cloudflare_access_session_duration }}"
+    policy:
+      name: "{{ cloudflare_access_health_policy_name }}"
+      decision: non_identity
+      include:
+        - service_token:
+            token_id: "{{ cloudflare_access_service_token_id }}"
+      exclude: []
+      require: []
+      precedence: 1
