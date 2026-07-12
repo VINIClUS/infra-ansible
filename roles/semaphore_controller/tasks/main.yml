@@ -17,7 +17,10 @@
       - ansible_facts.architecture in ['x86_64', 'amd64']
       - ansible_facts.service_mgr == 'systemd'
       - semaphore_controller_version == '2.18.25'
-      - semaphore_controller_sha256 is match('^[0-9a-f]{64}$')
+      - "semaphore_controller_sha256 == '\
+        209cf89c23710ed74e4568be129690fb5f9599b66f3cdfb55ed6c1a437c94dc9'"
+      - "semaphore_controller_download_url == 'https://github.com/semaphoreui/semaphore/releases/download/\
+        v2.18.25/semaphore_2.18.25_linux_amd64.deb'"
       - semaphore_controller_release_root is match('^/[a-zA-Z0-9._/-]+$')
       - semaphore_controller_current_path is match('^/[a-zA-Z0-9._/-]+$')
       - semaphore_controller_config_dir is match('^/[a-zA-Z0-9._/-]+$')
@@ -89,4 +92,4 @@
   delay: 2
   until:
     - semaphore_controller_health.status == 200
-    - semaphore_controller_health.content | trim == 'pong'
+    - semaphore_controller_health.content == 'pong'

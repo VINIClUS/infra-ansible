@@ -23,4 +23,4 @@ rotated after first login.
 
 The role installs and starts `semaphore.service`, binds Semaphore to loopback
 port 3000, and succeeds only after `GET /api/ping` returns HTTP 200 with the
-exact body `pong`.
+exact body `pong`, without trimming or whitespace normalization.

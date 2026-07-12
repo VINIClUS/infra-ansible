@@ -10,6 +10,9 @@ semaphore_controller_config_path: "{{ semaphore_controller_config_dir }}/config.
 semaphore_controller_state_dir: /var/lib/semaphore
 semaphore_controller_tmp_dir: "{{ semaphore_controller_state_dir }}/tmp"
 semaphore_controller_cache_dir: /var/cache/semaphore
+semaphore_controller_setup_state_dir: /var/lib/infra-ansible/semaphore
+semaphore_controller_setup_marker_path: >-
+  {{ semaphore_controller_setup_state_dir }}/setup-complete
 
 semaphore_controller_release_path: >-
   {{ semaphore_controller_release_root }}/{{ semaphore_controller_version }}

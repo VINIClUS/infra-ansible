@@ -29,7 +29,7 @@
 
 - name: Check first Semaphore setup marker
   ansible.builtin.stat:
-    path: "{{ semaphore_controller_state_dir }}/.setup-complete"
+    path: "{{ semaphore_controller_setup_marker_path }}"
   register: semaphore_controller_setup_marker
   become: true
 
@@ -64,7 +64,7 @@
 
 - name: Record successful first Semaphore setup
   ansible.builtin.file:
-    path: "{{ semaphore_controller_state_dir }}/.setup-complete"
+    path: "{{ semaphore_controller_setup_marker_path }}"
     state: touch
     owner: root
     group: root
@@ -151,6 +151,7 @@
     not semaphore_controller_current_release.stat.islnk | default(false) or
     semaphore_controller_current_release.stat.lnk_source | default('') !=
     semaphore_controller_release_path
+  changed_when: true
   become: true
   notify: Restart Semaphore
 

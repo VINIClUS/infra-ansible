@@ -55,6 +55,15 @@ def test_role_requires_debian_13_amd64_one_host_limit_and_exact_tag():
     assert "ansible_facts.distribution_major_version == '13'" in assertions
     assert "ansible_facts.architecture in ['x86_64', 'amd64']" in assertions
     assert "ansible_facts.service_mgr == 'systemd'" in assertions
+    assert (
+        "semaphore_controller_sha256 == "
+        "'209cf89c23710ed74e4568be129690fb5f9599b66f3cdfb55ed6c1a437c94dc9'"
+    ) in assertions
+    assert (
+        "semaphore_controller_download_url == "
+        "'https://github.com/semaphoreui/semaphore/releases/download/"
+        "v2.18.25/semaphore_2.18.25_linux_amd64.deb'"
+    ) in assertions
     assert "ansible_limit is defined" in assertions
     assert "ansible_limit | trim == inventory_hostname" in assertions
     assert "ansible_play_hosts_all | length == 1" in assertions
@@ -88,8 +97,13 @@ def test_install_uses_native_pinned_deb_and_immutable_release():
     )
 
     download = task_named("install.yml", "Download exact official Semaphore package")
+    assert download["ansible.builtin.get_url"]["url"] == (
+        "https://github.com/semaphoreui/semaphore/releases/download/"
+        "v2.18.25/semaphore_2.18.25_linux_amd64.deb"
+    )
     assert download["ansible.builtin.get_url"]["checksum"] == (
-        "sha256:{{ semaphore_controller_sha256 }}"
+        "sha256:209cf89c23710ed74e4568be129690fb5"
+        "f9599b66f3cdfb55ed6c1a437c94dc9"
     )
     extraction = task_named("install.yml", "Extract immutable Semaphore release")
     assert extraction["ansible.builtin.command"]["argv"] == [
@@ -141,24 +155,61 @@ def test_service_activation_is_atomic_and_health_requires_200_pong():
     main = task_named("main.yml", "Require local Semaphore health")
     configure = read(f"{ROLE}/tasks/configure.yml")
     unit = read(f"{ROLE}/templates/semaphore.service.j2")
+    readme = read(f"{ROLE}/README.md")
 
     assert main["ansible.builtin.uri"]["url"] == (
         "http://127.0.0.1:3000/api/ping"
     )
     assert main["ansible.builtin.uri"]["status_code"] == 200
     assert main["ansible.builtin.uri"]["return_content"] is True
-    assert "semaphore_controller_health.content | trim == 'pong'" in main["until"]
+    assert "semaphore_controller_health.content == 'pong'" in main["until"]
+    assert all("trim" not in condition for condition in main["until"])
+    assert "without trimming or whitespace normalization" in readme
     assert "{{ semaphore_controller_current_path }}.next" in configure
     activation = task_named("configure.yml", "Atomically activate exact Semaphore release")
     assert activation["ansible.builtin.command"]["argv"][0:2] == [
         "mv",
         "--no-target-directory",
     ]
+    assert activation["changed_when"] is True
     assert (
         "{{ semaphore_controller_current_path }}/usr/bin/semaphore server "
         "--config={{ semaphore_controller_config_path }}"
     ) in unit
     assert "User={{ semaphore_controller_user }}" in unit
+
+
+def test_setup_completion_state_is_root_controlled_outside_service_state():
+    defaults = load_yaml(f"{ROLE}/defaults/main.yml")
+    install = task_named("install.yml", "Create persistent Semaphore directories")
+    configure = read(f"{ROLE}/tasks/configure.yml")
+    marker = task_named("configure.yml", "Record successful first Semaphore setup")
+
+    assert defaults["semaphore_controller_setup_state_dir"] == (
+        "/var/lib/infra-ansible/semaphore"
+    )
+    assert defaults["semaphore_controller_setup_marker_path"] == (
+        "{{ semaphore_controller_setup_state_dir }}/setup-complete"
+    )
+    setup_directory = next(
+        item
+        for item in install["loop"]
+        if item["path"] == "{{ semaphore_controller_setup_state_dir }}"
+    )
+    assert setup_directory == {
+        "path": "{{ semaphore_controller_setup_state_dir }}",
+        "owner": "root",
+        "group": "root",
+        "mode": "0700",
+    }
+    assert "{{ semaphore_controller_setup_marker_path }}" in configure
+    assert "{{ semaphore_controller_state_dir }}/.setup-complete" not in configure
+    assert marker["ansible.builtin.file"]["path"] == (
+        "{{ semaphore_controller_setup_marker_path }}"
+    )
+    assert marker["ansible.builtin.file"]["owner"] == "root"
+    assert marker["ansible.builtin.file"]["group"] == "root"
+    assert marker["ansible.builtin.file"]["mode"] == "0600"
 
 
 def test_role_has_no_container_runtime_dependency():
