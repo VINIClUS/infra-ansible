@@ -72,7 +72,9 @@ try {
 
     foreach ($Case in $Cases) {
         Write-Host "Building $($Case.Name) systemd fixture"
-        Invoke-Docker build --file $Case.Dockerfile --tag $Case.Image $Root | Out-Host
+        Invoke-Docker -Arguments @(
+            "build", "--file", $Case.Dockerfile, "--tag", $Case.Image, $Root
+        ) | Out-Host
 
         $RunArguments = @(
             "run",
@@ -84,24 +86,43 @@ try {
             $Case.Image
         )
         $Containers.Add($Case.Container)
-        Invoke-Docker @RunArguments | Out-Null
+        Invoke-Docker -Arguments $RunArguments | Out-Null
         Wait-Systemd -Container $Case.Container
 
-        Invoke-Docker exec $Case.Container mkdir -p /tmp/ansible/roles/github_actions_runner | Out-Null
-        Invoke-Docker cp "$(Join-Path $Root 'roles/github_actions_runner')/." "$($Case.Container):/tmp/ansible/roles/github_actions_runner" | Out-Null
-        Invoke-Docker cp $ArchivePath "$($Case.Container):/tmp/fake-runner.tar.gz" | Out-Null
-        Invoke-Docker cp $PlaybookPath "$($Case.Container):/tmp/ansible/playbook.yml" | Out-Null
+        Invoke-Docker -Arguments @(
+            "exec", $Case.Container, "mkdir", "-p", "/tmp/ansible/roles/github_actions_runner"
+        ) | Out-Null
+        Invoke-Docker -Arguments @(
+            "cp",
+            "$(Join-Path $Root 'roles/github_actions_runner')/.",
+            "$($Case.Container):/tmp/ansible/roles/github_actions_runner"
+        ) | Out-Null
+        Invoke-Docker -Arguments @(
+            "cp", $ArchivePath, "$($Case.Container):/tmp/fake-runner.tar.gz"
+        ) | Out-Null
+        Invoke-Docker -Arguments @(
+            "cp", $PlaybookPath, "$($Case.Container):/tmp/ansible/playbook.yml"
+        ) | Out-Null
 
         Write-Host "Applying the role to $($Case.Name)"
-        $FirstRun = Invoke-Docker exec --env GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN=offline-fixture-token $Case.Container ansible-playbook -i localhost, /tmp/ansible/playbook.yml
+        $FirstRun = Invoke-Docker -Arguments @(
+            "exec",
+            "--env", "GITHUB_ACTIONS_RUNNER_REGISTRATION_TOKEN=offline-fixture-token",
+            $Case.Container,
+            "ansible-playbook", "-i", "localhost,", "/tmp/ansible/playbook.yml"
+        )
         $FirstRun | Out-Host
         if (($FirstRun -join "`n") -notmatch "failed=0") {
             throw "$($Case.Name) first run did not report success"
         }
 
-        $RunnerMetadataJson = Invoke-Docker exec $Case.Container cat /opt/github-actions-runner/.runner
+        $RunnerMetadataJson = Invoke-Docker -Arguments @(
+            "exec", $Case.Container, "cat", "/opt/github-actions-runner/.runner"
+        )
         $RunnerMetadata = (($RunnerMetadataJson -join "`n") | ConvertFrom-Json)
-        $ContainerArchitecture = ((Invoke-Docker exec $Case.Container dpkg --print-architecture) -join "`n").Trim()
+        $ContainerArchitecture = ((Invoke-Docker -Arguments @(
+            "exec", $Case.Container, "dpkg", "--print-architecture"
+        )) -join "`n").Trim()
         $ExpectedRunnerArchitecture = switch ($ContainerArchitecture) {
             "amd64" { "x64" }
             "arm64" { "arm64" }
@@ -119,13 +140,21 @@ try {
         }
 
         Write-Host "Proving idempotency on $($Case.Name) without a registration token"
-        $SecondRun = Invoke-Docker exec $Case.Container ansible-playbook -i localhost, /tmp/ansible/playbook.yml
+        $SecondRun = Invoke-Docker -Arguments @(
+            "exec",
+            $Case.Container,
+            "ansible-playbook", "-i", "localhost,", "/tmp/ansible/playbook.yml"
+        )
         $SecondRun | Out-Host
         if (($SecondRun -join "`n") -notmatch "changed=0") {
             throw "$($Case.Name) second run was not idempotent"
         }
 
-        $ActiveState = Invoke-Docker exec $Case.Container bash -lc 'systemctl is-active "$(cat /opt/github-actions-runner/.service)"'
+        $ActiveState = Invoke-Docker -Arguments @(
+            "exec",
+            $Case.Container,
+            "bash", "-lc", 'systemctl is-active "$(cat /opt/github-actions-runner/.service)"'
+        )
         if (($ActiveState -join "`n").Trim() -ne "active") {
             throw "$($Case.Name) fake runner service is not active"
         }

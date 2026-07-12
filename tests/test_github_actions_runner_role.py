@@ -105,7 +105,10 @@ def test_matrix_validates_registration_metadata_and_tracks_cleanup_before_start(
     )
     assert "$RunnerMetadata.labels -ne $ExpectedRunnerLabels" in matrix
     assert '$RunnerMetadata.work -ne "/var/lib/github-actions-runner"' in matrix
+    assert "Invoke-Docker exec" not in matrix
+    assert '"mkdir", "-p"' in matrix
+    assert '"ansible-playbook", "-i", "localhost,"' in matrix
 
     cleanup_tracking = matrix.index("$Containers.Add($Case.Container)")
-    container_start = matrix.index("Invoke-Docker @RunArguments")
+    container_start = matrix.index("Invoke-Docker -Arguments $RunArguments")
     assert cleanup_tracking < container_start
