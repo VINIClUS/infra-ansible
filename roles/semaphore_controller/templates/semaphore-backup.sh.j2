@@ -4,6 +4,13 @@ set -Eeuo pipefail
 umask 077
 workdir="$(mktemp --directory \
   "{{ semaphore_controller_backup_staging_root }}/timer.XXXXXXXX")"
+chown root:postgres "${workdir}"
+chmod 0710 "${workdir}"
+
+database_dir="${workdir}/database"
+secret_dir="${workdir}/root"
+install -d -o postgres -g postgres -m 0700 "${database_dir}"
+install -d -o root -g root -m 0700 "${secret_dir}"
 
 cleanup() {
   rm -rf -- "${workdir}"
@@ -11,15 +18,16 @@ cleanup() {
 trap cleanup EXIT
 
 backup_id="$(date --utc +%Y%m%dT%H%M%S%NZ)"
-database_dump="${workdir}/database.dump"
-config_archive="${workdir}/config.tar"
-bundle="${workdir}/bundle.tar"
-encrypted_bundle="${workdir}/${backup_id}.tar.age"
+database_dump="${database_dir}/database.dump"
+config_archive="${secret_dir}/config.tar"
+bundle="${secret_dir}/bundle.tar"
+encrypted_bundle="${secret_dir}/${backup_id}.tar.age"
 object_key="{{ semaphore_controller_backup_prefix }}/{{ inventory_hostname }}/${backup_id}.tar.age"
 
 runuser -u postgres -- pg_dump \
   --format=custom \
-  "{{ semaphore_controller_database_name }}" >"${database_dump}"
+  --file "${database_dump}" \
+  "{{ semaphore_controller_database_name }}"
 
 tar --create \
   --file "${config_archive}" \
@@ -28,8 +36,9 @@ tar --create \
 
 tar --create \
   --file "${bundle}" \
-  --directory "${workdir}" \
+  --directory "${database_dir}" \
   database.dump \
+  --directory "${secret_dir}" \
   config.tar
 
 age -r "{{ semaphore_controller_backup_age_recipient }}" \

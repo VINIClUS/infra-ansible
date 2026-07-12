@@ -58,8 +58,8 @@
       mode: "0700"
     - path: "{{ semaphore_controller_setup_state_dir }}"
       owner: root
-      group: root
-      mode: "0700"
+      group: postgres
+      mode: "0710"
   become: true
 
 - name: Download exact official Semaphore package

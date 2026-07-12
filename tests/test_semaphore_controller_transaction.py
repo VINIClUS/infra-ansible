@@ -25,6 +25,20 @@ def task_named(path: str, name: str) -> dict:
     return next(task for task in tasks_in(path) if task["name"] == name)
 
 
+def nested_tasks(path: str):
+    def walk(tasks):
+        for task in tasks:
+            yield task
+            for section in ("block", "rescue", "always"):
+                yield from walk(task.get(section, []))
+
+    return list(walk(tasks_in(path)))
+
+
+def nested_task_named(path: str, name: str) -> dict:
+    return next(task for task in nested_tasks(path) if task["name"] == name)
+
+
 class RolloutState(Enum):
     PREFLIGHT = auto()
     BACKED_UP = auto()
@@ -150,6 +164,128 @@ def test_backup_and_rollback_keep_secrets_out_of_argv_and_restore_everything():
     assert "http://127.0.0.1:3000/api/ping" in rollback
     assert "always:" in rollback
     assert "state: absent" in rollback
+
+
+def test_backup_staging_allows_postgres_traversal_without_exposing_secrets():
+    directories = task_named("backup.yml", "Create protected Semaphore backup directories")
+    assert all(isinstance(item, dict) for item in directories["loop"])
+    staging = next(
+        item
+        for item in directories["loop"]
+        if item["path"] == "{{ semaphore_controller_backup_staging_root }}"
+    )
+    transaction = nested_task_named(
+        "backup.yml", "Create Semaphore transaction staging directory"
+    )["ansible.builtin.file"]
+    database = nested_task_named(
+        "backup.yml", "Create postgres-only Semaphore database dump directory"
+    )["ansible.builtin.file"]
+    secrets = nested_task_named(
+        "backup.yml", "Create root-only Semaphore secret staging directory"
+    )["ansible.builtin.file"]
+
+    assert staging == {
+        "path": "{{ semaphore_controller_backup_staging_root }}",
+        "owner": "root",
+        "group": "postgres",
+        "mode": "0710",
+    }
+    assert transaction["owner"] == "root"
+    assert transaction["group"] == "postgres"
+    assert transaction["mode"] == "0710"
+    assert database["owner"] == "postgres"
+    assert database["group"] == "postgres"
+    assert database["mode"] == "0700"
+    assert secrets["owner"] == "root"
+    assert secrets["group"] == "root"
+    assert secrets["mode"] == "0700"
+    assert "semaphore_controller_backup_database_path" in read(
+        f"{ROLE}/tasks/backup.yml"
+    )
+    assert "semaphore_controller_backup_secret_path" in read(
+        f"{ROLE}/tasks/backup.yml"
+    )
+
+
+def test_rollback_staging_separates_postgres_restore_from_root_only_plaintext():
+    staging = nested_task_named(
+        "rollback.yml", "Create protected Semaphore rollback staging directory"
+    )["ansible.builtin.file"]
+    database = nested_task_named(
+        "rollback.yml", "Create postgres-only Semaphore restore directory"
+    )["ansible.builtin.file"]
+    secrets = nested_task_named(
+        "rollback.yml", "Create root-only Semaphore decrypt directory"
+    )["ansible.builtin.file"]
+    rollback = read(f"{ROLE}/tasks/rollback.yml")
+
+    assert staging["owner"] == "root"
+    assert staging["group"] == "postgres"
+    assert staging["mode"] == "0710"
+    assert database["owner"] == "postgres"
+    assert database["group"] == "postgres"
+    assert database["mode"] == "0700"
+    assert secrets["owner"] == "root"
+    assert secrets["group"] == "root"
+    assert secrets["mode"] == "0700"
+    assert "semaphore_controller_rollback_database_path" in rollback
+    assert "semaphore_controller_rollback_secret_path" in rollback
+    assert rollback.index("always:") < rollback.index(
+        "Delete Semaphore rollback plaintext and age identity"
+    )
+
+
+def test_database_restore_terminates_connections_then_recreates_exact_database():
+    rollback = read(f"{ROLE}/tasks/rollback.yml")
+    terminate = nested_task_named(
+        "rollback.yml", "Terminate active Semaphore database connections"
+    )["ansible.builtin.command"]["argv"]
+    drop = nested_task_named("rollback.yml", "Drop changed Semaphore database")
+    create = nested_task_named("rollback.yml", "Recreate exact Semaphore database")
+    restore = nested_task_named(
+        "rollback.yml", "Restore exact Semaphore PostgreSQL backup"
+    )
+
+    assert rollback.index("Stop Semaphore before rollback restore") < rollback.index(
+        "Terminate active Semaphore database connections"
+    )
+    assert rollback.index("Terminate active Semaphore database connections") < (
+        rollback.index("Drop changed Semaphore database")
+    )
+    assert rollback.index("Drop changed Semaphore database") < rollback.index(
+        "Recreate exact Semaphore database"
+    )
+    assert rollback.index("Recreate exact Semaphore database") < rollback.index(
+        "Restore exact Semaphore PostgreSQL backup"
+    )
+    assert terminate[0] == "psql"
+    assert "pg_terminate_backend" in str(terminate)
+    assert drop["ansible.builtin.command"]["argv"] == [
+        "dropdb",
+        "--if-exists",
+        "{{ semaphore_controller_database_name }}",
+    ]
+    assert create["ansible.builtin.command"]["argv"] == [
+        "createdb",
+        "--owner",
+        "{{ semaphore_controller_database_user }}",
+        "--encoding",
+        "UTF8",
+        "--template",
+        "template0",
+        "{{ semaphore_controller_database_name }}",
+    ]
+    restore_argv = restore["ansible.builtin.command"]["argv"]
+    assert restore_argv[:6] == [
+        "pg_restore",
+        "--exit-on-error",
+        "--no-owner",
+        "--role",
+        "{{ semaphore_controller_database_user }}",
+        "--dbname",
+    ]
+    assert "--clean" not in restore_argv
+    assert "ansible.builtin.shell" not in rollback
 
 
 def test_explicit_rollback_is_one_shot_and_exact():

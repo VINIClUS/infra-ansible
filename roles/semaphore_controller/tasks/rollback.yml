@@ -120,15 +120,39 @@
     semaphore_controller_rollback_staging_path: >-
       {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
          semaphore_controller_requested_rollback_backup_id }}
+    semaphore_controller_rollback_database_path: >-
+      {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
+         semaphore_controller_requested_rollback_backup_id ~ '/database' }}
+    semaphore_controller_rollback_secret_path: >-
+      {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
+         semaphore_controller_requested_rollback_backup_id ~ '/root' }}
     semaphore_controller_rollback_identity_path: >-
       {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
-         semaphore_controller_requested_rollback_backup_id ~ '/identity.txt' }}
+         semaphore_controller_requested_rollback_backup_id ~ '/root/identity.txt' }}
 
 - name: Restore Semaphore from exact encrypted backup
   block:
     - name: Create protected Semaphore rollback staging directory
       ansible.builtin.file:
         path: "{{ semaphore_controller_rollback_staging_path }}"
+        state: directory
+        owner: root
+        group: postgres
+        mode: "0710"
+      become: true
+
+    - name: Create postgres-only Semaphore restore directory
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_rollback_database_path }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: "0700"
+      become: true
+
+    - name: Create root-only Semaphore decrypt directory
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_rollback_secret_path }}"
         state: directory
         owner: root
         group: root
@@ -154,7 +178,7 @@
           - --identity
           - "{{ semaphore_controller_rollback_identity_path }}"
           - --output
-          - "{{ semaphore_controller_rollback_staging_path }}/bundle.tar"
+          - "{{ semaphore_controller_rollback_secret_path }}/bundle.tar"
           - "{{ semaphore_controller_deployment_state.encrypted_path }}"
       become: true
       changed_when: true
@@ -166,15 +190,15 @@
           - tar
           - --extract
           - --file
-          - "{{ semaphore_controller_rollback_staging_path }}/bundle.tar"
+          - "{{ semaphore_controller_rollback_secret_path }}/bundle.tar"
           - --directory
-          - "{{ semaphore_controller_rollback_staging_path }}"
+          - "{{ semaphore_controller_rollback_secret_path }}"
       become: true
       changed_when: true
 
     - name: Read Semaphore rollback bundle metadata
       ansible.builtin.slurp:
-        src: "{{ semaphore_controller_rollback_staging_path }}/metadata.json"
+        src: "{{ semaphore_controller_rollback_secret_path }}/metadata.json"
       register: semaphore_controller_rollback_metadata_raw
       become: true
 
@@ -195,22 +219,76 @@
             semaphore_controller_deployment_state.previous_release
         fail_msg: Semaphore rollback bundle metadata does not match state.
 
+    - name: Place Semaphore database dump in postgres-only restore directory
+      ansible.builtin.copy:
+        src: "{{ semaphore_controller_rollback_secret_path }}/database.dump"
+        dest: "{{ semaphore_controller_rollback_database_path }}/database.dump"
+        remote_src: true
+        owner: postgres
+        group: postgres
+        mode: "0600"
+      become: true
+
     - name: Stop Semaphore before rollback restore
       ansible.builtin.systemd_service:
         name: semaphore.service
         state: stopped
       become: true
 
+    - name: Terminate active Semaphore database connections
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --dbname
+          - postgres
+          - --no-psqlrc
+          - --set
+          - ON_ERROR_STOP=1
+          - --command
+          - >-
+            SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = '{{ semaphore_controller_database_name }}'
+            AND pid <> pg_backend_pid()
+      become: true
+      become_user: postgres
+      changed_when: true
+
+    - name: Drop changed Semaphore database
+      ansible.builtin.command:
+        argv:
+          - dropdb
+          - --if-exists
+          - "{{ semaphore_controller_database_name }}"
+      become: true
+      become_user: postgres
+      changed_when: true
+
+    - name: Recreate exact Semaphore database
+      ansible.builtin.command:
+        argv:
+          - createdb
+          - --owner
+          - "{{ semaphore_controller_database_user }}"
+          - --encoding
+          - UTF8
+          - --template
+          - template0
+          - "{{ semaphore_controller_database_name }}"
+      become: true
+      become_user: postgres
+      changed_when: true
+
     - name: Restore exact Semaphore PostgreSQL backup
       ansible.builtin.command:
         argv:
           - pg_restore
-          - --clean
-          - --if-exists
           - --exit-on-error
+          - --no-owner
+          - --role
+          - "{{ semaphore_controller_database_user }}"
           - --dbname
           - "{{ semaphore_controller_database_name }}"
-          - "{{ semaphore_controller_rollback_staging_path }}/database.dump"
+          - "{{ semaphore_controller_rollback_database_path }}/database.dump"
       become: true
       become_user: postgres
       changed_when: true
@@ -228,7 +306,7 @@
           - --extract
           - --same-owner
           - --file
-          - "{{ semaphore_controller_rollback_staging_path }}/config.tar"
+          - "{{ semaphore_controller_rollback_secret_path }}/config.tar"
           - --directory
           - /
       become: true

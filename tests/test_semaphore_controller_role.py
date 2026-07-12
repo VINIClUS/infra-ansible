@@ -89,6 +89,8 @@ def test_install_uses_native_pinned_deb_and_immutable_release():
         "python3-venv",
         "python3-pexpect",
         "python3-psycopg",
+        "python3-boto3",
+        "python3-botocore",
     ]
     assert defaults["semaphore_controller_download_url"] == (
         "https://github.com/semaphoreui/semaphore/releases/download/"
@@ -199,8 +201,8 @@ def test_setup_completion_state_is_root_controlled_outside_service_state():
     assert setup_directory == {
         "path": "{{ semaphore_controller_setup_state_dir }}",
         "owner": "root",
-        "group": "root",
-        "mode": "0700",
+        "group": "postgres",
+        "mode": "0710",
     }
     assert "{{ semaphore_controller_setup_marker_path }}" in configure
     assert "{{ semaphore_controller_state_dir }}/.setup-complete" not in configure
