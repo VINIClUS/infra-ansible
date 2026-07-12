@@ -343,6 +343,30 @@ def test_github_deploy_key_is_create_only(tmp_path: Path) -> None:
     assert not any(call[:4] == ["gh", "repo", "deploy-key", "add"] for call in calls)
 
 
+def test_github_deploy_key_identity_ignores_only_the_public_comment() -> None:
+    keys = [
+        {
+            "id": 7,
+            "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+            "key": "ssh-ed25519 AAAATEST",
+            "read_only": True,
+        }
+    ]
+    matches = seed._github_deploy_key_matches(
+        keys,
+        title=seed.GITHUB_DEPLOY_KEY_TITLE,
+        public_key="ssh-ed25519 AAAATEST infra-ansible production inventory",
+        require_read_only=True,
+    )
+    assert [item["id"] for item in matches] == [7]
+    assert not seed._github_deploy_key_matches(
+        keys,
+        title=seed.GITHUB_DEPLOY_KEY_TITLE,
+        public_key="ssh-ed25519 AAAADIFFERENT same-comment",
+        require_read_only=True,
+    )
+
+
 def test_cloudflare_service_token_is_create_only_and_secret_safe(tmp_path: Path) -> None:
     requests: list[seed.HttpRequest] = []
 

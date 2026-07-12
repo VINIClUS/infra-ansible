@@ -7,6 +7,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -548,13 +549,36 @@ def _github_deploy_key_matches(
     public_key: str | None = None,
     require_read_only: bool = False,
 ) -> list[dict[str, Any]]:
+    expected_identity = (
+        _ssh_public_key_identity(public_key) if public_key is not None else None
+    )
     return [
         item
         for item in keys
         if item.get("title") == title
-        and (public_key is None or item.get("key", "").strip() == public_key)
+        and (
+            public_key is None
+            or (
+                expected_identity is not None
+                and _ssh_public_key_identity(item.get("key", ""))
+                == expected_identity
+            )
+        )
         and (not require_read_only or item.get("read_only") is True)
     ]
+
+
+def _ssh_public_key_identity(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        return None
+    fields = value.strip().split()
+    if (
+        len(fields) < 2
+        or fields[0] != "ssh-ed25519"
+        or re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", fields[1]) is None
+    ):
+        return None
+    return fields[0], fields[1]
 
 
 def list_github_deploy_keys(*, command: Command = _run_command) -> list[dict[str, Any]]:
