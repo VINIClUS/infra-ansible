@@ -22,6 +22,7 @@
     name: "{{ semaphore_controller_database_name }}"
     owner: "{{ semaphore_controller_database_user }}"
     encoding: UTF8
+    template: template0
     state: present
     login_unix_socket: /var/run/postgresql
   become: true

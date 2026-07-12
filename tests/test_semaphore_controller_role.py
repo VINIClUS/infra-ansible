@@ -128,12 +128,15 @@ def test_install_uses_native_pinned_deb_and_immutable_release():
 def test_postgresql_and_first_run_setup_keep_secrets_out_of_argv_and_logs():
     configure = read(f"{ROLE}/tasks/configure.yml")
     database_user = task_named("configure.yml", "Create Semaphore PostgreSQL role")
+    database = task_named("configure.yml", "Create Semaphore PostgreSQL database")
     setup = task_named("configure.yml", "Run first Semaphore setup over protected stdin")
 
     assert "community.postgresql.postgresql_user" in configure
     assert "community.postgresql.postgresql_db" in configure
     assert database_user["no_log"] is True
     assert database_user["become_user"] == "postgres"
+    assert database["community.postgresql.postgresql_db"]["encoding"] == "UTF8"
+    assert database["community.postgresql.postgresql_db"]["template"] == "template0"
     assert setup["no_log"] is True
     assert setup["ansible.builtin.expect"]["echo"] is False
     assert setup["ansible.builtin.expect"]["command"] == (
