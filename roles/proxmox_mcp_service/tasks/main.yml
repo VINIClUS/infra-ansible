@@ -122,9 +122,18 @@
 - name: Link the protected environment into the immutable release
   ansible.builtin.file:
     src: "{{ proxmox_mcp_service_config_path }}/proxmox-mcp.env"
-    dest: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.env"
+    dest: >-
+      {{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.proxmox-mcp.env
     state: link
     force: true
+
+- name: Materialize non-secret Compose project interpolation environment
+  ansible.builtin.template:
+    src: compose-project.env.j2
+    dest: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.env"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Activate the exact release path
   ansible.builtin.file:

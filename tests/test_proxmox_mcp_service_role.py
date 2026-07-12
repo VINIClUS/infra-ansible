@@ -14,6 +14,8 @@ def test_role_is_disabled_and_requires_pinned_release_contract():
     assert 'proxmox_mcp_service_repo_ref: ""' in defaults
     assert "proxmox_mcp_service_release_root: /opt/proxmox-mcp/releases" in defaults
     assert "proxmox_mcp_service_data_volume: proxmox_mcp_data" in defaults
+    assert "  - docker-compose\n" in defaults
+    assert "docker-compose-v2" not in defaults
     assert "proxmox_mcp_service_listen_address: 127.0.0.1" in defaults
     assert "proxmox_mcp_service_resource_kind: lxc" in defaults
     assert "proxmox_mcp_service_release_source: git" in defaults
@@ -51,6 +53,16 @@ def test_controller_archive_contains_only_committed_release_files():
 def test_role_does_not_bind_the_inherited_backup_path():
     compose = read("../ProxmoxMCP/compose.mcp.yml")
     assert "/mnt/infra-backups/proxmox" not in compose
+
+
+def test_role_keeps_secrets_out_of_compose_project_dotenv():
+    runtime_env = read("roles/proxmox_mcp_service/templates/proxmox-mcp.env.j2")
+    project_env = read("roles/proxmox_mcp_service/templates/compose-project.env.j2")
+    tasks = read("roles/proxmox_mcp_service/tasks/main.yml")
+    assert "='" in runtime_env
+    assert "PVE_SSH_PUBLIC_KEY_FILE=" in project_env
+    assert "PVE_TOKEN_SECRET" not in project_env
+    assert ".proxmox-mcp.env" in tasks
 
 
 def test_playbook_and_collection_are_explicit():

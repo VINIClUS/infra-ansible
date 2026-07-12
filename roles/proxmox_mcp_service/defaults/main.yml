@@ -17,7 +17,7 @@ proxmox_mcp_service_ssh_public_key_file: >-
 
 proxmox_mcp_service_packages:
   - docker.io
-  - docker-compose-v2
+  - docker-compose
   - git
 
 proxmox_mcp_service_required_env_names:
