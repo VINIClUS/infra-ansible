@@ -113,14 +113,29 @@
       - semaphore_controller_minio_buckets.backups is defined
       - semaphore_controller_minio_buckets.artifacts is defined
       - >-
-        semaphore_controller_transaction_environment.values() |
-        reject('equalto', '') | list | length == 3
+        semaphore_controller_transaction_environment.age_identity |
+        length > 0
       - >-
-        semaphore_controller_transaction_environment.values() |
-        select('search', '[\r\n]') | list | length == 0
+        semaphore_controller_transaction_environment.age_identity is not
+        search('\r')
+      - >-
+        semaphore_controller_transaction_environment.age_identity is
+        match('(?s)^(?:#[^\r\n]*\n)*AGE-SECRET-KEY-1[0-9A-Z]+\n?$')
+      - >-
+        semaphore_controller_transaction_environment.minio_access_key |
+        length > 0
+      - >-
+        semaphore_controller_transaction_environment.minio_access_key is not
+        search('[\r\n]')
+      - >-
+        semaphore_controller_transaction_environment.minio_secret_key |
+        length > 0
+      - >-
+        semaphore_controller_transaction_environment.minio_secret_key is not
+        search('[\r\n]')
     fail_msg: >-
-      The public backup recipient, MinIO contract, private age identity, and
-      MinIO credentials are required and must not contain newlines.
+      The public backup recipient, MinIO contract, native age identity, and
+      single-line MinIO credentials are required.
   no_log: true
 
 - name: Inspect pre-run Semaphore setup state
