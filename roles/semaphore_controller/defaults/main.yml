@@ -27,6 +27,7 @@ semaphore_controller_download_path: >-
 semaphore_controller_user: semaphore
 semaphore_controller_group: semaphore
 semaphore_controller_port: 3000
+semaphore_controller_interface: 127.0.0.1
 semaphore_controller_database_host: 127.0.0.1:5432
 semaphore_controller_database_name: semaphore
 semaphore_controller_database_user: semaphore

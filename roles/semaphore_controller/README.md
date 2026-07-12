@@ -21,6 +21,9 @@ retained while the final configuration is rendered as root-owned mode `0640`.
 The administrator password is not stored in the configuration and should be
 rotated after first login.
 
-The role installs and starts `semaphore.service`, binds Semaphore to loopback
-port 3000, and succeeds only after `GET /api/ping` returns HTTP 200 with the
-exact body `pong`, without trimming or whitespace normalization.
+The role installs and starts `semaphore.service`. It binds Semaphore to the
+canonical IPv4 address in `semaphore_controller_interface`, which defaults to
+the fail-closed loopback value `127.0.0.1`; use `0.0.0.0` only when the guest
+firewall restricts port 3000 to the trusted edge proxy. Health remains local:
+the role succeeds only after `GET http://127.0.0.1:3000/api/ping` returns HTTP
+200 with the exact body `pong`, without trimming or whitespace normalization.

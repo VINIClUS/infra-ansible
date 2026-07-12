@@ -156,7 +156,9 @@ Persistent state remains outside releases:
 - `/var/lib/infra-ansible/deployments` for redacted deployment manifests.
 
 Semaphore and the GitHub runner use separate Unix users. Semaphore listens on
-port 3000. The guest firewall accepts that port only from localhost and CT 110.
+port 3000 and defaults to the loopback interface. Production explicitly binds
+`0.0.0.0` so CT 110 can reach the service; the guest firewall accepts that port
+only from localhost and CT 110. Local health always uses `127.0.0.1`.
 
 ### `edge_proxy_route`
 
