@@ -1,0 +1,42 @@
+---
+- name: Bootstrap the Ansible controller services
+  hosts: ansible_controllers
+  gather_facts: true
+  serial: 1
+  vars:
+    semaphore_controller_expected_run_tags:
+      - common_base
+      - ssh_hardening
+      - github_actions_runner
+      - infra_ansible_deployer
+      - semaphore_controller
+      - monitoring_agent
+  roles:
+    - role: common_base
+      tags: [common_base]
+    - role: ssh_hardening
+      tags: [ssh_hardening]
+    - role: github_actions_runner
+      tags: [github_actions_runner]
+    - role: infra_ansible_deployer
+      tags: [infra_ansible_deployer]
+    - role: semaphore_controller
+      tags: [semaphore_controller]
+    - role: monitoring_agent
+      tags: [monitoring_agent]
+
+- name: Bootstrap the Ansible controller edge route
+  hosts: edge_proxy_hosts
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: edge_proxy_route
+      tags: [edge_proxy_route]
+
+- name: Bootstrap path-scoped Cloudflare Access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: cloudflare_access_application
+      tags: [cloudflare_access_application]

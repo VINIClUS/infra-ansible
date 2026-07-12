@@ -1,0 +1,194 @@
+---
+- name: Validate Semaphore controller enable flag
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_enabled is boolean
+      - semaphore_controller_rollback_mode is boolean
+    fail_msg: Semaphore controller enable and rollback flags must be booleans.
+
+- name: Stop only the Semaphore controller role when it is disabled
+  ansible.builtin.meta: end_role
+  when:
+    - not semaphore_controller_enabled | bool
+    - not semaphore_controller_rollback_mode | bool
+
+- name: Validate narrow Semaphore controller contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Debian'
+      - ansible_facts.distribution_major_version == '13'
+      - ansible_facts.architecture in ['x86_64', 'amd64']
+      - ansible_facts.service_mgr == 'systemd'
+      - semaphore_controller_version == '2.18.25'
+      - "semaphore_controller_sha256 == '\
+        209cf89c23710ed74e4568be129690fb5f9599b66f3cdfb55ed6c1a437c94dc9'"
+      - "semaphore_controller_download_url == 'https://github.com/semaphoreui/semaphore/releases/download/\
+        v2.18.25/semaphore_2.18.25_linux_amd64.deb'"
+      - semaphore_controller_release_root is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_current_path is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_config_dir is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_port | int == 3000
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - >-
+        (ansible_run_tags | list | sort) ==
+        (semaphore_controller_expected_run_tags | list | sort)
+    fail_msg: >-
+      Semaphore controller deployment requires Debian 13 amd64 under systemd,
+      the pinned release contract with native postgresql, one exact --limit
+      host, and only the exact declared reconciliation tags.
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Validate narrow Semaphore rollback contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Debian'
+      - ansible_facts.distribution_major_version == '13'
+      - ansible_facts.architecture in ['x86_64', 'amd64']
+      - ansible_facts.service_mgr == 'systemd'
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - >-
+        ansible_run_tags | list | sort == ['semaphore_controller_rollback']
+    fail_msg: >-
+      Semaphore rollback requires one exact --limit host and only the
+      semaphore_controller_rollback tag.
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Read required Semaphore values from the controller environment
+  ansible.builtin.set_fact:
+    semaphore_controller_runtime_environment: >-
+      {{ semaphore_controller_runtime_environment | default({}) |
+         combine({item: lookup('ansible.builtin.env', item)}) }}
+  loop: "{{ semaphore_controller_required_env }}"
+  no_log: true
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Validate required Semaphore values without logging them
+  ansible.builtin.assert:
+    that:
+      - >-
+        semaphore_controller_runtime_environment.values() |
+        reject('equalto', '') | list | length ==
+        semaphore_controller_required_env | length
+      - >-
+        semaphore_controller_runtime_environment.values() |
+        select('search', '[\r\n]') | list | length == 0
+      - >-
+        semaphore_controller_runtime_environment['SEMAPHORE_ACCESS_KEY_ENCRYPTION']
+        is match('^[A-Za-z0-9+/]+={0,2}$')
+      - >-
+        semaphore_controller_runtime_environment['SEMAPHORE_ACCESS_KEY_ENCRYPTION'] |
+        b64decode | length in [16, 24, 32]
+    fail_msg: >-
+      Required Semaphore values are missing, contain newlines, or include an
+      invalid AES access-key encryption value.
+  no_log: true
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Read protected Semaphore transaction values
+  ansible.builtin.set_fact:
+    semaphore_controller_transaction_environment:
+      age_identity: >-
+        {{ lookup('ansible.builtin.env', 'ANSIBLE_BACKUP_AGE_IDENTITY') }}
+      minio_access_key: >-
+        {{ lookup('ansible.builtin.env',
+                  semaphore_controller_minio_access_key_env_var) }}
+      minio_secret_key: >-
+        {{ lookup('ansible.builtin.env',
+                  semaphore_controller_minio_secret_key_env_var) }}
+  no_log: true
+
+- name: Validate protected Semaphore transaction contract
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_backup_age_recipient is match('^age1[0-9a-z]+$')
+      - semaphore_controller_minio_endpoint_url | length > 0
+      - semaphore_controller_minio_region | length > 0
+      - semaphore_controller_minio_buckets is mapping
+      - semaphore_controller_minio_buckets.backups is defined
+      - semaphore_controller_minio_buckets.artifacts is defined
+      - >-
+        semaphore_controller_transaction_environment.values() |
+        reject('equalto', '') | list | length == 3
+      - >-
+        semaphore_controller_transaction_environment.values() |
+        select('search', '[\r\n]') | list | length == 0
+    fail_msg: >-
+      The public backup recipient, MinIO contract, private age identity, and
+      MinIO credentials are required and must not contain newlines.
+  no_log: true
+
+- name: Inspect pre-run Semaphore setup state
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_setup_marker_path }}"
+  register: semaphore_controller_pre_run_setup_marker
+  become: true
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Record whether Semaphore existed before this run
+  ansible.builtin.set_fact:
+    semaphore_controller_had_setup_before_run: >-
+      {{ semaphore_controller_pre_run_setup_marker.stat.exists }}
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Install native Semaphore and PostgreSQL release
+  ansible.builtin.import_tasks: install.yml
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Configure initial native Semaphore and PostgreSQL service
+  ansible.builtin.import_tasks: configure.yml
+  when:
+    - not semaphore_controller_rollback_mode | bool
+    - not semaphore_controller_had_setup_before_run | bool
+
+- name: Run encrypted Semaphore deployment transaction
+  ansible.builtin.include_tasks: deploy.yml
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Run exact one-shot Semaphore rollback
+  ansible.builtin.include_tasks: rollback.yml
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Clear consumed Semaphore rollback marker
+  ansible.builtin.file:
+    path: "{{ semaphore_controller_rollback_marker_path }}"
+    state: absent
+  become: true
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Apply pending Semaphore service handlers
+  ansible.builtin.meta: flush_handlers
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Enable and start Semaphore service
+  ansible.builtin.systemd_service:
+    name: semaphore.service
+    enabled: true
+    state: started
+  become: true
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Require local Semaphore health
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/api/ping
+    method: GET
+    status_code: 200
+    return_content: true
+  register: semaphore_controller_health
+  changed_when: false
+  retries: 30
+  delay: 2
+  until:
+    - semaphore_controller_health.status == 200
+    - semaphore_controller_health.content == 'pong'
+  when: not semaphore_controller_rollback_mode | bool
+
+- name: Clear protected Semaphore transaction values
+  ansible.builtin.set_fact:
+    semaphore_controller_transaction_environment: {}
+  no_log: true

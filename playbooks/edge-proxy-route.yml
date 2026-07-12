@@ -1,0 +1,8 @@
+---
+- name: Reconcile the Ansible controller edge route
+  hosts: edge_proxy_hosts
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: edge_proxy_route
+      tags: [edge_proxy_route]

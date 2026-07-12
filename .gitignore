@@ -3,7 +3,10 @@
 !.env.example
 
 .ansible/
+.worktrees/
 *.retry
+__pycache__/
+*.pyc
 
 vault-password*
 *.vault-password

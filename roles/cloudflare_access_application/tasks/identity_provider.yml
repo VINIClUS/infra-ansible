@@ -1,0 +1,21 @@
+---
+- name: Require exactly one One-Time PIN identity provider
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudflare_access_identity_provider_candidates |
+        selectattr('type', 'equalto', 'onetimepin') |
+        list | length == 1
+    fail_msg: >-
+      Cloudflare Access must expose exactly one identity provider with type
+      onetimepin; refusing to select a missing, ambiguous, or different
+      provider.
+  no_log: true
+
+- name: Record exact One-Time PIN identity provider ID
+  ansible.builtin.set_fact:
+    cloudflare_access_application_otp_identity_provider_id: >-
+      {{ cloudflare_access_identity_provider_candidates |
+         selectattr('type', 'equalto', 'onetimepin') |
+         map(attribute='id') | first }}
+  no_log: true

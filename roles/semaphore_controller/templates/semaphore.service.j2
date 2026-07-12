@@ -1,0 +1,26 @@
+[Unit]
+Description=Semaphore controller
+Documentation=https://docs.semaphoreui.com/
+Wants=network-online.target
+After=network-online.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User={{ semaphore_controller_user }}
+Group={{ semaphore_controller_group }}
+WorkingDirectory={{ semaphore_controller_state_dir }}
+Environment=HOME={{ semaphore_controller_state_dir }}
+ExecStart={{ semaphore_controller_current_path }}/usr/bin/semaphore server --config={{ semaphore_controller_config_path }}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ semaphore_controller_state_dir }}
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

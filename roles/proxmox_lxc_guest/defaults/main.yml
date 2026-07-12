@@ -1,0 +1,20 @@
+---
+proxmox_lxc_guest_enabled: false
+proxmox_lxc_guest_api_host: "{{ lookup('ansible.builtin.env', 'PVE_HOST') }}"
+proxmox_lxc_guest_api_port: 443
+proxmox_lxc_guest_api_user: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_ID').split('!')[0] }}"
+proxmox_lxc_guest_api_token_id: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_ID').split('!')[-1] }}"
+proxmox_lxc_guest_api_token_secret: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_SECRET') }}"
+proxmox_lxc_guest_validate_certs: true
+proxmox_lxc_guest_node: pve-01
+proxmox_lxc_guest_template_vmid: 9400
+proxmox_lxc_guest_template_name: tlp-ct-debian-13
+proxmox_lxc_guest_vmid: 0
+proxmox_lxc_guest_hostname: ansible
+proxmox_lxc_guest_storage: local-lvm
+proxmox_lxc_guest_bridge: vmbr0
+proxmox_lxc_guest_cmode: tty
+proxmox_lxc_guest_cores: 2
+proxmox_lxc_guest_memory_mb: 4096
+proxmox_lxc_guest_disk_gb: 32
+proxmox_lxc_guest_onboot: true

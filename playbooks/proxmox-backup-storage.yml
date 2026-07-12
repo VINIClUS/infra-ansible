@@ -1,0 +1,10 @@
+---
+- name: Provision persistent Proxmox backup storage
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_backup_storage
+      tags:
+        - proxmox_backup_storage

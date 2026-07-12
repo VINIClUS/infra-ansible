@@ -1,0 +1,7 @@
+---
+- name: Restart Semaphore
+  ansible.builtin.systemd_service:
+    name: semaphore.service
+    daemon_reload: true
+    state: restarted
+  become: true

@@ -1,0 +1,48 @@
+---
+github_actions_runner_version: 2.335.1
+github_actions_runner_sha256_x64: 4ef2f25285f0ae4477f1fe1e346db76d2f3ebf03824e2ddd1973a2819bf6c8cf
+github_actions_runner_sha256_arm64: 6d1e85bfd1a506a8b17c1f1b9b57dba458ffed90898799aaa9f599520b0d9207
+
+github_actions_runner_repository_url: https://github.com/VINIClUS/infra-ansible
+github_actions_runner_name: "{{ inventory_hostname }}"
+github_actions_runner_labels:
+  - ansible-prod
+  - linux
+  - "{{ github_actions_runner_architecture }}"
+github_actions_runner_user: github-runner
+github_actions_runner_group: github-runner
+github_actions_runner_home: /opt/github-actions-runner
+github_actions_runner_work: /var/lib/github-actions-runner
+
+github_actions_runner_architecture_map:
+  x86_64: x64
+  amd64: x64
+  aarch64: arm64
+  arm64: arm64
+github_actions_runner_checksum_map:
+  x64: "{{ github_actions_runner_sha256_x64 }}"
+  arm64: "{{ github_actions_runner_sha256_arm64 }}"
+github_actions_runner_architecture: >-
+  {{ github_actions_runner_architecture_map[ansible_architecture] }}
+github_actions_runner_archive_sha256: >-
+  {{ github_actions_runner_checksum_map[github_actions_runner_architecture] }}
+github_actions_runner_archive_filename: >-
+  actions-runner-linux-{{ github_actions_runner_architecture }}-{{ github_actions_runner_version }}.tar.gz
+github_actions_runner_archive_url: >-
+  {{ 'https://github.com/actions/runner/releases/download/v' ~
+     github_actions_runner_version ~ '/' ~
+     github_actions_runner_archive_filename }}
+github_actions_runner_archive_path: >-
+  /var/cache/github-actions-runner/{{ github_actions_runner_archive_filename }}
+github_actions_runner_release_root: /opt/github-actions-runner-releases
+github_actions_runner_release_dir: >-
+  {{ github_actions_runner_release_root }}/{{ github_actions_runner_version }}-{{ github_actions_runner_architecture }}
+
+github_actions_runner_packages:
+  - ca-certificates
+  - curl
+  - gzip
+  - libicu-dev
+  - libssl-dev
+  - tar
+  - zlib1g

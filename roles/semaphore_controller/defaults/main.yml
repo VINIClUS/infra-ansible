@@ -1,0 +1,92 @@
+---
+semaphore_controller_enabled: false
+semaphore_controller_version: 2.18.25
+semaphore_controller_sha256: 209cf89c23710ed74e4568be129690fb5f9599b66f3cdfb55ed6c1a437c94dc9
+
+semaphore_controller_release_root: /opt/semaphore/releases
+semaphore_controller_current_path: /opt/semaphore/current
+semaphore_controller_config_dir: /etc/semaphore
+semaphore_controller_config_path: "{{ semaphore_controller_config_dir }}/config.json"
+semaphore_controller_state_dir: /var/lib/semaphore
+semaphore_controller_tmp_dir: "{{ semaphore_controller_state_dir }}/tmp"
+semaphore_controller_cache_dir: /var/cache/semaphore
+semaphore_controller_setup_state_dir: /var/lib/infra-ansible/semaphore
+semaphore_controller_setup_marker_path: >-
+  {{ semaphore_controller_setup_state_dir }}/setup-complete
+
+semaphore_controller_release_path: >-
+  {{ semaphore_controller_release_root }}/{{ semaphore_controller_version }}
+semaphore_controller_download_filename: >-
+  semaphore_{{ semaphore_controller_version }}_linux_amd64.deb
+semaphore_controller_download_url: "https://github.com/semaphoreui/semaphore/releases/download/\
+  v{{ semaphore_controller_version }}/\
+  semaphore_{{ semaphore_controller_version }}_linux_amd64.deb"
+semaphore_controller_download_path: >-
+  {{ semaphore_controller_cache_dir }}/{{ semaphore_controller_download_filename }}
+
+semaphore_controller_user: semaphore
+semaphore_controller_group: semaphore
+semaphore_controller_port: 3000
+semaphore_controller_database_host: 127.0.0.1:5432
+semaphore_controller_database_name: semaphore
+semaphore_controller_database_user: semaphore
+semaphore_controller_admin_username: admin
+semaphore_controller_admin_email: admin@localhost
+semaphore_controller_admin_name: Semaphore Administrator
+semaphore_controller_web_root: ""
+
+semaphore_controller_rollback_mode: false
+semaphore_controller_rollback_backup_id: ""
+semaphore_controller_expected_run_tags:
+  - monitoring_agent
+  - semaphore_controller
+semaphore_controller_target_binary: >-
+  {{ semaphore_controller_release_path }}/usr/bin/semaphore
+semaphore_controller_backup_root: >-
+  {{ semaphore_controller_setup_state_dir }}/backups
+semaphore_controller_backup_staging_root: >-
+  {{ semaphore_controller_setup_state_dir }}/backup-staging
+semaphore_controller_deployment_state_path: >-
+  {{ semaphore_controller_setup_state_dir }}/deployment-state.json
+semaphore_controller_rollback_marker_path: >-
+  {{ semaphore_controller_setup_state_dir }}/rollback-request
+semaphore_controller_deployment_evidence_path: >-
+  {{ semaphore_controller_setup_state_dir }}/deployment-evidence.json
+semaphore_controller_backup_script_path: /usr/local/sbin/semaphore-backup
+semaphore_controller_backup_credentials_path: >-
+  {{ semaphore_controller_config_dir }}/backup-credentials.json
+semaphore_controller_backup_prefix: ansible/semaphore-backups
+semaphore_controller_deployment_prefix: ansible/deployments
+semaphore_controller_backup_age_recipient: >-
+  {{ ansible_backup_age_recipient | default('') }}
+semaphore_controller_minio_endpoint_url: >-
+  {{ minio_endpoint_url | default('') }}
+semaphore_controller_minio_region: "{{ minio_region | default('us-east-1') }}"
+semaphore_controller_minio_use_path_style: >-
+  {{ minio_use_path_style | default(true) }}
+semaphore_controller_minio_access_key_env_var: >-
+  {{ minio_access_key_env_var | default('OBJECT_STORAGE_ACCESS_KEY') }}
+semaphore_controller_minio_secret_key_env_var: >-
+  {{ minio_secret_key_env_var | default('OBJECT_STORAGE_SECRET_KEY') }}
+semaphore_controller_minio_buckets: "{{ minio_buckets | default({}) }}"
+
+semaphore_controller_required_env:
+  - SEMAPHORE_DB_PASSWORD
+  - SEMAPHORE_ACCESS_KEY_ENCRYPTION
+  - SEMAPHORE_ADMIN_PASSWORD
+
+semaphore_controller_packages:
+  - postgresql
+  - postgresql-client
+  - ca-certificates
+  - curl
+  - git
+  - openssh-client
+  - rsync
+  - age
+  - python3
+  - python3-venv
+  - python3-pexpect
+  - python3-psycopg
+  - python3-boto3
+  - python3-botocore

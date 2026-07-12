@@ -1,0 +1,8 @@
+---
+- name: Reconcile path-scoped Cloudflare Access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: cloudflare_access_application
+      tags: [cloudflare_access_application]

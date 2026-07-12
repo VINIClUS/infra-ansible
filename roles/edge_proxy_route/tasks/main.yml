@@ -1,0 +1,190 @@
+---
+- name: Validate edge proxy route contract
+  ansible.builtin.assert:
+    that:
+      - edge_proxy_route_domain == 'ansible.vinisantana.com'
+      - >-
+        edge_proxy_route_controller_address is
+        match('^(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$')
+      - >-
+        edge_proxy_route_controller_address.split('.') |
+        map('int') | min >= 0
+      - >-
+        edge_proxy_route_controller_address.split('.') |
+        map('int') | max <= 255
+      - >-
+        (edge_proxy_route_controller_address.split('.')[0] | int == 10) or
+        (edge_proxy_route_controller_address.split('.')[0] | int == 172 and
+         edge_proxy_route_controller_address.split('.')[1] | int >= 16 and
+         edge_proxy_route_controller_address.split('.')[1] | int <= 31) or
+        (edge_proxy_route_controller_address.split('.')[0] | int == 192 and
+         edge_proxy_route_controller_address.split('.')[1] | int == 168)
+      - edge_proxy_route_upstream_port | int == 3000
+      - >-
+        edge_proxy_route_upstream ==
+        'http://' ~ edge_proxy_route_controller_address ~ ':3000'
+      - edge_proxy_route_config_path is match('^/etc/nginx/.+\\.conf$')
+    fail_msg: >-
+      The edge route requires ansible.vinisantana.com and an explicit stable
+      controller IPv4 address on the pinned HTTP port 3000.
+  tags: [edge_proxy_route_validate]
+
+- name: Render Nginx route candidate
+  ansible.builtin.template:
+    src: nginx-route.conf.j2
+    dest: "{{ edge_proxy_route_candidate_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Inspect preceding managed Nginx route
+  ansible.builtin.stat:
+    path: "{{ edge_proxy_route_config_path }}"
+  register: edge_proxy_route_preceding
+  become: true
+
+- name: Compare candidate with preceding managed Nginx route
+  ansible.builtin.command:
+    argv:
+      - cmp
+      - --silent
+      - "{{ edge_proxy_route_candidate_path }}"
+      - "{{ edge_proxy_route_config_path }}"
+  register: edge_proxy_route_comparison
+  changed_when: false
+  failed_when: edge_proxy_route_comparison.rc not in [0, 1]
+  when: edge_proxy_route_preceding.stat.exists
+  become: true
+
+- name: Record whether the managed Nginx route changed
+  ansible.builtin.set_fact:
+    edge_proxy_route_changed: >-
+      {{ not edge_proxy_route_preceding.stat.exists or
+         edge_proxy_route_comparison.rc | default(1) != 0 }}
+
+- name: Generate Nginx route backup timestamp
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y%m%dT%H%M%S%NZ
+  register: edge_proxy_route_backup_timestamp
+  changed_when: false
+  when:
+    - edge_proxy_route_changed
+    - edge_proxy_route_preceding.stat.exists
+
+- name: Back up preceding managed Nginx route
+  ansible.builtin.copy:
+    src: "{{ edge_proxy_route_config_path }}"
+    dest: >-
+      {{ edge_proxy_route_config_path }}.{{ edge_proxy_route_backup_timestamp.stdout }}.bak
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+  when:
+    - edge_proxy_route_changed
+    - edge_proxy_route_preceding.stat.exists
+  become: true
+
+- name: Install and verify managed Nginx route
+  become: true
+  block:
+    - name: Atomically install Nginx route candidate
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ edge_proxy_route_candidate_path }}"
+          - "{{ edge_proxy_route_config_path }}"
+      changed_when: true
+      when: edge_proxy_route_changed
+      notify: Validate and reload Nginx route
+
+    - name: Run pending Nginx route handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Probe managed Nginx route by public Host header
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/ping
+        headers:
+          Host: "{{ edge_proxy_route_domain }}"
+        status_code: 200
+        return_content: true
+      register: edge_proxy_route_known_host_probe
+      changed_when: false
+      until:
+        - edge_proxy_route_known_host_probe.status == 200
+        - edge_proxy_route_known_host_probe.content == 'pong'
+      retries: "{{ edge_proxy_route_probe_retries }}"
+      delay: "{{ edge_proxy_route_probe_delay }}"
+
+    - name: Prove unknown Nginx Host remains explicit 404
+      ansible.builtin.uri:
+        url: http://127.0.0.1/api/ping
+        headers:
+          Host: unknown.invalid
+        status_code: 404
+      register: edge_proxy_route_unknown_host_probe
+      changed_when: false
+  rescue:
+    - name: Stage preceding Nginx route for restoration
+      ansible.builtin.command:
+        argv:
+          - cp
+          - --archive
+          - >-
+            {{ edge_proxy_route_config_path }}.{{ edge_proxy_route_backup_timestamp.stdout }}.bak
+          - "{{ edge_proxy_route_restore_candidate_path }}"
+      changed_when: true
+      when:
+        - edge_proxy_route_changed
+        - edge_proxy_route_preceding.stat.exists
+
+    - name: Atomically restore preceding Nginx route
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ edge_proxy_route_restore_candidate_path }}"
+          - "{{ edge_proxy_route_config_path }}"
+      changed_when: true
+      when:
+        - edge_proxy_route_changed
+        - edge_proxy_route_preceding.stat.exists
+
+    - name: Remove newly managed Nginx route
+      ansible.builtin.file:
+        path: "{{ edge_proxy_route_config_path }}"
+        state: absent
+      when:
+        - edge_proxy_route_changed
+        - not edge_proxy_route_preceding.stat.exists
+
+    - name: Revalidate restored Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+
+    - name: Reload restored Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Report failed Nginx route transaction
+      ansible.builtin.fail:
+        msg: >-
+          The managed Nginx route failed verification and its preceding state
+          was restored: {{ ansible_failed_result.msg | default('unknown failure') }}
+  always:
+    - name: Remove Nginx route transaction candidates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ edge_proxy_route_candidate_path }}"
+        - "{{ edge_proxy_route_restore_candidate_path }}"

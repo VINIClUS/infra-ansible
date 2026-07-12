@@ -1,0 +1,2 @@
+---
+# Explicit readback after mutation means no deferred handler is required.

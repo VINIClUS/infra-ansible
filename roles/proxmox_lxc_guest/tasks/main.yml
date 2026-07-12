@@ -1,0 +1,171 @@
+---
+- name: Validate LXC enable flag
+  ansible.builtin.assert:
+    that: [proxmox_lxc_guest_enabled is boolean]
+
+- name: Stop the create-only role when disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_lxc_guest_enabled | bool
+
+- name: Validate narrow create-only contract
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all == [inventory_hostname]
+      - ansible_run_tags | list | sort == ['proxmox_lxc_guest']
+      - proxmox_lxc_guest_vmid | int >= 100
+      - proxmox_lxc_guest_template_vmid | int == 9400
+      - proxmox_lxc_guest_storage == 'local-lvm'
+      - proxmox_lxc_guest_bridge == 'vmbr0'
+      - proxmox_lxc_guest_disk_gb | int == 32
+
+- name: Read source template configuration
+  ansible.builtin.uri:
+    url: >-
+      {{ 'https://' ~ proxmox_lxc_guest_api_host ~ '/api2/json/nodes/' ~
+         proxmox_lxc_guest_node ~ '/lxc/' ~ proxmox_lxc_guest_template_vmid ~
+         '/config' }}
+    headers:
+      Authorization: >-
+        {{ 'PVEAPIToken=' ~ lookup('ansible.builtin.env', 'PVE_TOKEN_ID') ~
+           '=' ~ proxmox_lxc_guest_api_token_secret }}
+    validate_certs: "{{ proxmox_lxc_guest_validate_certs }}"
+    return_content: true
+  register: proxmox_lxc_guest_template
+  changed_when: false
+  no_log: true
+
+- name: Prove source template safety
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_guest_template.json.data.template | int == 1
+      - proxmox_lxc_guest_template.json.data.unprivileged | int == 1
+      - proxmox_lxc_guest_template.json.data.ostype == 'debian'
+      - proxmox_lxc_guest_template.json.data.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_template.json.data.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_template.json.data.net0 is search('(^|,)ip=dhcp(,|$)')
+
+- name: Read existing target VMID
+  community.proxmox.proxmox_vm_info:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    config: current
+  register: proxmox_lxc_guest_existing
+  changed_when: false
+  no_log: true
+
+- name: Prove an existing target has the approved identity
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_guest_existing.proxmox_vms | length == 1
+      - proxmox_lxc_guest_existing.proxmox_vms[0].vmid | int == proxmox_lxc_guest_vmid | int
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.hostname == proxmox_lxc_guest_hostname
+      - proxmox_lxc_guest_existing.proxmox_vms[0].node == proxmox_lxc_guest_node
+      - proxmox_lxc_guest_existing.proxmox_vms[0].type == 'lxc'
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.ostype == 'debian'
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.unprivileged | int == 1
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
+  when: proxmox_lxc_guest_existing.proxmox_vms | length > 0
+
+- name: Clone absent approved template
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    clone: "{{ proxmox_lxc_guest_template_vmid }}"
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    hostname: "{{ proxmox_lxc_guest_hostname }}"
+    node: "{{ proxmox_lxc_guest_node }}"
+    storage: "{{ proxmox_lxc_guest_storage }}"
+  when: proxmox_lxc_guest_existing.proxmox_vms | length == 0
+  no_log: true
+
+- name: Reconcile non-destructive target configuration
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    hostname: "{{ proxmox_lxc_guest_hostname }}"
+    node: "{{ proxmox_lxc_guest_node }}"
+    cmode: "{{ proxmox_lxc_guest_cmode }}"
+    cores: "{{ proxmox_lxc_guest_cores }}"
+    memory: "{{ proxmox_lxc_guest_memory_mb }}"
+    onboot: "{{ proxmox_lxc_guest_onboot }}"
+    update: true
+    state: present
+  no_log: true
+
+- name: Start reconciled target
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    node: "{{ proxmox_lxc_guest_node }}"
+    state: started
+  no_log: true
+
+- name: Read final target configuration
+  community.proxmox.proxmox_vm_info:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    config: current
+  register: proxmox_lxc_guest_postflight
+  changed_when: false
+  no_log: true
+
+- name: Prove final target configuration
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_guest_postflight.proxmox_vms | length == 1
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].vmid | int == proxmox_lxc_guest_vmid | int
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.hostname == proxmox_lxc_guest_hostname
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].node == proxmox_lxc_guest_node
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].type == 'lxc'
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.ostype == 'debian'
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.unprivileged | int == 1
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.cores | int == proxmox_lxc_guest_cores | int
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.memory | int == proxmox_lxc_guest_memory_mb | int
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.onboot | bool == proxmox_lxc_guest_onboot | bool
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.cmode == proxmox_lxc_guest_cmode
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is match('^local-lvm:')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is search('(^|,)size=32G(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].status == 'running'
+
+- name: Record redacted LXC guest summary
+  ansible.builtin.set_fact:
+    proxmox_lxc_guest_summary:
+      vmid: "{{ proxmox_lxc_guest_postflight.proxmox_vms[0].vmid }}"
+      hostname: "{{ proxmox_lxc_guest_postflight.proxmox_vms[0].config.hostname }}"
+      node: "{{ proxmox_lxc_guest_postflight.proxmox_vms[0].node }}"
+      state: "{{ proxmox_lxc_guest_postflight.proxmox_vms[0].status }}"

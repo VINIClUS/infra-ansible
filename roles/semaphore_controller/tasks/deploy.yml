@@ -1,0 +1,220 @@
+---
+- name: Deploy Semaphore transactionally
+  block:
+    - name: Create encrypted Semaphore pre-change backup
+      ansible.builtin.include_tasks: backup.yml
+
+    - name: Reconcile Semaphore configuration inside transaction
+      ansible.builtin.include_tasks: configure.yml
+      vars:
+        semaphore_controller_defer_activation: true
+      when: semaphore_controller_had_setup_before_run | bool
+
+    - name: Stop Semaphore before database migration
+      ansible.builtin.systemd_service:
+        name: semaphore.service
+        state: stopped
+      become: true
+
+    - name: Migrate Semaphore database to exact target release
+      ansible.builtin.command:
+        argv:
+          - "{{ semaphore_controller_target_binary }}"
+          - migrate
+          - --apply-to
+          - "{{ semaphore_controller_version }}"
+      become: true
+      become_user: "{{ semaphore_controller_user }}"
+      changed_when: true
+
+    - name: Switch to exact Semaphore target release
+      ansible.builtin.file:
+        src: "{{ semaphore_controller_release_path }}"
+        dest: "{{ semaphore_controller_current_path }}"
+        state: link
+        force: true
+      become: true
+
+    - name: Apply pending Semaphore service handlers after switch
+      ansible.builtin.meta: flush_handlers
+
+    - name: Restart exact Semaphore target release
+      ansible.builtin.systemd_service:
+        name: semaphore
+        daemon_reload: true
+        state: restarted
+      become: true
+
+    - name: Verify exact Semaphore target internal health
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3000/api/ping
+        method: GET
+        status_code: 200
+        return_content: true
+      register: semaphore_controller_health
+      changed_when: false
+      failed_when: >-
+        semaphore_controller_health.status != 200 or
+        semaphore_controller_health.content | trim != 'pong'
+      retries: 30
+      delay: 2
+
+    - name: Record HEALTHY Semaphore deployment state
+      ansible.builtin.copy:
+        content: |
+          {
+            "schema": 1,
+            "state": "HEALTHY",
+            "backup_id": {{ semaphore_controller_backup_id | to_json }},
+            "backup_object": {{ semaphore_controller_backup_object_key | to_json }},
+            "encrypted_path": {{ semaphore_controller_encrypted_backup_path | to_json }},
+            "previous_release": {{ semaphore_controller_preceding_release | to_json }},
+            "target_release": {{ semaphore_controller_release_path | to_json }}
+          }
+        dest: "{{ semaphore_controller_deployment_state_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+
+    - name: Arm exact one-shot Semaphore rollback marker
+      ansible.builtin.copy:
+        content: "{{ semaphore_controller_backup_id }}\n"
+        dest: "{{ semaphore_controller_rollback_marker_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+  rescue:
+    - name: Restore Semaphore after failed rollout
+      ansible.builtin.include_tasks: rollback.yml
+
+    - name: Fail after successful Semaphore rollback
+      ansible.builtin.fail:
+        msg: Semaphore rollout failed and the previous release was restored.
+  always:
+    - name: Delete any remaining Semaphore plaintext backup staging
+      ansible.builtin.file:
+        path: >-
+          {{ semaphore_controller_backup_staging_path |
+             default(semaphore_controller_backup_staging_root ~ '/failed') }}
+        state: absent
+      become: true
+
+- name: Write protected Semaphore timer credentials
+  ansible.builtin.copy:
+    content: >-
+      {{ {'access_key': semaphore_controller_transaction_environment.minio_access_key,
+          'secret_key': semaphore_controller_transaction_environment.minio_secret_key}
+         | to_nice_json }}
+    dest: "{{ semaphore_controller_backup_credentials_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+  no_log: true
+
+- name: Install Semaphore daily backup script
+  ansible.builtin.template:
+    src: semaphore-backup.sh.j2
+    dest: "{{ semaphore_controller_backup_script_path }}"
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+
+- name: Install Semaphore daily backup service
+  ansible.builtin.template:
+    src: semaphore-backup.service.j2
+    dest: /etc/systemd/system/semaphore-backup.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Install Semaphore daily backup timer
+  ansible.builtin.template:
+    src: semaphore-backup.timer.j2
+    dest: /etc/systemd/system/semaphore-backup.timer
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Verify Semaphore backup systemd units
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - verify
+      - /etc/systemd/system/semaphore-backup.service
+      - /etc/systemd/system/semaphore-backup.timer
+  changed_when: false
+  become: true
+
+- name: Enable and start Semaphore daily backup timer
+  ansible.builtin.systemd_service:
+    name: semaphore-backup.timer
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+
+- name: Read next Semaphore backup timer trigger
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=NextElapseUSecRealtime
+      - --value
+      - semaphore-backup.timer
+  register: semaphore_controller_backup_timer_next_trigger
+  changed_when: false
+  become: true
+
+- name: Require next Semaphore backup timer trigger
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_backup_timer_next_trigger.stdout | trim | length > 0
+      - semaphore_controller_backup_timer_next_trigger.stdout | trim != 'n/a'
+    fail_msg: Semaphore backup timer has no next trigger.
+
+- name: Write redacted Semaphore deployment evidence
+  ansible.builtin.copy:
+    content: |
+      {
+        "schema": 1,
+        "state": "HEALTHY",
+        "backup_id": {{ semaphore_controller_backup_id | to_json }},
+        "previous_release": {{ semaphore_controller_preceding_release | to_json }},
+        "target_release": {{ semaphore_controller_release_path | to_json }},
+        "version": {{ semaphore_controller_version | to_json }}
+      }
+    dest: "{{ semaphore_controller_deployment_evidence_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  become: true
+
+- name: Upload redacted Semaphore deployment evidence
+  amazon.aws.s3_object:
+    endpoint_url: "{{ semaphore_controller_minio_endpoint_url }}"
+    region: "{{ semaphore_controller_minio_region }}"
+    access_key: >-
+      {{ semaphore_controller_transaction_environment.minio_access_key }}
+    secret_key: >-
+      {{ semaphore_controller_transaction_environment.minio_secret_key }}
+    aws_config:
+      s3:
+        addressing_style: >-
+          {{ semaphore_controller_minio_use_path_style |
+             bool | ternary('path', 'auto') }}
+    bucket: "{{ semaphore_controller_minio_buckets.artifacts }}"
+    object: >-
+      {{ semaphore_controller_deployment_prefix ~ '/' ~ inventory_hostname ~
+         '/' ~ semaphore_controller_backup_id ~ '.json' }}
+    src: "{{ semaphore_controller_deployment_evidence_path }}"
+    mode: put
+    overwrite: never
+    encrypt: false
+  become: true
+  no_log: true

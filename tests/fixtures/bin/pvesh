@@ -1,0 +1,9 @@
+#!/bin/sh
+if [ "${FAKE_STORAGE_MODE:-compliant}" = "absent-then-created" ] && [ ! -f "${FAKE_STORAGE_STATE:-}" ]; then
+  printf '%s\n' "storage 'infra-backups' does not exist" >&2
+  exit 255
+elif [ "${FAKE_STORAGE_MODE:-compliant}" = "conflict" ]; then
+  printf '%s\n' '{"type":"nfs","path":"/mnt/other","content":"backup","prune-backups":"keep-last=2","is_mountpoint":"/mnt/other","nodes":"localhost"}'
+else
+  printf '%s\n' '{"type":"dir","path":"/mnt/infra-backups/proxmox","content":"backup","prune-backups":"keep-last=2","is_mountpoint":"/mnt/infra-backups/proxmox","nodes":"localhost"}'
+fi

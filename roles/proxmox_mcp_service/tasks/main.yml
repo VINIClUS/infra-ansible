@@ -1,0 +1,189 @@
+---
+- name: Validate Proxmox MCP service enable flag
+  ansible.builtin.assert:
+    that:
+      - proxmox_mcp_service_enabled is boolean
+    fail_msg: "proxmox_mcp_service_enabled must be a boolean."
+
+- name: Stop only the Proxmox MCP role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_mcp_service_enabled | bool
+
+- name: Validate narrow Proxmox MCP deployment contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - proxmox_mcp_service_resource_kind == 'lxc'
+      - proxmox_mcp_service_repo_url is match('^https://[^\n]+$')
+      - proxmox_mcp_service_repo_ref is match('^[0-9a-f]{40}$')
+      - proxmox_mcp_service_release_source in ['git', 'controller_archive']
+      - >-
+        proxmox_mcp_service_release_source == 'git' or
+        proxmox_mcp_service_controller_repo_path is match('^/[^\n]+$')
+      - proxmox_mcp_service_release_root is match('^/[^\n]+$')
+      - proxmox_mcp_service_current_path is match('^/[^\n]+$')
+      - proxmox_mcp_service_config_path is match('^/[^\n]+$')
+      - proxmox_mcp_service_data_volume == 'proxmox_mcp_data'
+      - proxmox_mcp_service_listen_address == '127.0.0.1'
+      - proxmox_mcp_service_listen_port | int == 3100
+      - proxmox_mcp_service_ssh_public_key_file | length > 0
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - ansible_run_tags | list | sort == ['proxmox_mcp_service']
+    fail_msg: >-
+      Proxmox MCP deployment requires Debian, an exact Git commit, loopback
+      binding, a dedicated SSH public key, one exact --limit host, and only the
+      proxmox_mcp_service tag.
+
+- name: Read required runtime values from the controller environment
+  ansible.builtin.set_fact:
+    proxmox_mcp_service_runtime_environment: >-
+      {{ proxmox_mcp_service_runtime_environment | default({}) |
+         combine({item: lookup('ansible.builtin.env', item)}) }}
+  loop: "{{ proxmox_mcp_service_required_env_names }}"
+  no_log: true
+
+- name: Validate required runtime values without logging them
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_mcp_service_runtime_environment.values() |
+        reject('equalto', '') | list | length ==
+        proxmox_mcp_service_required_env_names | length
+      - >-
+        proxmox_mcp_service_runtime_environment.values() |
+        select('search', '[\r\n]') | list | length == 0
+    fail_msg: "Required Proxmox MCP runtime values are missing or contain newlines."
+  no_log: true
+
+- name: Validate the controller bootstrap key is public
+  ansible.builtin.assert:
+    that:
+      - >-
+        lookup('ansible.builtin.file', proxmox_mcp_service_ssh_public_key_file) |
+        trim is match(
+          '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)) [A-Za-z0-9+/]+=*([^\r\n]*)$'
+        )
+    fail_msg: "The bootstrap key file must contain exactly one SSH public key."
+  no_log: true
+
+- name: Install only the declared Proxmox MCP runtime packages
+  ansible.builtin.apt:
+    name: "{{ proxmox_mcp_service_packages }}"
+    state: present
+    update_cache: true
+
+- name: Create persistent Proxmox MCP directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ proxmox_mcp_service_release_root }}"
+      mode: "0755"
+    - path: "{{ proxmox_mcp_service_config_path }}"
+      mode: "0700"
+
+- name: Check out the exact Proxmox MCP release
+  ansible.builtin.git:
+    repo: "{{ proxmox_mcp_service_repo_url }}"
+    dest: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}"
+    version: "{{ proxmox_mcp_service_repo_ref }}"
+    single_branch: true
+    update: false
+  when: proxmox_mcp_service_release_source == 'git'
+
+- name: Deploy exact committed release archive from controller
+  ansible.builtin.include_tasks: deploy_controller_archive.yml
+  when: proxmox_mcp_service_release_source == 'controller_archive'
+
+- name: Install the dedicated SSH public key only
+  ansible.builtin.copy:
+    src: "{{ proxmox_mcp_service_ssh_public_key_file }}"
+    dest: "{{ proxmox_mcp_service_config_path }}/proxmox-mcp.pub"
+    owner: root
+    group: root
+    mode: "0644"
+  no_log: true
+
+- name: Materialize the allowlisted Proxmox MCP environment
+  ansible.builtin.template:
+    src: proxmox-mcp.env.j2
+    dest: "{{ proxmox_mcp_service_config_path }}/proxmox-mcp.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Link the protected environment into the immutable release
+  ansible.builtin.file:
+    src: "{{ proxmox_mcp_service_config_path }}/proxmox-mcp.env"
+    dest: >-
+      {{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.proxmox-mcp.env
+    state: link
+    force: true
+
+- name: Materialize non-secret Compose project interpolation environment
+  ansible.builtin.template:
+    src: compose-project.env.j2
+    dest: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}/.env"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Activate the exact release path
+  ansible.builtin.file:
+    src: "{{ proxmox_mcp_service_release_root }}/{{ proxmox_mcp_service_repo_ref }}"
+    dest: "{{ proxmox_mcp_service_current_path }}"
+    state: link
+    force: true
+
+- name: Install the boot-time Compose unit
+  ansible.builtin.template:
+    src: proxmox-mcp.service.j2
+    dest: /etc/systemd/system/proxmox-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for Proxmox MCP
+
+- name: Apply pending systemd unit reloads
+  ansible.builtin.meta: flush_handlers
+
+- name: Build and reconcile the Proxmox MCP Compose project
+  community.docker.docker_compose_v2:
+    project_src: "{{ proxmox_mcp_service_current_path }}"
+    project_name: proxmox-mcp
+    files:
+      - compose.mcp.yml
+    state: present
+    build: always
+    pull: never
+    wait: true
+    wait_timeout: 120
+
+- name: Enable the boot-time Proxmox MCP unit
+  ansible.builtin.systemd_service:
+    name: proxmox-mcp.service
+    enabled: true
+
+- name: Confirm the persistent Docker volume exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - volume
+      - inspect
+      - "{{ proxmox_mcp_service_data_volume }}"
+  changed_when: false
+
+- name: Confirm the loopback health endpoint
+  ansible.builtin.uri:
+    url: >-
+      http://{{ proxmox_mcp_service_listen_address }}:{{ proxmox_mcp_service_listen_port }}/health
+    method: GET
+    status_code: 200
+    return_content: false

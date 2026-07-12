@@ -1,0 +1,10 @@
+---
+- name: Reconcile the Ansible controller release
+  hosts: ansible_controllers
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: semaphore_controller
+      tags: [semaphore_controller]
+    - role: monitoring_agent
+      tags: [monitoring_agent]

@@ -2,32 +2,29 @@
 - name: Validate Infisical contract variables
   ansible.builtin.assert:
     that:
-      - infisical_runtime_project_slug | length > 0
+      - infisical_runtime_project_id | length > 0
       - infisical_runtime_environment | length > 0
       - infisical_runtime_secret_paths is mapping
       - infisical_runtime_secret_paths | length > 0
       - infisical_runtime_required_keys is iterable
     fail_msg: >-
-      Infisical project, environment, secret paths, and required keys must be
+      Infisical project ID, environment, secret paths, and required keys must be
       declared.
 
-- name: Validate Infisical token presence when access check is enabled
+- name: Reject legacy static-token contract
   ansible.builtin.assert:
     that:
-      - >-
-        lookup('ansible.builtin.env', infisical_runtime_token_env_var) |
-        length > 0
+      - infisical_token_env_var is not defined
+      - infisical_project_slug is not defined
     fail_msg: >-
-      Infisical token environment variable is required for live access
-      validation.
-  no_log: true
-  when: infisical_runtime_validate_access | bool
+      Static token and project slug variables are no longer supported. Use the
+      Universal Auth launcher with infisical_project_id.
 
 - name: Record redacted Infisical validation summary
   ansible.builtin.set_fact:
     infisical_runtime_contract_summary:
-      project: "{{ infisical_runtime_project_slug }}"
+      project_id_configured: "{{ infisical_runtime_project_id | length > 0 }}"
       environment: "{{ infisical_runtime_environment }}"
       path_count: "{{ infisical_runtime_secret_paths | length }}"
       required_key_count: "{{ infisical_runtime_required_keys | length }}"
-      live_validation_enabled: "{{ infisical_runtime_validate_access | bool }}"
+      authentication: universal-auth

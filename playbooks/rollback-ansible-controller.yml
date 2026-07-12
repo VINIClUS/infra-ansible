@@ -1,0 +1,28 @@
+---
+- name: Roll back the immediately preceding Ansible controller deployment
+  hosts: ansible_controllers
+  gather_facts: true
+  serial: 1
+  vars:
+    semaphore_controller_rollback_mode: true
+    semaphore_controller_rollback_marker_path: >-
+      /var/lib/infra-ansible/semaphore/rollback-request
+  pre_tasks:
+    - name: Read the armed one-shot Semaphore rollback backup ID
+      ansible.builtin.slurp:
+        src: "{{ semaphore_controller_rollback_marker_path }}"
+      register: semaphore_controller_rollback_marker_for_playbook
+      become: true
+      no_log: true
+      tags: [semaphore_controller_rollback]
+
+    - name: Select the exact immediately preceding Semaphore backup ID
+      ansible.builtin.set_fact:
+        semaphore_controller_rollback_backup_id: >-
+          {{ semaphore_controller_rollback_marker_for_playbook.content |
+             b64decode | trim }}
+      no_log: true
+      tags: [semaphore_controller_rollback]
+  roles:
+    - role: semaphore_controller
+      tags: [semaphore_controller_rollback]

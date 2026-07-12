@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+umask 077
+workdir="$(mktemp --directory \
+  "{{ semaphore_controller_backup_staging_root }}/timer.XXXXXXXX")"
+chown root:postgres "${workdir}"
+chmod 0710 "${workdir}"
+
+database_dir="${workdir}/database"
+secret_dir="${workdir}/root"
+install -d -o postgres -g postgres -m 0700 "${database_dir}"
+install -d -o root -g root -m 0700 "${secret_dir}"
+
+cleanup() {
+  rm -rf -- "${workdir}"
+}
+trap cleanup EXIT
+
+backup_id="$(date --utc +%Y%m%dT%H%M%S%NZ)"
+database_dump="${database_dir}/database.dump"
+config_archive="${secret_dir}/config.tar"
+bundle="${secret_dir}/bundle.tar"
+encrypted_bundle="${secret_dir}/${backup_id}.tar.age"
+object_key="{{ semaphore_controller_backup_prefix }}/{{ inventory_hostname }}/${backup_id}.tar.age"
+
+runuser -u postgres -- pg_dump \
+  --format=custom \
+  --file "${database_dump}" \
+  "{{ semaphore_controller_database_name }}"
+
+tar --create \
+  --file "${config_archive}" \
+  --directory / \
+  "{{ semaphore_controller_config_dir | regex_replace('^/', '') }}"
+
+tar --create \
+  --file "${bundle}" \
+  --directory "${database_dir}" \
+  database.dump \
+  --directory "${secret_dir}" \
+  config.tar
+
+age -r "{{ semaphore_controller_backup_age_recipient }}" \
+  -o "${encrypted_bundle}" \
+  "${bundle}"
+
+python3 - "${encrypted_bundle}" "${object_key}" <<'PY'
+import json
+import sys
+
+import boto3
+from botocore.config import Config
+
+
+with open(
+    {{ semaphore_controller_backup_credentials_path | to_json }},
+    encoding="utf-8",
+) as credentials_file:
+    credentials = json.load(credentials_file)
+
+client = boto3.client(
+    "s3",
+    endpoint_url={{ semaphore_controller_minio_endpoint_url | to_json }},
+    region_name={{ semaphore_controller_minio_region | to_json }},
+    aws_access_key_id=credentials["access_key"],
+    aws_secret_access_key=credentials["secret_key"],
+    config=Config(
+        s3={
+            "addressing_style":
+                {{ (semaphore_controller_minio_use_path_style | bool |
+                    ternary('path', 'auto')) | to_json }}
+        }
+    ),
+)
+client.upload_file(
+    sys.argv[1],
+    {{ semaphore_controller_minio_buckets.backups | to_json }},
+    sys.argv[2],
+)
+PY

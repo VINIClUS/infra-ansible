@@ -1,0 +1,167 @@
+---
+- name: Enable and start PostgreSQL
+  ansible.builtin.systemd_service:
+    name: postgresql.service
+    enabled: true
+    state: started
+  become: true
+
+- name: Create Semaphore PostgreSQL role
+  community.postgresql.postgresql_user:
+    name: "{{ semaphore_controller_database_user }}"
+    password: "{{ semaphore_controller_runtime_environment['SEMAPHORE_DB_PASSWORD'] }}"
+    role_attr_flags: NOSUPERUSER,NOCREATEDB,NOCREATEROLE,LOGIN
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+  no_log: true
+
+- name: Create Semaphore PostgreSQL database
+  community.postgresql.postgresql_db:
+    name: "{{ semaphore_controller_database_name }}"
+    owner: "{{ semaphore_controller_database_user }}"
+    encoding: UTF8
+    state: present
+    login_unix_socket: /var/run/postgresql
+  become: true
+  become_user: postgres
+
+- name: Check first Semaphore setup marker
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_setup_marker_path }}"
+  register: semaphore_controller_setup_marker
+  become: true
+
+- name: Run first Semaphore setup over protected stdin
+  ansible.builtin.expect:
+    command: >-
+      {{ semaphore_controller_release_path }}/usr/bin/semaphore setup
+      --config {{ semaphore_controller_config_path }}
+    responses:
+      "(?s)What database to use:.*:": "3"
+      "db Hostname.*:": "{{ semaphore_controller_database_host }}"
+      "db User.*:": "{{ semaphore_controller_database_user }}"
+      "db Password.*:": "{{ semaphore_controller_runtime_environment['SEMAPHORE_DB_PASSWORD'] }}"
+      "db Name.*:": "{{ semaphore_controller_database_name }}"
+      "Playbook path.*:": "{{ semaphore_controller_tmp_dir }}"
+      "Public URL.*:": "{{ semaphore_controller_web_root }}"
+      "Enable email alerts.*:": "no"
+      "Enable telegram alerts.*:": "no"
+      "Enable slack alerts.*:": "no"
+      "Enable Rocket.Chat alerts.*:": "no"
+      "Enable Microsoft Team Channel alerts.*:": "no"
+      "Enable LDAP authentication.*:": "no"
+      "Username:": "{{ semaphore_controller_admin_username }}"
+      "Email:": "{{ semaphore_controller_admin_email }}"
+      "Your name:": "{{ semaphore_controller_admin_name }}"
+      "Password:": "{{ semaphore_controller_runtime_environment['SEMAPHORE_ADMIN_PASSWORD'] }}"
+    echo: false
+    timeout: 120
+  when: not semaphore_controller_setup_marker.stat.exists
+  become: true
+  no_log: true
+
+- name: Record successful first Semaphore setup
+  ansible.builtin.file:
+    path: "{{ semaphore_controller_setup_marker_path }}"
+    state: touch
+    owner: root
+    group: root
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  when: not semaphore_controller_setup_marker.stat.exists
+  become: true
+
+- name: Read setup-generated Semaphore configuration
+  ansible.builtin.slurp:
+    src: "{{ semaphore_controller_config_path }}"
+  register: semaphore_controller_generated_config_raw
+  become: true
+  no_log: true
+
+- name: Capture setup-generated cookie secrets
+  ansible.builtin.set_fact:
+    semaphore_controller_generated_cookie_hash: >-
+      {{ (semaphore_controller_generated_config_raw.content |
+          b64decode | from_json).cookie_hash }}
+    semaphore_controller_generated_cookie_encryption: >-
+      {{ (semaphore_controller_generated_config_raw.content |
+          b64decode | from_json).cookie_encryption }}
+  no_log: true
+
+- name: Render protected Semaphore configuration
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ semaphore_controller_config_path }}"
+    owner: root
+    group: "{{ semaphore_controller_group }}"
+    mode: "0640"
+  become: true
+  no_log: true
+  notify: Restart Semaphore
+
+- name: Install Semaphore systemd unit
+  ansible.builtin.template:
+    src: semaphore.service.j2
+    dest: /etc/systemd/system/semaphore.service
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Restart Semaphore
+
+- name: Inspect active Semaphore release
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_current_path }}"
+    follow: false
+  register: semaphore_controller_current_release
+  become: true
+
+- name: Remove stale Semaphore activation candidate
+  ansible.builtin.file:
+    path: "{{ semaphore_controller_current_path }}.next"
+    state: absent
+  when: >-
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
+  become: true
+
+- name: Prepare exact Semaphore release symlink
+  ansible.builtin.file:
+    src: "{{ semaphore_controller_release_path }}"
+    dest: "{{ semaphore_controller_current_path }}.next"
+    state: link
+  when: >-
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
+  become: true
+
+- name: Atomically activate exact Semaphore release
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-target-directory
+      - "{{ semaphore_controller_current_path }}.next"
+      - "{{ semaphore_controller_current_path }}"
+  when: >-
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
+  changed_when: true
+  become: true
+  notify: Restart Semaphore
+
+- name: Clear in-memory Semaphore secret values
+  ansible.builtin.set_fact:
+    semaphore_controller_runtime_environment: {}
+    semaphore_controller_generated_config_raw: {}
+    semaphore_controller_generated_cookie_hash: ""
+    semaphore_controller_generated_cookie_encryption: ""
+  no_log: true

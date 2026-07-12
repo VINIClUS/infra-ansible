@@ -1,0 +1,19 @@
+{
+  "postgres": {
+    "host": {{ semaphore_controller_database_host | to_json }},
+    "user": {{ semaphore_controller_database_user | to_json }},
+    "pass": {{ semaphore_controller_runtime_environment['SEMAPHORE_DB_PASSWORD'] | to_json }},
+    "name": {{ semaphore_controller_database_name | to_json }},
+    "options": {
+      "sslmode": "disable"
+    }
+  },
+  "dialect": "postgres",
+  "port": {{ semaphore_controller_port | string | to_json }},
+  "interface": "127.0.0.1",
+  "tmp_path": {{ semaphore_controller_tmp_dir | to_json }},
+  "web_host": {{ semaphore_controller_web_root | to_json }},
+  "cookie_hash": {{ semaphore_controller_generated_cookie_hash | to_json }},
+  "cookie_encryption": {{ semaphore_controller_generated_cookie_encryption | to_json }},
+  "access_key_encryption": {{ semaphore_controller_runtime_environment['SEMAPHORE_ACCESS_KEY_ENCRYPTION'] | to_json }}
+}
