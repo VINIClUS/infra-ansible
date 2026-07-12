@@ -51,8 +51,20 @@ def test_controller_archive_contains_only_committed_release_files():
 
 
 def test_role_does_not_bind_the_inherited_backup_path():
-    compose = read("../ProxmoxMCP/compose.mcp.yml")
-    assert "/mnt/infra-backups/proxmox" not in compose
+    forbidden_path = "/mnt/infra-backups/proxmox"
+    role_root = ROOT / "roles/proxmox_mcp_service"
+    role_contract = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(role_root.rglob("*"))
+        if path.is_file() and path.suffix in {".j2", ".yaml", ".yml"}
+    )
+    assert forbidden_path not in role_contract
+
+    # The upstream repository is available in the local multi-repository
+    # workspace, but a standalone GitHub checkout must remain testable.
+    upstream_compose = ROOT.parent / "ProxmoxMCP/compose.mcp.yml"
+    if upstream_compose.is_file():
+        assert forbidden_path not in upstream_compose.read_text(encoding="utf-8")
 
 
 def test_role_keeps_secrets_out_of_compose_project_dotenv():
