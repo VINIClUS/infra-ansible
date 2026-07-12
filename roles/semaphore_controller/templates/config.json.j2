@@ -10,7 +10,7 @@
   },
   "dialect": "postgres",
   "port": {{ semaphore_controller_port | string | to_json }},
-  "interface": "127.0.0.1",
+  "interface": {{ semaphore_controller_interface | to_json }},
   "tmp_path": {{ semaphore_controller_tmp_dir | to_json }},
   "web_host": {{ semaphore_controller_web_root | to_json }},
   "cookie_hash": {{ semaphore_controller_generated_cookie_hash | to_json }},

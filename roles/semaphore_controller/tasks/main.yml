@@ -28,6 +28,9 @@
       - semaphore_controller_current_path is match('^/[a-zA-Z0-9._/-]+$')
       - semaphore_controller_config_dir is match('^/[a-zA-Z0-9._/-]+$')
       - semaphore_controller_port | int == 3000
+      - >-
+        semaphore_controller_interface is
+        match('^(?:(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])\Z')
       - ansible_limit is defined
       - ansible_limit | trim == inventory_hostname
       - ansible_play_hosts_all | length == 1
@@ -37,8 +40,9 @@
         (semaphore_controller_expected_run_tags | list | sort)
     fail_msg: >-
       Semaphore controller deployment requires Debian 13 amd64 under systemd,
-      the pinned release contract with native postgresql, one exact --limit
-      host, and only the exact declared reconciliation tags.
+      the pinned release contract with native postgresql, a canonical IPv4
+      listen interface, one exact --limit host, and only the exact declared
+      reconciliation tags.
   when: not semaphore_controller_rollback_mode | bool
 
 - name: Validate narrow Semaphore rollback contract

@@ -38,6 +38,7 @@ def test_native_semaphore_contract_is_exact_and_fail_closed():
     assert defaults["semaphore_controller_current_path"] == "/opt/semaphore/current"
     assert defaults["semaphore_controller_config_dir"] == "/etc/semaphore"
     assert defaults["semaphore_controller_port"] == 3000
+    assert defaults["semaphore_controller_interface"] == "127.0.0.1"
     assert defaults["semaphore_controller_required_env"] == [
         "SEMAPHORE_DB_PASSWORD",
         "SEMAPHORE_ACCESS_KEY_ENCRYPTION",
@@ -46,6 +47,46 @@ def test_native_semaphore_contract_is_exact_and_fail_closed():
     assert "PostgreSQL" in main
     assert "http://127.0.0.1:3000/api/ping" in main
     assert "no_log: true" in main
+
+
+def test_listen_interface_is_configurable_and_restricted_to_canonical_ipv4():
+    config_template = read(f"{ROLE}/templates/config.json.j2")
+    validation = task_named("main.yml", "Validate narrow Semaphore controller contract")
+    assertions = validation["ansible.builtin.assert"]["that"]
+
+    assert (
+        '"interface": {{ semaphore_controller_interface | to_json }}'
+        in config_template
+    )
+    assert '"interface": "127.0.0.1"' not in config_template
+
+    interface_condition = next(
+        condition
+        for condition in assertions
+        if "semaphore_controller_interface is match" in condition
+    )
+    interface_pattern = re.search(
+        r"match\('(?P<pattern>.+)'\)$", interface_condition
+    )["pattern"]
+    assert interface_pattern.endswith(r"\Z")
+    assert all(
+        re.fullmatch(interface_pattern, value)
+        for value in ("0.0.0.0", "127.0.0.1", "192.168.1.31", "255.255.255.255")
+    )
+    assert not any(
+        re.fullmatch(interface_pattern, value)
+        for value in (
+            "",
+            " 127.0.0.1",
+            "127.0.0.1 ",
+            "127.0.0.1\n",
+            "localhost",
+            "::1",
+            "01.2.3.4",
+            "256.0.0.1",
+            "1.2.3",
+        )
+    )
 
 
 def test_role_requires_debian_13_amd64_one_host_limit_and_exact_tag():
