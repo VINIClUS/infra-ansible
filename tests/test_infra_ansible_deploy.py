@@ -272,7 +272,26 @@ def test_playbook_commands_are_fixed_and_secret_free():
         assert "SSL_CERT_FILE" not in child_env
 
 
-def test_external_health_secrets_are_allowlisted_and_only_enter_child_env():
+@pytest.mark.parametrize(
+    "secret_export",
+    [
+        (
+            '{"CLOUDFLARE_ACCESS_CLIENT_ID": "health-client-id", '
+            '"CLOUDFLARE_ACCESS_CLIENT_SECRET": "health-client-secret", '
+            '"UNRELATED": "must-not-be-forwarded"}'
+        ),
+        (
+            '[{"key": "CLOUDFLARE_ACCESS_CLIENT_ID", '
+            '"value": "health-client-id"}, '
+            '{"key": "CLOUDFLARE_ACCESS_CLIENT_SECRET", '
+            '"value": "health-client-secret"}, '
+            '{"key": "UNRELATED", "value": "must-not-be-forwarded"}]'
+        ),
+    ],
+)
+def test_external_health_secrets_are_allowlisted_and_only_enter_child_env(
+    secret_export,
+):
     config = deploy.DeployConfig(
         infisical_domain="https://infisical.example.test",
         infisical_project_id="project-id",
@@ -287,11 +306,7 @@ def test_external_health_secrets_are_allowlisted_and_only_enter_child_env():
             subprocess.CompletedProcess(
                 [],
                 0,
-                stdout=(
-                    '{"CLOUDFLARE_ACCESS_CLIENT_ID": "health-client-id", '
-                    '"CLOUDFLARE_ACCESS_CLIENT_SECRET": "health-client-secret", '
-                    '"UNRELATED": "must-not-be-forwarded"}'
-                ),
+                stdout=secret_export,
                 stderr="",
             ),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),

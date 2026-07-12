@@ -474,9 +474,7 @@ def run_external_health_check(
         ],
         export_env,
     )
-    exported = json.loads(raw_secrets)
-    if not isinstance(exported, dict):
-        raise RuntimeError("Infisical health export did not return a JSON object")
+    exported = normalize_infisical_export(json.loads(raw_secrets))
     missing = [key for key in _HEALTH_KEYS if not exported.get(key)]
     if missing:
         raise RuntimeError("missing external health keys: " + ", ".join(missing))
@@ -489,6 +487,26 @@ def run_external_health_check(
         health_env,
         cwd=PUBLIC_REPO_ROOT,
     )
+
+
+def normalize_infisical_export(exported) -> dict[str, str]:
+    if isinstance(exported, dict):
+        return {key: str(value) for key, value in exported.items()}
+    if not isinstance(exported, list):
+        raise RuntimeError("Infisical export did not return a JSON object or list")
+
+    normalized = {}
+    for record in exported:
+        if not isinstance(record, dict):
+            raise RuntimeError("Infisical export list record is invalid")
+        key = record.get("key")
+        value = record.get("value")
+        if not isinstance(key, str) or not key or not isinstance(value, str):
+            raise RuntimeError("Infisical export list record is invalid")
+        if key in normalized:
+            raise RuntimeError(f"Duplicate Infisical export key: {key}")
+        normalized[key] = value
+    return normalized
 
 
 def execute_fixed_sequence(
