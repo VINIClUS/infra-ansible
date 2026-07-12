@@ -271,6 +271,7 @@ The `/ansible` folder contains:
 - `SEMAPHORE_DB_PASSWORD`
 - `SEMAPHORE_ACCESS_KEY_ENCRYPTION`
 - `SEMAPHORE_ADMIN_PASSWORD`
+- `ANSIBLE_EDGE_SSH_PRIVATE_KEY`
 - `INFRA_INVENTORY_DEPLOY_KEY`
 - `ANSIBLE_BACKUP_AGE_IDENTITY`
 - `CLOUDFLARE_ACCESS_CLIENT_ID`
@@ -286,6 +287,12 @@ cannot read it. The wrapper obtains a short-lived token, fetches only required
 names, removes bootstrap variables, and invokes Ansible with `no_log` on all
 secret-bearing tasks. Secrets are never command-line values, GitHub artifacts,
 workflow outputs, or unencrypted MinIO objects.
+
+The dedicated edge key is provisioned separately from the seven generated
+controller bootstrap secrets. The deployer validates its OpenSSH private-key
+envelope and installs it as root-only mode 0600 at
+`/etc/infra-ansible-deploy/edge-ssh-key`; inventory contains only that public
+path.
 
 ## Rollout and Rollback
 

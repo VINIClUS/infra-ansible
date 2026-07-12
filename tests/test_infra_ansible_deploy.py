@@ -391,6 +391,9 @@ def test_role_installs_only_the_narrow_root_boundary():
     assert script.startswith("#!/usr/bin/python3 -I\n")
     assert defaults["infra_ansible_deployer_public_repo_dest"] == "/srv/infra-ansible"
     assert defaults["infra_ansible_deployer_inventory_repo_dest"] == "/srv/infra-ansible-inventory"
+    assert defaults["infra_ansible_deployer_edge_ssh_key_path"] == (
+        "/etc/infra-ansible-deploy/edge-ssh-key"
+    )
     assert "version: \"{{ infra_ansible_deployer_public_sha }}\"" in tasks
     assert "version: \"{{ infra_ansible_deployer_inventory_sha }}\"" in tasks
     assert "dest: /usr/local/sbin/infra-ansible-deploy" in tasks
@@ -403,6 +406,22 @@ def test_role_installs_only_the_narrow_root_boundary():
         'infra_ansible_deployer_runtime_secrets.INFRA_INVENTORY_DEPLOY_KEY }}\\n"'
         in tasks
     )
+    assert "ANSIBLE_EDGE_SSH_PRIVATE_KEY" in tasks
+    assert (
+        'content: "{{ '
+        'infra_ansible_deployer_runtime_secrets.ANSIBLE_EDGE_SSH_PRIVATE_KEY }}\\n"'
+        in tasks
+    )
+    assert 'dest: "{{ infra_ansible_deployer_edge_ssh_key_path }}"' in tasks
+    assert "Install the dedicated edge SSH private key" in tasks
+    edge_key_task = tasks.split("Install the dedicated edge SSH private key", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert 'owner: root' in edge_key_task
+    assert 'group: root' in edge_key_task
+    assert 'mode: "0600"' in edge_key_task
+    assert "no_log: true" in edge_key_task
+    assert "ANSIBLE_EDGE_SSH_PRIVATE_KEY" not in env_template
     assert "runtime_secrets.values() |\n        select('search', '[\\r\\n]')" not in tasks
     assert "Defaults!/usr/local/sbin/infra-ansible-deploy secure_path=" in sudoers
     assert "NOPASSWD:NOSETENV:" in sudoers
@@ -431,3 +450,5 @@ def test_role_installs_only_the_narrow_root_boundary():
     assert "checksum: sha256:{{ infra_ansible_deployer_powershell_sha256 }}" in tasks
     assert "latest" not in (defaults.__repr__() + tasks).lower()
     assert "vendor apt" in readme.lower()
+    assert "ANSIBLE_EDGE_SSH_PRIVATE_KEY" in readme
+    assert "/etc/infra-ansible-deploy/edge-ssh-key" in readme

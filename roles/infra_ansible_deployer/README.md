@@ -19,11 +19,13 @@ and activated through root-owned links in `/usr/local/bin`.
 Set `infra_ansible_deployer_public_sha` and
 `infra_ansible_deployer_inventory_sha` to exact commits during bootstrap. The
 role checks out both repositories under `/srv`, owned by root. Bootstrap also
-requires `INFRA_INVENTORY_DEPLOY_KEY`,
+requires `ANSIBLE_EDGE_SSH_PRIVATE_KEY`, `INFRA_INVENTORY_DEPLOY_KEY`,
 `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`, and
 `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` in the Ansible controller
-environment. Their values are installed only in mode-0600 root files, and all
-secret-bearing tasks use `no_log`.
+environment. The dedicated edge key is validated as an OpenSSH private key and
+installed at `/etc/infra-ansible-deploy/edge-ssh-key`. Their values are
+installed only in mode-0600 root files, and all secret-bearing tasks use
+`no_log`.
 
 At deployment time the boundary locks the mode-0600 regular file
 `/run/infra-ansible/deploy.lock` inside a root-only mode-0700 runtime
