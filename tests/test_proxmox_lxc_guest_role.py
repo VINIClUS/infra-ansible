@@ -19,6 +19,19 @@ def task_named(name: str) -> dict:
     return next(task for task in role_tasks() if task["name"] == name)
 
 
+def proxmox_module_calls() -> list[dict]:
+    module_names = (
+        "community.proxmox.proxmox_vm_info",
+        "community.proxmox.proxmox",
+    )
+    return [
+        task[module_name]
+        for task in role_tasks()
+        for module_name in module_names
+        if module_name in task
+    ]
+
+
 def test_lxc_role_is_disabled_and_create_only():
     defaults = read("roles/proxmox_lxc_guest/defaults/main.yml")
     tasks = read("roles/proxmox_lxc_guest/tasks/main.yml")
@@ -34,6 +47,22 @@ def test_lxc_role_requires_approved_template_contract():
     for token in ("template", "unprivileged", "ostype", "rootfs", "vmbr0", "ip=dhcp"):
         assert token in tasks
     assert "community.proxmox.proxmox" in tasks
+
+
+def test_lxc_role_defaults_to_proxied_api_port():
+    defaults = yaml.safe_load(read("roles/proxmox_lxc_guest/defaults/main.yml"))
+
+    assert defaults.get("proxmox_lxc_guest_api_port") == 443
+
+
+def test_all_proxmox_modules_use_configured_api_port():
+    module_calls = proxmox_module_calls()
+
+    assert len(module_calls) == 5
+    assert all(
+        call.get("api_port") == "{{ proxmox_lxc_guest_api_port }}"
+        for call in module_calls
+    )
 
 
 def test_lxc_playbook_runs_only_on_bootstrap_host():

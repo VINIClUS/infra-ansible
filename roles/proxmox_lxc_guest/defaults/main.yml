@@ -1,6 +1,7 @@
 ---
 proxmox_lxc_guest_enabled: false
 proxmox_lxc_guest_api_host: "{{ lookup('ansible.builtin.env', 'PVE_HOST') }}"
+proxmox_lxc_guest_api_port: 443
 proxmox_lxc_guest_api_user: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_ID').split('!')[0] }}"
 proxmox_lxc_guest_api_token_id: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_ID').split('!')[-1] }}"
 proxmox_lxc_guest_api_token_secret: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_SECRET') }}"

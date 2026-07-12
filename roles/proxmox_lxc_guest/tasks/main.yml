@@ -51,6 +51,7 @@
 - name: Read existing target VMID
   community.proxmox.proxmox_vm_info:
     api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
     api_user: "{{ proxmox_lxc_guest_api_user }}"
     api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
     api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
@@ -81,6 +82,7 @@
 - name: Clone absent approved template
   community.proxmox.proxmox:
     api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
     api_user: "{{ proxmox_lxc_guest_api_user }}"
     api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
     api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
@@ -96,6 +98,7 @@
 - name: Reconcile non-destructive target configuration
   community.proxmox.proxmox:
     api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
     api_user: "{{ proxmox_lxc_guest_api_user }}"
     api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
     api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
@@ -113,6 +116,7 @@
 - name: Start reconciled target
   community.proxmox.proxmox:
     api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
     api_user: "{{ proxmox_lxc_guest_api_user }}"
     api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
     api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
@@ -125,6 +129,7 @@
 - name: Read final target configuration
   community.proxmox.proxmox_vm_info:
     api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
     api_user: "{{ proxmox_lxc_guest_api_user }}"
     api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
     api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
