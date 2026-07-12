@@ -34,22 +34,38 @@ The live mode authenticates with Universal Auth, lists existing keys with
 `viewSecretValue=false`, sends values only in HTTPS request bodies, and emits a
 JSON summary containing names and non-secret resource IDs only.
 
-The bootstrap is create-only. A complete existing contract is a safe no-op and
-a partial existing contract stops before generating material. Never delete or
-overwrite an existing key merely to make a rerun pass. Rotation requires one
-explicit `--rotate NAME` per approved existing key; the Cloudflare client ID
-and client secret must be rotated together. Rotations snapshot their prior
-values only in memory so a failed transaction can restore them. Review the
-dependent service's recovery procedure and take an encrypted backup before any
-rotation.
+The bootstrap is create-only. A partial existing contract stops before
+generating material. A complete seven-name set becomes a no-op only after the
+bootstrap cross-checks the selected Infisical values against the one exact
+read-only GitHub deploy key, the one exact Cloudflare service token, its ID in
+inventory, and the age recipient in inventory. Both remote listings consume
+every page. Missing, duplicate, or inconsistent state fails closed with a
+redacted recovery message.
+
+Never delete or overwrite an existing key merely to make a rerun pass. Local
+Infisical rotation requires one explicit `--rotate NAME`, snapshots the prior
+value before generating replacement material, and restores it on transaction
+failure. `INFRA_INVENTORY_DEPLOY_KEY`, both Cloudflare Access credential names,
+and `ANSIBLE_BACKUP_AGE_IDENTITY` are deliberately rejected by `--rotate`:
+they require a separate change procedure that coordinates the old and new
+GitHub/Cloudflare resource or backup-recipient handoff. Review the dependent
+service recovery procedure and take an encrypted backup before any supported
+local rotation.
 
 Age and SSH private keys exist only in a temporary mode-0700 directory with
-mode-0600 files and are removed on every exit path. Only the public Ed25519 key
-is passed to `gh repo deploy-key add`; read-only is the GitHub CLI default, so
-the bootstrap never supplies `--allow-write`. The age recipient and Cloudflare
-service-token resource ID are public metadata and are atomically written to the
-private inventory. The corresponding private identity, client ID, and client
-secret remain only in Infisical.
+mode-0600 files. Removal is verified on every exit path; failure stops the run
+with `manual cleanup required`. Only the public Ed25519 key is passed to
+`gh repo deploy-key add`; read-only is the GitHub CLI default, so the bootstrap
+never supplies `--allow-write`. API base URLs must be clean HTTPS URLs without
+userinfo, query, or fragment. A 2xx response alone is insufficient: mutations
+must return the committed resource shape and pass a fresh paginated readback.
+
+The age recipient and Cloudflare service-token resource ID are public metadata.
+Their two-file inventory transaction uses a mode-0600 write-ahead journal,
+atomic replacements, file and directory sync, and automatic rollback recovery
+on the next invocation. The journal is removed only after both files are
+durable. The corresponding private identity, client ID, and client secret
+remain only in Infisical.
 
 If a remote step fails, the bootstrap attempts to remove newly created
 Infisical secrets, the new Cloudflare service token, and the new GitHub deploy

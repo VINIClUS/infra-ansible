@@ -35,6 +35,15 @@ INFISICAL_SECRET_PATH = "/ansible"
 GITHUB_INVENTORY_REPOSITORY = "VINIClUS/infra-ansible-inventory"
 GITHUB_DEPLOY_KEY_TITLE = "infra-ansible production inventory"
 CLOUDFLARE_SERVICE_TOKEN_NAME = "Semaphore production health check"
+INVENTORY_JOURNAL_NAME = ".ansible-controller-metadata-transaction.json"
+EXTERNAL_ROTATION_NAMES = frozenset(
+    {
+        "ANSIBLE_BACKUP_AGE_IDENTITY",
+        "INFRA_INVENTORY_DEPLOY_KEY",
+        "CLOUDFLARE_ACCESS_CLIENT_ID",
+        "CLOUDFLARE_ACCESS_CLIENT_SECRET",
+    }
+)
 
 
 class SeedError(RuntimeError):
@@ -56,6 +65,10 @@ class Config:
     cloudflare_account_id: str
     cloudflare_api_token: str
     inventory_root: Path
+
+    def __post_init__(self) -> None:
+        _validate_https_url(self.infisical_url, "Infisical API URL")
+        _validate_https_url(self.cloudflare_api_url, "Cloudflare API URL")
 
     @classmethod
     def from_environment(cls, inventory_root: Path) -> "Config":
@@ -109,6 +122,19 @@ class HttpResponse:
 Transport = Callable[[HttpRequest], HttpResponse]
 
 
+def _validate_https_url(url: str, label: str, *, allow_query: bool = False) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or (parsed.query and not allow_query)
+        or parsed.fragment
+    ):
+        raise SeedError(f"{label} must be a clean HTTPS URL")
+
+
 def _urllib_transport(request: HttpRequest) -> HttpResponse:
     raw_request = urllib.request.Request(
         request.url,
@@ -135,6 +161,7 @@ def request_json(
     transport: Transport = _urllib_transport,
     operation: str = "API request",
 ) -> Any:
+    _validate_https_url(url, operation, allow_query=True)
     request_headers = {"Accept": "application/json", **(headers or {})}
     encoded_body = b""
     if body is not None:
@@ -227,8 +254,16 @@ class InfisicalClient:
             "type": "shared",
         }
 
+    @staticmethod
+    def _require_committed_secret(payload: Any, name: str, operation: str) -> None:
+        secret = payload.get("secret") if isinstance(payload, dict) else None
+        if not isinstance(secret, dict) or secret.get("secretKey") != name:
+            raise RemoteStateUncertain(
+                f"{operation} returned no committed secret; manual recovery required"
+            )
+
     def create_secret(self, name: str, value: str) -> None:
-        request_json(
+        payload = request_json(
             "POST",
             self._secret_url(name),
             headers=self._headers(),
@@ -236,9 +271,15 @@ class InfisicalClient:
             transport=self._transport,
             operation=f"Infisical create for {name}",
         )
+        self._require_committed_secret(payload, name, f"Infisical create for {name}")
+        if name not in self.existing_secret_names():
+            raise RemoteStateUncertain(
+                f"Infisical create readback for {name} found no committed secret; "
+                "manual recovery required"
+            )
 
     def replace_secret(self, name: str, value: str) -> None:
-        request_json(
+        payload = request_json(
             "PATCH",
             self._secret_url(name),
             headers=self._headers(),
@@ -246,6 +287,12 @@ class InfisicalClient:
             transport=self._transport,
             operation=f"Infisical rotation for {name}",
         )
+        self._require_committed_secret(payload, name, f"Infisical rotation for {name}")
+        if name not in self.existing_secret_names():
+            raise RemoteStateUncertain(
+                f"Infisical rotation readback for {name} found no committed secret; "
+                "manual recovery required"
+            )
 
     def read_secret_value(self, name: str) -> str:
         payload = request_json(
@@ -256,12 +303,13 @@ class InfisicalClient:
             operation=f"Infisical rotation snapshot for {name}",
         )
         value = payload.get("secret", {}).get("secretValue") if isinstance(payload, dict) else None
-        if not isinstance(value, str):
+        key = payload.get("secret", {}).get("secretKey") if isinstance(payload, dict) else None
+        if key != name or not isinstance(value, str):
             raise SeedError(f"Infisical rotation snapshot for {name} returned no value")
         return value
 
     def delete_secret(self, name: str) -> None:
-        request_json(
+        payload = request_json(
             "DELETE",
             self._secret_url(name),
             headers=self._headers(),
@@ -274,6 +322,12 @@ class InfisicalClient:
             transport=self._transport,
             operation=f"Infisical compensation for {name}",
         )
+        self._require_committed_secret(payload, name, f"Infisical deletion for {name}")
+        if name in self.existing_secret_names():
+            raise RemoteStateUncertain(
+                f"Infisical deletion readback for {name} still found the secret; "
+                "manual recovery required"
+            )
 
 
 Command = Callable[..., subprocess.CompletedProcess[str]]
@@ -361,18 +415,22 @@ def generated_key_material(
     except (OSError, UnicodeError):
         raise SeedError("temporary key generation failed") from None
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        try:
+            shutil.rmtree(workdir)
+            if workdir.exists():
+                raise OSError
+        except OSError:
+            raise RemoteStateUncertain(
+                "secret temporary directory cleanup failed; manual cleanup required"
+            ) from None
 
 
 def register_read_only_deploy_key(
     material: KeyMaterial, *, command: Command = _run_command
 ) -> int | None:
     environment = _minimal_command_environment()
-    before = command(
-        ["gh", "api", f"repos/{GITHUB_INVENTORY_REPOSITORY}/keys"],
-        env=environment,
-    )
-    if _github_deploy_key_matches(before.stdout, title=GITHUB_DEPLOY_KEY_TITLE):
+    before = list_github_deploy_keys(command=command)
+    if _github_deploy_key_matches(before, title=GITHUB_DEPLOY_KEY_TITLE):
         raise SeedError("GitHub deploy key with the managed title already exists")
     try:
         command(
@@ -394,12 +452,9 @@ def register_read_only_deploy_key(
             "GitHub deploy-key create response was ambiguous; manual recovery required"
         ) from None
     try:
-        listing = command(
-            ["gh", "api", f"repos/{GITHUB_INVENTORY_REPOSITORY}/keys"],
-            env=environment,
-        )
+        listing = list_github_deploy_keys(command=command)
         matches = _github_deploy_key_matches(
-            listing.stdout,
+            listing,
             title=GITHUB_DEPLOY_KEY_TITLE,
             public_key=material.deploy_public_key,
             require_read_only=True,
@@ -416,28 +471,42 @@ def register_read_only_deploy_key(
 
 
 def _github_deploy_key_matches(
-    output: str,
+    keys: list[dict[str, Any]],
     *,
     title: str,
     public_key: str | None = None,
     require_read_only: bool = False,
 ) -> list[dict[str, Any]]:
-    if not output.strip():
-        return []
+    return [
+        item
+        for item in keys
+        if item.get("title") == title
+        and (public_key is None or item.get("key", "").strip() == public_key)
+        and (not require_read_only or item.get("read_only") is True)
+    ]
+
+
+def list_github_deploy_keys(*, command: Command = _run_command) -> list[dict[str, Any]]:
+    result = command(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{GITHUB_INVENTORY_REPOSITORY}/keys?per_page=100",
+        ],
+        env=_minimal_command_environment(),
+    )
     try:
-        parsed = json.loads(output)
-        if not isinstance(parsed, list):
+        pages = json.loads(result.stdout)
+        if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
             raise TypeError
-        return [
-            item
-            for item in parsed
-            if isinstance(item, dict)
-            and item.get("title") == title
-            and (public_key is None or item.get("key", "").strip() == public_key)
-            and (not require_read_only or item.get("read_only") is True)
-        ]
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        raise SeedError("GitHub deploy-key readback failed") from None
+        keys = [item for page in pages for item in page]
+        if any(not isinstance(item, dict) for item in keys):
+            raise TypeError
+        return keys
+    except (json.JSONDecodeError, TypeError):
+        raise SeedError("GitHub deploy-key paginated readback failed") from None
 
 
 def delete_github_deploy_key(key_id: int | None, *, command: Command = _run_command) -> None:
@@ -453,6 +522,8 @@ def delete_github_deploy_key(key_id: int | None, *, command: Command = _run_comm
         ],
         env=_minimal_command_environment(),
     )
+    if any(item.get("id") == key_id for item in list_github_deploy_keys(command=command)):
+        raise SeedError("GitHub deploy-key deletion readback still found the resource")
 
 
 @dataclass(frozen=True)
@@ -460,6 +531,51 @@ class CloudflareServiceToken:
     resource_id: str
     client_id: str
     client_secret: str
+
+
+def _cloudflare_result(payload: Any, expected_type: type, operation: str) -> Any:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("success") is not True
+        or not isinstance(payload.get("result"), expected_type)
+    ):
+        raise SeedError(f"{operation} failed Cloudflare success semantics")
+    return payload["result"]
+
+
+def list_cloudflare_service_tokens(
+    config: Config, *, transport: Transport = _urllib_transport
+) -> list[dict[str, Any]]:
+    collection_url = (
+        f"{config.cloudflare_api_url}/accounts/{config.cloudflare_account_id}"
+        "/access/service_tokens"
+    )
+    headers = {"Authorization": f"Bearer {config.cloudflare_api_token}"}
+    page = 1
+    tokens: list[dict[str, Any]] = []
+    while True:
+        payload = request_json(
+            "GET",
+            f"{collection_url}?page={page}&per_page=100",
+            headers=headers,
+            transport=transport,
+            operation="Cloudflare Access service-token listing",
+        )
+        result = _cloudflare_result(payload, list, "service-token listing")
+        result_info = payload.get("result_info")
+        if (
+            not isinstance(result_info, dict)
+            or result_info.get("page") != page
+            or not isinstance(result_info.get("total_pages"), int)
+            or result_info["total_pages"] < page
+            or result_info["total_pages"] > 10000
+            or any(not isinstance(item, dict) for item in result)
+        ):
+            raise SeedError("service-token listing failed Cloudflare success semantics")
+        tokens.extend(result)
+        if page == result_info["total_pages"]:
+            return tokens
+        page += 1
 
 
 def create_cloudflare_service_token(
@@ -470,16 +586,7 @@ def create_cloudflare_service_token(
         "/access/service_tokens"
     )
     headers = {"Authorization": f"Bearer {config.cloudflare_api_token}"}
-    listing = request_json(
-        "GET",
-        f"{collection_url}?per_page=100",
-        headers=headers,
-        transport=transport,
-        operation="Cloudflare Access service-token preflight",
-    )
-    listed_tokens = listing.get("result", []) if isinstance(listing, dict) else []
-    if not isinstance(listed_tokens, list):
-        raise SeedError("Cloudflare Access service-token preflight returned an invalid response")
+    listed_tokens = list_cloudflare_service_tokens(config, transport=transport)
     if any(
         isinstance(item, dict) and item.get("name") == CLOUDFLARE_SERVICE_TOKEN_NAME
         for item in listed_tokens
@@ -499,7 +606,13 @@ def create_cloudflare_service_token(
             "Cloudflare service-token create response was ambiguous; "
             "manual recovery required"
         ) from None
-    result = payload.get("result", {}) if isinstance(payload, dict) else {}
+    try:
+        result = _cloudflare_result(payload, dict, "service-token creation")
+    except SeedError:
+        raise RemoteStateUncertain(
+            "Cloudflare service-token create response was incomplete; "
+            "manual recovery required"
+        ) from None
     values = (
         result.get("id") if isinstance(result, dict) else None,
         result.get("client_id") if isinstance(result, dict) else None,
@@ -510,13 +623,38 @@ def create_cloudflare_service_token(
             "Cloudflare service-token create response was incomplete; "
             "manual recovery required"
         )
-    return CloudflareServiceToken(*values)
+    token = CloudflareServiceToken(*values)
+    try:
+        listed_after_create = list_cloudflare_service_tokens(
+            config, transport=transport
+        )
+        managed_after_create = [
+            item
+            for item in listed_after_create
+            if item.get("name") == CLOUDFLARE_SERVICE_TOKEN_NAME
+        ]
+        matches = [
+            item
+            for item in managed_after_create
+            if item.get("id") == token.resource_id
+            and item.get("client_id") == token.client_id
+        ]
+    except SeedError:
+        raise RemoteStateUncertain(
+            "Cloudflare service-token create readback failed; manual recovery required"
+        ) from None
+    if len(managed_after_create) != 1 or len(matches) != 1:
+        raise RemoteStateUncertain(
+            "Cloudflare service-token create readback was not exact; "
+            "manual recovery required"
+        )
+    return token
 
 
 def delete_cloudflare_service_token(
     config: Config, resource_id: str, *, transport: Transport = _urllib_transport
 ) -> None:
-    request_json(
+    payload = request_json(
         "DELETE",
         (
             f"{config.cloudflare_api_url}/accounts/{config.cloudflare_account_id}"
@@ -526,6 +664,14 @@ def delete_cloudflare_service_token(
         transport=transport,
         operation="Cloudflare Access service-token compensation",
     )
+    result = _cloudflare_result(payload, dict, "service-token deletion")
+    if result.get("id") != resource_id:
+        raise SeedError("service-token deletion returned an unexpected resource ID")
+    if any(
+        item.get("id") == resource_id
+        for item in list_cloudflare_service_tokens(config, transport=transport)
+    ):
+        raise SeedError("service-token deletion readback still found the resource")
 
 
 @dataclass(frozen=True)
@@ -624,6 +770,122 @@ class InfisicalProvisioningClient(Protocol):
 Summary = dict[str, Any]
 
 
+def _read_inventory_setting(path: Path, name: str) -> str:
+    try:
+        matches = [
+            line.split(":", 1)[1].strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith(f"{name}:")
+        ]
+    except (OSError, UnicodeError):
+        raise SeedError(f"private inventory cannot read {name}") from None
+    if len(matches) != 1 or len(matches[0]) < 2:
+        raise SeedError(f"private inventory must contain exactly one {name}")
+    encoded = matches[0]
+    if not (encoded.startswith('"') and encoded.endswith('"')):
+        raise SeedError(f"private inventory {name} must use a quoted scalar")
+    value = encoded[1:-1]
+    if not value or any(character in value for character in "\r\n\""):
+        raise SeedError(f"private inventory {name} is empty or invalid")
+    return value
+
+
+@contextmanager
+def _derived_public_material(
+    deploy_private_key: str,
+    age_identity: str,
+    *,
+    command: Command = _run_command,
+) -> Iterator[tuple[str, str]]:
+    workdir = Path(tempfile.mkdtemp(prefix="ansible-verify-"))
+    os.chmod(workdir, 0o700)
+    deploy_path = workdir / "inventory-deploy-key"
+    age_path = workdir / "backup-age-identity"
+    try:
+        for path, value in (
+            (deploy_path, deploy_private_key),
+            (age_path, age_identity),
+        ):
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(value)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        environment = _minimal_command_environment()
+        deploy_public = command(
+            ["ssh-keygen", "-y", "-f", str(deploy_path)], env=environment
+        ).stdout.strip()
+        age_recipient = command(
+            ["age-keygen", "-y", str(age_path)], env=environment
+        ).stdout.strip()
+        if not deploy_public or not age_recipient:
+            raise SeedError("public-key derivation returned an invalid result")
+        yield deploy_public, age_recipient
+    finally:
+        try:
+            shutil.rmtree(workdir)
+            if workdir.exists():
+                raise OSError
+        except OSError:
+            raise RemoteStateUncertain(
+                "secret verification directory cleanup failed; manual cleanup required"
+            ) from None
+
+
+def validate_complete_contract(
+    config: Config,
+    *,
+    infisical: InfisicalProvisioningClient,
+    command: Command = _run_command,
+    transport: Transport = _urllib_transport,
+) -> str:
+    if not hasattr(infisical, "read_secret_value"):
+        raise SeedError("complete contract validation cannot read selected secrets")
+    read_value = getattr(infisical, "read_secret_value")
+    deploy_private_key = read_value("INFRA_INVENTORY_DEPLOY_KEY")
+    age_identity = read_value("ANSIBLE_BACKUP_AGE_IDENTITY")
+    cloudflare_client_id = read_value("CLOUDFLARE_ACCESS_CLIENT_ID")
+    with _derived_public_material(
+        deploy_private_key, age_identity, command=command
+    ) as (deploy_public_key, age_recipient):
+        github_matches = _github_deploy_key_matches(
+            list_github_deploy_keys(command=command),
+            title=GITHUB_DEPLOY_KEY_TITLE,
+        )
+        if (
+            len(github_matches) != 1
+            or github_matches[0].get("read_only") is not True
+            or github_matches[0].get("key", "").strip() != deploy_public_key
+        ):
+            raise SeedError("GitHub deploy-key external contract is incomplete")
+        cloudflare_matches = [
+            item
+            for item in list_cloudflare_service_tokens(config, transport=transport)
+            if item.get("name") == CLOUDFLARE_SERVICE_TOKEN_NAME
+        ]
+        if (
+            len(cloudflare_matches) != 1
+            or cloudflare_matches[0].get("client_id") != cloudflare_client_id
+            or not isinstance(cloudflare_matches[0].get("id"), str)
+        ):
+            raise SeedError("Cloudflare service-token external contract is incomplete")
+        resource_id = cloudflare_matches[0]["id"]
+        inventory_resource_id = _read_inventory_setting(
+            config.inventory_root
+            / "inventories/prod/group_vars/local_validation/cloudflare_access.yml",
+            "cloudflare_access_service_token_id",
+        )
+        inventory_age_recipient = _read_inventory_setting(
+            config.inventory_root
+            / "inventories/prod/group_vars/ansible_controllers/semaphore.yml",
+            "ansible_backup_age_recipient",
+        )
+        if inventory_resource_id != resource_id or inventory_age_recipient != age_recipient:
+            raise SeedError("private inventory external contract is incomplete")
+        return resource_id
+
+
 def _summary(
     *,
     cloudflare_service_token_id: str | None,
@@ -655,7 +917,9 @@ def provision(
     generate_resources: Callable[[], GeneratedResources] | None = None,
     compensate_cloudflare: Callable[[str], None] | None = None,
     compensate_github: Callable[[int | None], None] | None = None,
+    validate_existing_contract: Callable[[], str] | None = None,
 ) -> Summary:
+    recover_inventory_metadata_transaction(config.inventory_root)
     approved = set(SECRET_NAMES)
     rotate = set(rotate or set())
     infisical = infisical or InfisicalClient(config)
@@ -663,12 +927,10 @@ def provision(
 
     if rotate - (approved & existing):
         raise SeedError("--rotate must name an approved existing secret")
-    cloudflare_pair = {
-        "CLOUDFLARE_ACCESS_CLIENT_ID",
-        "CLOUDFLARE_ACCESS_CLIENT_SECRET",
-    }
-    if rotate & cloudflare_pair and not cloudflare_pair <= rotate:
-        raise SeedError("Cloudflare Access credentials must rotate together")
+    if rotate & EXTERNAL_ROTATION_NAMES:
+        raise SeedError(
+            "external credentials require a separate external-resource procedure"
+        )
     missing = approved - existing
     if existing and missing and not rotate:
         raise SeedError(
@@ -676,19 +938,16 @@ def provision(
         )
     target_names = missing | rotate
     if not target_names:
+        validator = validate_existing_contract or (
+            lambda: validate_complete_contract(config, infisical=infisical)
+        )
+        cloudflare_service_token_id = validator()
         return _summary(
-            cloudflare_service_token_id=None,
+            cloudflare_service_token_id=cloudflare_service_token_id,
             created_names=set(),
             existing_names=existing,
             missing_names=set(),
         )
-
-    resource_factory = generate_resources or (
-        lambda: globals()["generate_resources"](config, target_names)
-    )
-    resources = resource_factory()
-    if set(resources.values) != target_names:
-        raise SeedError("generated values did not match the requested secret names")
 
     old_values: dict[str, str] = {}
     if rotate:
@@ -700,13 +959,33 @@ def provision(
             name: getattr(infisical, "read_secret_value")(name) for name in rotate
         }
 
-    attempted_creates: list[str] = []
-    attempted_rotations: list[str] = []
-    inventory_rollback: Callable[[], None] = lambda: None
+    resource_factory = generate_resources or (
+        lambda: globals()["generate_resources"](config, target_names)
+    )
+    resources = resource_factory()
     compensate_cloudflare = compensate_cloudflare or (
         lambda resource_id: delete_cloudflare_service_token(config, resource_id)
     )
     compensate_github = compensate_github or delete_github_deploy_key
+    if set(resources.values) != target_names:
+        compensation_ok = True
+        if resources.cloudflare_service_token_id:
+            compensation_ok &= _best_effort(
+                lambda: compensate_cloudflare(resources.cloudflare_service_token_id or "")
+            )
+        if resources.github_deploy_key_id is not None:
+            compensation_ok &= _best_effort(
+                lambda: compensate_github(resources.github_deploy_key_id)
+            )
+        state = "completed" if compensation_ok else "incomplete; manual recovery required"
+        raise SeedError(
+            "generated values did not match the requested secret names; "
+            f"compensation {state}"
+        )
+
+    attempted_creates: list[str] = []
+    attempted_rotations: list[str] = []
+    inventory_rollback: Callable[[], None] = lambda: None
     try:
         for name in sorted(target_names):
             if name in rotate:
@@ -721,8 +1000,9 @@ def provision(
                 cloudflare_service_token_id=resources.cloudflare_service_token_id,
                 age_recipient=resources.age_recipient or None,
             )
-    except Exception:
-        compensation_ok = _best_effort(inventory_rollback)
+    except Exception as error:
+        compensation_ok = not isinstance(error, RemoteStateUncertain)
+        compensation_ok &= _best_effort(inventory_rollback)
         for name in reversed(attempted_rotations):
             compensation_ok &= _best_effort(
                 lambda name=name: getattr(infisical, "replace_secret")(
@@ -773,10 +1053,86 @@ def _atomic_write(path: Path, content: str) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, path.stat().st_mode & 0o777)
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
+        _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _inventory_journal_path(inventory_root: Path) -> Path:
+    return inventory_root / INVENTORY_JOURNAL_NAME
+
+
+def _remove_inventory_journal(inventory_root: Path) -> None:
+    journal = _inventory_journal_path(inventory_root)
+    journal.unlink(missing_ok=True)
+    _fsync_directory(inventory_root)
+
+
+def recover_inventory_metadata_transaction(inventory_root: Path) -> None:
+    journal = _inventory_journal_path(inventory_root)
+    if not journal.exists():
+        return
+    try:
+        payload = json.loads(journal.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError
+        entries = payload.get("files")
+        if payload.get("version") != 1 or not isinstance(entries, list):
+            raise ValueError
+        restores: dict[Path, str] = {}
+        root = inventory_root.resolve()
+        for entry in entries:
+            relative = entry.get("path") if isinstance(entry, dict) else None
+            original = entry.get("original") if isinstance(entry, dict) else None
+            if not isinstance(relative, str) or not isinstance(original, str):
+                raise ValueError
+            target = (inventory_root / relative).resolve()
+            if not target.is_relative_to(root):
+                raise ValueError
+            restores[target] = original
+        for path, original in restores.items():
+            _atomic_write(path, original)
+        _remove_inventory_journal(inventory_root)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        raise RemoteStateUncertain(
+            "private inventory transaction recovery failed; manual recovery required"
+        ) from None
+
+
+def _journaled_inventory_replace(
+    inventory_root: Path, rendered: Mapping[Path, str]
+) -> dict[Path, str]:
+    recover_inventory_metadata_transaction(inventory_root)
+    originals = {path: path.read_text(encoding="utf-8") for path in rendered}
+    journal = {
+        "version": 1,
+        "files": [
+            {
+                "path": str(path.resolve().relative_to(inventory_root.resolve())),
+                "original": originals[path],
+            }
+            for path in sorted(rendered)
+        ],
+    }
+    _atomic_write(
+        _inventory_journal_path(inventory_root),
+        json.dumps(journal, sort_keys=True, separators=(",", ":")) + "\n",
+    )
+    for path in sorted(rendered):
+        _atomic_write(path, rendered[path])
+    _remove_inventory_journal(inventory_root)
+    return originals
 
 
 def write_public_inventory_metadata(
@@ -785,6 +1141,7 @@ def write_public_inventory_metadata(
     cloudflare_service_token_id: str | None,
     age_recipient: str | None,
 ) -> Callable[[], None]:
+    recover_inventory_metadata_transaction(inventory_root)
     updates: list[tuple[Path, str, str]] = []
     if cloudflare_service_token_id:
         updates.append(
@@ -804,23 +1161,30 @@ def write_public_inventory_metadata(
                 age_recipient,
             )
         )
-    originals: dict[Path, str] = {}
+    for _path, name, value in updates:
+        if (
+            not value
+            or len(value) > 512
+            or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for character in value)
+        ):
+            raise SeedError(f"public inventory metadata {name} is invalid")
     try:
         rendered: dict[Path, str] = {}
         for path, name, value in updates:
-            originals[path] = path.read_text(encoding="utf-8")
             rendered[path] = _replace_exact_setting(path, name, value)
-        for path, content in rendered.items():
-            _atomic_write(path, content)
+        originals = _journaled_inventory_replace(inventory_root, rendered)
     except (OSError, UnicodeError, SeedError):
-        for path, original in originals.items():
-            if path.exists():
-                _best_effort(lambda path=path, original=original: _atomic_write(path, original))
-        raise SeedError("private inventory metadata update failed") from None
+        recovery_ok = _best_effort(
+            lambda: recover_inventory_metadata_transaction(inventory_root)
+        )
+        if not recovery_ok:
+            raise RemoteStateUncertain(
+                "private inventory metadata update failed; manual recovery required"
+            ) from None
+        raise SeedError("private inventory metadata update failed; recovered") from None
 
     def rollback() -> None:
-        for path, original in originals.items():
-            _atomic_write(path, original)
+        _journaled_inventory_replace(inventory_root, originals)
 
     return rollback
 
