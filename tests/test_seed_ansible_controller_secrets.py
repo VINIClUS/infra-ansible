@@ -91,6 +91,7 @@ def test_request_json_keeps_credentials_out_of_url_and_sanitizes_errors(
     assert "ua-client-secret" not in captured[0].url
     assert json.loads(captured[0].body.decode()) == {"clientSecret": "ua-client-secret"}
     assert captured[0].headers["Authorization"] == "Bearer cloudflare-api-token"
+    assert captured[0].headers["User-Agent"] == "infra-ansible-secret-bootstrap/1"
 
     def fail_with_seed_error(_request: seed.HttpRequest) -> seed.HttpResponse:
         raise seed.SeedError("server echoed ua-client-secret")

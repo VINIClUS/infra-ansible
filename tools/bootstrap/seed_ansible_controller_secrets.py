@@ -35,6 +35,7 @@ INFISICAL_SECRET_PATH = "/ansible"
 GITHUB_INVENTORY_REPOSITORY = "VINIClUS/infra-ansible-inventory"
 GITHUB_DEPLOY_KEY_TITLE = "infra-ansible production inventory"
 CLOUDFLARE_SERVICE_TOKEN_NAME = "Semaphore production health check"
+HTTP_USER_AGENT = "infra-ansible-secret-bootstrap/1"
 INVENTORY_JOURNAL_NAME = ".ansible-controller-metadata-transaction.json"
 EXTERNAL_ROTATION_NAMES = frozenset(
     {
@@ -179,7 +180,11 @@ def request_json(
     operation: str = "API request",
 ) -> Any:
     _validate_https_url(url, operation, allow_query=True)
-    request_headers = {"Accept": "application/json", **(headers or {})}
+    request_headers = {
+        "Accept": "application/json",
+        "User-Agent": HTTP_USER_AGENT,
+        **(headers or {}),
+    }
     encoded_body = b""
     if body is not None:
         request_headers["Content-Type"] = "application/json"
