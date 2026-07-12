@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -154,6 +155,47 @@ def test_postgresql_and_first_run_setup_keep_secrets_out_of_argv_and_logs():
     assert captured["no_log"] is True
     assert rendered["no_log"] is True
     assert rendered["ansible.builtin.template"]["mode"] == "0640"
+
+
+def test_protected_transaction_accepts_only_a_native_multiline_age_identity():
+    validation = task_named(
+        "main.yml", "Validate protected Semaphore transaction contract"
+    )
+    conditions = "\n".join(validation["ansible.builtin.assert"]["that"])
+
+    assert "age_identity is match" in conditions
+    assert "AGE-SECRET-KEY-1" in conditions
+    assert "age_identity is not search('\\r')" in conditions
+    assert "minio_access_key is not search('[\\r\\n]')" in conditions
+    assert "minio_secret_key is not search('[\\r\\n]')" in conditions
+    assert "transaction_environment.values()" not in conditions
+
+    age_condition = next(
+        condition for condition in validation["ansible.builtin.assert"]["that"]
+        if "age_identity is match" in condition
+    )
+    age_pattern = re.search(r"match\('(?P<pattern>.+)'\)$", age_condition)[
+        "pattern"
+    ]
+    valid_identities = (
+        "AGE-SECRET-KEY-1ABC123",
+        "# created: 2026-07-12\n"
+        "# public key: age1example\n"
+        "AGE-SECRET-KEY-1ABC123",
+    )
+    invalid_identities = (
+        "AGE-SECRET-KEY-1ABC123\r\n",
+        "AGE-SECRET-KEY-1ABC123\nAGE-SECRET-KEY-1DEF456",
+        "prefix\nAGE-SECRET-KEY-1ABC123",
+        "AGE-SECRET-KEY-1ABC123\nsuffix",
+        "AGE-SECRET-KEY-1ABC123 extra",
+    )
+    assert all(re.fullmatch(age_pattern, value) for value in valid_identities)
+    assert not any(re.fullmatch(age_pattern, value) for value in invalid_identities)
+    assert validation["ansible.builtin.assert"]["fail_msg"] == (
+        "The public backup recipient, MinIO contract, native age identity, "
+        "and single-line MinIO credentials are required."
+    )
 
 
 def test_service_activation_is_atomic_and_health_requires_200_pong():
