@@ -1069,7 +1069,8 @@ github_actions_runner_version: 2.335.1
 github_actions_runner_name: "ansible-prod-{{ ansible_controller_vmid }}"
 ```
 
-Add `/ansible` to `infisical_secret_paths`; add all seven approved secret names
+Add `/ansible` to `infisical_secret_paths`; add all seven bootstrap-managed
+secret names plus the separately provisioned `ANSIBLE_EDGE_SSH_PRIVATE_KEY`
 to `infisical_required_keys`; add MinIO prefixes
 `ansible/semaphore-backups` and `ansible/deployments`.
 

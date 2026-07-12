@@ -20,6 +20,8 @@
 - name: Read only the deployment bootstrap secrets
   ansible.builtin.set_fact:
     infra_ansible_deployer_runtime_secrets:
+      ANSIBLE_EDGE_SSH_PRIVATE_KEY: >-
+        {{ lookup('ansible.builtin.env', 'ANSIBLE_EDGE_SSH_PRIVATE_KEY') }}
       INFRA_INVENTORY_DEPLOY_KEY: >-
         {{ lookup('ansible.builtin.env', 'INFRA_INVENTORY_DEPLOY_KEY') }}
       INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: >-
@@ -31,6 +33,9 @@
 - name: Validate deployment bootstrap secrets without disclosing them
   ansible.builtin.assert:
     that:
+      - >-
+        infra_ansible_deployer_runtime_secrets.ANSIBLE_EDGE_SSH_PRIVATE_KEY is
+        match('(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\n.+\n-----END OPENSSH PRIVATE KEY-----\n?$')
       - >-
         infra_ansible_deployer_runtime_secrets.INFRA_INVENTORY_DEPLOY_KEY is
         match('(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\n.+\n-----END OPENSSH PRIVATE KEY-----\n?$')
@@ -54,8 +59,8 @@
         infra_ansible_deployer_infisical_environment is
         match('^[A-Za-z0-9_-]+$')
     fail_msg: >-
-      The inventory deploy key, Infisical Universal Auth credentials, project,
-      domain, and environment must be present and newline-free.
+      The dedicated edge and inventory deploy keys, Infisical Universal Auth
+      credentials, project, domain, and environment must be present and valid.
   no_log: true
 
 - name: Install fixed deployment boundary dependencies
@@ -165,6 +170,15 @@
   ansible.builtin.copy:
     content: "{{ infra_ansible_deployer_runtime_secrets.INFRA_INVENTORY_DEPLOY_KEY }}\n"
     dest: "{{ infra_ansible_deployer_inventory_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the dedicated edge SSH private key
+  ansible.builtin.copy:
+    content: "{{ infra_ansible_deployer_runtime_secrets.ANSIBLE_EDGE_SSH_PRIVATE_KEY }}\n"
+    dest: "{{ infra_ansible_deployer_edge_ssh_key_path }}"
     owner: root
     group: root
     mode: "0600"

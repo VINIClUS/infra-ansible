@@ -12,6 +12,7 @@ infra_ansible_deployer_group: github-runner
 infra_ansible_deployer_config_dir: /etc/infra-ansible-deploy
 infra_ansible_deployer_inventory_key_path: >-
   {{ infra_ansible_deployer_config_dir }}/inventory-deploy-key
+infra_ansible_deployer_edge_ssh_key_path: /etc/infra-ansible-deploy/edge-ssh-key
 infra_ansible_deployer_config_path: /etc/infra-ansible-deploy.env
 infra_ansible_deployer_script_path: /usr/local/sbin/infra-ansible-deploy
 infra_ansible_deployer_state_dir: /var/lib/infra-ansible-deploy

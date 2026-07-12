@@ -21,6 +21,13 @@ creates a short-lived token inside the tools container and removes it and the
 bootstrap credentials before starting Ansible. Do not accept static
 `INFISICAL_TOKEN` values or pass credentials as command-line arguments.
 
+`ANSIBLE_EDGE_SSH_PRIVATE_KEY` is a separately provisioned `/ansible` secret,
+not generated or rotated by the controller bootstrap seeder. It is transported
+only as a child-process environment value, validated without disclosure, and
+installed by `infra_ansible_deployer` as the root-owned mode-0600 file
+`/etc/infra-ansible-deploy/edge-ssh-key`. Never place its value in inventory,
+command arguments, logs, or incident output.
+
 Grant each identity read access only to its project, environments, and secret
 paths. Rotate identities independently through the untracked `.env` or secure
 runner; no inventory change is required.
