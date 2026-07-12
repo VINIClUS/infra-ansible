@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import urllib.error
 import urllib.parse
+import urllib.request
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -102,6 +104,53 @@ def test_request_json_keeps_credentials_out_of_url_and_sanitizes_errors(
             operation="authenticate",
         )
     assert str(seed_raised.value) == "authenticate failed"
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["http://infisical.example/leak", "https://other-origin.example/leak"],
+)
+def test_http_transport_blocks_redirects_without_forwarding_authorization(
+    monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    sentinel = "Bearer redirect-secret-sentinel"
+    opened: list[urllib.request.Request] = []
+    handlers: list[object] = []
+
+    class FakeOpener:
+        def open(self, request: urllib.request.Request, *, timeout: int) -> object:
+            assert timeout == 30
+            opened.append(request)
+            raise urllib.error.HTTPError(
+                request.full_url,
+                302,
+                "Found",
+                {"Location": location},
+                None,
+            )
+
+    def build_opener(*received_handlers: object) -> FakeOpener:
+        handlers.extend(received_handlers)
+        return FakeOpener()
+
+    monkeypatch.setattr(seed.urllib.request, "build_opener", build_opener)
+    monkeypatch.setattr(
+        seed.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: pytest.fail("default redirect-following opener used"),
+    )
+
+    with pytest.raises(seed.SeedError) as raised:
+        seed.request_json(
+            "GET",
+            "https://infisical.example/api/v4/secrets",
+            headers={"Authorization": sentinel},
+            operation="redirect preflight",
+        )
+
+    assert len(opened) == 1
+    assert any(isinstance(handler, seed.NoRedirectHandler) for handler in handlers)
+    assert sentinel not in str(raised.value)
 
 
 def test_infisical_list_hides_values_and_writes_values_only_in_http_body() -> None:
@@ -425,6 +474,36 @@ def test_create_only_is_compensated_on_partial_infisical_failure(tmp_path: Path)
     # lost, so compensation includes the attempted name as well.
     assert deleted == list(reversed(created))
     assert compensations == [("cloudflare", "cf-token-id"), ("github", 123)]
+
+
+def test_malformed_infisical_delete_readback_prevents_compensation_success(
+    tmp_path: Path,
+) -> None:
+    values = {name: f"value-for-{name}" for name in EXPECTED_NAMES}
+
+    class MalformedDeleteReadback:
+        def existing_secret_names(self) -> set[str]:
+            return set()
+
+        def create_secret(self, name: str, _value: str) -> None:
+            if name == "SEMAPHORE_ADMIN_PASSWORD":
+                raise seed.SeedError("create failed")
+
+        def delete_secret(self, _name: str) -> None:
+            raise seed.SeedError("Infisical secret listing semantics were invalid")
+
+    with pytest.raises(seed.SeedError, match="manual recovery required") as raised:
+        seed.provision(
+            config(tmp_path),
+            infisical=MalformedDeleteReadback(),
+            generate_resources=lambda: seed.GeneratedResources(
+                values=values,
+                age_recipient="",
+                cloudflare_service_token_id=None,
+                github_deploy_key_id=None,
+            ),
+        )
+    assert "compensation completed" not in str(raised.value)
 
 
 def test_inventory_manual_recovery_state_cannot_be_reported_as_compensated(
@@ -956,6 +1035,50 @@ def test_infisical_mutation_rejects_pending_shape_and_requires_readback(tmp_path
     with pytest.raises(seed.RemoteStateUncertain, match="committed secret"):
         client.create_secret("SEMAPHORE_ADMIN_PASSWORD", "body-only")
     assert [request.method for request in requests].count("GET") == 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"secrets": {}},
+        {"secrets": [{}]},
+        {"secrets": [{"secretKey": ""}]},
+        {
+            "secrets": [
+                {"secretKey": "SEMAPHORE_DB_PASSWORD"},
+                {"secretKey": "SEMAPHORE_DB_PASSWORD"},
+            ]
+        },
+    ],
+)
+def test_infisical_listing_rejects_malformed_or_ambiguous_envelopes(
+    tmp_path: Path, payload: object
+) -> None:
+    def transport(request: seed.HttpRequest) -> seed.HttpResponse:
+        if request.url.endswith("/api/v1/auth/universal-auth/login"):
+            return seed.HttpResponse(200, {"accessToken": "token"})
+        return seed.HttpResponse(200, payload)
+
+    client = seed.InfisicalClient(config(tmp_path), transport=transport)
+    with pytest.raises(seed.SeedError, match="listing semantics"):
+        client.existing_secret_names()
+
+
+def test_infisical_delete_malformed_absence_readback_fails_closed(tmp_path: Path) -> None:
+    def transport(request: seed.HttpRequest) -> seed.HttpResponse:
+        if request.url.endswith("/api/v1/auth/universal-auth/login"):
+            return seed.HttpResponse(200, {"accessToken": "token"})
+        if request.method == "DELETE":
+            return seed.HttpResponse(
+                200,
+                {"secret": {"secretKey": "SEMAPHORE_ADMIN_PASSWORD"}},
+            )
+        return seed.HttpResponse(200, {})
+
+    client = seed.InfisicalClient(config(tmp_path), transport=transport)
+    with pytest.raises(seed.SeedError, match="listing semantics"):
+        client.delete_secret("SEMAPHORE_ADMIN_PASSWORD")
 
 
 def test_inventory_journal_recovers_interrupted_two_file_update(

@@ -57,8 +57,11 @@ mode-0600 files. Removal is verified on every exit path; failure stops the run
 with `manual cleanup required`. Only the public Ed25519 key is passed to
 `gh repo deploy-key add`; read-only is the GitHub CLI default, so the bootstrap
 never supplies `--allow-write`. API base URLs must be clean HTTPS URLs without
-userinfo, query, or fragment. A 2xx response alone is insufficient: mutations
-must return the committed resource shape and pass a fresh paginated readback.
+userinfo, query, or fragment. The HTTP client refuses every redirect so an
+Authorization header can never be replayed to another origin or plaintext URL.
+A 2xx response alone is insufficient: Infisical listings require an explicit,
+unambiguous `secrets` list with valid key names, and mutations must return the
+committed resource shape and pass a fresh paginated readback.
 
 The age recipient and Cloudflare service-token resource ID are public metadata.
 Their two-file inventory transaction uses a mode-0600 write-ahead journal,

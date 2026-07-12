@@ -122,6 +122,22 @@ class HttpResponse:
 Transport = Callable[[HttpRequest], HttpResponse]
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject every redirect so credentials are never replayed to a new URL."""
+
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> None:
+        del request, file_pointer, code, message, headers, new_url
+        return None
+
+
 def _validate_https_url(url: str, label: str, *, allow_query: bool = False) -> None:
     parsed = urllib.parse.urlsplit(url)
     if (
@@ -142,8 +158,9 @@ def _urllib_transport(request: HttpRequest) -> HttpResponse:
         headers=dict(request.headers),
         method=request.method,
     )
+    opener = urllib.request.build_opener(NoRedirectHandler())
     try:
-        with urllib.request.urlopen(raw_request, timeout=30) as response:
+        with opener.open(raw_request, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
             return HttpResponse(response.status, payload)
     except urllib.error.HTTPError as error:
@@ -230,14 +247,20 @@ class InfisicalClient:
             transport=self._transport,
             operation="Infisical secret listing",
         )
-        secrets_list = payload.get("secrets", []) if isinstance(payload, dict) else []
+        if not isinstance(payload, dict) or "secrets" not in payload:
+            raise SeedError("Infisical secret listing semantics were invalid")
+        secrets_list = payload["secrets"]
         if not isinstance(secrets_list, list):
-            raise SeedError("Infisical secret listing returned an invalid response")
-        return {
-            item["secretKey"]
-            for item in secrets_list
-            if isinstance(item, dict) and isinstance(item.get("secretKey"), str)
-        }
+            raise SeedError("Infisical secret listing semantics were invalid")
+        names: list[str] = []
+        for item in secrets_list:
+            name = item.get("secretKey") if isinstance(item, dict) else None
+            if not isinstance(name, str) or not name:
+                raise SeedError("Infisical secret listing semantics were invalid")
+            names.append(name)
+        if len(names) != len(set(names)):
+            raise SeedError("Infisical secret listing semantics were ambiguous")
+        return set(names)
 
     def _secret_url(self, name: str) -> str:
         return (
