@@ -90,6 +90,7 @@ def test_runner_role_installs_and_manages_generated_systemd_service():
 
     start = task_named("Start runner through its generated service helper")
     assert start["ansible.builtin.command"]["argv"] == ["./svc.sh", "start"]
+    assert start["changed_when"] is True
 
 
 def test_matrix_validates_registration_metadata_and_tracks_cleanup_before_start():

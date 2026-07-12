@@ -166,6 +166,7 @@
     chdir: "{{ github_actions_runner_home }}"
   become: true
   when: not github_actions_runner_service_file.stat.exists
+  changed_when: true
 
 - name: Read generated runner service name
   ansible.builtin.slurp:

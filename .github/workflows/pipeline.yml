@@ -1,0 +1,127 @@
+---
+name: Validate and deploy
+
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the validated revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check \
+            pytest \
+            ansible-core \
+            ansible-lint \
+            yamllint
+          ansible-galaxy collection install --requirements-file requirements.yml
+
+      - name: Run Python tests
+        shell: bash
+        run: python -m pytest -q
+
+      - name: Validate repository scaffolds
+        shell: bash
+        run: |
+          set -euo pipefail
+          pwsh -NoProfile -File tests/Validate-InfraAnsibleScaffold.ps1
+          pwsh -NoProfile -File tests/Validate-AnsibleContainer.ps1
+          pwsh -NoProfile -File tests/Validate-ProxmoxBackupStorageRole.ps1
+
+      - name: Validate reusable runner role matrix
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/Validate-GitHubRunnerMatrix.ps1
+
+      - name: Parse the public example inventory
+        shell: bash
+        run: ansible-inventory -i inventories/example/hosts.yml --list
+
+      - name: Syntax-check every playbook
+        shell: bash
+        run: |
+          set -euo pipefail
+          for playbook in playbooks/*.yml; do
+            ansible-playbook -i inventories/example/hosts.yml "${playbook}" --syntax-check
+          done
+
+      - name: Lint repository YAML and Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          yamllint .
+          ansible-lint .
+
+      - name: Build and smoke-test the Ansible tool image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag "infra-ansible-tools:${GITHUB_SHA}" --file tools/ansible/Dockerfile .
+          docker run --rm "infra-ansible-tools:${GITHUB_SHA}" --version
+
+      - name: Build the immutable release manifest
+        shell: bash
+        run: python tools/release/build_release_manifest.py "${GITHUB_SHA}" release-manifest.json
+
+      - name: Upload the release manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy production
+    needs: validate
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'VINIClUS/infra-ansible'
+    runs-on: [self-hosted, linux, x64, ansible-prod]
+    environment: production
+    concurrency:
+      group: ansible-production
+      cancel-in-progress: false
+    steps:
+      - name: Download the validated release manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-manifest
+          path: .release
+
+      - name: Verify the release manifest targets this revision
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest_path = Path(".release/release-manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("infra_sha") != os.environ["GITHUB_SHA"]:
+              raise SystemExit("release manifest SHA does not match GITHUB_SHA")
+          PY
+
+      - name: Deploy the validated revision
+        shell: bash
+        run: sudo /usr/local/sbin/infra-ansible-deploy "$GITHUB_SHA"
