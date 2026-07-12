@@ -13,6 +13,19 @@
         cloudflare_access_health_domain ==
         'ansible.vinisantana.com/api/ping'
       - cloudflare_access_allowed_email == 'me@vinisantana.com'
+      - cloudflare_access_session_duration == '24h'
+      - >-
+        cloudflare_access_human_application_name ==
+        'Semaphore human OTP access'
+      - >-
+        cloudflare_access_health_application_name ==
+        'Semaphore health service access'
+      - >-
+        cloudflare_access_human_policy_name ==
+        'Allow exact Semaphore operator email'
+      - >-
+        cloudflare_access_health_policy_name ==
+        'Allow exact Semaphore health token'
       - cloudflare_access_applications | length == 2
       - >-
         cloudflare_access_applications | map(attribute='key') | list ==
@@ -21,8 +34,41 @@
         cloudflare_access_applications | map(attribute='type') |
         unique | list == ['self_hosted']
       - >-
+        cloudflare_access_applications | map(attribute='name') | list ==
+        ['Semaphore human OTP access',
+        'Semaphore health service access']
+      - >-
+        cloudflare_access_applications | map(attribute='domain') | list ==
+        ['ansible.vinisantana.com',
+        'ansible.vinisantana.com/api/ping']
+      - >-
+        cloudflare_access_applications |
+        map(attribute='session_duration') | list == ['24h', '24h']
+      - >-
+        cloudflare_access_applications[0].keys() | list | sort ==
+        ['domain', 'key', 'name', 'policy', 'session_duration', 'type']
+      - >-
+        cloudflare_access_applications[1].keys() | list | sort ==
+        ['domain', 'key', 'name', 'policy', 'session_duration', 'type']
+      - >-
+        cloudflare_access_applications[0].policy.keys() | list | sort ==
+        ['decision', 'exclude', 'include', 'name', 'precedence', 'require']
+      - >-
+        cloudflare_access_applications[1].policy.keys() | list | sort ==
+        ['decision', 'exclude', 'include', 'name', 'precedence', 'require']
+      - >-
+        cloudflare_access_applications[0].policy.name ==
+        'Allow exact Semaphore operator email'
+      - cloudflare_access_applications[0].policy.decision == 'allow'
+      - >-
         cloudflare_access_applications[0].policy.include ==
         [{'email': {'email': cloudflare_access_allowed_email}}]
+      - cloudflare_access_applications[0].policy.exclude == []
+      - cloudflare_access_applications[0].policy.require == []
+      - cloudflare_access_applications[0].policy.precedence | int == 1
+      - >-
+        cloudflare_access_applications[1].policy.name ==
+        'Allow exact Semaphore health token'
       - >-
         cloudflare_access_applications[1].policy.decision ==
         'non_identity'
@@ -30,6 +76,9 @@
         cloudflare_access_applications[1].policy.include ==
         [{'service_token': {'token_id':
         cloudflare_access_service_token_id}}]
+      - cloudflare_access_applications[1].policy.exclude == []
+      - cloudflare_access_applications[1].policy.require == []
+      - cloudflare_access_applications[1].policy.precedence | int == 1
     fail_msg: >-
       Cloudflare Access requires exactly one account or zone scope, an API
       token, the exact Semaphore domains and operator email, and one exact
@@ -45,6 +94,30 @@
       }}/{{ cloudflare_access_account_id
             if cloudflare_access_account_id | length > 0
             else cloudflare_access_zone_id }}
+  no_log: true
+
+- name: List configured Cloudflare Access identity providers
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url
+      }}/access/identity_providers?per_page=100
+    method: GET
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    status_code: 200
+    return_content: false
+  register: cloudflare_access_application_identity_provider_list
+  changed_when: false
+  failed_when: >-
+    cloudflare_access_application_identity_provider_list.json.success |
+    default(false) != true
+  no_log: true
+
+- name: Select the exact One-Time PIN identity provider
+  ansible.builtin.include_tasks: identity_provider.yml
+  vars:
+    cloudflare_access_identity_provider_candidates: >-
+      {{ cloudflare_access_application_identity_provider_list.json.result }}
   no_log: true
 
 - name: List exact Cloudflare Access application domains
@@ -110,11 +183,17 @@
     headers:
       Authorization: "Bearer {{ cloudflare_access_api_token }}"
     body_format: json
-    body:
-      name: "{{ item.item.name }}"
-      domain: "{{ item.item.domain }}"
-      type: "{{ item.item.type }}"
-      session_duration: "{{ item.item.session_duration }}"
+    body: >-
+      {{ {'name': item.item.name,
+          'domain': item.item.domain,
+          'type': item.item.type,
+          'session_duration': item.item.session_duration} |
+         combine(
+           {'allowed_idps':
+              [cloudflare_access_application_otp_identity_provider_id],
+            'auto_redirect_to_identity': true}
+           if item.item.key == 'human' else {}
+         ) }}
     status_code: 200
     return_content: false
   vars:
@@ -131,7 +210,12 @@
       cloudflare_access_current_application.domain != item.item.domain or
       cloudflare_access_current_application.type != item.item.type or
       cloudflare_access_current_application.session_duration |
-      default('') != item.item.session_duration
+      default('') != item.item.session_duration or
+      (item.item.key == 'human' and
+       (cloudflare_access_current_application.allowed_idps | default([]) !=
+        [cloudflare_access_application_otp_identity_provider_id] or
+        not (cloudflare_access_current_application.auto_redirect_to_identity |
+             default(false) | bool)))
   register: cloudflare_access_application_updates
   changed_when: true
   failed_when: >-
@@ -146,11 +230,17 @@
     headers:
       Authorization: "Bearer {{ cloudflare_access_api_token }}"
     body_format: json
-    body:
-      name: "{{ item.item.name }}"
-      domain: "{{ item.item.domain }}"
-      type: "{{ item.item.type }}"
-      session_duration: "{{ item.item.session_duration }}"
+    body: >-
+      {{ {'name': item.item.name,
+          'domain': item.item.domain,
+          'type': item.item.type,
+          'session_duration': item.item.session_duration} |
+         combine(
+           {'allowed_idps':
+              [cloudflare_access_application_otp_identity_provider_id],
+            'auto_redirect_to_identity': true}
+           if item.item.key == 'human' else {}
+         ) }}
     status_code: 200
     return_content: false
   loop: "{{ cloudflare_access_application_list.results }}"
