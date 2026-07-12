@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -37,6 +38,23 @@ def config(tmp_path: Path) -> seed.Config:
         cloudflare_api_token="cloudflare-api-token",
         inventory_root=tmp_path / "inventory",
     )
+
+
+def ed25519_public_key(key_byte: int, comment: str = "") -> str:
+    algorithm = b"ssh-ed25519"
+    key_bytes = bytes([key_byte]) * 32
+    blob = (
+        len(algorithm).to_bytes(4, "big")
+        + algorithm
+        + len(key_bytes).to_bytes(4, "big")
+        + key_bytes
+    )
+    suffix = f" {comment}" if comment else ""
+    return f"ssh-ed25519 {base64.b64encode(blob).decode('ascii')}{suffix}"
+
+
+def ssh_public_key_from_blob(blob: bytes) -> str:
+    return f"ssh-ed25519 {base64.b64encode(blob).decode('ascii')}"
 
 
 def test_secret_contract_is_exact() -> None:
@@ -250,7 +268,7 @@ def test_key_material_uses_0600_temp_files_and_only_public_key_reaches_gh(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[list[str], dict[str, str]]] = []
-    public_key = "ssh-ed25519 AAAATEST controller\n"
+    public_key = ed25519_public_key(1, "controller") + "\n"
     deploy_key_added = False
 
     def command(argv: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -305,7 +323,7 @@ def test_key_material_uses_0600_temp_files_and_only_public_key_reaches_gh(
 
 def test_github_deploy_key_is_create_only(tmp_path: Path) -> None:
     public_path = tmp_path / "key.pub"
-    public_key = "ssh-ed25519 AAAATEST controller"
+    public_key = ed25519_public_key(1, "controller")
     public_path.write_text(public_key + "\n", encoding="utf-8")
     material = seed.KeyMaterial(
         age_identity="unused",
@@ -348,21 +366,21 @@ def test_github_deploy_key_identity_ignores_only_the_public_comment() -> None:
         {
             "id": 7,
             "title": seed.GITHUB_DEPLOY_KEY_TITLE,
-            "key": "ssh-ed25519 AAAATEST",
+            "key": ed25519_public_key(1),
             "read_only": True,
         }
     ]
     matches = seed._github_deploy_key_matches(
         keys,
         title=seed.GITHUB_DEPLOY_KEY_TITLE,
-        public_key="ssh-ed25519 AAAATEST infra-ansible production inventory",
+        public_key=ed25519_public_key(1, "infra-ansible production inventory"),
         require_read_only=True,
     )
     assert [item["id"] for item in matches] == [7]
     assert not seed._github_deploy_key_matches(
         keys,
         title=seed.GITHUB_DEPLOY_KEY_TITLE,
-        public_key="ssh-ed25519 AAAADIFFERENT same-comment",
+        public_key=ed25519_public_key(2, "same-comment"),
         require_read_only=True,
     )
 
@@ -519,12 +537,12 @@ def test_resource_generation_compensates_deploy_key_if_cloudflare_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     public_path = tmp_path / "key.pub"
-    public_path.write_text("ssh-ed25519 AAAATEST\n", encoding="utf-8")
+    public_path.write_text(ed25519_public_key(1) + "\n", encoding="utf-8")
     material = seed.KeyMaterial(
         age_identity="AGE-SECRET-KEY-TEST",
         age_recipient="age1recipient",
         deploy_private_key="OPENSSH-PRIVATE-TEST",
-        deploy_public_key="ssh-ed25519 AAAATEST",
+        deploy_public_key=ed25519_public_key(1),
         deploy_public_key_path=public_path,
         workdir=tmp_path,
     )
@@ -827,7 +845,9 @@ def test_cleanup_failure_is_redacted_and_requires_manual_cleanup(
             return subprocess.CompletedProcess(argv, 0, "age1recipient\n", "")
         path = Path(argv[argv.index("-f") + 1])
         path.write_text("PRIVATE-SENTINEL\n", encoding="utf-8")
-        path.with_suffix(".pub").write_text("ssh-ed25519 AAAATEST\n", encoding="utf-8")
+        path.with_suffix(".pub").write_text(
+            ed25519_public_key(1) + "\n", encoding="utf-8"
+        )
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(seed.shutil, "rmtree", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError(sentinel)))
@@ -983,6 +1003,8 @@ def test_complete_names_require_external_contract_validation(tmp_path: Path) -> 
 def test_complete_contract_cross_checks_infisical_external_resources_and_inventory(
     tmp_path: Path,
 ) -> None:
+    derived_public_key = ed25519_public_key(17, "controller@example")
+    github_public_key = ed25519_public_key(17)
     cfg = config(tmp_path)
     access = cfg.inventory_root / "inventories/prod/group_vars/local_validation/cloudflare_access.yml"
     semaphore = cfg.inventory_root / "inventories/prod/group_vars/ansible_controllers/semaphore.yml"
@@ -1008,7 +1030,7 @@ def test_complete_contract_cross_checks_infisical_external_resources_and_invento
             return subprocess.CompletedProcess(
                 argv,
                 0,
-                "ssh-ed25519 AAAAPUBLIC controller@example\n",
+                derived_public_key + "\n",
                 "",
             )
         if argv[0] == "age-keygen":
@@ -1022,7 +1044,7 @@ def test_complete_contract_cross_checks_infisical_external_resources_and_invento
                         {
                             "id": 42,
                             "title": seed.GITHUB_DEPLOY_KEY_TITLE,
-                            "key": "ssh-ed25519 AAAAPUBLIC",
+                            "key": github_public_key,
                             "read_only": True,
                         }
                     ]
@@ -1063,6 +1085,196 @@ def test_complete_contract_cross_checks_infisical_external_resources_and_invento
             infisical=ExistingInfisical(),
             command=command,
             transport=transport,
+        )
+
+
+def test_ssh_public_key_identity_accepts_valid_ed25519_with_or_without_comment() -> None:
+    without_comment = ed25519_public_key(23)
+    with_comment = ed25519_public_key(23, "controller@example")
+    assert seed._ssh_public_key_identity(with_comment) == seed._ssh_public_key_identity(
+        without_comment
+    )
+
+
+@pytest.mark.parametrize(
+    "public_key",
+    [
+        "ssh-ed25519 QUFBQQ==",
+        ssh_public_key_from_blob(
+            len(b"ssh-rsa").to_bytes(4, "big")
+            + b"ssh-rsa"
+            + (32).to_bytes(4, "big")
+            + bytes([1]) * 32
+        ),
+        ssh_public_key_from_blob(
+            len(b"ssh-ed25519").to_bytes(4, "big")
+            + b"ssh-ed25519"
+            + (31).to_bytes(4, "big")
+            + bytes([1]) * 31
+        ),
+        ssh_public_key_from_blob(
+            len(b"ssh-ed25519").to_bytes(4, "big")
+            + b"ssh-ed25519"
+            + (32).to_bytes(4, "big")
+            + bytes([1]) * 32
+            + b"trailing"
+        ),
+    ],
+    ids=["not-wire-format", "wrong-embedded-algorithm", "wrong-key-length", "trailing-data"],
+)
+def test_ssh_public_key_identity_rejects_malformed_wire_blobs(public_key: str) -> None:
+    assert seed._ssh_public_key_identity(public_key) is None
+
+
+def _validate_complete_deploy_key_scenario(
+    tmp_path: Path,
+    *,
+    derived_public_key: str,
+    github_keys: list[dict[str, object]],
+) -> None:
+    cfg = config(tmp_path)
+    access = cfg.inventory_root / "inventories/prod/group_vars/local_validation/cloudflare_access.yml"
+    semaphore = cfg.inventory_root / "inventories/prod/group_vars/ansible_controllers/semaphore.yml"
+    access.parent.mkdir(parents=True)
+    semaphore.parent.mkdir(parents=True)
+    access.write_text('cloudflare_access_service_token_id: "cf-id"\n', encoding="utf-8")
+    semaphore.write_text('ansible_backup_age_recipient: "age1recipient"\n', encoding="utf-8")
+
+    class ExistingInfisical:
+        def read_secret_value(self, name: str) -> str:
+            return {
+                "INFRA_INVENTORY_DEPLOY_KEY": "PRIVATE-KEY-FIXTURE",
+                "ANSIBLE_BACKUP_AGE_IDENTITY": "AGE-IDENTITY-FIXTURE",
+                "CLOUDFLARE_ACCESS_CLIENT_ID": "cf-client-id",
+            }[name]
+
+    def command(argv: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        del env
+        if argv[0] == "ssh-keygen":
+            return subprocess.CompletedProcess(argv, 0, derived_public_key + "\n", "")
+        if argv[0] == "age-keygen":
+            return subprocess.CompletedProcess(argv, 0, "age1recipient\n", "")
+        return subprocess.CompletedProcess(argv, 0, json.dumps([github_keys]), "")
+
+    def transport(_request: seed.HttpRequest) -> seed.HttpResponse:
+        return seed.HttpResponse(
+            200,
+            {
+                "success": True,
+                "result": [
+                    {
+                        "id": "cf-id",
+                        "name": seed.CLOUDFLARE_SERVICE_TOKEN_NAME,
+                        "client_id": "cf-client-id",
+                    }
+                ],
+                "result_info": {"page": 1, "total_pages": 1},
+            },
+        )
+
+    seed.validate_complete_contract(
+        cfg,
+        infisical=ExistingInfisical(),
+        command=command,
+        transport=transport,
+    )
+
+
+@pytest.mark.parametrize(
+    ("derived_public_key", "github_keys"),
+    [
+        (
+            "ssh-ed25519 QUFBQQ==",
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": "ssh-ed25519 QUFBQQ==",
+                    "read_only": True,
+                }
+            ],
+        ),
+        (
+            "ssh-ed25519 QUFBQQ==",
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": ed25519_public_key(31),
+                    "read_only": True,
+                }
+            ],
+        ),
+        (
+            ed25519_public_key(31),
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": "ssh-ed25519 QUFBQQ==",
+                    "read_only": True,
+                }
+            ],
+        ),
+        (
+            ed25519_public_key(31),
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": ed25519_public_key(31),
+                    "read_only": True,
+                },
+                {
+                    "id": 2,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": ed25519_public_key(31),
+                    "read_only": True,
+                },
+            ],
+        ),
+        (
+            ed25519_public_key(31),
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": ed25519_public_key(31),
+                    "read_only": False,
+                }
+            ],
+        ),
+        (
+            ed25519_public_key(31),
+            [
+                {
+                    "id": 1,
+                    "title": seed.GITHUB_DEPLOY_KEY_TITLE,
+                    "key": ed25519_public_key(32),
+                    "read_only": True,
+                }
+            ],
+        ),
+    ],
+    ids=[
+        "matching-malformed-identities",
+        "malformed-derived-identity",
+        "malformed-github-identity",
+        "duplicate-managed-titles",
+        "non-read-only",
+        "different-valid-identity",
+    ],
+)
+def test_complete_contract_rejects_invalid_deploy_key_contracts(
+    tmp_path: Path,
+    derived_public_key: str,
+    github_keys: list[dict[str, object]],
+) -> None:
+    with pytest.raises(seed.SeedError, match="deploy-key external contract"):
+        _validate_complete_deploy_key_scenario(
+            tmp_path,
+            derived_public_key=derived_public_key,
+            github_keys=github_keys,
         )
 
 

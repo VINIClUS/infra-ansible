@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import os
-import re
 import secrets
 import shutil
 import subprocess
@@ -572,13 +572,38 @@ def _ssh_public_key_identity(value: Any) -> tuple[str, str] | None:
     if not isinstance(value, str):
         return None
     fields = value.strip().split()
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        return None
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+    offset = 0
+
+    def read_ssh_string() -> bytes | None:
+        nonlocal offset
+        if offset + 4 > len(blob):
+            return None
+        length = int.from_bytes(blob[offset : offset + 4], "big")
+        offset += 4
+        end = offset + length
+        if end > len(blob):
+            return None
+        result = blob[offset:end]
+        offset = end
+        return result
+
+    embedded_algorithm = read_ssh_string()
+    key_bytes = read_ssh_string()
     if (
-        len(fields) < 2
-        or fields[0] != "ssh-ed25519"
-        or re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", fields[1]) is None
+        embedded_algorithm != b"ssh-ed25519"
+        or key_bytes is None
+        or len(key_bytes) != 32
+        or offset != len(blob)
     ):
         return None
-    return fields[0], fields[1]
+    return fields[0], base64.b64encode(blob).decode("ascii")
 
 
 def list_github_deploy_keys(*, command: Command = _run_command) -> list[dict[str, Any]]:
