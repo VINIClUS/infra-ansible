@@ -615,17 +615,30 @@ def list_cloudflare_service_tokens(
         )
         result = _cloudflare_result(payload, list, "service-token listing")
         result_info = payload.get("result_info")
+        total_pages = (
+            result_info.get("total_pages")
+            if isinstance(result_info, dict)
+            else None
+        )
         if (
             not isinstance(result_info, dict)
             or result_info.get("page") != page
-            or not isinstance(result_info.get("total_pages"), int)
-            or result_info["total_pages"] < page
-            or result_info["total_pages"] > 10000
+            or not isinstance(total_pages, int)
+            or total_pages < 0
+            or total_pages > 10000
             or any(not isinstance(item, dict) for item in result)
         ):
             raise SeedError("service-token listing failed Cloudflare success semantics")
         tokens.extend(result)
-        if page == result_info["total_pages"]:
+        if total_pages == 0:
+            if page != 1 or result:
+                raise SeedError(
+                    "service-token listing failed Cloudflare success semantics"
+                )
+            return tokens
+        if total_pages < page:
+            raise SeedError("service-token listing failed Cloudflare success semantics")
+        if page == total_pages:
             return tokens
         page += 1
 

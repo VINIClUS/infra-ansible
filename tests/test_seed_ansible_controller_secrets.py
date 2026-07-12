@@ -364,6 +364,30 @@ def test_cloudflare_service_token_is_create_only_and_secret_safe(tmp_path: Path)
     assert requests[0].headers["Authorization"] == "Bearer cloudflare-api-token"
 
 
+def test_cloudflare_empty_first_page_with_zero_total_pages_is_valid(
+    tmp_path: Path,
+) -> None:
+    def transport(_request: seed.HttpRequest) -> seed.HttpResponse:
+        return seed.HttpResponse(
+            200,
+            {
+                "success": True,
+                "result": [],
+                "result_info": {
+                    "page": 1,
+                    "per_page": 100,
+                    "count": 0,
+                    "total_count": 0,
+                    "total_pages": 0,
+                },
+            },
+        )
+
+    assert seed.list_cloudflare_service_tokens(
+        config(tmp_path), transport=transport
+    ) == []
+
+
 def test_ambiguous_cloudflare_create_requires_manual_recovery(tmp_path: Path) -> None:
     calls = 0
 
