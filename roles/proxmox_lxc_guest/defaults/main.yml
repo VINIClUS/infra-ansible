@@ -13,6 +13,7 @@ proxmox_lxc_guest_vmid: 0
 proxmox_lxc_guest_hostname: ansible
 proxmox_lxc_guest_storage: local-lvm
 proxmox_lxc_guest_bridge: vmbr0
+proxmox_lxc_guest_cmode: tty
 proxmox_lxc_guest_cores: 2
 proxmox_lxc_guest_memory_mb: 4096
 proxmox_lxc_guest_disk_gb: 32

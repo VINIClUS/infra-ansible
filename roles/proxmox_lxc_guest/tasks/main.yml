@@ -106,6 +106,7 @@
     vmid: "{{ proxmox_lxc_guest_vmid }}"
     hostname: "{{ proxmox_lxc_guest_hostname }}"
     node: "{{ proxmox_lxc_guest_node }}"
+    cmode: "{{ proxmox_lxc_guest_cmode }}"
     cores: "{{ proxmox_lxc_guest_cores }}"
     memory: "{{ proxmox_lxc_guest_memory_mb }}"
     onboot: "{{ proxmox_lxc_guest_onboot }}"
@@ -150,11 +151,16 @@
       - proxmox_lxc_guest_postflight.proxmox_vms[0].type == 'lxc'
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.ostype == 'debian'
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.unprivileged | int == 1
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.cores | int == proxmox_lxc_guest_cores | int
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.memory | int == proxmox_lxc_guest_memory_mb | int
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.onboot | bool == proxmox_lxc_guest_onboot | bool
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].config.cmode == proxmox_lxc_guest_cmode
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is match('^local-lvm:')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.rootfs is search('(^|,)size=32G(,|$)')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
+      - proxmox_lxc_guest_postflight.proxmox_vms[0].status == 'running'
 
 - name: Record redacted LXC guest summary
   ansible.builtin.set_fact:

@@ -65,6 +65,19 @@ def test_all_proxmox_modules_use_configured_api_port():
     )
 
 
+def test_lxc_role_defaults_to_proxmox_9_console_mode():
+    defaults = yaml.safe_load(read("roles/proxmox_lxc_guest/defaults/main.yml"))
+
+    assert defaults.get("proxmox_lxc_guest_cmode") == "tty"
+
+
+def test_lxc_reconcile_sets_proxmox_9_console_mode():
+    reconcile = task_named("Reconcile non-destructive target configuration")
+    module_call = reconcile["community.proxmox.proxmox"]
+
+    assert module_call.get("cmode") == "{{ proxmox_lxc_guest_cmode }}"
+
+
 def test_lxc_playbook_runs_only_on_bootstrap_host():
     playbook = read("playbooks/provision-ansible-controller.yml")
     assert "hosts: ansible_controller_bootstrap" in playbook
@@ -105,6 +118,22 @@ def test_existing_target_and_postflight_require_debian():
     ):
         assertions = task_named(name)["ansible.builtin.assert"]["that"]
         assert any(".config.ostype == 'debian'" in assertion for assertion in assertions)
+
+
+def test_postflight_proves_complete_target_convergence():
+    assertions = task_named("Prove final target configuration")[
+        "ansible.builtin.assert"
+    ]["that"]
+    expected = (
+        ".config.cores | int == proxmox_lxc_guest_cores | int",
+        ".config.memory | int == proxmox_lxc_guest_memory_mb | int",
+        ".config.onboot | bool == proxmox_lxc_guest_onboot | bool",
+        ".config.cmode == proxmox_lxc_guest_cmode",
+        ".status == 'running'",
+    )
+
+    for check in expected:
+        assert any(check in assertion for assertion in assertions)
 
 
 def test_contract_checks_use_delimiter_aware_exact_matches():
