@@ -35,6 +35,38 @@ semaphore_controller_admin_email: admin@localhost
 semaphore_controller_admin_name: Semaphore Administrator
 semaphore_controller_web_root: ""
 
+semaphore_controller_rollback_mode: false
+semaphore_controller_rollback_backup_id: ""
+semaphore_controller_target_binary: >-
+  {{ semaphore_controller_release_path }}/usr/bin/semaphore
+semaphore_controller_backup_root: >-
+  {{ semaphore_controller_setup_state_dir }}/backups
+semaphore_controller_backup_staging_root: >-
+  {{ semaphore_controller_setup_state_dir }}/backup-staging
+semaphore_controller_deployment_state_path: >-
+  {{ semaphore_controller_setup_state_dir }}/deployment-state.json
+semaphore_controller_rollback_marker_path: >-
+  {{ semaphore_controller_setup_state_dir }}/rollback-request
+semaphore_controller_deployment_evidence_path: >-
+  {{ semaphore_controller_setup_state_dir }}/deployment-evidence.json
+semaphore_controller_backup_script_path: /usr/local/sbin/semaphore-backup
+semaphore_controller_backup_credentials_path: >-
+  {{ semaphore_controller_config_dir }}/backup-credentials.json
+semaphore_controller_backup_prefix: ansible/semaphore-backups
+semaphore_controller_deployment_prefix: ansible/deployments
+semaphore_controller_backup_age_recipient: >-
+  {{ ansible_backup_age_recipient | default('') }}
+semaphore_controller_minio_endpoint_url: >-
+  {{ minio_endpoint_url | default('') }}
+semaphore_controller_minio_region: "{{ minio_region | default('us-east-1') }}"
+semaphore_controller_minio_use_path_style: >-
+  {{ minio_use_path_style | default(true) }}
+semaphore_controller_minio_access_key_env_var: >-
+  {{ minio_access_key_env_var | default('OBJECT_STORAGE_ACCESS_KEY') }}
+semaphore_controller_minio_secret_key_env_var: >-
+  {{ minio_secret_key_env_var | default('OBJECT_STORAGE_SECRET_KEY') }}
+semaphore_controller_minio_buckets: "{{ minio_buckets | default({}) }}"
+
 semaphore_controller_required_env:
   - SEMAPHORE_DB_PASSWORD
   - SEMAPHORE_ACCESS_KEY_ENCRYPTION

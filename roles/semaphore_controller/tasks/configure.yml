@@ -124,9 +124,10 @@
     path: "{{ semaphore_controller_current_path }}.next"
     state: absent
   when: >-
-    not semaphore_controller_current_release.stat.islnk | default(false) or
-    semaphore_controller_current_release.stat.lnk_source | default('') !=
-    semaphore_controller_release_path
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
   become: true
 
 - name: Prepare exact Semaphore release symlink
@@ -135,9 +136,10 @@
     dest: "{{ semaphore_controller_current_path }}.next"
     state: link
   when: >-
-    not semaphore_controller_current_release.stat.islnk | default(false) or
-    semaphore_controller_current_release.stat.lnk_source | default('') !=
-    semaphore_controller_release_path
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
   become: true
 
 - name: Atomically activate exact Semaphore release
@@ -148,9 +150,10 @@
       - "{{ semaphore_controller_current_path }}.next"
       - "{{ semaphore_controller_current_path }}"
   when: >-
-    not semaphore_controller_current_release.stat.islnk | default(false) or
-    semaphore_controller_current_release.stat.lnk_source | default('') !=
-    semaphore_controller_release_path
+    not semaphore_controller_defer_activation | default(false) | bool and
+    (not semaphore_controller_current_release.stat.islnk | default(false) or
+     semaphore_controller_current_release.stat.lnk_source | default('') !=
+     semaphore_controller_release_path)
   changed_when: true
   become: true
   notify: Restart Semaphore

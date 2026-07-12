@@ -1,0 +1,185 @@
+---
+- name: Create protected Semaphore backup directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ semaphore_controller_backup_root }}"
+    - "{{ semaphore_controller_backup_staging_root }}"
+  become: true
+
+- name: Generate unique Semaphore backup identifier
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y%m%dT%H%M%S%NZ
+  register: semaphore_controller_backup_id_command
+  changed_when: false
+  become: true
+
+- name: Record exact Semaphore backup identifier
+  ansible.builtin.set_fact:
+    semaphore_controller_backup_id: >-
+      {{ semaphore_controller_backup_id_command.stdout | trim }}
+    semaphore_controller_backup_staging_path: >-
+      {{ semaphore_controller_backup_staging_root ~ '/' ~
+         (semaphore_controller_backup_id_command.stdout | trim) }}
+
+- name: Validate generated Semaphore backup identifier
+  ansible.builtin.assert:
+    that:
+      - >-
+        semaphore_controller_backup_id is
+        match('^[0-9]{8}T[0-9]{15}Z$')
+    fail_msg: Generated Semaphore backup identifier is unsafe.
+
+- name: Inspect preceding Semaphore release symlink
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_current_path }}"
+    follow: false
+  register: semaphore_controller_preceding_release_stat
+  become: true
+
+- name: Record exact preceding Semaphore release
+  ansible.builtin.set_fact:
+    semaphore_controller_preceding_release: >-
+      {{ semaphore_controller_preceding_release_stat.stat.lnk_source
+         if semaphore_controller_preceding_release_stat.stat.islnk | default(false)
+         else '' }}
+
+- name: Create Semaphore plaintext backup staging directory
+  ansible.builtin.file:
+    path: "{{ semaphore_controller_backup_staging_path }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+  become: true
+
+- name: Create and upload encrypted Semaphore pre-change backup
+  block:
+    - name: Create custom-format Semaphore PostgreSQL backup
+      ansible.builtin.command:
+        argv:
+          - pg_dump
+          - --format=custom
+          - --file
+          - "{{ semaphore_controller_backup_staging_path }}/database.dump"
+          - "{{ semaphore_controller_database_name }}"
+      become: true
+      become_user: postgres
+      changed_when: true
+
+    - name: Archive protected Semaphore configuration
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --create
+          - --file
+          - "{{ semaphore_controller_backup_staging_path }}/config.tar"
+          - --directory
+          - /
+          - "{{ semaphore_controller_config_dir | regex_replace('^/', '') }}"
+      become: true
+      changed_when: true
+
+    - name: Write redacted Semaphore backup metadata
+      ansible.builtin.copy:
+        content: |
+          {
+            "schema": 1,
+            "backup_id": {{ semaphore_controller_backup_id | to_json }},
+            "previous_release": {{ semaphore_controller_preceding_release | to_json }},
+            "target_release": {{ semaphore_controller_release_path | to_json }}
+          }
+        dest: "{{ semaphore_controller_backup_staging_path }}/metadata.json"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+
+    - name: Bundle Semaphore database configuration and metadata
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --create
+          - --file
+          - "{{ semaphore_controller_backup_staging_path }}/bundle.tar"
+          - --directory
+          - "{{ semaphore_controller_backup_staging_path }}"
+          - database.dump
+          - config.tar
+          - metadata.json
+      become: true
+      changed_when: true
+
+    - name: Record encrypted Semaphore backup paths
+      ansible.builtin.set_fact:
+        semaphore_controller_encrypted_backup_path: >-
+          {{ semaphore_controller_backup_root ~ '/' ~
+             semaphore_controller_backup_id ~ '.tar.age' }}
+        semaphore_controller_backup_object_key: >-
+          {{ semaphore_controller_backup_prefix ~ '/' ~ inventory_hostname ~
+             '/' ~ semaphore_controller_backup_id ~ '.tar.age' }}
+
+    - name: Encrypt Semaphore backup with public age recipient
+      ansible.builtin.command:
+        argv:
+          - age
+          - -r
+          - "{{ semaphore_controller_backup_age_recipient }}"
+          - -o
+          - "{{ semaphore_controller_encrypted_backup_path }}"
+          - "{{ semaphore_controller_backup_staging_path }}/bundle.tar"
+      become: true
+      changed_when: true
+
+    - name: Upload encrypted Semaphore pre-change backup
+      amazon.aws.s3_object:
+        endpoint_url: "{{ semaphore_controller_minio_endpoint_url }}"
+        region: "{{ semaphore_controller_minio_region }}"
+        access_key: >-
+          {{ semaphore_controller_transaction_environment.minio_access_key }}
+        secret_key: >-
+          {{ semaphore_controller_transaction_environment.minio_secret_key }}
+        aws_config:
+          s3:
+            addressing_style: >-
+              {{ semaphore_controller_minio_use_path_style |
+                 bool | ternary('path', 'auto') }}
+        bucket: "{{ semaphore_controller_minio_buckets.backups }}"
+        object: "{{ semaphore_controller_backup_object_key }}"
+        src: "{{ semaphore_controller_encrypted_backup_path }}"
+        mode: put
+        overwrite: never
+        encrypt: false
+      become: true
+      no_log: true
+
+    - name: Record BACKED_UP Semaphore deployment state
+      ansible.builtin.copy:
+        content: |
+          {
+            "schema": 1,
+            "state": "BACKED_UP",
+            "backup_id": {{ semaphore_controller_backup_id | to_json }},
+            "backup_object": {{ semaphore_controller_backup_object_key | to_json }},
+            "encrypted_path": {{ semaphore_controller_encrypted_backup_path | to_json }},
+            "previous_release": {{ semaphore_controller_preceding_release | to_json }},
+            "target_release": {{ semaphore_controller_release_path | to_json }}
+          }
+        dest: "{{ semaphore_controller_deployment_state_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+  always:
+    - name: Delete Semaphore plaintext backup staging
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_backup_staging_path }}"
+        state: absent
+      become: true

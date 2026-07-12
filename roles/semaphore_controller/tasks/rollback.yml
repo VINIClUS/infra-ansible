@@ -1,0 +1,288 @@
+---
+- name: Inspect root-owned Semaphore deployment state
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_deployment_state_path }}"
+  register: semaphore_controller_deployment_state_stat
+  become: true
+
+- name: Require protected Semaphore deployment state
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_deployment_state_stat.stat.exists
+      - semaphore_controller_deployment_state_stat.stat.isreg
+      - semaphore_controller_deployment_state_stat.stat.pw_name == 'root'
+      - semaphore_controller_deployment_state_stat.stat.gr_name == 'root'
+      - semaphore_controller_deployment_state_stat.stat.mode == '0600'
+    fail_msg: Semaphore rollback requires protected deployment state.
+
+- name: Read root-owned Semaphore deployment state
+  ansible.builtin.slurp:
+    src: "{{ semaphore_controller_deployment_state_path }}"
+  register: semaphore_controller_deployment_state_raw
+  become: true
+
+- name: Parse root-owned Semaphore deployment state
+  ansible.builtin.set_fact:
+    semaphore_controller_deployment_state: >-
+      {{ semaphore_controller_deployment_state_raw.content |
+         b64decode | from_json }}
+
+- name: Inspect one-shot Semaphore rollback marker
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_rollback_marker_path }}"
+  register: semaphore_controller_rollback_marker_stat
+  become: true
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Require protected one-shot Semaphore rollback marker
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_rollback_marker_stat.stat.exists
+      - semaphore_controller_rollback_marker_stat.stat.isreg
+      - semaphore_controller_rollback_marker_stat.stat.pw_name == 'root'
+      - semaphore_controller_rollback_marker_stat.stat.gr_name == 'root'
+      - semaphore_controller_rollback_marker_stat.stat.mode == '0600'
+    fail_msg: Explicit Semaphore rollback requires a protected one-shot marker.
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Read one-shot Semaphore rollback marker
+  ansible.builtin.slurp:
+    src: "{{ semaphore_controller_rollback_marker_path }}"
+  register: semaphore_controller_rollback_marker_raw
+  become: true
+  when: semaphore_controller_rollback_mode | bool
+
+- name: Select exact Semaphore rollback backup
+  ansible.builtin.set_fact:
+    semaphore_controller_requested_rollback_backup_id: >-
+      {{ semaphore_controller_rollback_backup_id
+         if semaphore_controller_rollback_mode | bool
+         else semaphore_controller_backup_id }}
+
+- name: Validate exact immediately preceding Semaphore backup
+  ansible.builtin.assert:
+    that:
+      - >-
+        semaphore_controller_requested_rollback_backup_id is
+        match('^[0-9]{8}T[0-9]{15}Z$')
+      - >-
+        semaphore_controller_deployment_state.backup_id ==
+        semaphore_controller_requested_rollback_backup_id
+      - >-
+        semaphore_controller_deployment_state.encrypted_path ==
+        semaphore_controller_backup_root ~ '/' ~
+        semaphore_controller_requested_rollback_backup_id ~ '.tar.age'
+      - >-
+        semaphore_controller_deployment_state.backup_object ==
+        semaphore_controller_backup_prefix ~ '/' ~ inventory_hostname ~ '/' ~
+        semaphore_controller_requested_rollback_backup_id ~ '.tar.age'
+      - >-
+        semaphore_controller_deployment_state.previous_release is
+        match('^' ~ semaphore_controller_release_root ~ '/[A-Za-z0-9._-]+$')
+      - >-
+        not semaphore_controller_rollback_mode | bool or
+        (semaphore_controller_rollback_marker_raw.content |
+         b64decode | trim) == semaphore_controller_requested_rollback_backup_id
+    fail_msg: >-
+      Rollback is restricted to the exact backup from the immediately
+      preceding deployment.
+
+- name: Inspect local encrypted Semaphore backup
+  ansible.builtin.stat:
+    path: "{{ semaphore_controller_deployment_state.encrypted_path }}"
+  register: semaphore_controller_local_encrypted_backup
+  become: true
+
+- name: Download exact encrypted Semaphore backup when local copy is absent
+  amazon.aws.s3_object:
+    endpoint_url: "{{ semaphore_controller_minio_endpoint_url }}"
+    region: "{{ semaphore_controller_minio_region }}"
+    access_key: >-
+      {{ semaphore_controller_transaction_environment.minio_access_key }}
+    secret_key: >-
+      {{ semaphore_controller_transaction_environment.minio_secret_key }}
+    aws_config:
+      s3:
+        addressing_style: >-
+          {{ semaphore_controller_minio_use_path_style |
+             bool | ternary('path', 'auto') }}
+    bucket: "{{ semaphore_controller_minio_buckets.backups }}"
+    object: "{{ semaphore_controller_deployment_state.backup_object }}"
+    dest: "{{ semaphore_controller_deployment_state.encrypted_path }}"
+    mode: get
+    overwrite: always
+  when: not semaphore_controller_local_encrypted_backup.stat.exists
+  become: true
+  no_log: true
+
+- name: Record protected Semaphore rollback staging paths
+  ansible.builtin.set_fact:
+    semaphore_controller_rollback_staging_path: >-
+      {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
+         semaphore_controller_requested_rollback_backup_id }}
+    semaphore_controller_rollback_identity_path: >-
+      {{ semaphore_controller_backup_staging_root ~ '/rollback-' ~
+         semaphore_controller_requested_rollback_backup_id ~ '/identity.txt' }}
+
+- name: Restore Semaphore from exact encrypted backup
+  block:
+    - name: Create protected Semaphore rollback staging directory
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_rollback_staging_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      become: true
+
+    - name: Materialize protected age identity for rollback
+      ansible.builtin.copy:
+        content: >-
+          {{ semaphore_controller_transaction_environment.age_identity }}
+        dest: "{{ semaphore_controller_rollback_identity_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+      no_log: true
+
+    - name: Decrypt exact Semaphore rollback bundle
+      ansible.builtin.command:
+        argv:
+          - age
+          - --decrypt
+          - --identity
+          - "{{ semaphore_controller_rollback_identity_path }}"
+          - --output
+          - "{{ semaphore_controller_rollback_staging_path }}/bundle.tar"
+          - "{{ semaphore_controller_deployment_state.encrypted_path }}"
+      become: true
+      changed_when: true
+      no_log: true
+
+    - name: Extract exact Semaphore rollback bundle
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --extract
+          - --file
+          - "{{ semaphore_controller_rollback_staging_path }}/bundle.tar"
+          - --directory
+          - "{{ semaphore_controller_rollback_staging_path }}"
+      become: true
+      changed_when: true
+
+    - name: Read Semaphore rollback bundle metadata
+      ansible.builtin.slurp:
+        src: "{{ semaphore_controller_rollback_staging_path }}/metadata.json"
+      register: semaphore_controller_rollback_metadata_raw
+      become: true
+
+    - name: Parse Semaphore rollback bundle metadata
+      ansible.builtin.set_fact:
+        semaphore_controller_rollback_metadata: >-
+          {{ semaphore_controller_rollback_metadata_raw.content |
+             b64decode | from_json }}
+
+    - name: Validate Semaphore rollback bundle metadata
+      ansible.builtin.assert:
+        that:
+          - >-
+            semaphore_controller_rollback_metadata.backup_id ==
+            semaphore_controller_requested_rollback_backup_id
+          - >-
+            semaphore_controller_rollback_metadata.previous_release ==
+            semaphore_controller_deployment_state.previous_release
+        fail_msg: Semaphore rollback bundle metadata does not match state.
+
+    - name: Stop Semaphore before rollback restore
+      ansible.builtin.systemd_service:
+        name: semaphore.service
+        state: stopped
+      become: true
+
+    - name: Restore exact Semaphore PostgreSQL backup
+      ansible.builtin.command:
+        argv:
+          - pg_restore
+          - --clean
+          - --if-exists
+          - --exit-on-error
+          - --dbname
+          - "{{ semaphore_controller_database_name }}"
+          - "{{ semaphore_controller_rollback_staging_path }}/database.dump"
+      become: true
+      become_user: postgres
+      changed_when: true
+
+    - name: Remove changed Semaphore configuration before restore
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_config_dir }}"
+        state: absent
+      become: true
+
+    - name: Restore exact Semaphore configuration archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --extract
+          - --same-owner
+          - --file
+          - "{{ semaphore_controller_rollback_staging_path }}/config.tar"
+          - --directory
+          - /
+      become: true
+      changed_when: true
+
+    - name: Restore exact preceding Semaphore release symlink
+      ansible.builtin.file:
+        src: "{{ semaphore_controller_deployment_state.previous_release }}"
+        dest: "{{ semaphore_controller_current_path }}"
+        state: link
+        force: true
+      become: true
+
+    - name: Restart restored Semaphore service
+      ansible.builtin.systemd_service:
+        name: semaphore.service
+        daemon_reload: true
+        state: restarted
+      become: true
+
+    - name: Verify restored Semaphore internal health
+      ansible.builtin.uri:
+        url: http://127.0.0.1:3000/api/ping
+        method: GET
+        status_code: 200
+        return_content: true
+      register: semaphore_controller_rollback_health
+      changed_when: false
+      retries: 30
+      delay: 2
+      until:
+        - semaphore_controller_rollback_health.status == 200
+        - semaphore_controller_rollback_health.content == 'pong'
+
+    - name: Record ROLLED_BACK Semaphore deployment state
+      ansible.builtin.copy:
+        content: |
+          {
+            "schema": 1,
+            "state": "ROLLED_BACK",
+            "backup_id": {{ semaphore_controller_requested_rollback_backup_id | to_json }},
+            "backup_object": {{ semaphore_controller_deployment_state.backup_object | to_json }},
+            "encrypted_path": {{ semaphore_controller_deployment_state.encrypted_path | to_json }},
+            "previous_release": {{ semaphore_controller_deployment_state.previous_release | to_json }},
+            "target_release": {{ semaphore_controller_deployment_state.target_release | to_json }}
+          }
+        dest: "{{ semaphore_controller_deployment_state_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+  always:
+    - name: Delete Semaphore rollback plaintext and age identity
+      ansible.builtin.file:
+        path: "{{ semaphore_controller_rollback_staging_path }}"
+        state: absent
+      become: true

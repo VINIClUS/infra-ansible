@@ -1,0 +1,18 @@
+[Unit]
+Description=Encrypted Semaphore PostgreSQL and configuration backup
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart={{ semaphore_controller_backup_script_path }}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths={{ semaphore_controller_config_dir }}
+ReadWritePaths={{ semaphore_controller_backup_staging_root }}
