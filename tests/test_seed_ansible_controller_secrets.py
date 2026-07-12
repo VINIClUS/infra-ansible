@@ -1005,7 +1005,12 @@ def test_complete_contract_cross_checks_infisical_external_resources_and_invento
         del env
         argv_seen.append(argv)
         if argv[0] == "ssh-keygen":
-            return subprocess.CompletedProcess(argv, 0, "ssh-ed25519 AAAAPUBLIC\n", "")
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                "ssh-ed25519 AAAAPUBLIC controller@example\n",
+                "",
+            )
         if argv[0] == "age-keygen":
             return subprocess.CompletedProcess(argv, 0, "age1recipient\n", "")
         return subprocess.CompletedProcess(

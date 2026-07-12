@@ -983,10 +983,18 @@ def validate_complete_contract(
             list_github_deploy_keys(command=command),
             title=GITHUB_DEPLOY_KEY_TITLE,
         )
+        deploy_public_identity = _ssh_public_key_identity(deploy_public_key)
+        github_public_identity = (
+            _ssh_public_key_identity(github_matches[0].get("key"))
+            if len(github_matches) == 1
+            else None
+        )
         if (
             len(github_matches) != 1
             or github_matches[0].get("read_only") is not True
-            or github_matches[0].get("key", "").strip() != deploy_public_key
+            or deploy_public_identity is None
+            or github_public_identity is None
+            or github_public_identity != deploy_public_identity
         ):
             raise SeedError("GitHub deploy-key external contract is incomplete")
         cloudflare_matches = [
