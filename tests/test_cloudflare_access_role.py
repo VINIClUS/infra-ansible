@@ -140,7 +140,7 @@ def test_api_reconciliation_lists_exact_domains_and_only_creates_or_updates():
     urls = [task["ansible.builtin.uri"]["url"] for task in calls]
 
     assert methods.count("GET") == 3
-    assert methods.count("POST") == 2
+    assert methods.count("POST") == 3
     assert methods.count("PUT") == 2
     assert set(methods) == {"GET", "POST", "PUT"}
     assert any("?domain=" in url and "&exact=true" in url for url in urls)
@@ -158,13 +158,80 @@ def test_api_reconciliation_lists_exact_domains_and_only_creates_or_updates():
     assert "state: absent" not in task_text
 
 
+def test_missing_onetimepin_identity_provider_is_created_idempotently():
+    tasks = load_yaml(f"{ROLE}/tasks/main.yml")
+    creation = next(
+        task
+        for task in tasks
+        if task.get("name")
+        == "Create the missing One-Time PIN identity provider"
+    )
+    request = creation["ansible.builtin.uri"]
+
+    assert request["url"].endswith("/access/identity_providers")
+    assert request["method"] == "POST"
+    assert request["body_format"] == "json"
+    assert request["body"] == {
+        "name": "Semaphore One-Time PIN",
+        "type": "onetimepin",
+        "config": {},
+    }
+    assert request["status_code"] == 200
+    assert request["return_content"] is False
+    assert creation["no_log"] is True
+    assert creation["changed_when"] is True
+    assert creation["when"] == (
+        "cloudflare_access_application_otp_identity_provider_count | int == 0"
+    )
+
+    task_text = read(f"{ROLE}/tasks/main.yml")
+    assert "Reject duplicate One-Time PIN identity providers" in task_text
+    assert "cloudflare_access_application_otp_identity_provider_create.json.result" in task_text
+
+
+def test_identity_provider_discovery_fails_closed_when_paginated():
+    tasks = load_yaml(f"{ROLE}/tasks/main.yml")
+    guard = next(
+        task
+        for task in tasks
+        if task.get("name")
+        == "Reject paginated Cloudflare Access identity provider discovery"
+    )
+    assertion = guard["ansible.builtin.assert"]
+
+    assert len(assertion["that"]) == 1
+    condition = assertion["that"][0]
+    assert "result_info.total_pages" in condition
+    assert "default(-1)" in condition
+    assert "== 1" in condition
+    assert "== 0" in condition
+    assert ".json.result |" in condition
+    assert "length == 0" in condition
+    assert "result_info.count" in condition
+    assert "result_info.total_count" in condition
+    assert guard["no_log"] is True
+
+
+def test_identity_provider_facts_retain_only_count_not_provider_objects():
+    tasks = load_yaml(f"{ROLE}/tasks/main.yml")
+    fact_names = {
+        fact_name
+        for task in tasks
+        for fact_name in task.get("ansible.builtin.set_fact", {})
+    }
+
+    assert "cloudflare_access_application_otp_identity_provider_count" in fact_names
+    assert "cloudflare_access_application_otp_identity_providers" not in fact_names
+    assert "cloudflare_access_application_identity_provider_candidates" not in fact_names
+
+
 def test_mutations_are_guarded_for_idempotency_and_unrelated_resources_are_untouched():
     tasks = load_yaml(f"{ROLE}/tasks/main.yml")
     calls = uri_tasks(tasks)
     creates = [task for task in calls if task["ansible.builtin.uri"].get("method") == "POST"]
     updates = [task for task in calls if task["ansible.builtin.uri"].get("method") == "PUT"]
 
-    assert len(creates) == 2
+    assert len(creates) == 3
     assert len(updates) == 2
     assert all("when" in task for task in creates + updates)
     assert all(task["ansible.builtin.uri"]["body_format"] == "json" for task in creates + updates)
@@ -190,6 +257,7 @@ def test_human_application_mutations_are_restricted_to_one_selected_otp_provider
         task
         for task in uri_tasks(tasks)
         if task["ansible.builtin.uri"].get("method") in {"POST", "PUT"}
+        and "/access/apps" in task["ansible.builtin.uri"]["url"]
         and "/policies" not in task["ansible.builtin.uri"]["url"]
     ]
 

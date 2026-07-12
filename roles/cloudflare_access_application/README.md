@@ -6,16 +6,17 @@ without deleting or changing unrelated Access resources. The catch-all
 `me@vinisantana.com`. The role lists the selected account or zone's identity
 providers, requires exactly one provider whose API type is `onetimepin`, and
 pins the human application to only that provider with automatic identity
-redirect enabled. A missing or ambiguous One-Time PIN provider fails before
-any application mutation. The more-specific
+redirect enabled. A missing One-Time PIN provider is created automatically;
+multiple providers of that type fail closed before any application mutation.
+The more-specific
 `ansible.vinisantana.com/api/ping` application has one `non_identity` policy
 that matches only the configured Access service-token resource ID.
 
 Set exactly one of `cloudflare_access_account_id` or
 `cloudflare_access_zone_id`, set the non-secret
 `cloudflare_access_service_token_id` from private inventory, and provide the
-API token only as `CLOUDFLARE_API_TOKEN`. The API token needs Access Apps and
-Policies write permission for the selected scope.
+API token only as `CLOUDFLARE_API_TOKEN`. The API token needs Access identity
+provider, Apps, and Policies write permission for the selected scope.
 
 The role lists applications with Cloudflare API v4's exact-domain query,
 creates missing resources, and updates drift only after matching exact domain
