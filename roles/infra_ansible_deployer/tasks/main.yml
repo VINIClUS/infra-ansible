@@ -6,6 +6,7 @@
       - ansible_service_mgr == 'systemd'
       - infra_ansible_deployer_public_sha is match('^[0-9a-f]{40}$')
       - infra_ansible_deployer_inventory_sha is match('^[0-9a-f]{40}$')
+      - ansible_architecture in ['x86_64', 'amd64']
       - infra_ansible_deployer_public_repo_dest == '/srv/infra-ansible'
       - >-
         infra_ansible_deployer_inventory_repo_dest ==
@@ -77,6 +78,88 @@
       mode: "0700"
     - path: "{{ infra_ansible_deployer_state_dir }}"
       mode: "0700"
+    - path: /run/infra-ansible
+      mode: "0700"
+    - path: "{{ infra_ansible_deployer_cache_dir }}"
+      mode: "0700"
+    - path: "{{ infra_ansible_deployer_infisical_release_dir }}"
+      mode: "0755"
+    - path: "{{ infra_ansible_deployer_powershell_release_dir }}"
+      mode: "0755"
+
+- name: Download pinned Infisical CLI archive
+  ansible.builtin.get_url:
+    url: "{{ infra_ansible_deployer_infisical_archive_url }}"
+    dest: >-
+      {{ infra_ansible_deployer_cache_dir }}/infisical-{{
+      infra_ansible_deployer_infisical_version }}.tar.gz
+    owner: root
+    group: root
+    mode: "0600"
+    checksum: sha256:{{ infra_ansible_deployer_infisical_sha256 }}
+
+- name: Extract verified Infisical CLI archive
+  ansible.builtin.unarchive:
+    src: >-
+      {{ infra_ansible_deployer_cache_dir }}/infisical-{{
+      infra_ansible_deployer_infisical_version }}.tar.gz
+    dest: "{{ infra_ansible_deployer_infisical_release_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
+
+- name: Make the pinned Infisical CLI executable
+  ansible.builtin.file:
+    path: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Activate the pinned Infisical CLI
+  ansible.builtin.file:
+    src: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
+    dest: /usr/local/bin/infisical
+    state: link
+    owner: root
+    group: root
+
+- name: Download pinned PowerShell archive
+  ansible.builtin.get_url:
+    url: "{{ infra_ansible_deployer_powershell_archive_url }}"
+    dest: >-
+      {{ infra_ansible_deployer_cache_dir }}/powershell-{{
+      infra_ansible_deployer_powershell_version }}.tar.gz
+    owner: root
+    group: root
+    mode: "0600"
+    checksum: sha256:{{ infra_ansible_deployer_powershell_sha256 }}
+
+- name: Extract verified PowerShell archive
+  ansible.builtin.unarchive:
+    src: >-
+      {{ infra_ansible_deployer_cache_dir }}/powershell-{{
+      infra_ansible_deployer_powershell_version }}.tar.gz
+    dest: "{{ infra_ansible_deployer_powershell_release_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ infra_ansible_deployer_powershell_release_dir }}/pwsh"
+
+- name: Make the pinned PowerShell executable
+  ansible.builtin.file:
+    path: "{{ infra_ansible_deployer_powershell_release_dir }}/pwsh"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Activate the pinned PowerShell release
+  ansible.builtin.file:
+    src: "{{ infra_ansible_deployer_powershell_release_dir }}/pwsh"
+    dest: /usr/local/bin/pwsh
+    state: link
+    owner: root
+    group: root
 
 - name: Install the private inventory deploy key
   ansible.builtin.copy:

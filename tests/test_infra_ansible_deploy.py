@@ -1,5 +1,10 @@
+import os
+import stat
 import subprocess
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -39,6 +44,7 @@ def test_rejects_untrusted_request(requested, main, checkout, dirty):
 @pytest.mark.parametrize(
     "arguments",
     [
+        ["main"],
         [SHA, "--inventory", "/tmp/hosts.yml"],
         [SHA, "--limit", "all"],
         [SHA, "--tags", "all"],
@@ -53,6 +59,18 @@ def test_cli_rejects_alternate_execution_inputs_and_unexpected_arguments(argumen
 
 def test_cli_accepts_exactly_one_sha():
     assert deploy.parse_args([SHA]).requested_sha == SHA
+
+
+def test_invalid_sha_is_rejected_before_lock_or_network(monkeypatch):
+    def forbidden_lock(*_args, **_kwargs):
+        raise AssertionError("lock must not be attempted")
+
+    def forbidden_network(*_args, **_kwargs):
+        raise AssertionError("network must not be attempted")
+
+    monkeypatch.setattr(deploy, "deployment_lock", forbidden_lock)
+    with pytest.raises(ValueError, match="40 lowercase hex"):
+        deploy.deploy_requested_sha("main", open_url=forbidden_network, base_env={})
 
 
 def test_public_main_response_requires_an_exact_sha():
@@ -81,6 +99,141 @@ def test_malformed_sha_is_rejected_before_any_git_subprocess():
         deploy.prepare_public_checkout("main", fake_run, {"PATH": "/usr/bin"})
 
     assert calls == []
+
+
+def test_main_ref_request_ignores_inherited_proxy_ca_and_path(monkeypatch):
+    inherited = {
+        "PATH": "/tmp/runner-bin",
+        "HTTP_PROXY": "http://runner-proxy.invalid",
+        "https_proxy": "http://runner-proxy.invalid",
+        "ALL_PROXY": "socks5://runner-proxy.invalid",
+        "NO_PROXY": "github.com",
+        "SSL_CERT_FILE": "/tmp/runner-ca.pem",
+        "SSL_CERT_DIR": "/tmp/runner-certs",
+        "REQUESTS_CA_BUNDLE": "/tmp/runner-requests.pem",
+        "CURL_CA_BUNDLE": "/tmp/runner-curl.pem",
+    }
+    observed = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return ('{"object": {"sha": "' + SHA + '"}}').encode()
+
+    def open_url(_request, **_kwargs):
+        observed.update(inherited)
+        return Response()
+
+    @contextmanager
+    def unlocked(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(deploy, "deployment_lock", unlocked)
+    monkeypatch.setattr(
+        deploy,
+        "prepare_public_checkout",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop"):
+        deploy.deploy_requested_sha(SHA, open_url=open_url, base_env=inherited)
+
+    assert observed["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+    for variable in (
+        "HTTP_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        assert variable not in observed
+
+
+def test_github_opener_uses_no_proxy_and_explicit_system_ca(monkeypatch):
+    captured = {}
+    sentinel_context = object()
+    sentinel_opener = object()
+
+    def fake_context(*, cafile):
+        captured["cafile"] = cafile
+        return sentinel_context
+
+    def fake_build_opener(*handlers):
+        captured["handlers"] = handlers
+        return sentinel_opener
+
+    monkeypatch.setattr(deploy.ssl, "create_default_context", fake_context)
+    monkeypatch.setattr(deploy.urllib.request, "build_opener", fake_build_opener)
+
+    assert deploy.build_github_opener() is sentinel_opener
+    assert captured["cafile"] == "/etc/ssl/certs/ca-certificates.crt"
+    proxy_handler, https_handler = captured["handlers"]
+    assert proxy_handler.proxies == {}
+    assert https_handler._context is sentinel_context
+
+
+@pytest.mark.parametrize(
+    ("mode", "uid", "message"),
+    [
+        (stat.S_IFIFO | 0o600, 0, "regular file"),
+        (stat.S_IFREG | 0o600, 1234, "owned by root"),
+        (stat.S_IFREG | 0o640, 0, "mode 0600"),
+    ],
+)
+def test_lock_metadata_rejects_unsafe_type_owner_and_mode(mode, uid, message):
+    metadata = SimpleNamespace(st_mode=mode, st_uid=uid)
+    with pytest.raises(PermissionError, match=message):
+        deploy.validate_lock_metadata(metadata)
+
+
+def test_lock_rejects_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("", encoding="utf-8")
+    target.chmod(0o600)
+    lock = tmp_path / "deploy.lock"
+    lock.symlink_to(target)
+
+    with pytest.raises(OSError):
+        with deploy.deployment_lock(str(lock), expected_uid=os.getuid()):
+            pass
+
+
+def test_lock_creates_missing_private_runtime_directory(tmp_path):
+    runtime = tmp_path / "runtime"
+    lock = runtime / "deploy.lock"
+
+    with deploy.deployment_lock(str(lock), expected_uid=os.getuid()):
+        assert runtime.is_dir()
+        assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
+        assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+
+
+def test_lock_serializes_concurrent_callers(tmp_path):
+    lock = tmp_path / "deploy.lock"
+    entered = threading.Event()
+    finished = threading.Event()
+
+    def contender():
+        with deploy.deployment_lock(str(lock), expected_uid=os.getuid()):
+            entered.set()
+        finished.set()
+
+    with deploy.deployment_lock(str(lock), expected_uid=os.getuid()):
+        thread = threading.Thread(target=contender)
+        thread.start()
+        assert not entered.wait(0.1)
+
+    thread.join(timeout=1)
+    assert entered.is_set()
+    assert finished.is_set()
 
 
 def test_playbook_commands_are_fixed_and_secret_free():
@@ -232,6 +385,10 @@ def test_role_installs_only_the_narrow_root_boundary():
         "roles/infra_ansible_deployer/templates/infra-ansible-deploy.sudoers.j2"
     )
 
+    script = read("tools/deploy/infra_ansible_deploy.py")
+    readme = read("roles/infra_ansible_deployer/README.md")
+
+    assert script.startswith("#!/usr/bin/python3 -I\n")
     assert defaults["infra_ansible_deployer_public_repo_dest"] == "/srv/infra-ansible"
     assert defaults["infra_ansible_deployer_inventory_repo_dest"] == "/srv/infra-ansible-inventory"
     assert "version: \"{{ infra_ansible_deployer_public_sha }}\"" in tasks
@@ -247,8 +404,30 @@ def test_role_installs_only_the_narrow_root_boundary():
         in tasks
     )
     assert "runtime_secrets.values() |\n        select('search', '[\\r\\n]')" not in tasks
-    assert sudoers.strip() == (
-        "github-runner ALL=(root) NOPASSWD: "
-        "/usr/local/sbin/infra-ansible-deploy [0-9a-f]*"
-    )
+    assert "Defaults!/usr/local/sbin/infra-ansible-deploy secure_path=" in sudoers
+    assert "NOPASSWD:NOSETENV:" in sudoers
+    assert "/usr/local/sbin/infra-ansible-deploy ^[0-9a-f]{40}$" in sudoers
     assert "NOPASSWD: ALL" not in tasks + env_template + sudoers
+    assert "path: /run/infra-ansible" in tasks
+    assert 'mode: "0700"' in tasks
+
+    assert defaults["infra_ansible_deployer_infisical_version"] == "0.43.84"
+    assert defaults["infra_ansible_deployer_infisical_sha256"] == (
+        "64a47155083c7b8042de64e67eee5629bf894903c102f7239f69c7ed93fdbfc5"
+    )
+    assert defaults["infra_ansible_deployer_powershell_version"] == "7.6.3"
+    assert defaults["infra_ansible_deployer_powershell_sha256"] == (
+        "856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7"
+    )
+    assert "infisical" not in defaults["infra_ansible_deployer_packages"]
+    assert "powershell" not in defaults["infra_ansible_deployer_packages"]
+    assert tasks.index("Download pinned Infisical CLI archive") < tasks.index(
+        "Extract verified Infisical CLI archive"
+    )
+    assert tasks.index("Download pinned PowerShell archive") < tasks.index(
+        "Extract verified PowerShell archive"
+    )
+    assert "checksum: sha256:{{ infra_ansible_deployer_infisical_sha256 }}" in tasks
+    assert "checksum: sha256:{{ infra_ansible_deployer_powershell_sha256 }}" in tasks
+    assert "latest" not in (defaults.__repr__() + tasks).lower()
+    assert "vendor apt" in readme.lower()

@@ -15,6 +15,26 @@ infra_ansible_deployer_inventory_key_path: >-
 infra_ansible_deployer_config_path: /etc/infra-ansible-deploy.env
 infra_ansible_deployer_script_path: /usr/local/sbin/infra-ansible-deploy
 infra_ansible_deployer_state_dir: /var/lib/infra-ansible-deploy
+infra_ansible_deployer_runtime_dir: /run/infra-ansible
+infra_ansible_deployer_cache_dir: /var/cache/infra-ansible-deployer
+
+infra_ansible_deployer_infisical_version: "0.43.84"
+infra_ansible_deployer_infisical_sha256: 64a47155083c7b8042de64e67eee5629bf894903c102f7239f69c7ed93fdbfc5
+infra_ansible_deployer_infisical_archive_url: >-
+  {{ 'https://github.com/Infisical/cli/releases/download/v' ~
+     infra_ansible_deployer_infisical_version ~ '/cli_' ~
+     infra_ansible_deployer_infisical_version ~ '_linux_amd64.tar.gz' }}
+infra_ansible_deployer_infisical_release_dir: >-
+  /opt/infisical/{{ infra_ansible_deployer_infisical_version }}
+
+infra_ansible_deployer_powershell_version: "7.6.3"
+infra_ansible_deployer_powershell_sha256: 856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7
+infra_ansible_deployer_powershell_archive_url: >-
+  {{ 'https://github.com/PowerShell/PowerShell/releases/download/v' ~
+     infra_ansible_deployer_powershell_version ~ '/powershell-' ~
+     infra_ansible_deployer_powershell_version ~ '-linux-x64.tar.gz' }}
+infra_ansible_deployer_powershell_release_dir: >-
+  /opt/powershell/{{ infra_ansible_deployer_powershell_version }}
 
 infra_ansible_deployer_infisical_domain: >-
   {{ infisical_api_url | default('https://infisical.vinisantana.com') }}
@@ -25,9 +45,17 @@ infra_ansible_deployer_infisical_environment: >-
 
 infra_ansible_deployer_packages:
   - ansible-core
+  - ca-certificates
   - git
-  - infisical
+  - libc6
+  - libgcc-s1
+  - libgssapi-krb5-2
+  - libicu-dev
+  - libssl-dev
+  - libstdc++6
+  - libunwind8
   - openssh-client
-  - powershell
   - python3
   - sudo
+  - tar
+  - zlib1g

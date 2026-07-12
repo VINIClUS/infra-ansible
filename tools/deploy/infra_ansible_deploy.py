@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Run the one fixed production deployment accepted from GitHub Actions."""
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ import fcntl
 import json
 import os
 import re
+import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -15,7 +17,7 @@ import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, NamedTuple, Sequence
+from typing import Callable, Mapping, MutableMapping, NamedTuple, Sequence
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -27,8 +29,10 @@ INVENTORY_VALIDATOR = (
 )
 INFISICAL_ENTRYPOINT = "/srv/infra-ansible/tools/ansible/infisical_ansible.py"
 CONFIG_PATH = "/etc/infra-ansible-deploy.env"
-LOCK_PATH = "/run/lock/infra-ansible-deploy.lock"
+RUNTIME_DIR = "/run/infra-ansible"
+LOCK_PATH = "/run/infra-ansible/deploy.lock"
 STATE_PATH = "/var/lib/infra-ansible-deploy/inventory-state.json"
+SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 GITHUB_MAIN_URL = (
     "https://api.github.com/repos/VINIClUS/infra-ansible/git/ref/heads/main"
 )
@@ -125,11 +129,19 @@ class RollbackFailed(RuntimeError):
     """The post-switch operation and the required rollback both failed."""
 
 
+def _requested_sha_argument(value: str) -> str:
+    if not SHA_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            "requested SHA must be exactly 40 lowercase hex characters"
+        )
+    return value
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Deploy exactly one validated infra-ansible main SHA."
     )
-    parser.add_argument("requested_sha")
+    parser.add_argument("requested_sha", type=_requested_sha_argument)
     return parser.parse_args(argv)
 
 
@@ -161,6 +173,17 @@ def _base_child_env(_base_env: Mapping[str, str]) -> dict[str, str]:
         "LANG": "C.UTF-8",
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin",
     }
+
+
+def sanitize_root_environment(
+    environment: MutableMapping[str, str],
+) -> dict[str, str]:
+    """Discard all caller-controlled process environment values."""
+
+    sanitized = _base_child_env(environment)
+    environment.clear()
+    environment.update(sanitized)
+    return dict(sanitized)
 
 
 def load_config(path: str = CONFIG_PATH) -> DeployConfig:
@@ -195,8 +218,16 @@ def load_config(path: str = CONFIG_PATH) -> DeployConfig:
     )
 
 
+def build_github_opener():
+    tls_context = ssl.create_default_context(cafile=SYSTEM_CA_BUNDLE)
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=tls_context),
+    )
+
+
 def fetch_public_main_sha(
-    open_url: Callable[..., object] = urllib.request.urlopen,
+    open_url: Callable[..., object] | None = None,
 ) -> str:
     request = urllib.request.Request(
         GITHUB_MAIN_URL,
@@ -205,7 +236,8 @@ def fetch_public_main_sha(
             "User-Agent": "infra-ansible-deploy/1",
         },
     )
-    with open_url(request, timeout=15) as response:
+    transport = build_github_opener().open if open_url is None else open_url
+    with transport(request, timeout=15) as response:
         payload = json.loads(response.read().decode("utf-8"))
     try:
         main_sha = payload["object"]["sha"]
@@ -478,21 +510,59 @@ def execute_fixed_sequence(
         raise deployment_error
 
 
+def validate_lock_metadata(metadata, expected_uid: int = 0) -> None:
+    if not stat.S_ISREG(metadata.st_mode):
+        raise PermissionError("deployment lock must be a regular file")
+    if metadata.st_uid != expected_uid:
+        raise PermissionError("deployment lock must be owned by root")
+    if stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise PermissionError("deployment lock must have mode 0600")
+
+
+def _validate_runtime_directory(metadata, expected_uid: int) -> None:
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise PermissionError("deployment runtime path must be a directory")
+    if metadata.st_uid != expected_uid:
+        raise PermissionError("deployment runtime directory must be owned by root")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise PermissionError("deployment runtime directory must have mode 0700")
+
+
 @contextmanager
-def deployment_lock(path: str = LOCK_PATH):
-    with open(path, "a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+def deployment_lock(path: str = LOCK_PATH, *, expected_uid: int = 0):
+    runtime_path = os.path.dirname(path)
+    lock_name = os.path.basename(path)
+    try:
+        os.mkdir(runtime_path, 0o700)
+    except FileExistsError:
+        pass
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    runtime_fd = os.open(runtime_path, directory_flags)
+    lock_fd = None
+    try:
+        _validate_runtime_directory(os.fstat(runtime_fd), expected_uid)
+        lock_flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+        lock_fd = os.open(lock_name, lock_flags, 0o600, dir_fd=runtime_fd)
+        validate_lock_metadata(os.fstat(lock_fd), expected_uid)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         yield
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(runtime_fd)
 
 
 def deploy_requested_sha(
     requested_sha: str,
     *,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-    open_url: Callable[..., object] = urllib.request.urlopen,
-    base_env: Mapping[str, str] | None = None,
+    open_url: Callable[..., object] | None = None,
+    base_env: MutableMapping[str, str] | None = None,
 ) -> None:
-    environment = dict(os.environ if base_env is None else base_env)
+    if not SHA_RE.fullmatch(requested_sha):
+        raise ValueError("requested SHA must be exactly 40 lowercase hex characters")
+    root_environment = os.environ if base_env is None else base_env
+    environment = sanitize_root_environment(root_environment)
     with deployment_lock():
         main_sha = fetch_public_main_sha(open_url)
         checkout_sha, dirty = prepare_public_checkout(requested_sha, run, environment)
