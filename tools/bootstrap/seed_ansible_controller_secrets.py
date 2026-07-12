@@ -66,10 +66,13 @@ class Config:
     cloudflare_account_id: str
     cloudflare_api_token: str
     inventory_root: Path
+    infisical_api_version: str = "v4"
 
     def __post_init__(self) -> None:
         _validate_https_url(self.infisical_url, "Infisical API URL")
         _validate_https_url(self.cloudflare_api_url, "Cloudflare API URL")
+        if self.infisical_api_version not in {"v3", "v4"}:
+            raise SeedError("Infisical API version must be v3 or v4")
 
     @classmethod
     def from_environment(cls, inventory_root: Path) -> "Config":
@@ -103,6 +106,7 @@ class Config:
             cloudflare_account_id=required["CLOUDFLARE_ACCOUNT_ID"],
             cloudflare_api_token=required["CLOUDFLARE_API_TOKEN"],
             inventory_root=inventory_root,
+            infisical_api_version=os.environ.get("INFISICAL_API_VERSION", "v4"),
         )
 
 
@@ -234,9 +238,14 @@ class InfisicalClient:
         return {"Authorization": f"Bearer {self._token()}"}
 
     def _query(self, *, view_secret_value: bool = False) -> str:
+        project_key = (
+            "workspaceId"
+            if self._config.infisical_api_version == "v3"
+            else "projectId"
+        )
         return urllib.parse.urlencode(
             {
-                "projectId": self._config.infisical_project_id,
+                project_key: self._config.infisical_project_id,
                 "environment": self._config.infisical_environment,
                 "secretPath": INFISICAL_SECRET_PATH,
                 "viewSecretValue": str(view_secret_value).lower(),
@@ -247,7 +256,7 @@ class InfisicalClient:
     def existing_secret_names(self) -> set[str]:
         payload = request_json(
             "GET",
-            f"{self._config.infisical_url}/api/v4/secrets?{self._query()}",
+            f"{self._config.infisical_url}/{self._secrets_api_path()}?{self._query()}",
             headers=self._headers(),
             transport=self._transport,
             operation="Infisical secret listing",
@@ -269,13 +278,23 @@ class InfisicalClient:
 
     def _secret_url(self, name: str) -> str:
         return (
-            f"{self._config.infisical_url}/api/v4/secrets/"
+            f"{self._config.infisical_url}/{self._secrets_api_path()}/"
             f"{urllib.parse.quote(name, safe='')}"
         )
 
+    def _secrets_api_path(self) -> str:
+        if self._config.infisical_api_version == "v3":
+            return "api/v3/secrets/raw"
+        return "api/v4/secrets"
+
     def _write_body(self, value: str) -> dict[str, Any]:
+        project_key = (
+            "workspaceId"
+            if self._config.infisical_api_version == "v3"
+            else "projectId"
+        )
         return {
-            "projectId": self._config.infisical_project_id,
+            project_key: self._config.infisical_project_id,
             "environment": self._config.infisical_environment,
             "secretPath": INFISICAL_SECRET_PATH,
             "secretValue": value,
@@ -337,12 +356,17 @@ class InfisicalClient:
         return value
 
     def delete_secret(self, name: str) -> None:
+        project_key = (
+            "workspaceId"
+            if self._config.infisical_api_version == "v3"
+            else "projectId"
+        )
         payload = request_json(
             "DELETE",
             self._secret_url(name),
             headers=self._headers(),
             body={
-                "projectId": self._config.infisical_project_id,
+                project_key: self._config.infisical_project_id,
                 "environment": self._config.infisical_environment,
                 "secretPath": INFISICAL_SECRET_PATH,
                 "type": "shared",

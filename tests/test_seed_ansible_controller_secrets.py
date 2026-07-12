@@ -189,6 +189,63 @@ def test_infisical_list_hides_values_and_writes_values_only_in_http_body() -> No
     assert json.loads(write.body.decode())["secretValue"] == "body-only-secret"
 
 
+def test_infisical_v3_uses_workspace_id_and_raw_secret_endpoints(
+    tmp_path: Path,
+) -> None:
+    requests: list[seed.HttpRequest] = []
+    created = False
+
+    def transport(request: seed.HttpRequest) -> seed.HttpResponse:
+        nonlocal created
+        requests.append(request)
+        if request.url.endswith("/api/v1/auth/universal-auth/login"):
+            return seed.HttpResponse(200, {"accessToken": "token"})
+        if request.method == "POST":
+            created = True
+            return seed.HttpResponse(
+                200,
+                {"secret": {"secretKey": "SEMAPHORE_DB_PASSWORD"}},
+            )
+        return seed.HttpResponse(
+            200,
+            {
+                "secrets": (
+                    [{"secretKey": "SEMAPHORE_DB_PASSWORD"}] if created else []
+                )
+            },
+        )
+
+    legacy_config = seed.Config(
+        **{**config(tmp_path).__dict__, "infisical_api_version": "v3"}
+    )
+    client = seed.InfisicalClient(legacy_config, transport=transport)
+
+    assert client.existing_secret_names() == set()
+    client.create_secret("SEMAPHORE_DB_PASSWORD", "secret-value")
+
+    list_request = next(
+        request
+        for request in requests
+        if request.method == "GET" and "/api/v3/secrets/raw?" in request.url
+    )
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(list_request.url).query)
+    assert query["workspaceId"] == ["project-id"]
+    assert "projectId" not in query
+
+    create_request = next(
+        request
+        for request in requests
+        if request.method == "POST" and "/api/v3/secrets/raw/" in request.url
+    )
+    assert create_request.url.endswith(
+        "/api/v3/secrets/raw/SEMAPHORE_DB_PASSWORD"
+    )
+    body = json.loads(create_request.body.decode())
+    assert body["workspaceId"] == "project-id"
+    assert "projectId" not in body
+    assert body["secretValue"] == "secret-value"
+
+
 def test_key_material_uses_0600_temp_files_and_only_public_key_reaches_gh(
     tmp_path: Path,
 ) -> None:
