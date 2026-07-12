@@ -25,6 +25,40 @@ Grant each identity read access only to its project, environments, and secret
 paths. Rotate identities independently through the untracked `.env` or secure
 runner; no inventory change is required.
 
+### Ansible controller bootstrap
+
+`tools/bootstrap/seed_ansible_controller_secrets.py` is the only supported
+bootstrap path for the seven approved names under `/ansible`. Start with
+`--dry-run`; it needs no credentials or network access and prints names only.
+The live mode authenticates with Universal Auth, lists existing keys with
+`viewSecretValue=false`, sends values only in HTTPS request bodies, and emits a
+JSON summary containing names and non-secret resource IDs only.
+
+The bootstrap is create-only. A complete existing contract is a safe no-op and
+a partial existing contract stops before generating material. Never delete or
+overwrite an existing key merely to make a rerun pass. Rotation requires one
+explicit `--rotate NAME` per approved existing key; the Cloudflare client ID
+and client secret must be rotated together. Rotations snapshot their prior
+values only in memory so a failed transaction can restore them. Review the
+dependent service's recovery procedure and take an encrypted backup before any
+rotation.
+
+Age and SSH private keys exist only in a temporary mode-0700 directory with
+mode-0600 files and are removed on every exit path. Only the public Ed25519 key
+is passed to `gh repo deploy-key add`; read-only is the GitHub CLI default, so
+the bootstrap never supplies `--allow-write`. The age recipient and Cloudflare
+service-token resource ID are public metadata and are atomically written to the
+private inventory. The corresponding private identity, client ID, and client
+secret remain only in Infisical.
+
+If a remote step fails, the bootstrap attempts to remove newly created
+Infisical secrets, the new Cloudflare service token, and the new GitHub deploy
+key, and restores public inventory files. A message ending in `compensation
+completed` means that automated cleanup succeeded; `manual recovery required`
+means an operator must inspect resources by their fixed names and IDs. Do not
+copy API response bodies, subprocess output, temporary files, or secret values
+into an incident ticket or terminal transcript during recovery.
+
 ## MinIO
 
 MinIO is the object storage target for artifacts, backups, and validation
