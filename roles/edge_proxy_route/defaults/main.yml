@@ -1,0 +1,13 @@
+---
+edge_proxy_route_domain: ansible.vinisantana.com
+edge_proxy_route_controller_address: ""
+edge_proxy_route_upstream_port: 3000
+edge_proxy_route_upstream: >-
+  http://{{ edge_proxy_route_controller_address }}:{{ edge_proxy_route_upstream_port }}
+
+edge_proxy_route_config_path: /etc/nginx/conf.d/ansible.vinisantana.com.conf
+edge_proxy_route_candidate_path: "{{ edge_proxy_route_config_path }}.candidate"
+edge_proxy_route_restore_candidate_path: >-
+  {{ edge_proxy_route_config_path }}.restore
+edge_proxy_route_probe_retries: 12
+edge_proxy_route_probe_delay: 5

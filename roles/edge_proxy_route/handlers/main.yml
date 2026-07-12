@@ -1,0 +1,16 @@
+---
+- name: Validate installed Nginx configuration
+  become: true
+  ansible.builtin.command:
+    argv:
+      - nginx
+      - -t
+  changed_when: false
+  notify: Reload Nginx after successful validation
+  listen: Validate and reload Nginx route
+
+- name: Reload Nginx after successful validation
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: reloaded
+  become: true
