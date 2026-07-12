@@ -43,6 +43,14 @@ def test_lxc_playbook_runs_only_on_bootstrap_host():
     assert "role: proxmox_lxc_guest" in playbook
 
 
+def test_lxc_playbook_uses_ansible_runtime_for_local_modules():
+    playbook = yaml.safe_load(read("playbooks/provision-ansible-controller.yml"))[0]
+
+    assert playbook.get("vars", {}).get("ansible_python_interpreter") == (
+        "{{ ansible_playbook_python }}"
+    )
+
+
 def test_lxc_role_reconciles_configuration_before_starting():
     tasks = role_tasks()
     reconcile_index = next(
