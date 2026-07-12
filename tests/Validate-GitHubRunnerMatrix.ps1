@@ -90,12 +90,12 @@ try {
         Wait-Systemd -Container $Case.Container
 
         Invoke-Docker -Arguments @(
-            "exec", $Case.Container, "mkdir", "-p", "/tmp/ansible/roles/github_actions_runner"
+            "exec", $Case.Container, "mkdir", "-p", "/tmp/ansible/roles"
         ) | Out-Null
         Invoke-Docker -Arguments @(
             "cp",
-            "$(Join-Path $Root 'roles/github_actions_runner')/.",
-            "$($Case.Container):/tmp/ansible/roles/github_actions_runner"
+            (Join-Path $Root "roles/github_actions_runner"),
+            "$($Case.Container):/tmp/ansible/roles/"
         ) | Out-Null
         Invoke-Docker -Arguments @(
             "cp", $ArchivePath, "$($Case.Container):/tmp/fake-runner.tar.gz"
