@@ -107,6 +107,7 @@ request = urllib.request.Request(
     headers={
         "CF-Access-Client-Id": os.environ["CLOUDFLARE_ACCESS_CLIENT_ID"],
         "CF-Access-Client-Secret": os.environ["CLOUDFLARE_ACCESS_CLIENT_SECRET"],
+        "User-Agent": "infra-ansible-deploy/1",
     },
 )
 with urllib.request.urlopen(request, timeout=15) as response:
