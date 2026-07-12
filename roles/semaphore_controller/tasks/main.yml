@@ -1,0 +1,92 @@
+---
+- name: Validate Semaphore controller enable flag
+  ansible.builtin.assert:
+    that:
+      - semaphore_controller_enabled is boolean
+    fail_msg: "semaphore_controller_enabled must be a boolean."
+
+- name: Stop only the Semaphore controller role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not semaphore_controller_enabled | bool
+
+- name: Validate narrow Semaphore controller contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Debian'
+      - ansible_facts.distribution_major_version == '13'
+      - ansible_facts.architecture in ['x86_64', 'amd64']
+      - ansible_facts.service_mgr == 'systemd'
+      - semaphore_controller_version == '2.18.25'
+      - semaphore_controller_sha256 is match('^[0-9a-f]{64}$')
+      - semaphore_controller_release_root is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_current_path is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_config_dir is match('^/[a-zA-Z0-9._/-]+$')
+      - semaphore_controller_port | int == 3000
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - ansible_run_tags | list | sort == ['semaphore_controller']
+    fail_msg: >-
+      Semaphore controller deployment requires Debian 13 amd64 under systemd,
+      the pinned release contract with native postgresql, one exact --limit
+      host, and only the semaphore_controller tag.
+
+- name: Read required Semaphore values from the controller environment
+  ansible.builtin.set_fact:
+    semaphore_controller_runtime_environment: >-
+      {{ semaphore_controller_runtime_environment | default({}) |
+         combine({item: lookup('ansible.builtin.env', item)}) }}
+  loop: "{{ semaphore_controller_required_env }}"
+  no_log: true
+
+- name: Validate required Semaphore values without logging them
+  ansible.builtin.assert:
+    that:
+      - >-
+        semaphore_controller_runtime_environment.values() |
+        reject('equalto', '') | list | length ==
+        semaphore_controller_required_env | length
+      - >-
+        semaphore_controller_runtime_environment.values() |
+        select('search', '[\r\n]') | list | length == 0
+      - >-
+        semaphore_controller_runtime_environment['SEMAPHORE_ACCESS_KEY_ENCRYPTION']
+        is match('^[A-Za-z0-9+/]+={0,2}$')
+      - >-
+        semaphore_controller_runtime_environment['SEMAPHORE_ACCESS_KEY_ENCRYPTION'] |
+        b64decode | length in [16, 24, 32]
+    fail_msg: >-
+      Required Semaphore values are missing, contain newlines, or include an
+      invalid AES access-key encryption value.
+  no_log: true
+
+- name: Install native Semaphore and PostgreSQL release
+  ansible.builtin.import_tasks: install.yml
+
+- name: Configure native Semaphore and PostgreSQL service
+  ansible.builtin.import_tasks: configure.yml
+
+- name: Apply pending Semaphore service handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Semaphore service
+  ansible.builtin.systemd_service:
+    name: semaphore.service
+    enabled: true
+    state: started
+  become: true
+
+- name: Require local Semaphore health
+  ansible.builtin.uri:
+    url: http://127.0.0.1:3000/api/ping
+    method: GET
+    status_code: 200
+    return_content: true
+  register: semaphore_controller_health
+  changed_when: false
+  retries: 30
+  delay: 2
+  until:
+    - semaphore_controller_health.status == 200
+    - semaphore_controller_health.content | trim == 'pong'
