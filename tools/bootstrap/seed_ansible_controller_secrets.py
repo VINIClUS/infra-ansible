@@ -67,12 +67,22 @@ class Config:
     cloudflare_api_token: str
     inventory_root: Path
     infisical_api_version: str = "v4"
+    cloudflare_handoff_resource_id: str = ""
+    cloudflare_handoff_client_id: str = ""
+    cloudflare_handoff_client_secret: str = ""
 
     def __post_init__(self) -> None:
         _validate_https_url(self.infisical_url, "Infisical API URL")
         _validate_https_url(self.cloudflare_api_url, "Cloudflare API URL")
         if self.infisical_api_version not in {"v3", "v4"}:
             raise SeedError("Infisical API version must be v3 or v4")
+        handoff_values = (
+            self.cloudflare_handoff_resource_id,
+            self.cloudflare_handoff_client_id,
+            self.cloudflare_handoff_client_secret,
+        )
+        if any(handoff_values) and not all(handoff_values):
+            raise SeedError("Cloudflare encrypted handoff must be complete")
 
     @classmethod
     def from_environment(cls, inventory_root: Path) -> "Config":
@@ -107,6 +117,15 @@ class Config:
             cloudflare_api_token=required["CLOUDFLARE_API_TOKEN"],
             inventory_root=inventory_root,
             infisical_api_version=os.environ.get("INFISICAL_API_VERSION", "v4"),
+            cloudflare_handoff_resource_id=os.environ.get(
+                "CLOUDFLARE_BOOTSTRAP_SERVICE_TOKEN_ID", ""
+            ),
+            cloudflare_handoff_client_id=os.environ.get(
+                "CLOUDFLARE_BOOTSTRAP_CLIENT_ID", ""
+            ),
+            cloudflare_handoff_client_secret=os.environ.get(
+                "CLOUDFLARE_BOOTSTRAP_CLIENT_SECRET", ""
+            ),
         )
 
 
@@ -788,9 +807,31 @@ def generate_resources(
             if target_names & cloudflare_names:
                 if not cloudflare_names <= target_names:
                     raise SeedError("Cloudflare Access credentials must rotate together")
-                cloudflare_token = create_cloudflare_service_token(
-                    config, transport=transport
-                )
+                if config.cloudflare_handoff_resource_id:
+                    cloudflare_token = CloudflareServiceToken(
+                        config.cloudflare_handoff_resource_id,
+                        config.cloudflare_handoff_client_id,
+                        config.cloudflare_handoff_client_secret,
+                    )
+                    listed_tokens = list_cloudflare_service_tokens(
+                        config, transport=transport
+                    )
+                    matches = [
+                        item
+                        for item in listed_tokens
+                        if item.get("id") == cloudflare_token.resource_id
+                        and item.get("name") == CLOUDFLARE_SERVICE_TOKEN_NAME
+                        and item.get("client_id") == cloudflare_token.client_id
+                    ]
+                    if len(matches) != 1:
+                        raise RemoteStateUncertain(
+                            "Cloudflare encrypted handoff readback was not exact; "
+                            "manual recovery required"
+                        )
+                else:
+                    cloudflare_token = create_cloudflare_service_token(
+                        config, transport=transport
+                    )
                 values["CLOUDFLARE_ACCESS_CLIENT_ID"] = cloudflare_token.client_id
                 values["CLOUDFLARE_ACCESS_CLIENT_SECRET"] = cloudflare_token.client_secret
         if set(values) != target_names:

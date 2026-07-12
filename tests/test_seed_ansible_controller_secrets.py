@@ -388,6 +388,50 @@ def test_cloudflare_empty_first_page_with_zero_total_pages_is_valid(
     ) == []
 
 
+def test_precreated_cloudflare_handoff_is_verified_without_a_create_request(
+    tmp_path: Path,
+) -> None:
+    requests: list[seed.HttpRequest] = []
+
+    def transport(request: seed.HttpRequest) -> seed.HttpResponse:
+        requests.append(request)
+        return seed.HttpResponse(
+            200,
+            {
+                "success": True,
+                "result": [
+                    {
+                        "id": "cf-resource-id",
+                        "name": seed.CLOUDFLARE_SERVICE_TOKEN_NAME,
+                        "client_id": "cf-client-id",
+                    }
+                ],
+                "result_info": {"page": 1, "total_pages": 1},
+            },
+        )
+
+    handoff_config = seed.Config(
+        **{
+            **config(tmp_path).__dict__,
+            "cloudflare_handoff_resource_id": "cf-resource-id",
+            "cloudflare_handoff_client_id": "cf-client-id",
+            "cloudflare_handoff_client_secret": "cf-client-secret",
+        }
+    )
+    resources = seed.generate_resources(
+        handoff_config,
+        {"CLOUDFLARE_ACCESS_CLIENT_ID", "CLOUDFLARE_ACCESS_CLIENT_SECRET"},
+        transport=transport,
+    )
+
+    assert resources.cloudflare_service_token_id == "cf-resource-id"
+    assert resources.values == {
+        "CLOUDFLARE_ACCESS_CLIENT_ID": "cf-client-id",
+        "CLOUDFLARE_ACCESS_CLIENT_SECRET": "cf-client-secret",
+    }
+    assert [request.method for request in requests] == ["GET"]
+
+
 def test_ambiguous_cloudflare_create_requires_manual_recovery(tmp_path: Path) -> None:
     calls = 0
 
