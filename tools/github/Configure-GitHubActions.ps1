@@ -138,14 +138,35 @@ $protectionBody = [ordered]@{
 }
 
 # Read all existing settings through endpoints that remain successful before the
-# environment and branch protection are created.
+# environment and branch protection are created. When a child already exists,
+# read that exact child before replacing its desired state.
 $null = Invoke-GitHubApi -Method GET -Endpoint $actionsEndpoint
 $null = Invoke-GitHubApi -Method GET -Endpoint $selectedActionsEndpoint
 $null = Invoke-GitHubApi -Method GET -Endpoint $forkApprovalEndpoint
-$null = Invoke-GitHubApi -Method GET -Endpoint $environmentsEndpoint
+$environments = Invoke-GitHubApi -Method GET -Endpoint $environmentsEndpoint
+$environmentEntries = @(Get-RequiredProperty -InputObject $environments -Name "environments" -Setting "production environment discovery")
+$productionEnvironmentCount = 0
+foreach ($environmentEntry in $environmentEntries) {
+    if ((Get-RequiredProperty -InputObject $environmentEntry -Name "name" -Setting "production environment discovery") -ceq "production") {
+        $productionEnvironmentCount++
+    }
+}
+if ($productionEnvironmentCount -gt 1) {
+    throw "production environment discovery returned duplicates"
+}
+if ($productionEnvironmentCount -eq 1) {
+    $currentEnvironment = Invoke-GitHubApi -Method GET -Endpoint $environmentEndpoint
+    if ((Get-RequiredProperty -InputObject $currentEnvironment -Name "name" -Setting "production environment") -cne "production") {
+        throw "production environment pre-write verification failed"
+    }
+}
+
 $branch = Invoke-GitHubApi -Method GET -Endpoint $branchEndpoint
 if ((Get-RequiredProperty -InputObject $branch -Name "name" -Setting "main branch") -cne "main") {
     throw "main branch verification returned an unexpected branch"
+}
+if ([bool] (Get-RequiredProperty -InputObject $branch -Name "protected" -Setting "main branch")) {
+    $null = Invoke-GitHubApi -Method GET -Endpoint $protectionEndpoint
 }
 
 # PUT is idempotent for these REST resources. Supplying complete canonical JSON
@@ -188,14 +209,21 @@ if ((Get-RequiredProperty -InputObject $environment -Name "name" -Setting "produ
 $protection = Invoke-GitHubApi -Method GET -Endpoint $protectionEndpoint
 $statusChecks = Get-RequiredProperty -InputObject $protection -Name "required_status_checks" -Setting "main branch protection"
 $contexts = @(Get-RequiredProperty -InputObject $statusChecks -Name "contexts" -Setting "main branch protection")
+$adminEnforcement = Get-RequiredProperty -InputObject $protection -Name "enforce_admins" -Setting "main branch protection"
 $pullRequests = Get-RequiredProperty -InputObject $protection -Name "required_pull_request_reviews" -Setting "main branch protection"
+$restrictions = Get-RequiredProperty -InputObject $protection -Name "restrictions" -Setting "main branch protection"
 $linearHistory = Get-RequiredProperty -InputObject $protection -Name "required_linear_history" -Setting "main branch protection"
 $forcePushes = Get-RequiredProperty -InputObject $protection -Name "allow_force_pushes" -Setting "main branch protection"
 $deletions = Get-RequiredProperty -InputObject $protection -Name "allow_deletions" -Setting "main branch protection"
 if (
     -not [bool] (Get-RequiredProperty -InputObject $statusChecks -Name "strict" -Setting "main branch protection") -or
     $contexts.Count -ne 1 -or $contexts[0] -cne "validate" -or
+    -not [bool] (Get-RequiredProperty -InputObject $adminEnforcement -Name "enabled" -Setting "main branch protection") -or
+    [bool] (Get-RequiredProperty -InputObject $pullRequests -Name "dismiss_stale_reviews" -Setting "main branch protection") -or
+    [bool] (Get-RequiredProperty -InputObject $pullRequests -Name "require_code_owner_reviews" -Setting "main branch protection") -or
     [int] (Get-RequiredProperty -InputObject $pullRequests -Name "required_approving_review_count" -Setting "main branch protection") -ne 0 -or
+    [bool] (Get-RequiredProperty -InputObject $pullRequests -Name "require_last_push_approval" -Setting "main branch protection") -or
+    $null -ne $restrictions -or
     -not [bool] (Get-RequiredProperty -InputObject $linearHistory -Name "enabled" -Setting "main branch protection") -or
     [bool] (Get-RequiredProperty -InputObject $forcePushes -Name "enabled" -Setting "main branch protection") -or
     [bool] (Get-RequiredProperty -InputObject $deletions -Name "enabled" -Setting "main branch protection")

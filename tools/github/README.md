@@ -27,10 +27,12 @@ Mutating requests serialize canonical PowerShell objects into temporary JSON
 files and pass them with `gh api --input`; response bodies are never forwarded
 to standard output.
 
-The operation is idempotent: each run reads the current resources, sends the
-same complete desired state with `PUT`, and reads back the effective settings.
-Its successful output contains only setting names and the state `verified`.
-Any `gh` failure stops the operation without printing the API response.
+The operation is idempotent: each run discovers optional resources from their
+parent collection or branch, reads the exact environment and protection
+resource when it already exists, sends the same complete desired state with
+`PUT`, and reads back every managed field. Its successful output contains only
+setting names and the state `verified`. Any `gh` failure or post-write drift
+stops the operation without printing the API response.
 
 Runner registration is intentionally outside this tool. This script never
 requests, accepts, stores, or prints a runner registration token.
