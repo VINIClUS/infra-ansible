@@ -40,6 +40,26 @@ def run_checked(command, env):
     ).stdout.strip()
 
 
+def normalize_export(exported):
+    if isinstance(exported, dict):
+        return {key: str(value) for key, value in exported.items()}
+    if not isinstance(exported, list):
+        raise RuntimeError("Infisical export did not return a JSON object or list")
+
+    normalized = {}
+    for record in exported:
+        if not isinstance(record, dict):
+            raise RuntimeError("Infisical export list record is invalid")
+        key = record.get("key")
+        value = record.get("value")
+        if not isinstance(key, str) or not key or not isinstance(value, str):
+            raise RuntimeError("Infisical export list record is invalid")
+        if key in normalized:
+            raise RuntimeError(f"Duplicate Infisical export key: {key}")
+        normalized[key] = value
+    return normalized
+
+
 def main():
     args = parse_args()
     missing_auth = [name for name in AUTH_VARIABLES if not os.environ.get(name)]
@@ -86,12 +106,10 @@ def main():
             export_env,
         )
         exported = json.loads(raw)
-        if not isinstance(exported, dict):
-            raise RuntimeError("Infisical export did not return a JSON object")
-        for key, value in exported.items():
+        for key, value in normalize_export(exported).items():
             if key in secrets and secrets[key] != value:
                 raise RuntimeError(f"Conflicting Infisical value for key: {key}")
-            secrets[key] = str(value)
+            secrets[key] = value
 
     missing_keys = [key for key in args.required_keys if key not in secrets]
     if missing_keys:

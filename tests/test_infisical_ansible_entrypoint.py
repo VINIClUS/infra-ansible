@@ -91,6 +91,47 @@ class InfisicalAnsibleEntrypointTests(unittest.TestCase):
         calls = [json.loads(line) for line in self.log_path.read_text().splitlines()]
         self.assertEqual(len(calls), 2)
 
+    def test_accepts_infisical_list_export_and_injects_only_allowlisted_keys(self):
+        result = self._run(
+            export=[
+                {"key": "SELECTED", "value": "kept", "type": "shared"},
+                {"key": "EXTRA", "value": "discarded", "type": "shared"},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [json.loads(line) for line in self.log_path.read_text().splitlines()]
+        self.assertEqual(calls[-1]["selected"], "kept")
+        self.assertIsNone(calls[-1]["extra"])
+
+    def test_rejects_malformed_infisical_list_records_without_values_in_errors(self):
+        sentinel = "never-print-list-value"
+        malformed_exports = (
+            [{"value": sentinel}],
+            [{"key": 123, "value": sentinel}],
+            [{"key": "", "value": sentinel}],
+            [{"key": "SELECTED"}],
+            [{"key": "SELECTED", "value": 123}],
+            ["not-a-record"],
+        )
+        for exported in malformed_exports:
+            with self.subTest(exported=exported):
+                result = self._run(export=exported)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Infisical export list record", result.stderr)
+                self.assertNotIn(sentinel, result.stdout + result.stderr)
+
+    def test_rejects_duplicate_infisical_list_keys_even_when_values_match(self):
+        sentinel = "never-print-duplicate-value"
+        result = self._run(
+            export=[
+                {"key": "SELECTED", "value": sentinel},
+                {"key": "SELECTED", "value": sentinel},
+            ]
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Duplicate Infisical export key: SELECTED", result.stderr)
+        self.assertNotIn(sentinel, result.stdout + result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
