@@ -113,11 +113,74 @@
     default(false) != true
   no_log: true
 
+- name: Reject paginated Cloudflare Access identity provider discovery
+  ansible.builtin.assert:
+    that:
+      - >-
+        (cloudflare_access_application_identity_provider_list.json.result_info.total_pages |
+         default(-1) | int) == 1 or
+        ((cloudflare_access_application_identity_provider_list.json.result_info.total_pages |
+          default(-1) | int) == 0 and
+         cloudflare_access_application_identity_provider_list.json.result |
+         length == 0 and
+         (cloudflare_access_application_identity_provider_list.json.result_info.count |
+          default(-1) | int) == 0 and
+         (cloudflare_access_application_identity_provider_list.json.result_info.total_count |
+          default(-1) | int) == 0)
+    fail_msg: >-
+      Cloudflare Access identity-provider discovery returned incomplete,
+      malformed, or multi-page metadata; refusing to create or select a
+      provider from incomplete results.
+  no_log: true
+
+- name: Record configured One-Time PIN identity providers
+  ansible.builtin.set_fact:
+    cloudflare_access_application_otp_identity_provider_count: >-
+      {{ cloudflare_access_application_identity_provider_list.json.result |
+         selectattr('type', 'equalto', 'onetimepin') | list | length }}
+  no_log: true
+
+- name: Reject duplicate One-Time PIN identity providers
+  ansible.builtin.assert:
+    that:
+      - >-
+        cloudflare_access_application_otp_identity_provider_count | int <= 1
+    fail_msg: >-
+      More than one Cloudflare Access identity provider has type onetimepin;
+      refusing an ambiguous update.
+  no_log: true
+
+- name: Create the missing One-Time PIN identity provider
+  ansible.builtin.uri:
+    url: >-
+      {{ cloudflare_access_application_scope_url
+      }}/access/identity_providers
+    method: POST
+    headers:
+      Authorization: "Bearer {{ cloudflare_access_api_token }}"
+    body_format: json
+    body:
+      name: Semaphore One-Time PIN
+      type: onetimepin
+      config: {}
+    status_code: 200
+    return_content: false
+  register: cloudflare_access_application_otp_identity_provider_create
+  when: cloudflare_access_application_otp_identity_provider_count | int == 0
+  changed_when: true
+  failed_when: >-
+    cloudflare_access_application_otp_identity_provider_create.json.success |
+    default(false) != true
+  no_log: true
+
 - name: Select the exact One-Time PIN identity provider
   ansible.builtin.include_tasks: identity_provider.yml
   vars:
     cloudflare_access_identity_provider_candidates: >-
-      {{ cloudflare_access_application_identity_provider_list.json.result }}
+      {{ cloudflare_access_application_identity_provider_list.json.result +
+         ([cloudflare_access_application_otp_identity_provider_create.json.result]
+          if cloudflare_access_application_otp_identity_provider_create is changed
+          else []) }}
   no_log: true
 
 - name: List exact Cloudflare Access application domains
