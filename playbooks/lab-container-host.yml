@@ -1,0 +1,9 @@
+---
+- name: Import safe Linux baseline contract
+  ansible.builtin.import_playbook: linux-baseline.yml
+
+- name: Apply lab container host capability
+  hosts: linux_guests
+  gather_facts: true
+  roles:
+    - container_runtime

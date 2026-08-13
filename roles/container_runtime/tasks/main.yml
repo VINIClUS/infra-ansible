@@ -1,0 +1,54 @@
+---
+- name: Validate lab container runtime contract
+  ansible.builtin.assert:
+    that:
+      - container_runtime_enabled is boolean
+      - container_runtime_technical_user is string
+      - container_runtime_packages is iterable
+      - >-
+        not container_runtime_enabled | bool or
+        container_runtime_technical_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - >-
+        not container_runtime_enabled | bool or
+        ansible_facts.os_family == 'Debian'
+    fail_msg: >-
+      container_runtime requires an explicit technical user and a Debian host
+      when enabled.
+
+- name: Load local passwd entries
+  ansible.builtin.getent:
+    database: passwd
+  when: container_runtime_enabled | bool
+
+- name: Prove the declared technical user already exists
+  ansible.builtin.assert:
+    that:
+      - container_runtime_technical_user in ansible_facts.getent_passwd
+    fail_msg: >-
+      container_runtime_technical_user must name an existing account; this role
+      never creates host users.
+  when: container_runtime_enabled | bool
+
+- name: Install lab container runtime packages
+  ansible.builtin.apt:
+    name: "{{ container_runtime_packages }}"
+    state: present
+    update_cache: true
+  become: true
+  when: container_runtime_enabled | bool
+
+- name: Enable Docker service
+  ansible.builtin.systemd_service:
+    name: docker.service
+    enabled: true
+    state: started
+  become: true
+  when: container_runtime_enabled | bool
+
+- name: Grant Docker access to the declared technical user
+  ansible.builtin.user:
+    name: "{{ container_runtime_technical_user }}"
+    groups: docker
+    append: true
+  become: true
+  when: container_runtime_enabled | bool
