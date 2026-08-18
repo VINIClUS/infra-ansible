@@ -72,6 +72,42 @@ def run_role(
     )
 
 
+def run_role_with_tags(
+    tmp_path: Path, variables: dict, requested_tags: str
+) -> subprocess.CompletedProcess:
+    playbook = tmp_path / "protocolos-edge-route-tags.yml"
+    playbook.write_text(
+        """---
+- name: Exercise Protocolos edge route tag selection
+  hosts: nginx
+  connection: local
+  gather_facts: false
+  roles:
+    - role: protocolos_edge_route
+      tags: [edge_proxy_route, protocolos_edge_route]
+""",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "nginx,",
+            str(playbook),
+            "--limit",
+            "nginx",
+            "--tags",
+            requested_tags,
+            "--extra-vars",
+            json.dumps(variables),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def run_role_task_file(
     tmp_path: Path,
     task_file: str,
@@ -127,6 +163,19 @@ def test_playbook_applies_shared_and_dedicated_tags_to_protocolos_role():
     )
 
     assert protocolos_role["tags"] == ["edge_proxy_route", "protocolos_edge_route"]
+
+
+def test_shared_edge_tag_skips_enabled_protocolos_without_mutating(tmp_path):
+    result = run_role_with_tags(
+        tmp_path,
+        {"protocolos_edge_route_enabled": True, **PROTOCOLS_SERVICE_CONTRACT},
+        "edge_proxy_route",
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "Preflight Protocolos upstream" not in output
+    assert "Require explicit approval" not in output
 
 
 def test_enabled_role_requires_explicit_per_run_approval_before_any_preflight(
