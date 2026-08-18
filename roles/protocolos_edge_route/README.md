@@ -13,7 +13,7 @@ literal Ansible limit `nginx`; a missing or different limit fails before any
 preflight or Nginx mutation. The exact targeted rollout command is:
 
 ```bash
-ansible-playbook -i /path/to/private/inventories/prod/hosts.yml playbooks/edge-proxy-route.yml --limit nginx --tags protocolos_edge_route -e protocolos_edge_route_apply=true
+ansible-playbook -i /path/to/private/inventories/prod/hosts.yml playbooks/edge-proxy-route.yml --limit nginx --tags protocolos_edge_route --extra-vars '{"protocolos_edge_route_apply": true}'
 ```
 
 The role never invokes certificate issuance or renewal. It requires the

@@ -67,7 +67,8 @@
       - ansible_limit | trim == 'nginx'
     fail_msg: >-
       Enabled Protocolos mutation requires explicit per-run approval with
-      -e protocolos_edge_route_apply=true and the exact --limit nginx.
+      --extra-vars '{"protocolos_edge_route_apply": true}' and the exact
+      --limit nginx.
 
 - name: Preflight Protocolos upstream over HTTP
   ansible.builtin.uri:

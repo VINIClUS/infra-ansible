@@ -165,6 +165,13 @@ def test_playbook_applies_shared_and_dedicated_tags_to_protocolos_role():
     assert protocolos_role["tags"] == ["edge_proxy_route", "protocolos_edge_route"]
 
 
+def test_rollout_readme_passes_the_apply_gate_as_json_boolean():
+    readme = read(f"{ROLE}/README.md")
+
+    assert "--extra-vars '{\"protocolos_edge_route_apply\": true}'" in readme
+    assert "-e protocolos_edge_route_apply=true" not in readme
+
+
 def test_shared_edge_tag_skips_enabled_protocolos_without_mutating(tmp_path):
     result = run_role_with_tags(
         tmp_path,
