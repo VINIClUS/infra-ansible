@@ -1,0 +1,27 @@
+---
+protocolos_edge_route_enabled: false
+protocolos_edge_route_domain: protocolos.portosoftware.com.br
+protocolos_edge_route_upstream_address: 192.168.1.199
+protocolos_edge_route_upstream_port: 80
+protocolos_edge_route_upstream: http://192.168.1.199:80
+
+protocolos_edge_route_vmid: 104
+protocolos_edge_route_node: pve-01
+protocolos_edge_route_vm_name: SistemaDeProtocolos
+protocolos_edge_route_vm_mac: BC:24:11:D1:92:1B
+
+protocolos_edge_route_certificate_path: >-
+  /etc/letsencrypt/live/protocolos.portosoftware.com.br/fullchain.pem
+protocolos_edge_route_private_key_path: >-
+  /etc/letsencrypt/live/protocolos.portosoftware.com.br/privkey.pem
+
+protocolos_edge_route_config_path: >-
+  /etc/nginx/sites-available/protocolos.portosoftware.com.br
+protocolos_edge_route_enabled_path: >-
+  /etc/nginx/sites-enabled/protocolos.portosoftware.com.br
+protocolos_edge_route_candidate_path: >-
+  /etc/nginx/sites-available/protocolos.portosoftware.com.br.candidate
+protocolos_edge_route_restore_candidate_path: >-
+  /etc/nginx/sites-available/protocolos.portosoftware.com.br.restore
+protocolos_edge_route_probe_retries: 12
+protocolos_edge_route_probe_delay: 5

@@ -101,7 +101,10 @@ def test_privileged_edge_and_access_runs_remain_separate():
     assert len(edge) == 1
     assert edge[0]["hosts"] == "edge_proxy_hosts"
     assert edge[0]["serial"] == 1
-    assert role_contract(edge[0]) == [("edge_proxy_route", ["edge_proxy_route"])]
+    assert role_contract(edge[0]) == [
+        ("edge_proxy_route", ["edge_proxy_route"]),
+        ("protocolos_edge_route", ["protocolos_edge_route"]),
+    ]
     assert len(access) == 1
     assert access[0]["hosts"] == "localhost"
     assert access[0]["connection"] == "local"

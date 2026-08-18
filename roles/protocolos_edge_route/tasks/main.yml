@@ -1,0 +1,367 @@
+---
+- name: Validate Protocolos edge route enable flag
+  ansible.builtin.assert:
+    that:
+      - protocolos_edge_route_enabled is boolean
+    fail_msg: protocolos_edge_route_enabled must be a boolean.
+
+- name: Stop Protocolos edge route role when disabled
+  ansible.builtin.meta: end_role
+  when: not protocolos_edge_route_enabled | bool
+
+- name: Validate exact Protocolos VM 104 edge contract
+  ansible.builtin.assert:
+    that:
+      - protocolos_edge_route_domain == 'protocolos.portosoftware.com.br'
+      - protocolos_edge_route_upstream_address == '192.168.1.199'
+      - protocolos_edge_route_upstream_port is integer
+      - protocolos_edge_route_upstream_port == 80
+      - protocolos_edge_route_upstream == 'http://192.168.1.199:80'
+      - protocolos_edge_route_vmid is integer
+      - protocolos_edge_route_vmid == 104
+      - protocolos_edge_route_node == 'pve-01'
+      - protocolos_edge_route_vm_name == 'SistemaDeProtocolos'
+      - protocolos_edge_route_vm_mac == 'BC:24:11:D1:92:1B'
+      - >-
+        protocolos_edge_route_certificate_path ==
+        '/etc/letsencrypt/live/protocolos.portosoftware.com.br/fullchain.pem'
+      - >-
+        protocolos_edge_route_private_key_path ==
+        '/etc/letsencrypt/live/protocolos.portosoftware.com.br/privkey.pem'
+      - >-
+        protocolos_edge_route_config_path ==
+        '/etc/nginx/sites-available/protocolos.portosoftware.com.br'
+      - >-
+        protocolos_edge_route_enabled_path ==
+        '/etc/nginx/sites-enabled/protocolos.portosoftware.com.br'
+      - >-
+        protocolos_edge_route_candidate_path ==
+        '/etc/nginx/sites-available/protocolos.portosoftware.com.br.candidate'
+      - >-
+        protocolos_edge_route_restore_candidate_path ==
+        '/etc/nginx/sites-available/protocolos.portosoftware.com.br.restore'
+      - protocolos_edge_route_probe_retries is integer
+      - protocolos_edge_route_probe_retries > 0
+      - protocolos_edge_route_probe_delay is integer
+      - protocolos_edge_route_probe_delay >= 0
+    fail_msg: >-
+      The enabled route requires the exact Protocolos VM 104 edge contract;
+      domain, upstream, VM identity, certificate, and Nginx paths are pinned.
+
+- name: Preflight Protocolos upstream over HTTP
+  ansible.builtin.uri:
+    url: "{{ protocolos_edge_route_upstream }}"
+    method: GET
+    status_code: 200
+    return_content: false
+  register: protocolos_edge_route_upstream_preflight
+  changed_when: false
+  until: protocolos_edge_route_upstream_preflight.status == 200
+  retries: "{{ protocolos_edge_route_probe_retries }}"
+  delay: "{{ protocolos_edge_route_probe_delay }}"
+
+- name: Inspect existing Protocolos Let's Encrypt certificate material
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ protocolos_edge_route_certificate_path }}"
+    - "{{ protocolos_edge_route_private_key_path }}"
+  register: protocolos_edge_route_certificate_material
+  changed_when: false
+  become: true
+
+- name: Require existing Protocolos Let's Encrypt certificate material
+  ansible.builtin.assert:
+    that:
+      - protocolos_edge_route_certificate_material.results | length == 2
+      - >-
+        protocolos_edge_route_certificate_material.results |
+        selectattr('stat.exists') | list | length == 2
+      - >-
+        protocolos_edge_route_certificate_material.results |
+        selectattr('stat.isreg') | list | length == 2
+    fail_msg: >-
+      The existing Protocolos Let's Encrypt certificate and key must both be
+      present as regular files; this role never issues certificates.
+
+- name: Read Protocolos certificate subject alternative names
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ protocolos_edge_route_certificate_path }}"
+      - -noout
+      - -ext
+      - subjectAltName
+  register: protocolos_edge_route_certificate_san
+  changed_when: false
+  become: true
+
+- name: Validate exact Protocolos certificate SAN
+  ansible.builtin.assert:
+    that:
+      - >-
+        protocolos_edge_route_certificate_san.stdout |
+        regex_findall('DNS:([^,\\s]+)') | sort ==
+        ['protocolos.portosoftware.com.br']
+    fail_msg: >-
+      The existing Protocolos certificate must contain exactly one DNS SAN:
+      protocolos.portosoftware.com.br.
+
+- name: Require enabled certbot renewal timer
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - certbot.timer
+  register: protocolos_edge_route_certbot_timer
+  changed_when: false
+  failed_when: >-
+    protocolos_edge_route_certbot_timer.rc != 0 or
+    protocolos_edge_route_certbot_timer.stdout | trim != 'enabled'
+  become: true
+
+- name: Render Protocolos Nginx route candidate
+  ansible.builtin.template:
+    src: protocolos-edge-route.conf.j2
+    dest: "{{ protocolos_edge_route_candidate_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Inspect preceding Protocolos Nginx route
+  ansible.builtin.stat:
+    path: "{{ protocolos_edge_route_config_path }}"
+  register: protocolos_edge_route_preceding_config
+  changed_when: false
+  become: true
+
+- name: Inspect preceding Protocolos Nginx route symlink
+  ansible.builtin.stat:
+    path: "{{ protocolos_edge_route_enabled_path }}"
+    follow: false
+  register: protocolos_edge_route_preceding_enabled
+  changed_when: false
+  become: true
+
+- name: Require preceding Protocolos enabled path to be absent or a symlink
+  ansible.builtin.assert:
+    that:
+      - >-
+        not protocolos_edge_route_preceding_enabled.stat.exists | default(false) or
+        protocolos_edge_route_preceding_enabled.stat.islnk | default(false)
+    fail_msg: >-
+      The Protocolos sites-enabled path must be absent or a symlink so its
+      preceding state can be restored transactionally.
+
+- name: Compare Protocolos candidate with preceding Nginx route
+  ansible.builtin.command:
+    argv:
+      - cmp
+      - --silent
+      - "{{ protocolos_edge_route_candidate_path }}"
+      - "{{ protocolos_edge_route_config_path }}"
+  register: protocolos_edge_route_config_comparison
+  changed_when: false
+  failed_when: protocolos_edge_route_config_comparison.rc not in [0, 1]
+  when: protocolos_edge_route_preceding_config.stat.exists
+  become: true
+
+- name: Record Protocolos route and symlink changes
+  ansible.builtin.set_fact:
+    protocolos_edge_route_config_changed: >-
+      {{ not protocolos_edge_route_preceding_config.stat.exists or
+         protocolos_edge_route_config_comparison.rc | default(1) != 0 }}
+    protocolos_edge_route_changed: >-
+      {{ protocolos_edge_route_config_changed | bool or
+         not protocolos_edge_route_preceding_enabled.stat.islnk | default(false) or
+         protocolos_edge_route_preceding_enabled.stat.lnk_source | default('') !=
+         protocolos_edge_route_config_path }}
+
+- name: Generate Protocolos Nginx route backup timestamp
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y%m%dT%H%M%S%NZ
+  register: protocolos_edge_route_backup_timestamp
+  changed_when: false
+  when:
+    - protocolos_edge_route_config_changed | bool
+    - protocolos_edge_route_preceding_config.stat.exists
+
+- name: Back up preceding Protocolos Nginx route
+  ansible.builtin.copy:
+    src: "{{ protocolos_edge_route_config_path }}"
+    dest: "{{ protocolos_edge_route_config_path }}.{{ protocolos_edge_route_backup_timestamp.stdout }}.bak"
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+  when:
+    - protocolos_edge_route_config_changed | bool
+    - protocolos_edge_route_preceding_config.stat.exists
+  become: true
+
+- name: Install and verify Protocolos Nginx route
+  become: true
+  when: protocolos_edge_route_changed | bool
+  block:
+    - name: Atomically install Protocolos Nginx route candidate
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ protocolos_edge_route_candidate_path }}"
+          - "{{ protocolos_edge_route_config_path }}"
+      changed_when: true
+      when: protocolos_edge_route_config_changed | bool
+
+    - name: Ensure Protocolos Nginx route symlink
+      ansible.builtin.file:
+        src: "{{ protocolos_edge_route_config_path }}"
+        dest: "{{ protocolos_edge_route_enabled_path }}"
+        state: link
+        force: true
+
+    - name: Validate installed Protocolos Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+
+    - name: Reload installed Protocolos Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Probe Protocolos HTTP redirect
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 301
+        follow_redirects: none
+        return_content: false
+      register: protocolos_edge_route_http_probe
+      changed_when: false
+      until: protocolos_edge_route_http_probe.status == 301
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS root
+      ansible.builtin.uri:
+        url: https://127.0.0.1/
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        return_content: false
+      register: protocolos_edge_route_https_root_probe
+      changed_when: false
+      until: protocolos_edge_route_https_root_probe.status == 200
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS CSRF endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1/api/auth/csrf
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        return_content: false
+      register: protocolos_edge_route_csrf_probe
+      changed_when: false
+      until: protocolos_edge_route_csrf_probe.status == 200
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS health endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1/api/health
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 401
+        validate_certs: false
+        return_content: false
+      register: protocolos_edge_route_health_probe
+      changed_when: false
+      until: protocolos_edge_route_health_probe.status == 401
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+  rescue:
+    - name: Stage preceding Protocolos Nginx route for restoration
+      ansible.builtin.command:
+        argv:
+          - cp
+          - --archive
+          - "{{ protocolos_edge_route_config_path }}.{{ protocolos_edge_route_backup_timestamp.stdout }}.bak"
+          - "{{ protocolos_edge_route_restore_candidate_path }}"
+      changed_when: true
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Restore preceding Protocolos Nginx route
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ protocolos_edge_route_restore_candidate_path }}"
+          - "{{ protocolos_edge_route_config_path }}"
+      changed_when: true
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Remove newly installed Protocolos Nginx route
+      ansible.builtin.file:
+        path: "{{ protocolos_edge_route_config_path }}"
+        state: absent
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - not protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Remove replacement Protocolos Nginx route symlink
+      ansible.builtin.file:
+        path: "{{ protocolos_edge_route_enabled_path }}"
+        state: absent
+
+    - name: Restore preceding Protocolos Nginx symlink state
+      ansible.builtin.file:
+        src: "{{ protocolos_edge_route_preceding_enabled.stat.lnk_source }}"
+        dest: "{{ protocolos_edge_route_enabled_path }}"
+        state: link
+        force: true
+      when: protocolos_edge_route_preceding_enabled.stat.islnk | default(false)
+
+    - name: Revalidate restored Protocolos Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+
+    - name: Reload restored Protocolos Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Report failed Protocolos Nginx route transaction
+      ansible.builtin.fail:
+        msg: >-
+          The Protocolos Nginx route transaction failed and the preceding
+          file and symlink state was restored:
+          {{ ansible_failed_result.msg | default('unknown failure') }}
+  always:
+    - name: Remove Protocolos Nginx route transaction candidates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ protocolos_edge_route_candidate_path }}"
+        - "{{ protocolos_edge_route_restore_candidate_path }}"
