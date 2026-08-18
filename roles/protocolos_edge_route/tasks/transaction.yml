@@ -1,0 +1,172 @@
+---
+- name: Install and verify Protocolos Nginx route
+  become: true
+  block:
+    - name: Atomically install Protocolos Nginx route candidate
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ protocolos_edge_route_candidate_path }}"
+          - "{{ protocolos_edge_route_config_path }}"
+      changed_when: true
+      when:
+        - protocolos_edge_route_changed | bool
+        - protocolos_edge_route_config_changed | bool
+
+    - name: Ensure Protocolos Nginx route symlink
+      ansible.builtin.file:
+        src: "{{ protocolos_edge_route_config_path }}"
+        dest: "{{ protocolos_edge_route_enabled_path }}"
+        state: link
+        force: true
+      when: protocolos_edge_route_changed | bool
+
+    - name: Validate installed Protocolos Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+      when: protocolos_edge_route_changed | bool
+
+    - name: Reload installed Protocolos Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+      when: protocolos_edge_route_changed | bool
+
+    - name: Probe Protocolos HTTP redirect
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 301
+        follow_redirects: none
+        return_content: false
+      register: protocolos_edge_route_http_probe
+      changed_when: false
+      when: protocolos_edge_route_changed | bool
+      until: protocolos_edge_route_http_probe.status == 301
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS root
+      ansible.builtin.uri:
+        url: https://127.0.0.1/
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        follow_redirects: none
+        return_content: false
+      register: protocolos_edge_route_https_root_probe
+      changed_when: false
+      when: protocolos_edge_route_changed | bool
+      until: protocolos_edge_route_https_root_probe.status == 200
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS CSRF endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1/api/auth/csrf
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        follow_redirects: none
+        return_content: false
+      register: protocolos_edge_route_csrf_probe
+      changed_when: false
+      when: protocolos_edge_route_changed | bool
+      until: protocolos_edge_route_csrf_probe.status == 200
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+
+    - name: Probe Protocolos HTTPS health endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1/api/health
+        headers:
+          Host: "{{ protocolos_edge_route_domain }}"
+        status_code: 401
+        validate_certs: false
+        follow_redirects: none
+        return_content: false
+      register: protocolos_edge_route_health_probe
+      changed_when: false
+      when: protocolos_edge_route_changed | bool
+      until: protocolos_edge_route_health_probe.status == 401
+      retries: "{{ protocolos_edge_route_probe_retries }}"
+      delay: "{{ protocolos_edge_route_probe_delay }}"
+  rescue:
+    - name: Stage preceding Protocolos Nginx route for restoration
+      ansible.builtin.command:
+        argv:
+          - cp
+          - --archive
+          - "{{ protocolos_edge_route_config_path }}.{{ protocolos_edge_route_backup_timestamp.stdout }}.bak"
+          - "{{ protocolos_edge_route_restore_candidate_path }}"
+      changed_when: true
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Restore preceding Protocolos Nginx route
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ protocolos_edge_route_restore_candidate_path }}"
+          - "{{ protocolos_edge_route_config_path }}"
+      changed_when: true
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Remove newly installed Protocolos Nginx route
+      ansible.builtin.file:
+        path: "{{ protocolos_edge_route_config_path }}"
+        state: absent
+      when:
+        - protocolos_edge_route_config_changed | bool
+        - not protocolos_edge_route_preceding_config.stat.exists
+
+    - name: Remove replacement Protocolos Nginx route symlink
+      ansible.builtin.file:
+        path: "{{ protocolos_edge_route_enabled_path }}"
+        state: absent
+
+    - name: Restore preceding Protocolos Nginx symlink state
+      ansible.builtin.file:
+        src: "{{ protocolos_edge_route_preceding_enabled.stat.lnk_source }}"
+        dest: "{{ protocolos_edge_route_enabled_path }}"
+        state: link
+        force: true
+      when: protocolos_edge_route_preceding_enabled.stat.islnk | default(false)
+
+    - name: Revalidate restored Protocolos Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+
+    - name: Reload restored Protocolos Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Report failed Protocolos Nginx route transaction
+      ansible.builtin.fail:
+        msg: >-
+          The Protocolos Nginx route transaction failed and the preceding
+          file and symlink state was restored:
+          {{ ansible_failed_result.msg | default('unknown failure') }}
+  always:
+    - name: Remove Protocolos Nginx route transaction candidates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ protocolos_edge_route_candidate_path }}"
+        - "{{ protocolos_edge_route_restore_candidate_path }}"

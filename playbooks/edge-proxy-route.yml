@@ -6,3 +6,5 @@
   roles:
     - role: edge_proxy_route
       tags: [edge_proxy_route]
+    - role: protocolos_edge_route
+      tags: [edge_proxy_route, protocolos_edge_route]
