@@ -248,5 +248,8 @@ def test_playbook_targets_only_edge_proxy_hosts_with_exact_role_tag():
     assert play["serial"] == 1
     assert play["roles"] == [
         {"role": "edge_proxy_route", "tags": ["edge_proxy_route"]},
-        {"role": "protocolos_edge_route", "tags": ["protocolos_edge_route"]},
+        {
+            "role": "protocolos_edge_route",
+            "tags": ["edge_proxy_route", "protocolos_edge_route"],
+        },
     ]

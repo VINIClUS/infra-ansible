@@ -1,5 +1,6 @@
 ---
 protocolos_edge_route_enabled: false
+protocolos_edge_route_apply: false
 protocolos_edge_route_domain: protocolos.portosoftware.com.br
 protocolos_edge_route_upstream_address: 192.168.1.199
 protocolos_edge_route_upstream_port: 80

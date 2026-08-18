@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -23,12 +24,18 @@ def task_named(tasks: list[dict], name: str) -> dict:
     return next(task for task in tasks if task["name"] == name)
 
 
-def run_role(tmp_path: Path, variables: dict | None = None) -> subprocess.CompletedProcess:
+def run_role(
+    tmp_path: Path,
+    variables: dict | None = None,
+    *,
+    host: str = "nginx",
+    limit: str | None = None,
+) -> subprocess.CompletedProcess:
     playbook = tmp_path / "protocolos-edge-route.yml"
     playbook.write_text(
-        """---
+        f"""---
 - name: Exercise protocolos edge route
-  hosts: localhost
+  hosts: {host}
   connection: local
   gather_facts: false
   tasks:
@@ -38,15 +45,18 @@ def run_role(tmp_path: Path, variables: dict | None = None) -> subprocess.Comple
 """,
         encoding="utf-8",
     )
-    return subprocess.run(
-        [
+    command = [
             "ansible-playbook",
             "-i",
-            "localhost,",
+            f"{host},",
             str(playbook),
             "--extra-vars",
             json.dumps(variables or {}),
-        ],
+    ]
+    if limit is not None:
+        command.extend(["--limit", limit])
+    return subprocess.run(
+        command,
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -60,6 +70,60 @@ def test_disabled_role_ends_without_operational_preflight(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Preflight Protocolos upstream" not in result.stdout
     assert "Install Protocolos Nginx route candidate" not in result.stdout
+
+
+def test_playbook_applies_shared_and_dedicated_tags_to_protocolos_role():
+    play = load_yaml("playbooks/edge-proxy-route.yml")[0]
+    protocolos_role = next(
+        role
+        for role in play["roles"]
+        if role["role"] == "protocolos_edge_route"
+    )
+
+    assert protocolos_role["tags"] == ["edge_proxy_route", "protocolos_edge_route"]
+
+
+def test_enabled_role_requires_explicit_per_run_approval_before_any_preflight(
+    tmp_path,
+):
+    result = run_role(
+        tmp_path,
+        {"protocolos_edge_route_enabled": True, **PROTOCOLS_SERVICE_CONTRACT},
+        limit="nginx",
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "explicit per-run approval" in output
+    assert "Preflight Protocolos upstream" not in output
+    assert "Render Protocolos Nginx route candidate" not in output
+    assert "Atomically install Protocolos Nginx route candidate" not in output
+
+
+@pytest.mark.parametrize(
+    ("host", "limit"),
+    [("nginx", None), ("not-nginx", "not-nginx")],
+)
+def test_enabled_role_requires_exact_nginx_limit_before_any_preflight(
+    tmp_path, host, limit
+):
+    result = run_role(
+        tmp_path,
+        {
+            "protocolos_edge_route_enabled": True,
+            "protocolos_edge_route_apply": True,
+            **PROTOCOLS_SERVICE_CONTRACT,
+        },
+        host=host,
+        limit=limit,
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "exact --limit nginx" in output
+    assert "Preflight Protocolos upstream" not in output
+    assert "Render Protocolos Nginx route candidate" not in output
+    assert "Atomically install Protocolos Nginx route candidate" not in output
 
 
 @pytest.mark.parametrize(
@@ -98,6 +162,7 @@ def test_defaults_pin_the_disabled_vm104_route_contract():
 
     assert defaults == {
         "protocolos_edge_route_enabled": False,
+        "protocolos_edge_route_apply": False,
         "protocolos_edge_route_domain": "protocolos.portosoftware.com.br",
         "protocolos_edge_route_upstream_address": "192.168.1.199",
         "protocolos_edge_route_upstream_port": 80,
@@ -126,7 +191,16 @@ def test_defaults_pin_the_disabled_vm104_route_contract():
         ),
         "protocolos_edge_route_probe_retries": 12,
         "protocolos_edge_route_probe_delay": 5,
+        **PROTOCOLS_SERVICE_CONTRACT,
     }
+
+    for duplicate_name in (
+        "protocolos_edge_route_vmid",
+        "protocolos_edge_route_node",
+        "protocolos_edge_route_vm_name",
+        "protocolos_edge_route_vm_mac",
+    ):
+        assert duplicate_name not in defaults
 
 
 def test_template_enforces_exact_redirect_and_tls_proxy_behavior():
@@ -185,7 +259,10 @@ def test_role_preflights_existing_certificate_san_timer_and_http_upstream():
 
 def test_transaction_installs_symlink_validates_reloads_and_rolls_back_both_states():
     tasks = load_yaml(f"{ROLE}/tasks/main.yml")
-    transaction = task_named(tasks, "Install and verify Protocolos Nginx route")
+    transaction_tasks = load_yaml(f"{ROLE}/tasks/transaction.yml")
+    transaction = task_named(
+        transaction_tasks, "Install and verify Protocolos Nginx route"
+    )
     block_names = [task["name"] for task in transaction["block"]]
     rescue_names = [task["name"] for task in transaction["rescue"]]
     top_level_names = [task["name"] for task in tasks]
@@ -220,7 +297,7 @@ def test_transaction_installs_symlink_validates_reloads_and_rolls_back_both_stat
 
 
 def test_probes_accept_the_required_public_statuses_only():
-    tasks = load_yaml(f"{ROLE}/tasks/main.yml")
+    tasks = load_yaml(f"{ROLE}/tasks/transaction.yml")
     block = task_named(tasks, "Install and verify Protocolos Nginx route")["block"]
 
     expected = {

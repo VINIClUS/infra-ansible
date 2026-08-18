@@ -5,6 +5,15 @@ This disabled-by-default role manages only the public edge route for VM 104,
 pinned domain, upstream, VM identity, Let's Encrypt certificate paths, and
 Nginx site paths declared in its defaults.
 
+Mutation also defaults to denied. Keep `protocolos_edge_route_apply` out of
+private inventory and approve only the individual run. The role requires the
+literal Ansible limit `nginx`; a missing or different limit fails before any
+preflight or Nginx mutation. The exact targeted rollout command is:
+
+```bash
+ansible-playbook -i /path/to/private/inventories/prod/hosts.yml playbooks/edge-proxy-route.yml --limit nginx --tags protocolos_edge_route -e protocolos_edge_route_apply=true
+```
+
 The role never invokes certificate issuance or renewal. It requires the
 existing certificate's sole DNS SAN to be `protocolos.portosoftware.com.br`
 and requires `certbot.timer` to be enabled before any Nginx change.

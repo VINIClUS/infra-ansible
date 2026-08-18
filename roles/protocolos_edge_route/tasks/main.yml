@@ -48,6 +48,17 @@
       The enabled route requires the exact Protocolos VM 104 edge contract;
       domain, upstream, VM identity, certificate, and Nginx paths are pinned.
 
+- name: Require explicit approval and exact Protocolos rollout limit
+  ansible.builtin.assert:
+    that:
+      - protocolos_edge_route_apply is boolean
+      - protocolos_edge_route_apply | bool
+      - ansible_limit is defined
+      - ansible_limit | trim == 'nginx'
+    fail_msg: >-
+      Enabled Protocolos mutation requires explicit per-run approval with
+      -e protocolos_edge_route_apply=true and the exact --limit nginx.
+
 - name: Preflight Protocolos upstream over HTTP
   ansible.builtin.uri:
     url: "{{ protocolos_edge_route_upstream }}"
