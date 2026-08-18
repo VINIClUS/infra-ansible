@@ -1,0 +1,25 @@
+---
+- name: Inspect existing Protocolos Let's Encrypt certificate material
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+  loop:
+    - "{{ protocolos_edge_route_certificate_path }}"
+    - "{{ protocolos_edge_route_private_key_path }}"
+  register: protocolos_edge_route_certificate_material
+  changed_when: false
+  become: true
+
+- name: Require existing Protocolos Let's Encrypt certificate material
+  ansible.builtin.assert:
+    that:
+      - protocolos_edge_route_certificate_material.results | length == 2
+      - >-
+        protocolos_edge_route_certificate_material.results |
+        selectattr('stat.exists') | list | length == 2
+      - >-
+        protocolos_edge_route_certificate_material.results |
+        selectattr('stat.isreg') | list | length == 2
+    fail_msg: >-
+      The existing Protocolos Let's Encrypt certificate and key must both be
+      present as regular files; this role never issues certificates.

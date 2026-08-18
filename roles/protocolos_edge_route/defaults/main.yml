@@ -6,10 +6,12 @@ protocolos_edge_route_upstream_address: 192.168.1.199
 protocolos_edge_route_upstream_port: 80
 protocolos_edge_route_upstream: http://192.168.1.199:80
 
-protocolos_edge_route_vmid: 104
-protocolos_edge_route_node: pve-01
-protocolos_edge_route_vm_name: SistemaDeProtocolos
-protocolos_edge_route_vm_mac: BC:24:11:D1:92:1B
+protocolos_service_vmid: 104  # noqa var-naming[no-role-prefix]
+protocolos_service_node: pve-01  # noqa var-naming[no-role-prefix]
+protocolos_service_name: SistemaDeProtocolos  # noqa var-naming[no-role-prefix]
+protocolos_service_private_address: 192.168.1.199  # noqa var-naming[no-role-prefix]
+protocolos_service_mac_address: BC:24:11:D1:92:1B  # noqa var-naming[no-role-prefix]
+protocolos_service_onboot: true  # noqa var-naming[no-role-prefix]
 
 protocolos_edge_route_certificate_path: >-
   /etc/letsencrypt/live/protocolos.portosoftware.com.br/fullchain.pem

@@ -44,6 +44,16 @@ rtk powershell -NoProfile -ExecutionPolicy Bypass -File tests\Validate-InfraAnsi
 rtk powershell -NoProfile -ExecutionPolicy Bypass -File tests\Validate-AnsibleContainer.ps1
 ```
 
+Antes de abrir um pull request, valide localmente a sintaxe do workflow com
+[`act`](https://github.com/nektos/act), sem executar jobs, deploys ou fornecer
+segredos. O wrapper passa `/dev/null` explicitamente para `--secret-file`,
+`--env-file`, `--input-file` e `--var-file`, impedindo que o `act` leia os
+arquivos locais padrao ignorados `.secrets`, `.env`, `.input` e `.vars`:
+
+```bash
+./tools/github/validate-workflow-locally.sh
+```
+
 Para usar Ansible sem instalar no host, construa o container local:
 
 ```powershell

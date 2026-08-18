@@ -1,0 +1,14 @@
+---
+- name: Record Protocolos Nginx route content change
+  ansible.builtin.set_fact:
+    protocolos_edge_route_config_changed: >-
+      {{ not protocolos_edge_route_preceding_config.stat.exists or
+         protocolos_edge_route_config_comparison.rc | default(1) != 0 }}
+
+- name: Record Protocolos Nginx route and symlink change
+  ansible.builtin.set_fact:
+    protocolos_edge_route_changed: >-
+      {{ protocolos_edge_route_config_changed | bool or
+         not protocolos_edge_route_preceding_enabled.stat.islnk | default(false) or
+         protocolos_edge_route_preceding_enabled.stat.lnk_source | default('') !=
+         protocolos_edge_route_config_path }}

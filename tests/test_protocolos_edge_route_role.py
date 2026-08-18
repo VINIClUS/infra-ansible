@@ -10,6 +10,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 ROLE = "roles/protocolos_edge_route"
+PROTOCOLS_SERVICE_CONTRACT = {
+    "protocolos_service_vmid": 104,
+    "protocolos_service_node": "pve-01",
+    "protocolos_service_name": "SistemaDeProtocolos",
+    "protocolos_service_private_address": "192.168.1.199",
+    "protocolos_service_mac_address": "BC:24:11:D1:92:1B",
+    "protocolos_service_onboot": True,
+}
 
 
 def read(path: str) -> str:
@@ -61,6 +69,44 @@ def run_role(
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def run_role_task_file(
+    tmp_path: Path,
+    task_file: str,
+    variables: dict | None = None,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    playbook = tmp_path / "protocolos-edge-route-task-file.yml"
+    playbook.write_text(
+        f"""---
+- name: Exercise Protocolos edge route task file
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Import Protocolos edge route task file
+      ansible.builtin.import_role:
+        name: protocolos_edge_route
+        tasks_from: {task_file}
+""",
+        encoding="utf-8",
+    )
+    return subprocess.run(
+        [
+            "ansible-playbook",
+            "-i",
+            "localhost,",
+            str(playbook),
+            "--extra-vars",
+            json.dumps(variables or {}),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, **(environment or {})},
     )
 
 
@@ -132,10 +178,12 @@ def test_enabled_role_requires_exact_nginx_limit_before_any_preflight(
         {"protocolos_edge_route_domain": "other.example"},
         {"protocolos_edge_route_upstream_address": "192.168.1.200"},
         {"protocolos_edge_route_upstream_port": 8181},
-        {"protocolos_edge_route_vmid": 105},
-        {"protocolos_edge_route_node": "pve-02"},
-        {"protocolos_edge_route_vm_name": "OtherService"},
-        {"protocolos_edge_route_vm_mac": "BC:24:11:D1:92:1C"},
+        {"protocolos_service_vmid": 105},
+        {"protocolos_service_node": "pve-02"},
+        {"protocolos_service_name": "OtherService"},
+        {"protocolos_service_private_address": "192.168.1.200"},
+        {"protocolos_service_mac_address": "BC:24:11:D1:92:1C"},
+        {"protocolos_service_onboot": False},
         {"protocolos_edge_route_certificate_path": "/tmp/fullchain.pem"},
         {"protocolos_edge_route_private_key_path": "/tmp/privkey.pem"},
         {"protocolos_edge_route_config_path": "/etc/nginx/other.conf"},
@@ -167,10 +215,6 @@ def test_defaults_pin_the_disabled_vm104_route_contract():
         "protocolos_edge_route_upstream_address": "192.168.1.199",
         "protocolos_edge_route_upstream_port": 80,
         "protocolos_edge_route_upstream": "http://192.168.1.199:80",
-        "protocolos_edge_route_vmid": 104,
-        "protocolos_edge_route_node": "pve-01",
-        "protocolos_edge_route_vm_name": "SistemaDeProtocolos",
-        "protocolos_edge_route_vm_mac": "BC:24:11:D1:92:1B",
         "protocolos_edge_route_certificate_path": (
             "/etc/letsencrypt/live/protocolos.portosoftware.com.br/fullchain.pem"
         ),
@@ -292,8 +336,92 @@ def test_transaction_installs_symlink_validates_reloads_and_rolls_back_both_stat
         "Reload restored Protocolos Nginx configuration"
     )
     assert transaction["rescue"][-1]["ansible.builtin.fail"]
-    assert "state: link" in read(f"{ROLE}/tasks/main.yml")
-    assert "mv" in read(f"{ROLE}/tasks/main.yml")
+    assert "transaction.yml" in read(f"{ROLE}/tasks/main.yml")
+    assert "state: link" in read(f"{ROLE}/tasks/transaction.yml")
+    assert "mv" in read(f"{ROLE}/tasks/transaction.yml")
+
+
+def test_failed_real_transaction_restores_preceding_vhost_and_symlink(tmp_path):
+    config_path = tmp_path / "sites-available" / "protocolos.conf"
+    enabled_path = tmp_path / "sites-enabled" / "protocolos.conf"
+    candidate_path = tmp_path / "sites-available" / "protocolos.conf.candidate"
+    restore_candidate_path = (
+        tmp_path / "sites-available" / "protocolos.conf.restore"
+    )
+    previous_target = tmp_path / "sites-available" / "previous.conf"
+    config_path.parent.mkdir()
+    enabled_path.parent.mkdir()
+    old_vhost = "server { return 418; }\n"
+    config_path.write_text(old_vhost, encoding="utf-8")
+    previous_target.write_text("previous symlink target\n", encoding="utf-8")
+    enabled_path.symlink_to(previous_target)
+    candidate_path.write_text("server { return 200; }\n", encoding="utf-8")
+    backup_path = Path(f"{config_path}.test.bak")
+    backup_path.write_text(old_vhost, encoding="utf-8")
+
+    bin_path = tmp_path / "bin"
+    bin_path.mkdir()
+    nginx_calls = tmp_path / "nginx-calls"
+    nginx_wrapper = bin_path / "nginx"
+    nginx_wrapper.write_text(
+        f"""#!/bin/sh
+count=0
+test ! -f '{nginx_calls}' || count=$(cat '{nginx_calls}')
+count=$((count + 1))
+echo "$count" >'{nginx_calls}'
+test "$count" -ne 1
+""",
+        encoding="utf-8",
+    )
+    nginx_wrapper.chmod(0o755)
+    systemctl_wrapper = bin_path / "systemctl"
+    systemctl_wrapper.write_text(
+        """#!/bin/sh
+if [ "$1" = "show" ]; then
+  printf 'LoadState=loaded\nActiveState=active\nSubState=running\n'
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    systemctl_wrapper.chmod(0o755)
+    become_wrapper = tmp_path / "test-become-wrapper"
+    become_wrapper.write_text(
+        "#!/bin/sh\nwhile [ \"$1\" != \"/bin/sh\" ]; do shift; done\nexec \"$@\"\n",
+        encoding="utf-8",
+    )
+    become_wrapper.chmod(0o755)
+
+    result = run_role_task_file(
+        tmp_path,
+        "transaction.yml",
+        {
+            "ansible_become_exe": str(become_wrapper),
+            "protocolos_edge_route_changed": True,
+            "protocolos_edge_route_config_changed": True,
+            "protocolos_edge_route_config_path": str(config_path),
+            "protocolos_edge_route_enabled_path": str(enabled_path),
+            "protocolos_edge_route_candidate_path": str(candidate_path),
+            "protocolos_edge_route_restore_candidate_path": str(
+                restore_candidate_path
+            ),
+            "protocolos_edge_route_backup_timestamp": {"stdout": "test"},
+            "protocolos_edge_route_preceding_config": {"stat": {"exists": True}},
+            "protocolos_edge_route_preceding_enabled": {
+                "stat": {"islnk": True, "lnk_source": str(previous_target)}
+            },
+        },
+        {"PATH": f"{bin_path}:{os.environ['PATH']}"},
+    )
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    assert "Protocolos Nginx route transaction failed" in output
+    assert config_path.read_text(encoding="utf-8") == old_vhost
+    assert enabled_path.is_symlink()
+    assert enabled_path.readlink() == previous_target
+    assert not candidate_path.exists()
+    assert not restore_candidate_path.exists()
 
 
 def test_probes_accept_the_required_public_statuses_only():
