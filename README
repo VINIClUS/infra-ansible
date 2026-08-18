@@ -49,3 +49,18 @@ Para usar Ansible sem instalar no host, construa o container local:
 ```powershell
 rtk docker build -t infra-ansible-tools:local -f tools\ansible\Dockerfile .
 ```
+
+## Lab container host
+
+`playbooks/lab-container-host.yml` importa o baseline Linux seguro e acrescenta
+o role `container_runtime`. Ele permanece inerte ate que um inventory efemero
+declare explicitamente um usuario tecnico existente:
+
+```yaml
+container_runtime_enabled: true
+container_runtime_technical_user: vagrant
+```
+
+O entrypoint e destinado ao harness local; ele nao consome o inventory privado,
+nao altera regras de firewall ou SSH e nao deve ser usado para provisionar
+hosts de producao sem uma revisao dedicada.

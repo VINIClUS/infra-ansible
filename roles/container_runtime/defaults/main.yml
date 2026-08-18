@@ -1,0 +1,12 @@
+---
+container_runtime_enabled: false
+container_runtime_technical_user: ""
+container_runtime_packages:
+  - docker.io
+  - docker-compose
+  - docker-buildx
+  - python3-venv
+  - git
+  - curl
+  - ca-certificates
+  - rsync
