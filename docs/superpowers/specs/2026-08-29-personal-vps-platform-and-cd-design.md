@@ -200,14 +200,13 @@ line never selects an arbitrary executable, playbook, Compose file, path, image
 registry or service.
 
 The dispatcher accepts a length-prefixed standard-input protocol. Its first
-frame is a non-secret, versioned JSON release manifest with:
+frame is a non-secret, versioned deployment envelope. The archive digest stays
+in this outer envelope so the archive can contain a canonical release manifest
+without a self-referential hash:
 
 ```json
 {
   "schema_version": 1,
-  "project": "cnesdata",
-  "source_repository": "VINIClUS/CnesData",
-  "source_sha": "40-character-sha",
   "ci_evidence": {
     "repository": "VINIClUS/CnesData",
     "workflow": ".github/workflows/ci.yml",
@@ -215,19 +214,26 @@ frame is a non-secret, versioned JSON release manifest with:
     "artifact_id": "integer",
     "artifact_digest": "sha256:digest"
   },
-  "images": {"api": "registry/repository@sha256:digest"},
-  "static_release": "optional-release-id",
-  "compose_sha256": "sha256",
-  "config_sha256": "sha256",
-  "requested_action": "deploy"
+  "release_manifest": {
+    "project": "cnesdata",
+    "source_repository": "VINIClUS/CnesData",
+    "source_sha": "40-character-sha",
+    "expires_at": "RFC3339 timestamp",
+    "images": {"api": "registry/repository@sha256:digest"},
+    "static_release": "optional-release-id",
+    "compose_sha256": "sha256",
+    "config_sha256": "sha256",
+    "requested_action": "deploy"
+  }
 }
 ```
 
 The second frame is the exact bounded CI release archive identified by
-`ci_evidence.artifact_digest`; it contains the canonical copy of the manifest,
-Compose file and generated non-secret configuration. The dispatcher hashes the
-archive before extraction, requires the embedded manifest to equal the first
-frame, rejects absolute paths, traversal, links, devices, duplicate names and
+`ci_evidence.artifact_digest`; it contains the canonical copy of
+`release_manifest`, the Compose file and generated non-secret configuration,
+but not the outer digest. The dispatcher hashes the archive before extraction,
+requires the embedded manifest to equal the envelope's `release_manifest`,
+rejects absolute paths, traversal, links, devices, duplicate names and
 undeclared files, and validates every declared uncompressed file size plus a
 strict aggregate uncompressed-size ceiling. Extraction streams into a fresh
 root-owned staging directory while enforcing both per-file and aggregate byte
@@ -236,11 +242,12 @@ the target filesystem. It then verifies `compose_sha256` and `config_sha256`
 against the staged bytes. Runtime secrets remain outside this archive and are
 rendered from SSM only after validation.
 
-The manifest is the atomic promotion unit. Its evidence repository, CI run,
-artifact ID and SHA-256 digest bind one source SHA to the exact OCI image
-digests, Compose checksum and configuration checksum produced by that run. The
-dispatcher never accepts an approved source SHA combined with an image or
-release artifact from another run.
+The envelope and its digest-matched archive are the atomic promotion unit. The
+outer evidence repository, CI run, artifact ID and SHA-256 digest bind one
+embedded release manifest—and therefore one source SHA—to the exact OCI image
+digests, Compose checksum, configuration checksum and expiration produced by
+that run. The dispatcher never accepts an approved source SHA combined with an
+image or release artifact from another run.
 
 For a private registry pull, an optional third frame carries the workflow's
 ephemeral bearer credential. The dispatcher accepts that frame only for the
@@ -257,6 +264,8 @@ Validation rejects:
 - a source SHA without a successful, recorded CI gate;
 - a CI workflow, run, artifact, source SHA or artifact digest that is expired,
   unsuccessful, unknown or inconsistent with another manifest field;
+- an absent, malformed or expired `release_manifest.expires_at`, checked again
+  immediately before switching the release;
 - a source SHA, OCI digest, Compose checksum or configuration checksum produced
   by different CI runs;
 - compose/config checksums that do not match the release artifact;
@@ -446,9 +455,13 @@ Personal production delivery runs only from `personal-infra-live`:
    requested; only after the gate succeeds does OIDC obtain the short-lived
    deploy session;
 7. SSM supplies the Cloudflare Access service token and dedicated SSH key only
-   to the in-memory job, and the dispatcher applies the exact approved artifact
-   without rebuilding or replanning it;
-8. logs and artifacts contain names and hashes, never secret values, and the
+   to the in-memory job; before sending any frame, the job reruns the live,
+   read-only inventory, dependency and target-host preflight and compares its
+   digests with the approved plan, failing closed on any drift;
+8. immediately before the release switch, the dispatcher revalidates the
+   embedded `expires_at`; it then applies the exact approved archive without
+   rebuilding or replanning it;
+9. logs and artifacts contain names and hashes, never secret values, and the
    paid GitHub Actions spending limit remains USD 0.
 
 No protected private Environment feature is assumed. The hard gate is the
