@@ -52,7 +52,8 @@ It does not own:
 │   ├── deploy-platform.yml
 │   ├── oidc-plan-gate.yml
 │   ├── oidc-apply-gate.yml
-│   └── oidc-product-deploy-gate.yml
+│   ├── oidc-cnesdata-host-deploy-gate.yml
+│   └── oidc-limnopulse-host-deploy-gate.yml
 ├── ansible/
 │   ├── requirements.yml
 │   ├── inventory/production/hosts.yml
@@ -168,10 +169,12 @@ Separate roles exist for:
 
 - `personal-infra-live` plan;
 - `personal-infra-live` apply;
-- CnesData plan;
-- CnesData deploy;
-- LimnoPulse plan;
-- LimnoPulse deploy.
+- `personal-infra-live` CnesData host deploy;
+- `personal-infra-live` LimnoPulse host deploy;
+- CnesData infrastructure plan;
+- CnesData infrastructure deploy;
+- LimnoPulse infrastructure plan;
+- LimnoPulse infrastructure deploy.
 
 AWS trust policies bind the `sts.amazonaws.com` audience and a customized
 GitHub OIDC `sub` containing the exact repository, ref and
@@ -184,16 +187,21 @@ the same repository/ref cannot assume the role directly. This remains an
 artifact or digest.
 
 The private repository cannot rely on protected GitHub Environments, so the
-reusable apply and product-deploy gates validate their evidence before they
-request an OIDC token. The reusable plan gate performs validation before its
-read-oriented session. Plan roles are read-only apart from writing their
-bounded plan evidence and creating/deleting only the exact S3 `.tflock` object
-for their backend key. Each product plan role has only that read-oriented
-policy; only its distinct deploy role can mutate that product's resources.
-Neither deploy role can mutate shared, edge or other-product resources.
-Contract tests request tokens through every caller and prove that only the
-expected reusable gate subject can assume each role and that no plan-gate
-subject can assume a deploy role.
+reusable apply and per-product host-deploy gates validate their evidence before
+they request an OIDC token. The two host-deploy roles trust distinct reusable
+workflow paths in `personal-infra-live`; each can read/decrypt only its
+application's exact SSM-held Cloudflare/SSH deployment credentials and cannot
+mutate AWS infrastructure or access the other application's prefix. The
+reusable plan gate performs validation before its read-oriented session. Plan
+roles are read-only apart from writing their bounded plan evidence and
+creating/deleting only the exact S3 `.tflock` object for their backend key.
+Each product infrastructure plan role has only that read-oriented policy; only
+its distinct infrastructure deploy role can mutate that product's AWS
+resources. Neither infrastructure deploy role can mutate shared, edge or
+other-product resources. Contract tests request tokens through every caller and
+prove that only the expected reusable gate subject can assume each role, that
+the two host-deploy gates cannot cross-assume, and that no plan-gate subject can
+assume a deploy role.
 
 ### 5.3 VPS roles
 
