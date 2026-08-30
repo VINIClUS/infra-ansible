@@ -256,6 +256,15 @@ never places it in an argument, environment variable, log or evidence file,
 and consumes it directly into the temporary Docker configuration. Public-image
 deployments omit the frame.
 
+Every platform workflow, product workflow and human runbook that can modify the
+VPS must first acquire the same root-owned, host-wide coordination lease through
+a fixed dispatcher operation. The lease records an unpredictable owner token
+and bounded expiration and is renewed by a watchdog while the operation is
+live. The dispatcher rejects a modifying operation without the matching owner
+token, never treats expiration alone as proof that a prior operation stopped,
+and releases the lease on every terminal path. This coordination lease is
+separate from each application's deployment history and safety markers.
+
 Validation rejects:
 
 - unknown projects, repositories, services or manifest versions;
@@ -269,7 +278,8 @@ Validation rejects:
 - a source SHA, OCI digest, Compose checksum or configuration checksum produced
   by different CI runs;
 - compose/config checksums that do not match the release artifact;
-- concurrent deployment of the same application;
+- any concurrent host-modifying operation, including another application's
+  deployment or a human platform runbook;
 - rollout while a host safety or cost-freeze marker is active.
 
 The privileged helper can only pull, validate, start a candidate, switch the
@@ -455,12 +465,15 @@ Personal production delivery runs only from `personal-infra-live`:
    requested; only after the gate succeeds does OIDC obtain the short-lived
    deploy session;
 7. SSM supplies the Cloudflare Access service token and dedicated SSH key only
-   to the in-memory job; before sending any frame, the job reruns the live,
-   read-only inventory, dependency and target-host preflight and compares its
-   digests with the approved plan, failing closed on any drift;
-8. immediately before the release switch, the dispatcher revalidates the
-   embedded `expires_at`; it then applies the exact approved archive without
-   rebuilding or replanning it;
+   to the in-memory job; the job acquires the host-wide coordination lease and
+   starts its renewal watchdog before rerunning the live, read-only inventory,
+   dependency and target-host preflight, then compares those digests with the
+   approved plan and fails closed on any drift;
+8. immediately before the release switch, the dispatcher proves the same owner
+   still holds an actively renewed lease with sufficient margin and revalidates
+   the embedded `expires_at`; it applies the exact approved archive without
+   rebuilding or replanning it, holds the lease through the health decision and
+   upstream switch, and releases it on every terminal path;
 9. logs and artifacts contain names and hashes, never secret values, and the
    paid GitHub Actions spending limit remains USD 0.
 
