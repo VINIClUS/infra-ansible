@@ -6,9 +6,19 @@ No secrets in Git. Do not commit passwords, tokens, private keys, database
 credentials, certificates, `.env` files, vault passwords, backup payloads, or
 health data exports.
 
+## Runtime profile boundary
+
+Infisical, MinIO and `infra-ansible-inventory` are contracts of the existing
+municipal/Proxmox profile. The separate personal profile is composed in the
+private `personal-infra-live` repository and uses SSM Parameter Store, KMS and
+IAM Roles Anywhere for secrets and temporary identity, plus S3 for OpenTofu
+state, evidence and approved backups. No inventory, identity, secret, artifact
+or state crosses between these profiles.
+
 ## Infisical
 
-Infisical is the primary secret source. This repository stores only:
+For the municipal/Proxmox profile, Infisical is the primary secret source. This
+repository stores only:
 
 - expected secret paths;
 - expected key names;
@@ -87,9 +97,10 @@ into an incident ticket or terminal transcript during recovery.
 
 ## MinIO
 
-MinIO is the object storage target for artifacts, backups, and validation
-reports. This repository stores only bucket names, prefixes, and retention
-intent. Access keys are read at runtime and must never be printed.
+For the municipal/Proxmox profile, MinIO is the object storage target for
+artifacts, backups, and validation reports. This repository stores only bucket
+names, prefixes, and retention intent. Access keys are read at runtime and must
+never be printed.
 
 Use a distinct MinIO service account and buckets for shared infrastructure and
 for every project. `https://s3.vinisantana.com` is the S3 API endpoint;

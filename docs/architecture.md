@@ -14,7 +14,19 @@ inventory, secret values, Packer template builds, or domain bootstrap logic.
 - `sus-siha-bootstrap` remains the source for DATASUS/SIHA operational
   automation.
 
-## Integration Model
+## Runtime profiles
+
+The existing integration model below is the municipal/Proxmox profile.
+`infra-ansible-inventory`, Infisical and MinIO are contracts of that profile,
+not global dependencies of every consumer of this reusable repository.
+
+The separate personal profile is composed by the private
+`personal-infra-live` repository. It uses SSM Parameter Store, KMS and IAM
+Roles Anywhere for secrets and temporary identity, and S3 for OpenTofu state,
+deployment evidence and the approved personal backup contracts. The municipal
+and personal profiles share no inventory, identity, secret, artifact or state.
+
+## Municipal/Proxmox Integration Model
 
 Ansible consumes stable contracts from sibling repositories:
 
@@ -23,9 +35,10 @@ Ansible consumes stable contracts from sibling repositories:
 - Infisical paths for runtime secrets;
 - MinIO buckets for artifacts, backups, and validation evidence.
 
-## Shared infrastructure and project ownership
+## Municipal shared infrastructure and project ownership
 
-This repository provides reusable automation. The private
+This section applies to the municipal/Proxmox profile. This repository provides
+reusable automation. The private
 `infra-ansible-inventory` repository owns only shared platform topology:
 Proxmox, edge networking, Cloudflare, MinIO, and operational infrastructure.
 Application hosts, variables, and secret paths belong to their project
@@ -35,7 +48,7 @@ Each domain uses its own Infisical Machine Identity and MinIO service account.
 A project identity must not read the shared infrastructure project or another
 project's paths, and projects must not share infrastructure bucket credentials.
 
-## Runtime secret flow
+## Municipal runtime secret flow
 
 `Invoke-InfisicalAnsible.ps1` passes Universal Auth bootstrap variables to the
 tools container by environment-variable name, never by value on the command
@@ -51,7 +64,7 @@ The first implementation layer is intentionally read-only by default. Playbooks
 that can change real infrastructure must require explicit inventory variables,
 `--limit`, and a narrow tag.
 
-## Persistent Proxmox backup storage
+## Municipal persistent Proxmox backup storage
 
 The `proxmox_backup_storage` role owns the host-side persistence boundary for
 full VM backups. It mounts the private inventory's verified source outside any

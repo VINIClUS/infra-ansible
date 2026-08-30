@@ -23,12 +23,18 @@ Este repositorio contem codigo Ansible generico para operar a infraestrutura:
   `sus-siha-bootstrap`; integra-los por versao, tag ou commit.
 - Tratar `packer-proxmox-templates` como fonte dos templates Proxmox/Packer.
 
-## Segredos e buckets
+## Perfis de runtime, segredos e estado
 
-- Infisical e o vault primario.
-- MinIO e o destino operacional para artefatos, backups e evidencias.
-- Este repositorio guarda contratos, paths e nomes de chaves, nunca valores.
-- Tokens e access keys devem vir do runtime seguro ou do inventory privado.
+- No perfil municipal/Proxmox, `infra-ansible-inventory` e o inventario
+  privado, Infisical e o vault primario e MinIO recebe artefatos, backups e
+  evidencias.
+- No perfil pessoal, o repositorio privado `personal-infra-live` compoe o
+  inventario e fixa as revisoes; SSM Parameter Store, KMS e IAM Roles Anywhere
+  fornecem segredos e identidades temporarias, e S3 recebe estado e evidencias.
+- Os perfis nao compartilham inventario, identidades, segredos, artefatos ou
+  estado.
+- Este repositorio guarda somente contratos, paths e nomes de chaves, nunca
+  valores. Tokens e access keys devem vir do runtime seguro do perfil correto.
 
 ## Validacao
 
