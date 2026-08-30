@@ -49,7 +49,10 @@ It does not own:
 │   ├── validate.yml
 │   ├── plan-shared.yml
 │   ├── apply-shared.yml
-│   └── deploy-platform.yml
+│   ├── deploy-platform.yml
+│   ├── oidc-plan-gate.yml
+│   ├── oidc-apply-gate.yml
+│   └── oidc-product-deploy-gate.yml
 ├── ansible/
 │   ├── requirements.yml
 │   ├── inventory/production/hosts.yml
@@ -158,17 +161,22 @@ Separate roles exist for:
 
 AWS trust policies bind the `sts.amazonaws.com` audience and a customized
 GitHub OIDC `sub` containing the exact repository, ref and
-`job_workflow_ref`. The apply job runs only inside a reusable, immutable apply
-gate workflow; the apply role requires that workflow's exact path and pinned
-ref in `job_workflow_ref`, so another workflow on the same repository/ref
-cannot bypass the gate and assume the role directly. This remains an `aud`/`sub`
-condition: AWS does not receive or validate a plan manifest, artifact or digest.
-The private-repository workflow cannot rely on protected GitHub Environments,
-so the reusable apply workflow validates that evidence itself before it
-requests an OIDC token. Plan roles are read-only apart from writing their
+`job_workflow_ref`. Direct plan/apply/deploy workflows are only callers and
+dispatchers: every job that requests an OIDC token executes inside a reusable,
+immutable gate workflow specific to its role class. Each role requires that
+gate's exact path and pinned ref in `job_workflow_ref`, so another workflow on
+the same repository/ref cannot assume the role directly. This remains an
+`aud`/`sub` condition: AWS does not receive or validate a plan manifest,
+artifact or digest.
+
+The private repository cannot rely on protected GitHub Environments, so the
+reusable apply and product-deploy gates validate their evidence before they
+request an OIDC token. The reusable plan gate performs validation before its
+read-oriented session. Plan roles are read-only apart from writing their
 bounded plan evidence and creating/deleting only the exact S3 `.tflock` object
 for their backend key. Product roles cannot mutate shared, edge or
-other-product resources.
+other-product resources. Contract tests request tokens through every caller and
+prove that only the expected reusable gate subject can assume each role.
 
 ### 5.3 VPS roles
 
