@@ -256,14 +256,24 @@ never places it in an argument, environment variable, log or evidence file,
 and consumes it directly into the temporary Docker configuration. Public-image
 deployments omit the frame.
 
-Every platform workflow, product workflow and human runbook that can modify the
-VPS must first acquire the same root-owned, host-wide coordination lease through
-a fixed dispatcher operation. The lease records an unpredictable owner token
-and bounded expiration and is renewed by a watchdog while the operation is
-live. The dispatcher rejects a modifying operation without the matching owner
-token, never treats expiration alone as proof that a prior operation stopped,
-and releases the lease on every terminal path. This coordination lease is
-separate from each application's deployment history and safety markers.
+Every platform workflow, product workflow, autonomous systemd unit and human
+runbook that can modify the VPS must first acquire the same root-owned,
+host-wide coordination lease through a fixed dispatcher operation. The lease
+records an unpredictable owner token, owner class, local process identity,
+GitHub run identity when applicable and bounded expiration, and a watchdog
+renews it while the operation is live. The dispatcher rejects a modifying
+operation without the matching owner token and releases the lease on every
+terminal path. This coordination lease is separate from each application's
+deployment history and safety markers.
+
+Expiration alone never permits takeover. The only stale-owner recovery is a
+reviewed root-only command that conditionally removes the exact recorded lease
+after proving its local dispatcher or renewer process is absent and, for a
+workflow owner, the recorded GitHub run is terminal. A human-owned lease also
+requires an operator-confirmed ended session; an autonomous owner requires its
+recorded systemd invocation to be inactive. Recovery records the prior owner,
+proof and approver in the redacted host audit log and fails if the lease changes
+during verification.
 
 Validation rejects:
 
@@ -362,7 +372,12 @@ maps them to principal tags and lists only the intended role, whose trust policy
 requires those exact tags and the exact trust-anchor ARN. Tests reject every
 cross-application certificate/role combination.
 
-A root-only systemd credential renewer:
+A root-only systemd credential renewer participates in the same host-wide
+coordination lease before it reloads credentials, replaces a process or changes
+traffic. If another deployment owns the lease when refresh becomes due, that
+owner must perform the renewal within its existing lease or abort and release
+before the credential safety margin; the renewer never bypasses coordination.
+While holding the lease, it:
 
 1. invokes `aws_signing_helper` with the application's certificate/key;
 2. obtains a short-lived role session;
