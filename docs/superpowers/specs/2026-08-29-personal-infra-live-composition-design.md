@@ -131,6 +131,7 @@ The `shared` stack owns:
 - budget-action roles and cost-freeze policy;
 - GitHub OIDC roles by repository and workflow;
 - Roles Anywhere trust anchor, profiles and per-application roles;
+- one enabled Roles Anywhere CRL bound to the trust anchor;
 - shared CloudWatch notification topic/email subscription if required;
 - the private InfluxDB backup bucket;
 - state and deployment-evidence storage.
@@ -211,6 +212,17 @@ Rules:
 The X.509 root CA private key is never stored in SSM. Two encrypted offline
 copies are maintained in physically separate locations. VPS leaf private keys
 are installed through a one-time secure bootstrap and rotated independently.
+
+The offline CA also issues a signed PEM CRL with bounded `nextUpdate`. The
+shared stack owns the enabled IAM Roles Anywhere CRL resource and its
+trust-anchor binding, while an explicit offline procedure signs each CRL update
+and an allowlisted secure operation calls `ImportCrl` or `UpdateCrl`. A suspected
+leaf-key compromise first disables that application's distinct profile, adds
+the certificate serial to the CRL, publishes and reads back the update, and
+proves `CreateSession` is rejected before a replacement leaf/profile is
+enabled. Existing sessions are bounded by the role's short maximum duration;
+the incident procedure does not treat CRL publication as terminating sessions
+already issued.
 
 ## 7. Cloudflare ownership
 
@@ -471,6 +483,8 @@ observability and backup paths with fewer managed processing dependencies.
   distribution and CloudFront-scoped WAF, before static DNS cutover.
 - Restore, SSH recovery, credential rotation and cost-freeze runbooks are
   executable and contain no secret values.
+- The enabled Roles Anywhere CRL is current, and a drill proves that a revoked
+  leaf cannot create a new session for its formerly allowed role.
 
 ## 16. References
 
@@ -486,6 +500,8 @@ observability and backup paths with fewer managed processing dependencies.
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html>
 - AWS Roles Anywhere certificate attribute trust conditions:
   <https://docs.aws.amazon.com/rolesanywhere/latest/userguide/attribute-mapping-and-trust-policy.html>
+- AWS Roles Anywhere CRL import and enforcement:
+  <https://docs.aws.amazon.com/rolesanywhere/latest/APIReference/API_ImportCrl.html>
 - Creating SSM parameters with explicit values:
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/param-create-cli.html>
 - AWS Budgets actions:

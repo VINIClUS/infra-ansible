@@ -324,15 +324,31 @@ A root-only systemd credential renewer:
 
 1. invokes `aws_signing_helper` with the application's certificate/key;
 2. obtains a short-lived role session;
-3. writes the shared-credentials file atomically beneath
-   `/run/personal-platform/<app>/aws/`;
+3. writes the shared-credentials file and a separate expiration timestamp
+   atomically beneath `/run/personal-platform/<app>/aws/`;
 4. assigns the application UID and mode 0400;
-5. refreshes before half the remaining session lifetime or immediately after a
+5. immediately invokes the application's fixed, allowlisted credential reload
+   hook; phase 1 starts a health-guarded replacement process through the
+   existing candidate dispatcher so an SDK that loaded the file as non-expiring
+   cannot retain the old session;
+6. verifies that the candidate uses the new session and passes its read-only AWS
+   credential health check before switching traffic or retiring the old
+   process; workers use an application-specific quiesce/replace contract that
+   prevents duplicate work;
+7. refreshes before half the remaining session lifetime or immediately after a
    failed credential health check;
-6. leaves the last still-valid file in place if refresh is transiently
+8. leaves the last still-valid file and process in place if refresh is
+   transiently
    unavailable;
-7. marks the application unhealthy before expiry rather than falling back to a
+9. marks and stops the application before expiry rather than falling back to a
    static access key.
+
+Tests hold an application process across a file replacement and prove that it
+cannot keep the old session: either the fixed reload hook is demonstrated to
+reinitialize the SDK provider, or the health-guarded restart is mandatory. A
+future in-memory host broker may replace restarts only if it exposes an
+expiration-aware process/container credential provider and passes the same
+renewal test without exposing the X.509 private key to the container.
 
 Containers bind-mount only their application-specific temporary credential
 directory and public AWS config read-only. Mounting the directory, rather than
@@ -502,6 +518,8 @@ and restorable configuration copies.
 - LimnoPulse production deployment design in `VINIClUS/limnopulse`
 - AWS IAM Roles Anywhere user guide:
   <https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html>
+- AWS SDK process credentials and expiration-aware refresh:
+  <https://docs.aws.amazon.com/sdkref/latest/guide/feature-process-credentials.html>
 - GitHub OIDC for AWS:
   <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws>
 - GitHub artifact validation:
