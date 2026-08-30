@@ -113,6 +113,18 @@ proves the resulting `sub` contains the exact repository, ref context and
 reusable-workflow path/ref before any AWS role is enabled. The administrator
 credential is ephemeral and is never stored in Actions, artifacts or state.
 
+The same bootstrap enables private reusable-workflow sharing on
+`personal-infra-live` with
+`PUT /repos/{owner}/{repo}/actions/permissions/access` and
+`access_level: "user"`, the GitHub setting for private repositories owned by
+the same personal account. It verifies the value through the corresponding GET
+endpoint and proves that pinned test calls from CnesData and LimnoPulse can load
+their respective gate. Because this repository-level setting necessarily
+permits other private repositories owned by the account to load a workflow,
+the OIDC trust policies remain the authorization boundary: a negative contract
+test from another owned repository must be unable to assume any role, and each
+product caller must be unable to select the other product's gate/role.
+
 ### 4.2 Backend contract
 
 All stacks use the S3 backend with:
