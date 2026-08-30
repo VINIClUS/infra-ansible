@@ -208,12 +208,24 @@ frame is a non-secret, versioned JSON release manifest with:
   "project": "cnesdata",
   "source_repository": "VINIClUS/CnesData",
   "source_sha": "40-character-sha",
+  "ci_evidence": {
+    "workflow": ".github/workflows/ci.yml",
+    "run_id": "integer",
+    "artifact_id": "integer",
+    "artifact_digest": "sha256:digest"
+  },
   "images": {"api": "registry/repository@sha256:digest"},
   "static_release": "optional-release-id",
   "compose_sha256": "sha256",
   "requested_action": "deploy"
 }
 ```
+
+The manifest is the atomic promotion unit. Its CI run, artifact ID and
+SHA-256 digest bind one source SHA to the exact OCI image digests, Compose
+checksum and configuration checksum produced by that run. The dispatcher never
+accepts an approved source SHA combined with an image or release artifact from
+another run.
 
 For a private registry pull, an optional second frame carries the workflow's
 ephemeral bearer credential. The dispatcher accepts that frame only for the
@@ -228,6 +240,10 @@ Validation rejects:
 - non-digest image references;
 - paths, shell metacharacters or additional arguments;
 - a source SHA without a successful, recorded CI gate;
+- a CI workflow, run, artifact, source SHA or artifact digest that is expired,
+  unsuccessful, unknown or inconsistent with another manifest field;
+- a source SHA, OCI digest, Compose checksum or configuration checksum produced
+  by different CI runs;
 - compose/config checksums that do not match the release artifact;
 - concurrent deployment of the same application;
 - rollout while a host safety or cost-freeze marker is active.
@@ -237,11 +253,15 @@ Nginx upstream, stop the prior candidate after health succeeds, or restore the
 immediately preceding manifest. It cannot prune images globally, delete
 volumes, execute a shell, change another application or alter the base host.
 
-Private GHCR pulls use the workflow's ephemeral, `packages:read`-only
-`GITHUB_TOKEN` through a temporary mode-0700 Docker configuration under
-`/run`. The package is explicitly linked to its source repository. The
-configuration is removed on every exit path and is never reused as a host
-credential.
+Before deployment credentials are requested, the workflow uses only an
+ephemeral, read-only `GITHUB_TOKEN` to validate the allowlisted CI workflow,
+successful conclusion, run ID, source SHA/ref, artifact ID, expiration and
+SHA-256 digest. When a private GHCR pull is required, the same token has only
+the additional `packages:read` access and is consumed through a temporary
+mode-0700 Docker configuration under `/run`. The package is explicitly linked
+to its source repository. The token and configuration are removed on every
+exit path, are never persisted, logged or included in evidence, and are never
+reused as a host credential.
 
 ## 8. Cloudflare Tunnel and Nginx
 
@@ -359,16 +379,24 @@ municipal inventories unless explicitly selected.
 
 Personal production delivery runs only from `personal-infra-live`:
 
-1. a GitHub-hosted job checks out exact pinned revisions;
+1. a GitHub-hosted plan job checks out exact pinned revisions;
 2. validation runs syntax, lint, unit/contract tests and check mode;
-3. AWS OIDC obtains a short-lived plan/deploy session;
-4. SSM supplies the Cloudflare Access service token and dedicated SSH key only
-   to the in-memory job;
-5. a plan artifact is bound to repository, commit, inventory digest, host-key
-   fingerprint and expiration;
-6. a separate `workflow_dispatch` verifies and applies that exact artifact;
-7. logs and artifacts contain names and hashes, never secret values;
-8. the paid GitHub Actions spending limit remains USD 0.
+3. the plan artifact is bound to repository, commit, inventory digest,
+   host-key fingerprint and expiration;
+4. a separate `workflow_dispatch` receives `plan_run_id`, `artifact_id` and
+   `artifact_digest`;
+5. using an ephemeral read-only `GITHUB_TOKEN`, it verifies the exact source
+   workflow, successful conclusion, source SHA/ref, artifact identity,
+   expiration, SHA-256 digest and the internal manifest binding source, OCI
+   images, Compose and configuration;
+6. any incorrect, expired or cross-run value fails before AWS credentials are
+   requested; only after the gate succeeds does OIDC obtain the short-lived
+   deploy session;
+7. SSM supplies the Cloudflare Access service token and dedicated SSH key only
+   to the in-memory job, and the dispatcher applies the exact approved artifact
+   without rebuilding or replanning it;
+8. logs and artifacts contain names and hashes, never secret values, and the
+   paid GitHub Actions spending limit remains USD 0.
 
 No protected private Environment feature is assumed. The hard gate is the
 separate manual workflow plus cryptographic binding to the prior plan. A plan
@@ -460,6 +488,10 @@ and restorable configuration copies.
 - LimnoPulse production deployment design in `VINIClUS/limnopulse`
 - AWS IAM Roles Anywhere user guide:
   <https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html>
+- GitHub OIDC for AWS:
+  <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws>
+- GitHub artifact validation:
+  <https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts>
 - Cloudflare Tunnel SSH documentation:
   <https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/use-cases/ssh/>
 - Grafana Alloy documentation: <https://grafana.com/docs/alloy/latest/>

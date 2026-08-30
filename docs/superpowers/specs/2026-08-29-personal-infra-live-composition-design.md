@@ -142,12 +142,14 @@ Separate roles exist for:
 - CnesData plan/deploy;
 - LimnoPulse plan/deploy.
 
-Trust policies bind repository, branch/tag or workflow file, audience and
-environment intent. The private-repository workflow cannot rely on protected
-GitHub Environments, so the apply role additionally requires an exact plan
-manifest and a repository/workflow claim. Plan roles are read-only apart from
-writing their bounded plan evidence. Product roles cannot mutate shared,
-edge or other-product resources.
+AWS trust policies bind the `sts.amazonaws.com` audience and the exact
+repository and ref encoded in the GitHub OIDC `sub` claim. They do not validate
+a plan manifest, artifact or digest: AWS does not receive custom claims for
+those values. The private-repository workflow cannot rely on protected GitHub
+Environments, so the apply workflow enforces that evidence gate itself before
+it requests an OIDC token. Plan roles are read-only apart from writing their
+bounded plan evidence. Product roles cannot mutate shared, edge or
+other-product resources.
 
 ### 5.3 VPS roles
 
@@ -324,15 +326,31 @@ deletion or an estimated total above USD 15 fail and are not publishable.
 
 ### 10.3 Apply
 
-A separate manual workflow receives the plan-run ID and manifest digest. It:
+A separate manual workflow receives `plan_run_id`, `artifact_id` and
+`artifact_digest`. With only an ephemeral, read-only `GITHUB_TOKEN`, and before
+requesting any AWS OIDC credential, it:
 
-1. downloads the exact artifact;
-2. rejects expiration or any SHA/dependency/backend drift;
-3. reacquires the state lock;
-4. displays the planned resource counts and cost impact;
-5. applies the binary plan without replanning;
-6. runs read-only health and policy checks;
-7. records redacted evidence.
+1. loads the named run and artifact through the GitHub API and proves that the
+   artifact belongs to that run;
+2. requires the exact allowlisted source workflow, successful conclusion,
+   expected source SHA and ref, an unexpired artifact and matching artifact
+   identity;
+3. downloads the exact artifact and verifies its SHA-256 digest against both
+   `artifact_digest` and GitHub's artifact metadata;
+4. validates the aggregate internal manifest and its source/dependency SHAs,
+   backend key/workspace, provider lock, policy results, cost manifest and
+   expiration;
+5. fails closed on any state, dependency, policy, cost or target drift;
+6. only after every prior check succeeds, requests the apply-role OIDC token,
+   reacquires the state lock and displays the planned resource counts and cost
+   impact;
+7. applies that exact binary plan without replanning, runs read-only health and
+   policy checks, and records redacted evidence including the run, artifact and
+   digest.
+
+The token is never persisted. A wrong, expired or mismatched run, workflow,
+SHA, ref, artifact or digest fails before AWS credentials exist. A valid gate
+applies only the already approved binary plan.
 
 There is no apply-on-merge. Product deployments use independent manual
 promotion workflows and cannot invoke shared OpenTofu apply implicitly.
@@ -426,7 +444,9 @@ observability and backup paths with fewer managed processing dependencies.
 - OpenTofu S3 backend and native locking:
   <https://opentofu.org/docs/language/settings/backends/s3/>
 - AWS GitHub OIDC guidance:
-  <https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html>
+  <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws>
+- GitHub artifact validation:
+  <https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts>
 - AWS Systems Manager Parameter Store:
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html>
 - AWS Budgets actions:
