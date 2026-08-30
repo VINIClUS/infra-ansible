@@ -1,8 +1,8 @@
 # Personal Infrastructure Live Composition Design
 
-**Date:** 2026-08-29  
-**Status:** Draft for repository review; architecture approved in design discussion  
-**Future repository:** private `VINIClUS/personal-infra-live`  
+**Date:** 2026-08-29
+**Status:** Draft for repository review; architecture approved in design discussion
+**Future repository:** private `VINIClUS/personal-infra-live`
 **Temporary publication location:** companion document in `infra-ansible`
 
 ## 1. Purpose

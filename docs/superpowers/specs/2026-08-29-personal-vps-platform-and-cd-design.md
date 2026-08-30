@@ -1,8 +1,8 @@
 # Personal VPS Platform and GitHub-hosted CD Design
 
-**Date:** 2026-08-29  
-**Status:** Draft for repository review; architecture approved in design discussion  
-**Repository:** `VINIClUS/infra-ansible`  
+**Date:** 2026-08-29
+**Status:** Draft for repository review; architecture approved in design discussion
+**Repository:** `VINIClUS/infra-ansible`
 **Integration base:** `main`
 
 ## 1. Purpose
