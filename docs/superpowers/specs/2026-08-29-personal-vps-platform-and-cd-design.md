@@ -209,6 +209,7 @@ frame is a non-secret, versioned JSON release manifest with:
   "source_repository": "VINIClUS/CnesData",
   "source_sha": "40-character-sha",
   "ci_evidence": {
+    "repository": "VINIClUS/CnesData",
     "workflow": ".github/workflows/ci.yml",
     "run_id": "integer",
     "artifact_id": "integer",
@@ -221,11 +222,11 @@ frame is a non-secret, versioned JSON release manifest with:
 }
 ```
 
-The manifest is the atomic promotion unit. Its CI run, artifact ID and
-SHA-256 digest bind one source SHA to the exact OCI image digests, Compose
-checksum and configuration checksum produced by that run. The dispatcher never
-accepts an approved source SHA combined with an image or release artifact from
-another run.
+The manifest is the atomic promotion unit. Its evidence repository, CI run,
+artifact ID and SHA-256 digest bind one source SHA to the exact OCI image
+digests, Compose checksum and configuration checksum produced by that run. The
+dispatcher never accepts an approved source SHA combined with an image or
+release artifact from another run.
 
 For a private registry pull, an optional second frame carries the workflow's
 ephemeral bearer credential. The dispatcher accepts that frame only for the
@@ -253,15 +254,22 @@ Nginx upstream, stop the prior candidate after health succeeds, or restore the
 immediately preceding manifest. It cannot prune images globally, delete
 volumes, execute a shell, change another application or alter the base host.
 
-Before deployment credentials are requested, the workflow uses only an
-ephemeral, read-only `GITHUB_TOKEN` to validate the allowlisted CI workflow,
-successful conclusion, run ID, source SHA/ref, artifact ID, expiration and
-SHA-256 digest. When a private GHCR pull is required, the same token has only
-the additional `packages:read` access and is consumed through a temporary
-mode-0700 Docker configuration under `/run`. The package is explicitly linked
-to its source repository. The token and configuration are removed on every
-exit path, are never persisted, logged or included in evidence, and are never
-reused as a host credential.
+Before deployment credentials are requested, the workflow uses an ephemeral,
+read-only GitHub credential to validate the allowlisted evidence repository and
+CI workflow, successful conclusion, run ID, source SHA/ref, artifact ID,
+expiration and SHA-256 digest. A repo-scoped `GITHUB_TOKEN` is used for
+same-repository evidence. Cross-repository evidence from the private CnesData
+repository uses a just-in-time GitHub App installation token limited to
+`Actions: read` and `Contents: read` on the exact allowlisted product
+repository; a classic or fine-grained personal access token is not accepted.
+
+When a private GHCR pull is required, the package must remain linked to its
+source repository and its **Manage Actions access** settings must separately
+grant `personal-infra-live` read access. Only then may the deployment job use
+its `packages:read` `GITHUB_TOKEN` through a temporary mode-0700 Docker
+configuration under `/run`. Every GitHub token and the configuration are
+removed on every exit path, are never persisted, logged or included in
+evidence, and are never reused as a host credential.
 
 ## 8. Cloudflare Tunnel and Nginx
 
@@ -389,7 +397,9 @@ Personal production delivery runs only from `personal-infra-live`:
    host-key fingerprint and expiration;
 4. a separate `workflow_dispatch` receives `plan_run_id`, `artifact_id` and
    `artifact_digest`;
-5. using an ephemeral read-only `GITHUB_TOKEN`, it verifies the exact source
+5. using the repo-scoped read-only `GITHUB_TOKEN`, or a just-in-time,
+   repository-allowlisted GitHub App installation token for private
+   cross-repository evidence, it verifies the evidence repository, exact source
    workflow, successful conclusion, source SHA/ref, artifact identity,
    expiration, SHA-256 digest and the internal manifest binding source, OCI
    images, Compose and configuration;
@@ -496,6 +506,10 @@ and restorable configuration copies.
   <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws>
 - GitHub artifact validation:
   <https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts>
+- GitHub `GITHUB_TOKEN` repository scope:
+  <https://docs.github.com/en/actions/concepts/security/github_token>
+- GitHub Packages Actions access:
+  <https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#ensuring-workflow-access-to-your-package>
 - Cloudflare Tunnel SSH documentation:
   <https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/use-cases/ssh/>
 - Grafana Alloy documentation: <https://grafana.com/docs/alloy/latest/>

@@ -148,7 +148,8 @@ a plan manifest, artifact or digest: AWS does not receive custom claims for
 those values. The private-repository workflow cannot rely on protected GitHub
 Environments, so the apply workflow enforces that evidence gate itself before
 it requests an OIDC token. Plan roles are read-only apart from writing their
-bounded plan evidence. Product roles cannot mutate shared, edge or
+bounded plan evidence and creating/deleting only the exact S3 `.tflock` object
+for their backend key. Product roles cannot mutate shared, edge or
 other-product resources.
 
 ### 5.3 VPS roles
@@ -361,16 +362,19 @@ workflow then:
    policy, cost, AWS-resource or target-host drift;
 6. discards the preflight credentials and probe material, and only after that
    live gate succeeds requests the modifying apply-role OIDC token;
-7. reacquires the state write lock, displays the planned resource counts and
-   cost impact, and applies that exact binary plan without replanning;
-8. runs read-only health and policy checks and records redacted evidence
+7. reacquires the state write lock and repeats the AWS-resource and target-host
+   drift checks under that final lock; any difference from the first live gate
+   or approved manifest fails closed without applying;
+8. displays the planned resource counts and cost impact and applies that exact
+   binary plan without replanning;
+9. runs read-only health and policy checks and records redacted evidence
    including the run, artifact and digest.
 
 No token, AWS credential or probe material is persisted. A wrong, expired or
 mismatched run, workflow, SHA, ref, artifact or digest fails before any AWS
 credential exists. Live drift can obtain only the non-mutating preflight
-session and must pass before the apply role exists. A valid gate applies only
-the already approved binary plan.
+session and must pass before the apply role exists, then pass again under the
+final apply lock. A valid gate applies only the already approved binary plan.
 
 There is no apply-on-merge. Product deployments use independent manual
 promotion workflows and cannot invoke shared OpenTofu apply implicitly.
