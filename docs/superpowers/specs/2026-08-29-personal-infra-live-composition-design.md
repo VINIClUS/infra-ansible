@@ -100,6 +100,18 @@ credentials to create only:
 Bootstrap emits redacted resource names and ARNs, never credentials. It is
 re-runnable and import-aware. It has no destroy workflow.
 
+After the private repositories exist, a one-time repository-administrator
+bootstrap configures each OIDC caller repository (`personal-infra-live`,
+CnesData and LimnoPulse) through
+`PUT /repos/{owner}/{repo}/actions/oidc/customization/sub` with
+`use_default: false` and `include_claim_keys: ["repo", "context",
+"job_workflow_ref"]`. Because these jobs do not use Environments, `context`
+must encode the exact allowed `ref`. The bootstrap reads the template back with
+the corresponding GET endpoint and runs a non-mutating token contract test that
+proves the resulting `sub` contains the exact repository, ref context and
+reusable-workflow path/ref before any AWS role is enabled. The administrator
+credential is ephemeral and is never stored in Actions, artifacts or state.
+
 ### 4.2 Backend contract
 
 All stacks use the S3 backend with:
@@ -156,8 +168,10 @@ Separate roles exist for:
 
 - `personal-infra-live` plan;
 - `personal-infra-live` apply;
-- CnesData plan/deploy;
-- LimnoPulse plan/deploy.
+- CnesData plan;
+- CnesData deploy;
+- LimnoPulse plan;
+- LimnoPulse deploy.
 
 AWS trust policies bind the `sts.amazonaws.com` audience and a customized
 GitHub OIDC `sub` containing the exact repository, ref and
@@ -174,9 +188,12 @@ reusable apply and product-deploy gates validate their evidence before they
 request an OIDC token. The reusable plan gate performs validation before its
 read-oriented session. Plan roles are read-only apart from writing their
 bounded plan evidence and creating/deleting only the exact S3 `.tflock` object
-for their backend key. Product roles cannot mutate shared, edge or
-other-product resources. Contract tests request tokens through every caller and
-prove that only the expected reusable gate subject can assume each role.
+for their backend key. Each product plan role has only that read-oriented
+policy; only its distinct deploy role can mutate that product's resources.
+Neither deploy role can mutate shared, edge or other-product resources.
+Contract tests request tokens through every caller and prove that only the
+expected reusable gate subject can assume each role and that no plan-gate
+subject can assume a deploy role.
 
 ### 5.3 VPS roles
 
