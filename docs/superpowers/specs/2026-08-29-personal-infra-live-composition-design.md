@@ -160,9 +160,15 @@ Roles Anywhere profiles are distinct for:
 - LimnoPulse API/workers;
 - InfluxDB backup uploader.
 
-Each role has a maximum session duration and exact actions/resources. A
-certificate or application compromise cannot assume another profile or read
-another parameter prefix.
+Each leaf certificate has an allowlisted, application-specific X.509 Subject CN
+and SAN URI. Every profile maps those fields to session principal tags, lists
+only its intended role ARN and has a maximum session duration. The intended
+role's trust policy requires the exact trust-anchor ARN and exact
+`aws:PrincipalTag/x509Subject/CN` and `aws:PrincipalTag/x509SAN/URI` values for
+that application. Trust-policy tests prove that each certificate is rejected by
+every other application role and profile. A certificate or application
+compromise therefore cannot assume another role or read another parameter
+prefix merely because the applications share a trust anchor.
 
 ## 6. Secret hierarchy
 
@@ -186,9 +192,12 @@ Rules:
 - VPS applications retrieve only their runtime prefix;
 - values are masked before use and never emitted to outputs, plans or
   artifacts;
-- OpenTofu creates parameter containers and policies but not secret values;
-- initial values and rotations are explicit secure operations with readback by
-  checksum or version, not plaintext;
+- OpenTofu manages the declared parameter names, IAM policies and KMS
+  permissions, but no `aws_ssm_parameter` resource or secret value;
+- an explicit secure bootstrap creates each `SecureString` with its initial
+  value through `PutParameter`; rotations use the same separately authorized
+  path with readback by checksum or version, not plaintext, so secret values
+  never enter OpenTofu configuration, plan or state;
 - Standard parameters are used unless a measured size or policy requirement
   justifies an approved Advanced parameter.
 
@@ -327,8 +336,8 @@ deletion or an estimated total above USD 15 fail and are not publishable.
 ### 10.3 Apply
 
 A separate manual workflow receives `plan_run_id`, `artifact_id` and
-`artifact_digest`. With only an ephemeral, read-only `GITHUB_TOKEN`, and before
-requesting any AWS OIDC credential, it:
+`artifact_digest`. Its first gate uses only an ephemeral, read-only
+`GITHUB_TOKEN`, and before requesting any AWS OIDC credential it:
 
 1. loads the named run and artifact through the GitHub API and proves that the
    artifact belongs to that run;
@@ -338,19 +347,30 @@ requesting any AWS OIDC credential, it:
 3. downloads the exact artifact and verifies its SHA-256 digest against both
    `artifact_digest` and GitHub's artifact metadata;
 4. validates the aggregate internal manifest and its source/dependency SHAs,
-   backend key/workspace, provider lock, policy results, cost manifest and
-   expiration;
-5. fails closed on any state, dependency, policy, cost or target drift;
-6. only after every prior check succeeds, requests the apply-role OIDC token,
-   reacquires the state lock and displays the planned resource counts and cost
-   impact;
-7. applies that exact binary plan without replanning, runs read-only health and
-   policy checks, and records redacted evidence including the run, artifact and
-   digest.
+   backend identity, provider lock, policy results, cost manifest, recorded
+   drift evidence and expiration.
 
-The token is never persisted. A wrong, expired or mismatched run, workflow,
-SHA, ref, artifact or digest fails before AWS credentials exist. A valid gate
-applies only the already approved binary plan.
+Only after this artifact gate succeeds, the workflow assumes a separate,
+short-lived preflight role. That role can only read the exact S3 state/backend,
+describe the declared AWS resources and retrieve the narrowly scoped SSM-held
+host probe credential. Apart from creating and releasing the exact backend lock
+object, it cannot write AWS resources, apply a plan or mutate the host. The
+workflow then:
+
+5. reads current state under that bounded lock and fails closed on dependency,
+   policy, cost, AWS-resource or target-host drift;
+6. discards the preflight credentials and probe material, and only after that
+   live gate succeeds requests the modifying apply-role OIDC token;
+7. reacquires the state write lock, displays the planned resource counts and
+   cost impact, and applies that exact binary plan without replanning;
+8. runs read-only health and policy checks and records redacted evidence
+   including the run, artifact and digest.
+
+No token, AWS credential or probe material is persisted. A wrong, expired or
+mismatched run, workflow, SHA, ref, artifact or digest fails before any AWS
+credential exists. Live drift can obtain only the non-mutating preflight
+session and must pass before the apply role exists. A valid gate applies only
+the already approved binary plan.
 
 There is no apply-on-merge. Product deployments use independent manual
 promotion workflows and cannot invoke shared OpenTofu apply implicitly.
@@ -449,6 +469,10 @@ observability and backup paths with fewer managed processing dependencies.
   <https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts>
 - AWS Systems Manager Parameter Store:
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html>
+- AWS Roles Anywhere certificate attribute trust conditions:
+  <https://docs.aws.amazon.com/rolesanywhere/latest/userguide/attribute-mapping-and-trust-policy.html>
+- Creating SSM parameters with explicit values:
+  <https://docs.aws.amazon.com/systems-manager/latest/userguide/param-create-cli.html>
 - AWS Budgets actions:
   <https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-controls.html>
 - CloudFront flat-rate plan quotas and eligibility:

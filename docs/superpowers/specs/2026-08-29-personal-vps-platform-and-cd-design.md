@@ -307,6 +307,10 @@ backend-neutral contract, while `personal-infra-live` selects:
 
 Each application has a distinct Roles Anywhere certificate, private key,
 profile and IAM role. The root CA private key never reaches the VPS.
+Each leaf carries an application-specific Subject CN and SAN URI; its profile
+maps them to principal tags and lists only the intended role, whose trust policy
+requires those exact tags and the exact trust-anchor ARN. Tests reject every
+cross-application certificate/role combination.
 
 A root-only systemd credential renewer:
 
