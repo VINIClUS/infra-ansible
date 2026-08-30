@@ -406,11 +406,14 @@ cannot write AWS resources, apply a plan or mutate the host. The workflow then:
    lease with the required safety margin and repeats the AWS-resource and
    target-host drift checks; any difference from the first live gate or
    approved manifest fails closed without applying;
-8. invokes `tofu apply` with that exact binary plan; the apply process acquires
+8. as the final precondition immediately before execution, revalidates the
+   plan-manifest expiration and requires enough remaining validity for the
+   bounded apply window; an expired plan or insufficient margin fails closed;
+9. invokes `tofu apply` with that exact binary plan; the apply process acquires
    and releases its own native `.tflock`, with no pre-created backend lock and no
-   `-lock=false`, does not replan, and is interrupted before lease expiry if the
-   watchdog cannot renew;
-9. runs read-only health and policy checks, records redacted evidence including
+   `-lock=false`, does not replan, and is interrupted before either the plan or
+   lease validity window expires or if the watchdog cannot renew;
+10. runs read-only health and policy checks, records redacted evidence including
    the run, artifact and digest, and releases the coordination lease on every
    terminal path.
 

@@ -228,10 +228,13 @@ The second frame is the exact bounded CI release archive identified by
 Compose file and generated non-secret configuration. The dispatcher hashes the
 archive before extraction, requires the embedded manifest to equal the first
 frame, rejects absolute paths, traversal, links, devices, duplicate names and
-undeclared files, and extracts into a fresh root-owned staging directory. It
-then verifies `compose_sha256` and `config_sha256` against the staged bytes.
-Runtime secrets remain outside this archive and are rendered from SSM only
-after validation.
+undeclared files, and validates every declared uncompressed file size plus a
+strict aggregate uncompressed-size ceiling. Extraction streams into a fresh
+root-owned staging directory while enforcing both per-file and aggregate byte
+limits before each write, so compression cannot bypass the bounds or exhaust
+the target filesystem. It then verifies `compose_sha256` and `config_sha256`
+against the staged bytes. Runtime secrets remain outside this archive and are
+rendered from SSM only after validation.
 
 The manifest is the atomic promotion unit. Its evidence repository, CI run,
 artifact ID and SHA-256 digest bind one source SHA to the exact OCI image
