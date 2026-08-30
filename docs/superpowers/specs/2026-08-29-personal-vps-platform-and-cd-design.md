@@ -219,6 +219,14 @@ without a self-referential hash:
     "source_repository": "VINIClUS/CnesData",
     "source_sha": "40-character-sha",
     "expires_at": "RFC3339 timestamp",
+    "platform_plan": {
+      "evidence_id": "versioned-s3-object-id",
+      "evidence_sha256": "sha256",
+      "inventory_sha256": "sha256",
+      "dependencies_sha256": "sha256",
+      "host_preflight_sha256": "sha256",
+      "host_key_fingerprint": "SHA256:fingerprint"
+    },
     "images": {"api": "registry/repository@sha256:digest"},
     "static_release": "optional-release-id",
     "compose_sha256": "sha256",
@@ -245,9 +253,10 @@ rendered from SSM only after validation.
 The envelope and its digest-matched archive are the atomic promotion unit. The
 outer evidence repository, CI run, artifact ID and SHA-256 digest bind one
 embedded release manifest—and therefore one source SHA—to the exact OCI image
-digests, Compose checksum, configuration checksum and expiration produced by
-that run. The dispatcher never accepts an approved source SHA combined with an
-image or release artifact from another run.
+digests, Compose checksum, configuration checksum, platform-plan evidence,
+drift baselines and expiration approved for that run. The dispatcher never
+accepts an approved source SHA combined with an image, baseline or release
+artifact from another run.
 
 The third frame carries the product workflow's ephemeral, repository-scoped
 `GITHUB_TOKEN`, with only `actions: read`, `contents: read` and, when required,
@@ -296,6 +305,9 @@ Validation rejects:
   unsuccessful, unknown or inconsistent with another manifest field;
 - an absent, malformed or expired `release_manifest.expires_at`, checked again
   immediately before switching the release;
+- a missing or mismatched versioned platform-plan object, evidence digest,
+  inventory digest, dependency digest, host-preflight digest or host-key
+  fingerprint;
 - a source SHA, OCI digest, Compose checksum or configuration checksum produced
   by different CI runs;
 - compose/config checksums that do not match the release artifact;
@@ -465,24 +477,38 @@ The public repository keeps its current hosted validation and municipal deploy
 job. New tests prove that personal roles remain disabled in the example and
 municipal inventories unless explicitly selected.
 
-Personal platform plan/apply runs only from `personal-infra-live`. Each product
-promotion starts in a separate manual workflow in that product's source
-repository and executes the centrally governed, product-specific reusable gate
-from `personal-infra-live` at an immutable pin:
+Personal platform plan/apply runs only from `personal-infra-live`. Its plan job
+is the only job that reads the private inventory and revision pins. It runs
+syntax, lint, unit/contract tests and check mode, then writes a versioned,
+KMS-protected deployment-input object to the private evidence bucket. That
+object is bound to the product, pinned revisions, inventory/dependency digests,
+host-preflight digest, host-key fingerprint and expiration; the plan evidence
+records its exact S3 version ID and SHA-256. Product workflows never check out
+or receive the private repository contents.
 
-1. a GitHub-hosted plan job checks out exact pinned revisions;
-2. validation runs syntax, lint, unit/contract tests and check mode;
-3. the plan artifact is bound to repository, commit, inventory digest,
-   host-key fingerprint and expiration;
-4. a separate `workflow_dispatch` in the same product repository receives
-   `plan_run_id`, `artifact_id` and `artifact_digest`;
-5. using that repository's ephemeral, read-only `GITHUB_TOKEN`, it verifies the
+Each product promotion starts in a separate manual workflow in that product's
+source repository and executes the centrally governed, product-specific
+reusable gate from `personal-infra-live` at an immutable pin:
+
+1. product CI validates source and builds the canonical release archive;
+2. its release manifest carries the operator-selected platform evidence ID and
+   all plan-time baseline values, which remain untrusted until matched against
+   the KMS-protected object during the deploy gate;
+3. a separate `workflow_dispatch` in the same product repository receives
+   `plan_evidence_id`, `plan_evidence_digest`, `plan_run_id`, `artifact_id` and
+   `artifact_digest`;
+4. using that repository's ephemeral, read-only `GITHUB_TOKEN`, it verifies the
    exact source workflow, successful conclusion, source SHA/ref, artifact
    identity, expiration, SHA-256 digest and the internal manifest binding
    source, OCI images, Compose and configuration;
-6. any incorrect, expired or cross-run value fails before AWS credentials are
-   requested; only after the gate succeeds does OIDC obtain the short-lived
-   deploy session;
+5. any incorrect, expired or cross-run GitHub value fails before AWS
+   credentials are requested; only after the gate succeeds does OIDC obtain the
+   short-lived deploy session;
+6. with that read-scoped session, the gate retrieves only the exact versioned
+   S3 deployment-input object named by the manifest, verifies its KMS-backed
+   identity and SHA-256, and requires every inventory, dependency, host,
+   host-key and expiration baseline to equal the canonical manifest before it
+   retrieves any host credential;
 7. SSM supplies the Cloudflare Access service token and dedicated SSH key only
    to the in-memory job; the job acquires the host-wide coordination lease and
    starts its renewal watchdog before rerunning the live, read-only inventory,

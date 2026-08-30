@@ -203,8 +203,10 @@ reusable apply and per-product host-deploy gates validate their evidence before
 they request an OIDC token. The two host-deploy roles trust both their exact
 product caller repository/ref and distinct reusable workflow paths pinned in
 `personal-infra-live`; each can read/decrypt only its application's exact
-SSM-held Cloudflare/SSH deployment credentials and cannot mutate AWS
-infrastructure or access the other application's prefix. The
+SSM-held Cloudflare/SSH deployment credentials plus the exact versioned S3
+deployment-input object named by the promotion, and cannot mutate AWS
+infrastructure, list arbitrary evidence or access the other application's
+prefix. The
 reusable plan gate performs validation before its read-oriented session. Plan
 roles are read-only apart from writing their bounded plan evidence and
 creating/deleting only the exact S3 `.tflock` object for their backend key.
