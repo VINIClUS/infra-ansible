@@ -223,13 +223,23 @@ frame is a non-secret, versioned JSON release manifest with:
 }
 ```
 
+The second frame is the exact bounded CI release archive identified by
+`ci_evidence.artifact_digest`; it contains the canonical copy of the manifest,
+Compose file and generated non-secret configuration. The dispatcher hashes the
+archive before extraction, requires the embedded manifest to equal the first
+frame, rejects absolute paths, traversal, links, devices, duplicate names and
+undeclared files, and extracts into a fresh root-owned staging directory. It
+then verifies `compose_sha256` and `config_sha256` against the staged bytes.
+Runtime secrets remain outside this archive and are rendered from SSM only
+after validation.
+
 The manifest is the atomic promotion unit. Its evidence repository, CI run,
 artifact ID and SHA-256 digest bind one source SHA to the exact OCI image
 digests, Compose checksum and configuration checksum produced by that run. The
 dispatcher never accepts an approved source SHA combined with an image or
 release artifact from another run.
 
-For a private registry pull, an optional second frame carries the workflow's
+For a private registry pull, an optional third frame carries the workflow's
 ephemeral bearer credential. The dispatcher accepts that frame only for the
 manifest's allowlisted repository and registry, enforces a strict size limit,
 never places it in an argument, environment variable, log or evidence file,
@@ -263,6 +273,15 @@ same-repository evidence. Cross-repository evidence from the private CnesData
 repository uses a just-in-time GitHub App installation token limited to
 `Actions: read` and `Contents: read` on the exact allowlisted product
 repository; a classic or fine-grained personal access token is not accepted.
+
+The App ID is non-secret repository configuration. Its private key is a
+repo-scoped encrypted Actions secret in `personal-infra-live`, available only
+to the evidence-gate job before AWS access. A one-time administrator installs
+the App only on the allowlisted personal repositories and seeds that secret.
+Rotation creates a second App key, updates and read-tests the secret, then
+revokes the old key; failed rotation restores the still-valid prior key. The
+private key and minted installation tokens are masked, never printed, passed to
+another job, persisted or uploaded as artifacts.
 
 When a private GHCR pull is required, the package must remain linked to its
 source repository and its **Manage Actions access** settings must separately
