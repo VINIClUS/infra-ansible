@@ -110,6 +110,12 @@ All stacks use the S3 backend with:
 - lifecycle limits for superseded state and lock versions;
 - no local state committed or uploaded as a workflow artifact.
 
+Apply workflows also use a separate conditional S3 coordination object per
+stack. It carries the run identity and a bounded lease, is honored by every
+workflow and human apply runbook, and remains held across the preflight-to-apply
+credential handoff. It is not the OpenTofu `.tflock`: each OpenTofu process must
+create and remove its own native backend lock normally.
+
 Force unlock is an emergency human procedure requiring the exact lock ID and
 proof that no apply is running. Workflows never pass `-lock=false`.
 
@@ -354,27 +360,32 @@ A separate manual workflow receives `plan_run_id`, `artifact_id` and
 Only after this artifact gate succeeds, the workflow assumes a separate,
 short-lived preflight role. That role can only read the exact S3 state/backend,
 describe the declared AWS resources and retrieve the narrowly scoped SSM-held
-host probe credential. Apart from creating and releasing the exact backend lock
-object, it cannot write AWS resources, apply a plan or mutate the host. The
-workflow then:
+host probe credential. Apart from the exact per-stack coordination object and
+the `.tflock` created and removed by its own OpenTofu read/refresh command, it
+cannot write AWS resources, apply a plan or mutate the host. The workflow then:
 
-5. reads current state under that bounded lock and fails closed on dependency,
-   policy, cost, AWS-resource or target-host drift;
-6. discards the preflight credentials and probe material, and only after that
-   live gate succeeds requests the modifying apply-role OIDC token;
-7. reacquires the state write lock and repeats the AWS-resource and target-host
-   drift checks under that final lock; any difference from the first live gate
-   or approved manifest fails closed without applying;
-8. displays the planned resource counts and cost impact and applies that exact
-   binary plan without replanning;
-9. runs read-only health and policy checks and records redacted evidence
-   including the run, artifact and digest.
+5. conditionally acquires the separate coordination lease, then reads current
+   state while its OpenTofu check owns the native `.tflock`, and fails closed on
+   dependency, policy, cost, AWS-resource or target-host drift;
+6. releases only the native `.tflock`, retains the coordination lease across
+   credential handoff, discards the preflight credentials and probe material,
+   and requests the modifying apply-role OIDC token;
+7. proves the same run still owns an unexpired coordination lease and repeats
+   the AWS-resource and target-host drift checks; any difference from the first
+   live gate or approved manifest fails closed without applying;
+8. invokes `tofu apply` with that exact binary plan; the apply process acquires
+   and releases its own native `.tflock`, with no pre-created backend lock and no
+   `-lock=false`, and does not replan;
+9. runs read-only health and policy checks, records redacted evidence including
+   the run, artifact and digest, and releases the coordination lease on every
+   terminal path.
 
 No token, AWS credential or probe material is persisted. A wrong, expired or
 mismatched run, workflow, SHA, ref, artifact or digest fails before any AWS
 credential exists. Live drift can obtain only the non-mutating preflight
-session and must pass before the apply role exists, then pass again under the
-final apply lock. A valid gate applies only the already approved binary plan.
+session and must pass before the apply role exists, then pass again while the
+same coordination lease excludes competing managed operations. A valid gate
+applies only the already approved binary plan.
 
 There is no apply-on-merge. Product deployments use independent manual
 promotion workflows and cannot invoke shared OpenTofu apply implicitly.
