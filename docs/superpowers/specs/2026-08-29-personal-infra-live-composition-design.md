@@ -116,6 +116,13 @@ workflow and human apply runbook, and remains held across the preflight-to-apply
 credential handoff. It is not the OpenTofu `.tflock`: each OpenTofu process must
 create and remove its own native backend lock normally.
 
+The holder owns an unpredictable token and renews the lease with conditional
+compare-and-swap before half of every lease interval from acquisition through
+final evidence. A renewal watchdog aborts before a fixed safety margin if it
+cannot renew. Expiration alone never permits takeover: a contender must also
+prove the recorded GitHub run is terminal, otherwise recovery is a reviewed
+human operation.
+
 Force unlock is an emergency human procedure requiring the exact lock ID and
 proof that no apply is running. Workflows never pass `-lock=false`.
 
@@ -149,12 +156,16 @@ Separate roles exist for:
 - CnesData plan/deploy;
 - LimnoPulse plan/deploy.
 
-AWS trust policies bind the `sts.amazonaws.com` audience and the exact
-repository and ref encoded in the GitHub OIDC `sub` claim. They do not validate
-a plan manifest, artifact or digest: AWS does not receive custom claims for
-those values. The private-repository workflow cannot rely on protected GitHub
-Environments, so the apply workflow enforces that evidence gate itself before
-it requests an OIDC token. Plan roles are read-only apart from writing their
+AWS trust policies bind the `sts.amazonaws.com` audience and a customized
+GitHub OIDC `sub` containing the exact repository, ref and
+`job_workflow_ref`. The apply job runs only inside a reusable, immutable apply
+gate workflow; the apply role requires that workflow's exact path and pinned
+ref in `job_workflow_ref`, so another workflow on the same repository/ref
+cannot bypass the gate and assume the role directly. This remains an `aud`/`sub`
+condition: AWS does not receive or validate a plan manifest, artifact or digest.
+The private-repository workflow cannot rely on protected GitHub Environments,
+so the reusable apply workflow validates that evidence itself before it
+requests an OIDC token. Plan roles are read-only apart from writing their
 bounded plan evidence and creating/deleting only the exact S3 `.tflock` object
 for their backend key. Product roles cannot mutate shared, edge or
 other-product resources.
@@ -379,15 +390,18 @@ cannot write AWS resources, apply a plan or mutate the host. The workflow then:
 5. conditionally acquires the separate coordination lease, then reads current
    state while its OpenTofu check owns the native `.tflock`, and fails closed on
    dependency, policy, cost, AWS-resource or target-host drift;
-6. releases only the native `.tflock`, retains the coordination lease across
-   credential handoff, discards the preflight credentials and probe material,
-   and requests the modifying apply-role OIDC token;
-7. proves the same run still owns an unexpired coordination lease and repeats
-   the AWS-resource and target-host drift checks; any difference from the first
-   live gate or approved manifest fails closed without applying;
+6. releases only the native `.tflock`, starts the owner-token renewal watchdog,
+   retains the coordination lease across credential handoff, discards the
+   preflight credentials and probe material, and requests the modifying
+   apply-role OIDC token;
+7. proves the same run still owns an unexpired, actively renewing coordination
+   lease with the required safety margin and repeats the AWS-resource and
+   target-host drift checks; any difference from the first live gate or
+   approved manifest fails closed without applying;
 8. invokes `tofu apply` with that exact binary plan; the apply process acquires
    and releases its own native `.tflock`, with no pre-created backend lock and no
-   `-lock=false`, and does not replan;
+   `-lock=false`, does not replan, and is interrupted before lease expiry if the
+   watchdog cannot renew;
 9. runs read-only health and policy checks, records redacted evidence including
    the run, artifact and digest, and releases the coordination lease on every
    terminal path.
@@ -496,6 +510,8 @@ observability and backup paths with fewer managed processing dependencies.
   <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws>
 - GitHub artifact validation:
   <https://docs.github.com/en/actions/tutorials/store-and-share-data#validating-artifacts>
+- GitHub OIDC with reusable workflows and customized `sub`:
+  <https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-with-reusable-workflows>
 - AWS Systems Manager Parameter Store:
   <https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html>
 - AWS Roles Anywhere certificate attribute trust conditions:

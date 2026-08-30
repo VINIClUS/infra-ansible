@@ -218,6 +218,7 @@ frame is a non-secret, versioned JSON release manifest with:
   "images": {"api": "registry/repository@sha256:digest"},
   "static_release": "optional-release-id",
   "compose_sha256": "sha256",
+  "config_sha256": "sha256",
   "requested_action": "deploy"
 }
 ```
