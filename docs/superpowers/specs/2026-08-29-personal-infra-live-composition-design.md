@@ -169,8 +169,8 @@ Separate roles exist for:
 
 - `personal-infra-live` plan;
 - `personal-infra-live` apply;
-- `personal-infra-live` CnesData host deploy;
-- `personal-infra-live` LimnoPulse host deploy;
+- CnesData host deploy through the pinned `personal-infra-live` gate;
+- LimnoPulse host deploy through the pinned `personal-infra-live` gate;
 - CnesData infrastructure plan;
 - CnesData infrastructure deploy;
 - LimnoPulse infrastructure plan;
@@ -188,10 +188,11 @@ artifact or digest.
 
 The private repository cannot rely on protected GitHub Environments, so the
 reusable apply and per-product host-deploy gates validate their evidence before
-they request an OIDC token. The two host-deploy roles trust distinct reusable
-workflow paths in `personal-infra-live`; each can read/decrypt only its
-application's exact SSM-held Cloudflare/SSH deployment credentials and cannot
-mutate AWS infrastructure or access the other application's prefix. The
+they request an OIDC token. The two host-deploy roles trust both their exact
+product caller repository/ref and distinct reusable workflow paths pinned in
+`personal-infra-live`; each can read/decrypt only its application's exact
+SSM-held Cloudflare/SSH deployment credentials and cannot mutate AWS
+infrastructure or access the other application's prefix. The
 reusable plan gate performs validation before its read-oriented session. Plan
 roles are read-only apart from writing their bounded plan evidence and
 creating/deleting only the exact S3 `.tflock` object for their backend key.

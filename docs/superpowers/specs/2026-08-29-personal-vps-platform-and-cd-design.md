@@ -249,12 +249,23 @@ digests, Compose checksum, configuration checksum and expiration produced by
 that run. The dispatcher never accepts an approved source SHA combined with an
 image or release artifact from another run.
 
-For a private registry pull, an optional third frame carries the workflow's
-ephemeral bearer credential. The dispatcher accepts that frame only for the
-manifest's allowlisted repository and registry, enforces a strict size limit,
-never places it in an argument, environment variable, log or evidence file,
-and consumes it directly into the temporary Docker configuration. Public-image
-deployments omit the frame.
+The third frame carries the product workflow's ephemeral, repository-scoped
+`GITHUB_TOKEN`, with only `actions: read`, `contents: read` and, when required,
+`packages: read`. The dispatcher accepts it only for the envelope's allowlisted
+repository, enforces a strict size limit, and uses it first to query the live
+GitHub API for the exact run, workflow, conclusion, SHA/ref, artifact ID,
+expiration and GitHub-recorded digest. It hashes the received archive and
+requires all live metadata and bytes to match the envelope before extraction.
+Thus possession of the SSH key and Cloudflare token without the product
+workflow's fresh GitHub token cannot authenticate invented CI evidence.
+
+When a private GHCR pull is required, the same token may also have
+`packages: read` and is consumed directly into a temporary Docker
+configuration for only the manifest's allowlisted repository and registry. It
+is never placed in an argument, environment variable, log or evidence file and
+is removed with the Docker configuration on every exit path. Public-image
+deployments omit `packages: read`, but still supply the token for live evidence
+verification.
 
 Every platform workflow, product workflow, autonomous systemd unit and human
 runbook that can modify the VPS must first acquire the same root-owned,
@@ -297,31 +308,23 @@ Nginx upstream, stop the prior candidate after health succeeds, or restore the
 immediately preceding manifest. It cannot prune images globally, delete
 volumes, execute a shell, change another application or alter the base host.
 
-Before deployment credentials are requested, the workflow uses an ephemeral,
-read-only GitHub credential to validate the allowlisted evidence repository and
-CI workflow, successful conclusion, run ID, source SHA/ref, artifact ID,
-expiration and SHA-256 digest. A repo-scoped `GITHUB_TOKEN` is used for
-same-repository evidence. Cross-repository evidence from the private CnesData
-repository uses a just-in-time GitHub App installation token limited to
-`Actions: read` and `Contents: read` on the exact allowlisted product
-repository; a classic or fine-grained personal access token is not accepted.
-
-The App ID is non-secret repository configuration. Its private key is a
-repo-scoped encrypted Actions secret in `personal-infra-live`, available only
-to the evidence-gate job before AWS access. A one-time administrator installs
-the App only on the allowlisted personal repositories and seeds that secret.
-Rotation creates a second App key, updates and read-tests the secret, then
-revokes the old key; failed rotation restores the still-valid prior key. The
-private key and minted installation tokens are masked, never printed, passed to
-another job, persisted or uploaded as artifacts.
+Before deployment credentials are requested, a manual workflow in the same
+product repository as the evidence uses its ephemeral, read-only
+`GITHUB_TOKEN` to validate the allowlisted CI workflow, successful conclusion,
+run ID, source SHA/ref, artifact ID, expiration and SHA-256 digest. It then
+calls the product-specific reusable host-deploy gate at its immutable pin in
+`personal-infra-live`. No GitHub App key, PAT or cross-repository secret exists;
+the caller token remains scoped to its product repository and is passed only
+over the encrypted forced-command stream for the dispatcher's second,
+independent live verification.
 
 When a private GHCR pull is required, the package must remain linked to its
-source repository and its **Manage Actions access** settings must separately
-grant `personal-infra-live` read access. Only then may the deployment job use
-its `packages:read` `GITHUB_TOKEN` through a temporary mode-0700 Docker
-configuration under `/run`. Every GitHub token and the configuration are
-removed on every exit path, are never persisted, logged or included in
-evidence, and are never reused as a host credential.
+source repository and permit that repository's Actions workflows to read it.
+Only then may the product deployment job use its `packages:read`
+`GITHUB_TOKEN` through a temporary mode-0700 Docker configuration under
+`/run`. Every GitHub token and the configuration are removed on every exit
+path, are never persisted, logged or included in evidence, and are never reused
+as a host credential.
 
 ## 8. Cloudflare Tunnel and Nginx
 
@@ -462,20 +465,21 @@ The public repository keeps its current hosted validation and municipal deploy
 job. New tests prove that personal roles remain disabled in the example and
 municipal inventories unless explicitly selected.
 
-Personal production delivery runs only from `personal-infra-live`:
+Personal platform plan/apply runs only from `personal-infra-live`. Each product
+promotion starts in a separate manual workflow in that product's source
+repository and executes the centrally governed, product-specific reusable gate
+from `personal-infra-live` at an immutable pin:
 
 1. a GitHub-hosted plan job checks out exact pinned revisions;
 2. validation runs syntax, lint, unit/contract tests and check mode;
 3. the plan artifact is bound to repository, commit, inventory digest,
    host-key fingerprint and expiration;
-4. a separate `workflow_dispatch` receives `plan_run_id`, `artifact_id` and
-   `artifact_digest`;
-5. using the repo-scoped read-only `GITHUB_TOKEN`, or a just-in-time,
-   repository-allowlisted GitHub App installation token for private
-   cross-repository evidence, it verifies the evidence repository, exact source
-   workflow, successful conclusion, source SHA/ref, artifact identity,
-   expiration, SHA-256 digest and the internal manifest binding source, OCI
-   images, Compose and configuration;
+4. a separate `workflow_dispatch` in the same product repository receives
+   `plan_run_id`, `artifact_id` and `artifact_digest`;
+5. using that repository's ephemeral, read-only `GITHUB_TOKEN`, it verifies the
+   exact source workflow, successful conclusion, source SHA/ref, artifact
+   identity, expiration, SHA-256 digest and the internal manifest binding
+   source, OCI images, Compose and configuration;
 6. any incorrect, expired or cross-run value fails before AWS credentials are
    requested; only after the gate succeeds does OIDC obtain the short-lived
    deploy session;
@@ -484,11 +488,13 @@ Personal production delivery runs only from `personal-infra-live`:
    starts its renewal watchdog before rerunning the live, read-only inventory,
    dependency and target-host preflight, then compares those digests with the
    approved plan and fails closed on any drift;
-8. immediately before the release switch, the dispatcher proves the same owner
-   still holds an actively renewed lease with sufficient margin and revalidates
-   the embedded `expires_at`; it applies the exact approved archive without
-   rebuilding or replanning it, holds the lease through the health decision and
-   upstream switch, and releases it on every terminal path;
+8. using the caller's token, the dispatcher independently revalidates the live
+   GitHub run/artifact provenance and received archive digest; immediately
+   before the release switch it proves the same owner still holds an actively
+   renewed lease with sufficient margin and revalidates the embedded
+   `expires_at`, then applies the exact approved archive without rebuilding or
+   replanning it, holds the lease through the health decision and upstream
+   switch, and releases it on every terminal path;
 9. logs and artifacts contain names and hashes, never secret values, and the
    paid GitHub Actions spending limit remains USD 0.
 
