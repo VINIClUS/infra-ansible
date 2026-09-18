@@ -1,0 +1,16 @@
+---
+- name: Bootstrap the CnesData deploy runner services
+  hosts: deploy_runners
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: common_base
+      tags: [common_base]
+    - role: ssh_hardening
+      tags: [ssh_hardening]
+    - role: github_actions_runner
+      tags: [github_actions_runner]
+    - role: cnesdata_deployer
+      tags: [cnesdata_deployer]
+    - role: monitoring_agent
+      tags: [monitoring_agent]
