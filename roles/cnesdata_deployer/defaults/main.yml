@@ -1,0 +1,18 @@
+---
+cnesdata_deployer_environment: ""
+cnesdata_deployer_runner_user: github-runner
+cnesdata_deployer_config_dir: /etc/cnesdata-deploy
+cnesdata_deployer_ssh_key_path: "{{ cnesdata_deployer_config_dir }}/vps-ssh-key"
+cnesdata_deployer_script_path: >-
+  /usr/local/sbin/cnesdata-deploy-{{ cnesdata_deployer_environment }}
+cnesdata_deployer_sudoers_path: >-
+  /etc/sudoers.d/cnesdata-deploy-{{ cnesdata_deployer_environment }}
+cnesdata_deployer_vps_host: 103.199.184.166
+cnesdata_deployer_vps_user: deploy
+cnesdata_deployer_tag_regex: >-
+  {{ '^develop-[0-9a-f]{7,40}$' if cnesdata_deployer_environment == 'dev'
+     else '^main-[0-9a-f]{7,40}$' }}
+cnesdata_deployer_packages:
+  - openssh-client
+  - ca-certificates
+  - sudo

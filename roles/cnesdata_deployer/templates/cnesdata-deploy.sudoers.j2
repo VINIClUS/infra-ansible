@@ -1,0 +1,2 @@
+Defaults!{{ cnesdata_deployer_script_path }} secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+{{ cnesdata_deployer_runner_user }} ALL=(root) NOPASSWD:NOSETENV: {{ cnesdata_deployer_script_path }} {{ cnesdata_deployer_tag_regex }}

@@ -1,0 +1,43 @@
+---
+- name: Validate deploy runner SSH access contract
+  ansible.builtin.assert:
+    that:
+      - deploy_runner_ssh_access_node | length > 0
+      - deploy_runner_ssh_access_vmid | int >= 100
+
+- name: Generate the controller-to-runner admin keypair
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -t
+      - ed25519
+      - -N
+      - ""
+      - -C
+      - cnesdata-deploy-runners
+      - -f
+      - "{{ deploy_runner_ssh_access_key_path }}"
+  args:
+    creates: "{{ deploy_runner_ssh_access_key_path }}"
+
+- name: Read the generated public key
+  ansible.builtin.slurp:
+    src: "{{ deploy_runner_ssh_access_key_path }}.pub"
+  register: deploy_runner_ssh_access_pubkey_file
+
+- name: Install the admin public key inside the target LXC via pct exec
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -i
+      - "{{ deploy_runner_ssh_access_pve_ssh_key }}"
+      - "{{ deploy_runner_ssh_access_pve_ssh_user }}@{{ deploy_runner_ssh_access_pve_ssh_host }}"
+      - >-
+        pct exec {{ deploy_runner_ssh_access_vmid }} --
+        sh -c 'key=$(cat); mkdir -p /root/.ssh; chmod 700 /root/.ssh;
+        touch /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys;
+        grep -qxF "$key" /root/.ssh/authorized_keys ||
+        echo "$key" >> /root/.ssh/authorized_keys'
+  args:
+    stdin: "{{ deploy_runner_ssh_access_pubkey_file.content | b64decode }}"
+  changed_when: true

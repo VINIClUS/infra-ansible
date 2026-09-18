@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TAG="${1:-}"
+
+if ! [[ "$TAG" =~ {{ cnesdata_deployer_tag_regex }} ]]; then
+  echo "cnesdata-deploy-{{ cnesdata_deployer_environment }}: rejected tag=${TAG}" >&2
+  exit 1
+fi
+
+exec ssh \
+  -i "{{ cnesdata_deployer_ssh_key_path }}" \
+  -o UserKnownHostsFile="{{ cnesdata_deployer_config_dir }}/vps-known-hosts" \
+  -o StrictHostKeyChecking=yes \
+  -o BatchMode=yes \
+  -o IdentitiesOnly=yes \
+  "{{ cnesdata_deployer_vps_user }}@{{ cnesdata_deployer_vps_host }}" \
+  "$TAG"

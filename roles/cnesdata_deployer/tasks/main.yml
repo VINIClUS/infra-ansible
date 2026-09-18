@@ -1,0 +1,87 @@
+---
+- name: Validate the fixed CnesData deployment contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - cnesdata_deployer_environment in ['dev', 'prod']
+      - cnesdata_deployer_config_dir == '/etc/cnesdata-deploy'
+      - >-
+        cnesdata_deployer_script_path ==
+        '/usr/local/sbin/cnesdata-deploy-' ~ cnesdata_deployer_environment
+      - >-
+        cnesdata_deployer_sudoers_path ==
+        '/etc/sudoers.d/cnesdata-deploy-' ~ cnesdata_deployer_environment
+    fail_msg: >-
+      The deployer requires Debian and a dev/prod environment at the fixed
+      root-owned paths.
+
+- name: Read only the deployment bootstrap secrets
+  ansible.builtin.set_fact:
+    cnesdata_deployer_runtime_secrets:
+      VPS_SSH_PRIVATE_KEY: >-
+        {{ lookup('ansible.builtin.env', 'CNESDATA_DEPLOY_VPS_SSH_PRIVATE_KEY') }}
+      VPS_KNOWN_HOSTS_ENTRY: >-
+        {{ lookup('ansible.builtin.env', 'CNESDATA_DEPLOY_VPS_KNOWN_HOSTS') }}
+  no_log: true
+
+- name: Validate deployment bootstrap secrets without disclosing them
+  ansible.builtin.assert:
+    that:
+      - >-
+        cnesdata_deployer_runtime_secrets.VPS_SSH_PRIVATE_KEY is
+        match('(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\n.+\n-----END OPENSSH PRIVATE KEY-----\n?$')
+      - cnesdata_deployer_runtime_secrets.VPS_KNOWN_HOSTS_ENTRY | length > 0
+      - cnesdata_deployer_runtime_secrets.VPS_KNOWN_HOSTS_ENTRY is not search('\r')
+    fail_msg: >-
+      The VPS deploy SSH private key and its pinned known_hosts entry must be
+      present and valid.
+  no_log: true
+
+- name: Install fixed deployment boundary dependencies
+  ansible.builtin.apt:
+    name: "{{ cnesdata_deployer_packages }}"
+    state: present
+    update_cache: true
+
+- name: Create root-owned deployment directory
+  ansible.builtin.file:
+    path: "{{ cnesdata_deployer_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the VPS deploy SSH private key
+  ansible.builtin.copy:
+    content: "{{ cnesdata_deployer_runtime_secrets.VPS_SSH_PRIVATE_KEY }}\n"
+    dest: "{{ cnesdata_deployer_ssh_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the pinned VPS known_hosts entry
+  ansible.builtin.copy:
+    content: "{{ cnesdata_deployer_runtime_secrets.VPS_KNOWN_HOSTS_ENTRY }}\n"
+    dest: "{{ cnesdata_deployer_config_dir }}/vps-known-hosts"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the only privileged deploy command
+  ansible.builtin.template:
+    src: cnesdata-deploy.sh.j2
+    dest: "{{ cnesdata_deployer_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the runner's single sudo grant
+  ansible.builtin.template:
+    src: cnesdata-deploy.sudoers.j2
+    dest: "{{ cnesdata_deployer_sudoers_path }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
