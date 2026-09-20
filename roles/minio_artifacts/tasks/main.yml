@@ -15,15 +15,11 @@
 - name: Validate MinIO credentials presence when access check is enabled
   ansible.builtin.assert:
     that:
-      - >-
-        lookup('ansible.builtin.env', minio_artifacts_access_key_env_var) |
-        length > 0
-      - >-
-        lookup('ansible.builtin.env', minio_artifacts_secret_key_env_var) |
-        length > 0
+      - minio_artifacts_access_key | length > 0
+      - minio_artifacts_secret_key | length > 0
     fail_msg: >-
-      MinIO credential environment variables are required for live access
-      validation.
+      MinIO credentials (minio_access_key / minio_secret_key) are required
+      for live access validation.
   no_log: true
   when: minio_artifacts_validate_access | bool
 
@@ -31,10 +27,8 @@
   amazon.aws.s3_bucket_info:
     endpoint_url: "{{ minio_artifacts_endpoint_url }}"
     region: "{{ minio_artifacts_region }}"
-    access_key: >-
-      {{ lookup('ansible.builtin.env', minio_artifacts_access_key_env_var) }}
-    secret_key: >-
-      {{ lookup('ansible.builtin.env', minio_artifacts_secret_key_env_var) }}
+    access_key: "{{ minio_artifacts_access_key }}"
+    secret_key: "{{ minio_artifacts_secret_key }}"
   register: minio_artifacts_bucket_info
   changed_when: false
   no_log: true

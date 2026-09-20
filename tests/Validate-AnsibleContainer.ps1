@@ -29,7 +29,6 @@ function Assert-FileContains {
 
 Assert-PathExists -RelativePath "tools\ansible\Dockerfile"
 Assert-PathExists -RelativePath "tools\ansible\Invoke-AnsibleContainer.ps1"
-Assert-PathExists -RelativePath "tools\ansible\Invoke-InfisicalAnsible.ps1"
 Assert-PathExists -RelativePath "tools\ansible\README.md"
 Assert-PathExists -RelativePath ".dockerignore"
 
@@ -94,54 +93,10 @@ printf '%s\n' "$*" >> "$RTK_MOCK_LOG"
             throw "Mocked wrapper invocation did not include: $expected"
         }
     }
-
-    Clear-Content -LiteralPath $mockLog
-    $env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "test-client-id"
-    $env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = "test-client-secret"
-    & (Join-Path $RepoRoot "tools\ansible\Invoke-InfisicalAnsible.ps1") `
-        -ProjectId "test-project" `
-        -Environment "prod" `
-        -SecretPath @("/infra/minio") `
-        -RequiredKey @("OBJECT_STORAGE_ACCESS_KEY", "OBJECT_STORAGE_SECRET_KEY") `
-        -Playbook "playbooks/site.yml" `
-        -InventoryRoot $RepoRoot `
-        -Inventory "inventories/example/hosts.yml" `
-        -Limit "localhost" `
-        -Tags "validation"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Mocked Infisical wrapper execution failed with exit code $LASTEXITCODE"
-    }
-
-    $infisicalInvocation = Get-Content -Raw -LiteralPath $mockLog
-    foreach ($expected in @(
-            "docker run",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
-            "tools/ansible/infisical_ansible.py",
-            "--project-id test-project",
-            "--environment prod",
-            "--path /infra/minio",
-            "--required-key OBJECT_STORAGE_ACCESS_KEY",
-            "--required-key OBJECT_STORAGE_SECRET_KEY",
-            "playbooks/site.yml",
-            ":/inventory:ro",
-            "-i /inventory/inventories/example/hosts.yml",
-            "--limit localhost",
-            "--tags validation"
-        )) {
-        if ($infisicalInvocation -notmatch [regex]::Escape($expected)) {
-            throw "Mocked Infisical invocation did not include: $expected"
-        }
-    }
-    if ($infisicalInvocation -match "test-client-secret") {
-        throw "Infisical client secret was exposed in Docker arguments"
-    }
 }
 finally {
     $env:PATH = $previousPath
     $env:RTK_MOCK_LOG = $previousLog
-    Remove-Item Env:INFISICAL_UNIVERSAL_AUTH_CLIENT_ID -ErrorAction SilentlyContinue
-    Remove-Item Env:INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $mockRoot) {
         Remove-Item -LiteralPath $mockRoot -Recurse -Force
     }

@@ -4,8 +4,7 @@ cloudflare_access_account_id: >-  # noqa var-naming[no-role-prefix]
   {{ cloudflare_account_id |
      default(lookup('ansible.builtin.env', 'CLOUDFLARE_ACCOUNT_ID'), true) }}
 cloudflare_access_zone_id: "{{ cloudflare_zone_id | default('', true) }}"  # noqa var-naming[no-role-prefix]
-cloudflare_access_api_token: >-  # noqa var-naming[no-role-prefix]
-  {{ lookup('ansible.builtin.env', 'CLOUDFLARE_API_TOKEN') }}
+cloudflare_access_api_token: "{{ cloudflare_api_token | default('') }}"  # noqa var-naming[no-role-prefix]
 cloudflare_access_service_token_id: ""  # noqa var-naming[no-role-prefix]
 
 cloudflare_access_human_domain: ansible.vinisantana.com  # noqa var-naming[no-role-prefix]

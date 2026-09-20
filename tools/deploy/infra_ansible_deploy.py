@@ -15,9 +15,10 @@ import sys
 import tempfile
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, NamedTuple, Sequence
+
+import yaml
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -27,8 +28,11 @@ FIXED_INVENTORY = "/srv/infra-ansible-inventory/inventories/prod/hosts.yml"
 INVENTORY_VALIDATOR = (
     "/srv/infra-ansible-inventory/tests/Validate-InventoryScaffold.ps1"
 )
-INFISICAL_ENTRYPOINT = "/srv/infra-ansible/tools/ansible/infisical_ansible.py"
-CONFIG_PATH = "/etc/infra-ansible-deploy.env"
+VAULT_PASSWORD_FILE = "/etc/infra-ansible-deploy/vault-pass"
+HEALTH_VAULT_FILE = (
+    "/srv/infra-ansible-inventory/inventories/prod/group_vars/"
+    "local_validation/vault.yml"
+)
 RUNTIME_DIR = "/run/infra-ansible"
 LOCK_PATH = "/run/infra-ansible/deploy.lock"
 STATE_PATH = "/var/lib/infra-ansible-deploy/inventory-state.json"
@@ -64,38 +68,14 @@ FIXED_ROLLBACK = RunSpec(
     "semaphore_controller_rollback",
 )
 
-_CONTROLLER_PATHS = ("/ansible", "/minio")
-_CONTROLLER_KEYS = (
-    "SEMAPHORE_DB_PASSWORD",
-    "SEMAPHORE_ACCESS_KEY_ENCRYPTION",
-    "SEMAPHORE_ADMIN_PASSWORD",
-    "ANSIBLE_BACKUP_AGE_IDENTITY",
-    "OBJECT_STORAGE_ACCESS_KEY",
-    "OBJECT_STORAGE_SECRET_KEY",
-)
-_RUN_ALLOWLISTS = {
-    FIXED_RUNS[0]: (_CONTROLLER_PATHS, _CONTROLLER_KEYS),
-    FIXED_RUNS[1]: (("/edge-proxy",), ("CLOUDFLARE_API_TOKEN",)),
-    FIXED_RUNS[2]: (
-        ("/edge-proxy", "/ansible"),
-        (
-            "CLOUDFLARE_API_TOKEN",
-            "CLOUDFLARE_ACCESS_CLIENT_ID",
-            "CLOUDFLARE_ACCESS_CLIENT_SECRET",
-        ),
-    ),
-    FIXED_ROLLBACK: (_CONTROLLER_PATHS, _CONTROLLER_KEYS),
-}
-_HEALTH_KEYS = (
-    "CLOUDFLARE_ACCESS_CLIENT_ID",
-    "CLOUDFLARE_ACCESS_CLIENT_SECRET",
-)
-_CONFIG_KEYS = (
-    "INFISICAL_DOMAIN",
-    "INFISICAL_PROJECT_ID",
-    "INFISICAL_ENVIRONMENT",
-    "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
-    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+# The fixed set of playbook runs this boundary will ever execute. Ansible
+# itself scopes which secrets each run can see (via inventory group
+# membership); this allowlist only fixes *which playbook/limit/tags* may
+# run, matching the narrow contract the sudoers rule grants the runner.
+_ALLOWED_RUNS = frozenset((*FIXED_RUNS, FIXED_ROLLBACK))
+_HEALTH_VAULT_KEYS = (
+    "vault_cloudflare_access_client_id",
+    "vault_cloudflare_access_client_secret",
 )
 _HEALTH_PROGRAM = """
 import os
@@ -115,15 +95,6 @@ with urllib.request.urlopen(request, timeout=15) as response:
     if response.status != 200 or body != "pong":
         raise SystemExit("external Semaphore health check failed")
 """.strip()
-
-
-@dataclass(frozen=True)
-class DeployConfig:
-    infisical_domain: str
-    infisical_project_id: str
-    infisical_environment: str
-    universal_auth_client_id: str
-    universal_auth_client_secret: str
 
 
 class RollbackFailed(RuntimeError):
@@ -185,38 +156,6 @@ def sanitize_root_environment(
     environment.clear()
     environment.update(sanitized)
     return dict(sanitized)
-
-
-def load_config(path: str = CONFIG_PATH) -> DeployConfig:
-    values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(
-        Path(path).read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not raw_line or raw_line.startswith("#"):
-            continue
-        if "=" not in raw_line:
-            raise ValueError(f"invalid deployment config line {line_number}")
-        key, value = raw_line.split("=", 1)
-        if key not in _CONFIG_KEYS:
-            raise ValueError(f"unexpected deployment config key: {key}")
-        if key in values:
-            raise ValueError(f"duplicate deployment config key: {key}")
-        if not value or "\x00" in value:
-            raise ValueError(f"deployment config value is empty or invalid: {key}")
-        values[key] = value
-
-    missing = [key for key in _CONFIG_KEYS if key not in values]
-    if missing:
-        raise ValueError("missing deployment config keys: " + ", ".join(missing))
-    return DeployConfig(
-        infisical_domain=values["INFISICAL_DOMAIN"],
-        infisical_project_id=values["INFISICAL_PROJECT_ID"],
-        infisical_environment=values["INFISICAL_ENVIRONMENT"],
-        universal_auth_client_id=values["INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"],
-        universal_auth_client_secret=values[
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
-        ],
-    )
 
 
 def build_github_opener():
@@ -304,6 +243,8 @@ def prepare_public_checkout(
 def prepare_private_inventory(
     run: Callable[..., subprocess.CompletedProcess[str]],
     base_env: Mapping[str, str],
+    *,
+    vault_password_file: str = VAULT_PASSWORD_FILE,
 ) -> str:
     env = _base_child_env(base_env)
     env["GIT_SSH_COMMAND"] = (
@@ -330,15 +271,28 @@ def prepare_private_inventory(
         raise ValueError("private inventory did not resolve to an exact SHA")
     if dirty:
         raise ValueError("private inventory checkout is dirty")
+    # The validator shells out to ansible-inventory internally and resolves
+    # the vault password through the inventory repo's own ansible.cfg
+    # (tools/vault/get-vault-pass.sh); point it at the controller's password
+    # file by path, never by value, to keep it out of this subprocess's env.
+    validator_env = dict(env)
+    validator_env["ANSIBLE_VAULT_PASSWORD_FILE"] = vault_password_file
     _run_checked(
         run,
         ["pwsh", "-NoProfile", "-File", INVENTORY_VALIDATOR],
-        env,
+        validator_env,
         cwd=INVENTORY_REPO_ROOT,
     )
     _run_checked(
         run,
-        ["ansible-inventory", "-i", FIXED_INVENTORY, "--list"],
+        [
+            "ansible-inventory",
+            "-i",
+            FIXED_INVENTORY,
+            "--list",
+            "--vault-password-file",
+            vault_password_file,
+        ],
         env,
         cwd=PUBLIC_REPO_ROOT,
     )
@@ -374,140 +328,76 @@ def record_inventory_state(
 
 def build_playbook_invocation(
     run_spec: RunSpec,
-    config: DeployConfig,
     requested_sha: str,
     inventory_sha: str,
     *,
     base_env: Mapping[str, str],
+    vault_password_file: str = VAULT_PASSWORD_FILE,
 ) -> tuple[list[str], dict[str, str]]:
-    if run_spec not in _RUN_ALLOWLISTS:
+    if run_spec not in _ALLOWED_RUNS:
         raise ValueError("run is not in the fixed deployment allowlist")
     validate_request(requested_sha, requested_sha, requested_sha, False)
     if not SHA_RE.fullmatch(inventory_sha):
         raise ValueError("inventory SHA must be exactly 40 lowercase hex characters")
 
-    paths, required_keys = _RUN_ALLOWLISTS[run_spec]
     command = [
-        "/usr/bin/python3",
-        INFISICAL_ENTRYPOINT,
-        "--domain",
-        config.infisical_domain,
-        "--project-id",
-        config.infisical_project_id,
-        "--environment",
-        config.infisical_environment,
+        "ansible-playbook",
+        "--vault-password-file",
+        vault_password_file,
+        "-i",
+        FIXED_INVENTORY,
+        run_spec.playbook,
+        "--limit",
+        run_spec.limit,
+        "--tags",
+        run_spec.tags,
+        "--extra-vars",
+        f"infra_ansible_deploy_sha={requested_sha}",
+        "--extra-vars",
+        f"infra_ansible_inventory_sha={inventory_sha}",
     ]
-    for secret_path in paths:
-        command.extend(("--path", secret_path))
-    for required_key in required_keys:
-        command.extend(("--required-key", required_key))
-    command.extend(
-        (
-            "--",
-            "-i",
-            FIXED_INVENTORY,
-            run_spec.playbook,
-            "--limit",
-            run_spec.limit,
-            "--tags",
-            run_spec.tags,
-            "--extra-vars",
-            f"infra_ansible_deploy_sha={requested_sha}",
-            "--extra-vars",
-            f"infra_ansible_inventory_sha={inventory_sha}",
-        )
-    )
     child_env = _base_child_env(base_env)
-    child_env.update(
-        {
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": config.universal_auth_client_id,
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": config.universal_auth_client_secret,
-        }
-    )
     return command, child_env
 
 
 def run_external_health_check(
-    config: DeployConfig,
     run: Callable[..., subprocess.CompletedProcess[str]],
     base_env: Mapping[str, str],
+    *,
+    vault_password_file: str = VAULT_PASSWORD_FILE,
+    health_vault_file: str = HEALTH_VAULT_FILE,
 ) -> None:
-    auth_env = _base_child_env(base_env)
-    auth_env.update(
-        {
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": config.universal_auth_client_id,
-            "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": config.universal_auth_client_secret,
-        }
-    )
-    token = _run_checked(
+    read_env = _base_child_env(base_env)
+    raw_decrypted = _run_checked(
         run,
-        [
-            "infisical",
-            "login",
-            "--method=universal-auth",
-            "--silent",
-            "--plain",
-            "--domain",
-            config.infisical_domain,
-        ],
-        auth_env,
+        ["ansible-vault", "view", "--vault-password-file", vault_password_file,
+         health_vault_file],
+        read_env,
     )
-    if not token:
-        raise RuntimeError("Infisical Universal Auth returned an empty access token")
-
-    export_env = dict(auth_env)
-    export_env["INFISICAL_TOKEN"] = token
-    raw_secrets = _run_checked(
-        run,
-        [
-            "infisical",
-            "export",
-            "--silent",
-            "--domain",
-            config.infisical_domain,
-            "--projectId",
-            config.infisical_project_id,
-            "--env",
-            config.infisical_environment,
-            "--path",
-            "/ansible",
-            "--format=json",
-        ],
-        export_env,
-    )
-    exported = normalize_infisical_export(json.loads(raw_secrets))
-    missing = [key for key in _HEALTH_KEYS if not exported.get(key)]
+    decrypted = yaml.safe_load(raw_decrypted)
+    if not isinstance(decrypted, dict):
+        raise RuntimeError("vault-decrypted health secrets were not a mapping")
+    missing = [key for key in _HEALTH_VAULT_KEYS if not decrypted.get(key)]
     if missing:
         raise RuntimeError("missing external health keys: " + ", ".join(missing))
 
     health_env = _base_child_env(base_env)
-    health_env.update({key: str(exported[key]) for key in _HEALTH_KEYS})
+    health_env.update(
+        {
+            "CLOUDFLARE_ACCESS_CLIENT_ID": str(
+                decrypted["vault_cloudflare_access_client_id"]
+            ),
+            "CLOUDFLARE_ACCESS_CLIENT_SECRET": str(
+                decrypted["vault_cloudflare_access_client_secret"]
+            ),
+        }
+    )
     _run_checked(
         run,
         ["/usr/bin/python3", "-c", _HEALTH_PROGRAM],
         health_env,
         cwd=PUBLIC_REPO_ROOT,
     )
-
-
-def normalize_infisical_export(exported) -> dict[str, str]:
-    if isinstance(exported, dict):
-        return {key: str(value) for key, value in exported.items()}
-    if not isinstance(exported, list):
-        raise RuntimeError("Infisical export did not return a JSON object or list")
-
-    normalized = {}
-    for record in exported:
-        if not isinstance(record, dict):
-            raise RuntimeError("Infisical export list record is invalid")
-        key = record.get("key")
-        value = record.get("value")
-        if not isinstance(key, str) or not key or not isinstance(value, str):
-            raise RuntimeError("Infisical export list record is invalid")
-        if key in normalized:
-            raise RuntimeError(f"Duplicate Infisical export key: {key}")
-        normalized[key] = value
-    return normalized
 
 
 def execute_fixed_sequence(
@@ -587,14 +477,14 @@ def deploy_requested_sha(
         checkout_sha, dirty = prepare_public_checkout(requested_sha, run, environment)
         validate_request(requested_sha, main_sha, checkout_sha, dirty)
 
-        inventory_sha = prepare_private_inventory(run, environment)
+        inventory_sha = prepare_private_inventory(
+            run, environment, vault_password_file=VAULT_PASSWORD_FILE
+        )
         record_inventory_state(requested_sha, inventory_sha)
-        config = load_config()
 
         def playbook_runner(run_spec: RunSpec) -> None:
             command, child_env = build_playbook_invocation(
                 run_spec,
-                config,
                 requested_sha,
                 inventory_sha,
                 base_env=environment,
@@ -603,7 +493,7 @@ def deploy_requested_sha(
 
         execute_fixed_sequence(
             playbook_runner,
-            lambda: run_external_health_check(config, run, environment),
+            lambda: run_external_health_check(run, environment),
         )
 
 

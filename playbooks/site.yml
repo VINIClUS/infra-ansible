@@ -3,5 +3,4 @@
   hosts: localhost
   gather_facts: false
   roles:
-    - infisical_runtime
     - minio_artifacts

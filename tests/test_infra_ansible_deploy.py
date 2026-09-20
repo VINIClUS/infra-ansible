@@ -237,18 +237,9 @@ def test_lock_serializes_concurrent_callers(tmp_path):
 
 
 def test_playbook_commands_are_fixed_and_secret_free():
-    config = deploy.DeployConfig(
-        infisical_domain="https://infisical.example.test",
-        infisical_project_id="project-id",
-        infisical_environment="prod",
-        universal_auth_client_id="client-id-secret-value",
-        universal_auth_client_secret="client-secret-value",
-    )
-
     for run_spec in (*deploy.FIXED_RUNS, deploy.FIXED_ROLLBACK):
         command, child_env = deploy.build_playbook_invocation(
             run_spec,
-            config,
             SHA,
             INVENTORY_SHA,
             base_env={
@@ -257,58 +248,42 @@ def test_playbook_commands_are_fixed_and_secret_free():
                 "https_proxy": "http://runner-proxy.invalid",
                 "SSL_CERT_FILE": "/tmp/runner-ca.pem",
             },
+            vault_password_file="/etc/infra-ansible-deploy/vault-pass",
         )
         assert deploy.FIXED_INVENTORY in command
         assert run_spec.playbook in command
         assert command[command.index("--limit") + 1] == run_spec.limit
         assert command[command.index("--tags") + 1] == run_spec.tags
-        assert "client-id-secret-value" not in command
-        assert "client-secret-value" not in command
-        assert child_env["INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"] == "client-id-secret-value"
-        assert child_env["INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"] == "client-secret-value"
+        assert command[command.index("--vault-password-file") + 1] == (
+            "/etc/infra-ansible-deploy/vault-pass"
+        )
+        assert "ansible-playbook" in command
         assert child_env["PATH"] == "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
         assert "ANSIBLE_CONFIG" not in child_env
         assert "https_proxy" not in child_env
         assert "SSL_CERT_FILE" not in child_env
 
 
-@pytest.mark.parametrize(
-    "secret_export",
-    [
-        (
-            '{"CLOUDFLARE_ACCESS_CLIENT_ID": "health-client-id", '
-            '"CLOUDFLARE_ACCESS_CLIENT_SECRET": "health-client-secret", '
-            '"UNRELATED": "must-not-be-forwarded"}'
-        ),
-        (
-            '[{"key": "CLOUDFLARE_ACCESS_CLIENT_ID", '
-            '"value": "health-client-id"}, '
-            '{"key": "CLOUDFLARE_ACCESS_CLIENT_SECRET", '
-            '"value": "health-client-secret"}, '
-            '{"key": "UNRELATED", "value": "must-not-be-forwarded"}]'
-        ),
-    ],
-)
+def test_run_is_rejected_outside_the_fixed_allowlist():
+    rogue = deploy.RunSpec("playbooks/site.yml", "all", "all")
+    with pytest.raises(ValueError, match="fixed deployment allowlist"):
+        deploy.build_playbook_invocation(
+            rogue, SHA, INVENTORY_SHA, base_env={"PATH": "/usr/bin"}
+        )
+
+
 def test_external_health_secrets_are_allowlisted_and_only_enter_child_env(
-    secret_export,
+    tmp_path,
 ):
-    config = deploy.DeployConfig(
-        infisical_domain="https://infisical.example.test",
-        infisical_project_id="project-id",
-        infisical_environment="prod",
-        universal_auth_client_id="universal-client-id",
-        universal_auth_client_secret="universal-client-secret",
+    decrypted_yaml = (
+        "vault_cloudflare_access_client_id: health-client-id\n"
+        "vault_cloudflare_access_client_secret: health-client-secret\n"
+        "vault_unrelated_secret: must-not-be-forwarded\n"
     )
     calls = []
     results = iter(
         [
-            subprocess.CompletedProcess([], 0, stdout="short-lived-token\n", stderr=""),
-            subprocess.CompletedProcess(
-                [],
-                0,
-                stdout=secret_export,
-                stderr="",
-            ),
+            subprocess.CompletedProcess([], 0, stdout=decrypted_yaml, stderr=""),
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),
         ]
     )
@@ -317,17 +292,26 @@ def test_external_health_secrets_are_allowlisted_and_only_enter_child_env(
         calls.append((command, kwargs))
         return next(results)
 
-    deploy.run_external_health_check(config, fake_run, {"PATH": "/usr/bin"})
+    deploy.run_external_health_check(
+        fake_run,
+        {"PATH": "/usr/bin"},
+        vault_password_file="/etc/infra-ansible-deploy/vault-pass",
+    )
 
+    assert calls[0][0] == [
+        "ansible-vault",
+        "view",
+        "--vault-password-file",
+        "/etc/infra-ansible-deploy/vault-pass",
+        deploy.HEALTH_VAULT_FILE,
+    ]
     for command, _kwargs in calls:
-        assert "universal-client-secret" not in command
-        assert "short-lived-token" not in command
         assert "health-client-secret" not in command
     health_env = calls[-1][1]["env"]
     assert health_env["CLOUDFLARE_ACCESS_CLIENT_ID"] == "health-client-id"
     assert health_env["CLOUDFLARE_ACCESS_CLIENT_SECRET"] == "health-client-secret"
+    assert "vault_unrelated_secret" not in health_env
     assert "UNRELATED" not in health_env
-    assert "INFISICAL_TOKEN" not in health_env
     health_program = calls[-1][0][2]
     assert '"User-Agent": "infra-ansible-deploy/1"' in health_program
 
@@ -340,17 +324,41 @@ def test_inventory_is_updated_and_validated_before_it_is_recorded():
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, stdout=next(outputs), stderr="")
 
-    inventory_sha = deploy.prepare_private_inventory(fake_run, {"PATH": "/usr/bin"})
+    inventory_sha = deploy.prepare_private_inventory(
+        fake_run,
+        {"PATH": "/usr/bin"},
+        vault_password_file="/etc/infra-ansible-deploy/vault-pass",
+    )
 
     assert inventory_sha == INVENTORY_SHA
     flattened = [call[0] for call in calls]
     assert flattened[0][:4] == ["git", "-C", deploy.INVENTORY_REPO_ROOT, "fetch"]
     assert ["git", "-C", deploy.INVENTORY_REPO_ROOT, "checkout", "--detach", "origin/main"] in flattened
-    assert ["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR] in flattened
-    assert ["ansible-inventory", "-i", deploy.FIXED_INVENTORY, "--list"] in flattened
-    assert flattened.index(["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR]) < flattened.index(
-        ["ansible-inventory", "-i", deploy.FIXED_INVENTORY, "--list"]
+    validator_command = ["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR]
+    inventory_command = [
+        "ansible-inventory",
+        "-i",
+        deploy.FIXED_INVENTORY,
+        "--list",
+        "--vault-password-file",
+        "/etc/infra-ansible-deploy/vault-pass",
+    ]
+    assert validator_command in flattened
+    assert inventory_command in flattened
+    assert flattened.index(validator_command) < flattened.index(inventory_command)
+
+    validator_call = next(
+        call for call in calls if call[0] == validator_command
     )
+    assert (
+        validator_call[1]["env"]["ANSIBLE_VAULT_PASSWORD_FILE"]
+        == "/etc/infra-ansible-deploy/vault-pass"
+    )
+    inventory_call = next(
+        call for call in calls if call[0] == inventory_command
+    )
+    assert "ANSIBLE_VAULT_PASSWORD_FILE" not in inventory_call[1]["env"]
+    assert "ANSIBLE_VAULT_PASSWORD" not in inventory_call[1]["env"]
 
 
 def test_post_switch_failure_runs_fixed_rollback():
@@ -395,9 +403,6 @@ def test_initial_controller_failure_does_not_run_wrapper_rollback():
 def test_role_installs_only_the_narrow_root_boundary():
     defaults = yaml.safe_load(read("roles/infra_ansible_deployer/defaults/main.yml"))
     tasks = read("roles/infra_ansible_deployer/tasks/main.yml")
-    env_template = read(
-        "roles/infra_ansible_deployer/templates/infra-ansible-deploy.env.j2"
-    )
     sudoers = read(
         "roles/infra_ansible_deployer/templates/infra-ansible-deploy.sudoers.j2"
     )
@@ -411,13 +416,17 @@ def test_role_installs_only_the_narrow_root_boundary():
     assert defaults["infra_ansible_deployer_edge_ssh_key_path"] == (
         "/etc/infra-ansible-deploy/edge-ssh-key"
     )
+    assert defaults["infra_ansible_deployer_vault_password_path"] == (
+        "/etc/infra-ansible-deploy/vault-pass"
+    )
     assert "version: \"{{ infra_ansible_deployer_public_sha }}\"" in tasks
     assert "version: \"{{ infra_ansible_deployer_inventory_sha }}\"" in tasks
     assert "dest: /usr/local/sbin/infra-ansible-deploy" in tasks
     assert 'mode: "0755"' in tasks
-    assert "dest: /etc/infra-ansible-deploy.env" in tasks
-    assert 'mode: "0600"' in tasks
-    assert "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=" in env_template
+    assert "dest: /etc/infra-ansible-deploy.env" not in tasks
+    assert not Path(
+        ROOT / "roles/infra_ansible_deployer/templates/infra-ansible-deploy.env.j2"
+    ).exists()
     assert (
         'content: "{{ '
         'infra_ansible_deployer_runtime_secrets.INFRA_INVENTORY_DEPLOY_KEY }}\\n"'
@@ -438,34 +447,47 @@ def test_role_installs_only_the_narrow_root_boundary():
     assert 'group: root' in edge_key_task
     assert 'mode: "0600"' in edge_key_task
     assert "no_log: true" in edge_key_task
-    assert "ANSIBLE_EDGE_SSH_PRIVATE_KEY" not in env_template
-    assert "runtime_secrets.values() |\n        select('search', '[\\r\\n]')" not in tasks
+
+    assert "Install the ansible-vault password for the inventory repository" in tasks
+    assert (
+        'content: "{{ infra_ansible_deployer_runtime_secrets.ANSIBLE_VAULT_PASSWORD }}"'
+        in tasks
+    )
+    vault_pass_task = tasks.split(
+        "Install the ansible-vault password for the inventory repository", 1
+    )[1].split("- name:", 1)[0]
+    assert 'dest: "{{ infra_ansible_deployer_vault_password_path }}"' in vault_pass_task
+    assert 'owner: root' in vault_pass_task
+    assert 'group: root' in vault_pass_task
+    assert 'mode: "0600"' in vault_pass_task
+    assert "no_log: true" in vault_pass_task
+
+    assert "path: /etc/infra-ansible-deploy.env" in tasks
+    assert "state: absent" in tasks.split(
+        "path: /etc/infra-ansible-deploy.env", 1
+    )[1].split("- name:", 1)[0]
+
     assert "Defaults!/usr/local/sbin/infra-ansible-deploy secure_path=" in sudoers
     assert "NOPASSWD:NOSETENV:" in sudoers
     assert "/usr/local/sbin/infra-ansible-deploy ^[0-9a-f]{40}$" in sudoers
-    assert "NOPASSWD: ALL" not in tasks + env_template + sudoers
+    assert "NOPASSWD: ALL" not in tasks + sudoers
     assert "path: /run/infra-ansible" in tasks
     assert 'mode: "0700"' in tasks
 
-    assert defaults["infra_ansible_deployer_infisical_version"] == "0.43.84"
-    assert defaults["infra_ansible_deployer_infisical_sha256"] == (
-        "64a47155083c7b8042de64e67eee5629bf894903c102f7239f69c7ed93fdbfc5"
-    )
     assert defaults["infra_ansible_deployer_powershell_version"] == "7.6.3"
     assert defaults["infra_ansible_deployer_powershell_sha256"] == (
         "856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7"
     )
-    assert "infisical" not in defaults["infra_ansible_deployer_packages"]
     assert "powershell" not in defaults["infra_ansible_deployer_packages"]
-    assert tasks.index("Download pinned Infisical CLI archive") < tasks.index(
-        "Extract verified Infisical CLI archive"
-    )
+    assert "infisical" not in tasks.lower()
+    assert "infisical" not in script.lower()
+    assert "infisical" not in " ".join(str(v) for v in defaults.values()).lower()
     assert tasks.index("Download pinned PowerShell archive") < tasks.index(
         "Extract verified PowerShell archive"
     )
-    assert "checksum: sha256:{{ infra_ansible_deployer_infisical_sha256 }}" in tasks
     assert "checksum: sha256:{{ infra_ansible_deployer_powershell_sha256 }}" in tasks
     assert "latest" not in (defaults.__repr__() + tasks).lower()
     assert "vendor apt" in readme.lower()
     assert "ANSIBLE_EDGE_SSH_PRIVATE_KEY" in readme
     assert "/etc/infra-ansible-deploy/edge-ssh-key" in readme
+    assert "/etc/infra-ansible-deploy/vault-pass" in readme

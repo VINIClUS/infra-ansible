@@ -2,26 +2,19 @@
 env_name: example
 timezone: America/Sao_Paulo
 
-infisical_project_id: 00000000-0000-0000-0000-000000000000
-infisical_environment: >-
-  {{ lookup('ansible.builtin.env', 'INFISICAL_ENVIRONMENT') |
-     default('staging', true) }}
-infisical_api_url: https://infisical.example.invalid
-infisical_secret_paths:
-  proxmox: /proxmox
-  edge_proxy: /edge-proxy
-  minio: /minio
-infisical_required_keys:
-  - PROXMOX_API_TOKEN_SECRET
-  - OBJECT_STORAGE_ACCESS_KEY
-  - OBJECT_STORAGE_SECRET_KEY
+# Real values come from infra-ansible-inventory's ansible-vault. These
+# environment-variable fallbacks exist only so this example inventory can be
+# used for optional local live validation without a private inventory.
+pve_host: "{{ lookup('ansible.builtin.env', 'PVE_HOST', default='') }}"
+pve_token_id: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_ID', default='') }}"
+pve_token_secret: "{{ lookup('ansible.builtin.env', 'PVE_TOKEN_SECRET', default='') }}"
 
 minio_endpoint_url: https://minio.example.invalid
 minio_region: us-east-1
 minio_use_path_style: true
 minio_validate_access: false
-minio_access_key_env_var: OBJECT_STORAGE_ACCESS_KEY
-minio_secret_key_env_var: OBJECT_STORAGE_SECRET_KEY
+minio_access_key: "{{ lookup('ansible.builtin.env', 'OBJECT_STORAGE_ACCESS_KEY', default='') }}"
+minio_secret_key: "{{ lookup('ansible.builtin.env', 'OBJECT_STORAGE_SECRET_KEY', default='') }}"
 minio_buckets:
   artifacts: infra-artifacts
   backups: infra-backups

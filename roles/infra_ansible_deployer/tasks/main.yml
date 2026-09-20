@@ -12,7 +12,6 @@
         infra_ansible_deployer_inventory_repo_dest ==
         '/srv/infra-ansible-inventory'
       - infra_ansible_deployer_script_path == '/usr/local/sbin/infra-ansible-deploy'
-      - infra_ansible_deployer_config_path == '/etc/infra-ansible-deploy.env'
     fail_msg: >-
       The deployer requires Debian systemd and exact public and inventory SHAs
       at the fixed root-owned paths.
@@ -24,10 +23,8 @@
         {{ lookup('ansible.builtin.env', 'ANSIBLE_EDGE_SSH_PRIVATE_KEY') }}
       INFRA_INVENTORY_DEPLOY_KEY: >-
         {{ lookup('ansible.builtin.env', 'INFRA_INVENTORY_DEPLOY_KEY') }}
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: >-
-        {{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_ID') }}
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: >-
-        {{ lookup('ansible.builtin.env', 'INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET') }}
+      ANSIBLE_VAULT_PASSWORD: >-
+        {{ lookup('ansible.builtin.env', 'ANSIBLE_VAULT_PASSWORD') }}
   no_log: true
 
 - name: Validate deployment bootstrap secrets without disclosing them
@@ -40,27 +37,14 @@
         infra_ansible_deployer_runtime_secrets.INFRA_INVENTORY_DEPLOY_KEY is
         match('(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\n.+\n-----END OPENSSH PRIVATE KEY-----\n?$')
       - >-
-        infra_ansible_deployer_runtime_secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID |
+        infra_ansible_deployer_runtime_secrets.ANSIBLE_VAULT_PASSWORD |
         length > 0
       - >-
-        infra_ansible_deployer_runtime_secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID is
+        infra_ansible_deployer_runtime_secrets.ANSIBLE_VAULT_PASSWORD is
         not search('[\r\n]')
-      - >-
-        infra_ansible_deployer_runtime_secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET |
-        length > 0
-      - >-
-        infra_ansible_deployer_runtime_secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET is
-        not search('[\r\n]')
-      - infra_ansible_deployer_infisical_project_id | length > 0
-      - >-
-        infra_ansible_deployer_infisical_domain is
-        match('^https://[^\r\n]+$')
-      - >-
-        infra_ansible_deployer_infisical_environment is
-        match('^[A-Za-z0-9_-]+$')
     fail_msg: >-
-      The dedicated edge and inventory deploy keys, Infisical Universal Auth
-      credentials, project, domain, and environment must be present and valid.
+      The dedicated edge and inventory deploy keys, and the ansible-vault
+      password for the inventory repository, must be present and valid.
   no_log: true
 
 - name: Install fixed deployment boundary dependencies
@@ -87,47 +71,8 @@
       mode: "0700"
     - path: "{{ infra_ansible_deployer_cache_dir }}"
       mode: "0700"
-    - path: "{{ infra_ansible_deployer_infisical_release_dir }}"
-      mode: "0755"
     - path: "{{ infra_ansible_deployer_powershell_release_dir }}"
       mode: "0755"
-
-- name: Download pinned Infisical CLI archive
-  ansible.builtin.get_url:
-    url: "{{ infra_ansible_deployer_infisical_archive_url }}"
-    dest: >-
-      {{ infra_ansible_deployer_cache_dir }}/infisical-{{
-      infra_ansible_deployer_infisical_version }}.tar.gz
-    owner: root
-    group: root
-    mode: "0600"
-    checksum: sha256:{{ infra_ansible_deployer_infisical_sha256 }}
-
-- name: Extract verified Infisical CLI archive
-  ansible.builtin.unarchive:
-    src: >-
-      {{ infra_ansible_deployer_cache_dir }}/infisical-{{
-      infra_ansible_deployer_infisical_version }}.tar.gz
-    dest: "{{ infra_ansible_deployer_infisical_release_dir }}"
-    remote_src: true
-    owner: root
-    group: root
-    creates: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
-
-- name: Make the pinned Infisical CLI executable
-  ansible.builtin.file:
-    path: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
-    owner: root
-    group: root
-    mode: "0755"
-
-- name: Activate the pinned Infisical CLI
-  ansible.builtin.file:
-    src: "{{ infra_ansible_deployer_infisical_release_dir }}/infisical"
-    dest: /usr/local/bin/infisical
-    state: link
-    owner: root
-    group: root
 
 - name: Download pinned PowerShell archive
   ansible.builtin.get_url:
@@ -184,6 +129,20 @@
     mode: "0600"
   no_log: true
 
+- name: Install the ansible-vault password for the inventory repository
+  ansible.builtin.copy:
+    content: "{{ infra_ansible_deployer_runtime_secrets.ANSIBLE_VAULT_PASSWORD }}"
+    dest: "{{ infra_ansible_deployer_vault_password_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Remove the retired pre-vault bootstrap credential file
+  ansible.builtin.file:
+    path: /etc/infra-ansible-deploy.env
+    state: absent
+
 - name: Check out the exact public deployment repository SHA
   ansible.builtin.git:
     repo: "{{ infra_ansible_deployer_public_repo_url }}"
@@ -225,15 +184,6 @@
     owner: root
     group: root
     mode: "0755"
-
-- name: Install the root-only deployment configuration
-  ansible.builtin.template:
-    src: infra-ansible-deploy.env.j2
-    dest: /etc/infra-ansible-deploy.env
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
 
 - name: Install the only privileged runner command
   ansible.builtin.template:

@@ -28,7 +28,7 @@
          '/config' }}
     headers:
       Authorization: >-
-        {{ 'PVEAPIToken=' ~ lookup('ansible.builtin.env', 'PVE_TOKEN_ID') ~
+        {{ 'PVEAPIToken=' ~ (pve_token_id | default('')) ~
            '=' ~ proxmox_lxc_guest_api_token_secret }}
     validate_certs: "{{ proxmox_lxc_guest_validate_certs }}"
     return_content: true

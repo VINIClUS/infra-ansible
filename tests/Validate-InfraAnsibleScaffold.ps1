@@ -37,7 +37,6 @@ $requiredPaths = @(
     "inventories\example\hosts.yml",
     "inventories\example\group_vars\all.yml",
     "playbooks\site.yml",
-    "playbooks\validate-infisical-access.yml",
     "playbooks\validate-minio-access.yml",
     "playbooks\proxmox-template-preflight.yml",
     "playbooks\proxmox-backup-storage.yml",
@@ -52,7 +51,6 @@ $requiredPaths = @(
     "roles\ssh_hardening\tasks\main.yml",
     "roles\firewall_base\tasks\main.yml",
     "roles\cloudinit_guest\tasks\main.yml",
-    "roles\infisical_runtime\tasks\main.yml",
     "roles\minio_artifacts\tasks\main.yml",
     "roles\monitoring_agent\tasks\main.yml",
     "roles\backup_client\tasks\main.yml",
@@ -64,8 +62,7 @@ $requiredPaths = @(
     "roles\proxmox_lxc_guest\defaults\main.yml",
     "roles\proxmox_lxc_guest\tasks\main.yml",
     "roles\proxmox_lxc_guest\README.md",
-    "tools\ansible\Invoke-InfisicalAnsible.ps1",
-    "tools\ansible\infisical_ansible.py"
+    "docs\runbook-secret-rotation.md"
 )
 
 foreach ($relativePath in $requiredPaths) {
@@ -75,13 +72,12 @@ foreach ($relativePath in $requiredPaths) {
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Infisical"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "MinIO"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "No secrets in Git"
-Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "Machine\s+Identity"
+Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "ansible-vault"
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "project\s+repositories"
-Assert-FileContains -RelativePath "docs\safety.md" -Pattern "Universal\s+Auth"
+Assert-FileContains -RelativePath "docs\safety.md" -Pattern "vault_password_file"
 $envExample = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".env.example")
 foreach ($requiredVariable in @(
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=",
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=",
+        "ANSIBLE_VAULT_PASSWORD=",
         "OBJECT_STORAGE_ACCESS_KEY=",
         "OBJECT_STORAGE_SECRET_KEY="
     )) {
@@ -108,17 +104,10 @@ Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "keep-last=2"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "is_mountpoint"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "--limit"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "recovery-preflight"
-Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "infisical_secret_paths"
 Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "minio_buckets"
-Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "infisical_project_id"
+Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "pve_token_secret"
 Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "OBJECT_STORAGE_ACCESS_KEY"
 Assert-FileContains -RelativePath "inventories\example\group_vars\all.yml" -Pattern "OBJECT_STORAGE_SECRET_KEY"
-Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "INFISICAL_CLI_VERSION=0\.43\.84"
-Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "sha256sum -c"
-$dockerfile = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "tools\ansible\Dockerfile")
-if ($dockerfile -match "allow-untrusted") {
-    throw "Infisical CLI installation must verify the release checksum"
-}
 Assert-FileContains -RelativePath "tools\ansible\Dockerfile" -Pattern "boto3>=1\.35\.0"
 Assert-FileContains -RelativePath "requirements.yml" -Pattern "community\.proxmox"
 Assert-FileContains -RelativePath "roles\proxmox_lxc_guest\defaults\main.yml" -Pattern "proxmox_lxc_guest_enabled:\s+false"
