@@ -1,10 +1,10 @@
 # proxmox_mcp_service
 
 Deploys an exact `ProxmoxMCP` Git commit on one approved, unprivileged Debian
-LXC guest. The role is
-disabled by default and requires an exact `--limit` plus the
-`proxmox_mcp_service` tag. Runtime values come from an allowlisted controller
-environment, normally populated by the Infisical Machine Identity launcher.
+LXC guest. The role is disabled by default and requires an exact `--limit`
+plus the `proxmox_mcp_service` tag. Runtime values come from an allowlisted
+set of inventory variables, resolved from infra-ansible-inventory's
+ansible-vault via the `lookup('ansible.builtin.vars', ...)` pattern.
 
 The application release is replaceable under `/opt/proxmox-mcp/releases`; the
 SQLite database and audit log remain in the fixed Docker volume
@@ -22,7 +22,7 @@ contract are available.
 
 The deployed HTTP service receives only variables consumed by its runtime.
 Operator-only recovery inputs, OpenAI placeholders, lifecycle metadata, and
-Infisical bootstrap credentials are not copied into the service environment.
+the ansible-vault password are not copied into the service environment.
 Backup and restore remain local CLI operations and stay disabled while the
 persistent Proxmox storage contract is incomplete.
 
