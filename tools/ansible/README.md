@@ -9,7 +9,6 @@ It installs:
 - `ansible-lint`
 - `yamllint`
 - collections declared in `requirements.yml`
-- Infisical CLI `0.43.84`
 
 Build:
 
@@ -29,25 +28,28 @@ Run ad-hoc commands directly:
 rtk docker run --rm -e ANSIBLE_CONFIG=/work/ansible.cfg -v ${PWD}:/work -w /work --entrypoint ansible-inventory infra-ansible-tools:local -i inventories/example/hosts.yml --graph
 ```
 
-Do not pass secrets as command-line arguments. Use runtime environment variables
-or Infisical integration when live validation is intentionally enabled.
+Do not pass secrets as command-line arguments.
 
-## Machine Identity launcher
+## Running against the private inventory
 
-Put `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and
-`INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` in the untracked `.env`, then run:
+Real secrets live in `infra-ansible-inventory`'s ansible-vault
+(`group_vars/*/vault.yml`), not in this repository. To run a playbook against
+that inventory from the container, mount both repositories and set the vault
+password as an environment variable rather than a file the container can read
+by accident:
 
 ```powershell
-rtk pwsh -NoProfile -File tools/ansible/Invoke-InfisicalAnsible.ps1 `
-  -ProjectId $env:INFISICAL_PROJECT_ID `
-  -Environment prod `
-  -SecretPath @('/proxmox', '/minio') `
-  -RequiredKey @('PROXMOX_API_TOKEN_SECRET', 'OBJECT_STORAGE_ACCESS_KEY', 'OBJECT_STORAGE_SECRET_KEY') `
-  -Playbook playbooks/site.yml `
-  -InventoryRoot ../infra-ansible-inventory `
-  -Inventory inventories/prod/hosts.yml `
-  -Limit localhost
+rtk docker run --rm `
+  -e ANSIBLE_VAULT_PASSWORD `
+  -v ${PWD}:/work/infra-ansible `
+  -v ${PWD}\..\infra-ansible-inventory:/work/infra-ansible-inventory `
+  -w /work/infra-ansible-inventory `
+  infra-ansible-tools:local `
+  -i inventories/prod/hosts.yml ../infra-ansible/playbooks/site.yml --limit localhost
 ```
 
-The launcher obtains an ephemeral token inside the container, injects only
-`RequiredKey` values, and scrubs Infisical credentials before Ansible starts.
+`infra-ansible-inventory/ansible.cfg` sets `vault_password_file` to
+`tools/vault/get-vault-pass.sh`, which reads `ANSIBLE_VAULT_PASSWORD` from the
+environment. See `docs/safety.md` and
+`docs/runbook-secret-rotation.md` in this repository for the full secret
+model and rotation procedures.

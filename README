@@ -26,8 +26,9 @@ Este repositorio contem codigo Ansible generico para operar a infraestrutura:
 ## Perfis de runtime, segredos e estado
 
 - No perfil municipal/Proxmox, `infra-ansible-inventory` e o inventario
-  privado, Infisical e o vault primario e MinIO recebe artefatos, backups e
-  evidencias.
+  privado; o ansible-vault desse inventario e o vault primario (Infisical foi
+  descomissionado em 2026-09); MinIO recebe artefatos, backups e evidencias
+  (tambem descomissionado, sem previsao de retorno).
 - No perfil pessoal, o repositorio privado `personal-infra-live` compoe o
   inventario e fixa as revisoes; SSM Parameter Store, KMS e IAM Roles Anywhere
   fornecem segredos e identidades temporarias, e S3 recebe estado e evidencias.

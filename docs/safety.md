@@ -8,92 +8,49 @@ health data exports.
 
 ## Runtime profile boundary
 
-Infisical, MinIO and `infra-ansible-inventory` are contracts of the existing
-municipal/Proxmox profile. The separate personal profile is composed in the
-private `personal-infra-live` repository and uses SSM Parameter Store, KMS and
-IAM Roles Anywhere for secrets and temporary identity, plus S3 for OpenTofu
-state, evidence and approved backups. No inventory, identity, secret, artifact
-or state crosses between these profiles.
+ansible-vault, MinIO and `infra-ansible-inventory` are contracts of the
+existing municipal/Proxmox profile. The separate personal profile is composed
+in the private `personal-infra-live` repository and uses SSM Parameter Store,
+KMS and IAM Roles Anywhere for secrets and temporary identity, plus S3 for
+OpenTofu state, evidence and approved backups. No inventory, identity, secret,
+artifact or state crosses between these profiles.
 
-## Infisical
+## Secrets (ansible-vault)
 
-For the municipal/Proxmox profile, Infisical is the primary secret source. This
-repository stores only:
+For the municipal/Proxmox profile, `infra-ansible-inventory`'s ansible-vault
+is the primary and only secret source. Infisical, which previously held this
+role, was decommissioned (September 2026); it is no longer reachable and its
+values were migrated. This repository stores only:
 
-- expected secret paths;
-- expected key names;
-- environment names;
+- variable names, in `group_vars/*/vars.yml` (or role-equivalent contract
+  files), each pointing at a `{{ vault_* }}` indirection;
 - validation logic that redacts sensitive values.
 
-Automation authenticates with an Infisical Machine Identity through Universal
-Auth. Only the client ID and client secret are bootstrap inputs. The launcher
-creates a short-lived token inside the tools container and removes it and the
-bootstrap credentials before starting Ansible. Do not accept static
-`INFISICAL_TOKEN` values or pass credentials as command-line arguments.
+The encrypted values live in sibling `group_vars/*/vault.yml` files in
+`infra-ansible-inventory`, committed to git as whole-file
+`ansible-vault encrypt` blobs (never inline `!vault` tags). Automation
+authenticates by resolving a vault password through
+`tools/vault/get-vault-pass.sh` (the inventory's `ansible.cfg`
+`vault_password_file`): the `ANSIBLE_VAULT_PASSWORD` environment variable if
+set, else `vault/.vault-pass` on disk. Do not pass the vault password as a
+command-line argument or echo it to a log.
 
-`ANSIBLE_EDGE_SSH_PRIVATE_KEY` is a separately provisioned `/ansible` secret,
-not generated or rotated by the controller bootstrap seeder. It is transported
-only as a child-process environment value, validated without disclosure, and
-installed by `infra_ansible_deployer` as the root-owned mode-0600 file
+`ANSIBLE_EDGE_SSH_PRIVATE_KEY` is a separately provisioned secret, supplied
+out-of-band at controller bootstrap — never stored in the inventory vault
+(see `INFRA_INVENTORY_DEPLOY_KEY` in
+`docs/runbook-secret-rotation.md` for why: the inventory can't hold the key
+used to clone the inventory). It is transported only as a child-process
+environment value, validated without disclosure, and installed by
+`infra_ansible_deployer` as the root-owned mode-0600 file
 `/etc/infra-ansible-deploy/edge-ssh-key`. Never place its value in inventory,
 command arguments, logs, or incident output.
 
-Grant each identity read access only to its project, environments, and secret
-paths. Rotate identities independently through the untracked `.env` or secure
-runner; no inventory change is required.
-
-### Ansible controller bootstrap
-
-`tools/bootstrap/seed_ansible_controller_secrets.py` is the only supported
-bootstrap path for the seven approved names under `/ansible`. Start with
-`--dry-run`; it needs no credentials or network access and prints names only.
-The live mode authenticates with Universal Auth, lists existing keys with
-`viewSecretValue=false`, sends values only in HTTPS request bodies, and emits a
-JSON summary containing names and non-secret resource IDs only.
-
-The bootstrap is create-only. A partial existing contract stops before
-generating material. A complete seven-name set becomes a no-op only after the
-bootstrap cross-checks the selected Infisical values against the one exact
-read-only GitHub deploy key, the one exact Cloudflare service token, its ID in
-inventory, and the age recipient in inventory. Both remote listings consume
-every page. Missing, duplicate, or inconsistent state fails closed with a
-redacted recovery message.
-
-Never delete or overwrite an existing key merely to make a rerun pass. Local
-Infisical rotation requires one explicit `--rotate NAME`, snapshots the prior
-value before generating replacement material, and restores it on transaction
-failure. `INFRA_INVENTORY_DEPLOY_KEY`, both Cloudflare Access credential names,
-and `ANSIBLE_BACKUP_AGE_IDENTITY` are deliberately rejected by `--rotate`:
-they require a separate change procedure that coordinates the old and new
-GitHub/Cloudflare resource or backup-recipient handoff. Review the dependent
-service recovery procedure and take an encrypted backup before any supported
-local rotation.
-
-Age and SSH private keys exist only in a temporary mode-0700 directory with
-mode-0600 files. Removal is verified on every exit path; failure stops the run
-with `manual cleanup required`. Only the public Ed25519 key is passed to
-`gh repo deploy-key add`; read-only is the GitHub CLI default, so the bootstrap
-never supplies `--allow-write`. API base URLs must be clean HTTPS URLs without
-userinfo, query, or fragment. The HTTP client refuses every redirect so an
-Authorization header can never be replayed to another origin or plaintext URL.
-A 2xx response alone is insufficient: Infisical listings require an explicit,
-unambiguous `secrets` list with valid key names, and mutations must return the
-committed resource shape and pass a fresh paginated readback.
-
-The age recipient and Cloudflare service-token resource ID are public metadata.
-Their two-file inventory transaction uses a mode-0600 write-ahead journal,
-atomic replacements, file and directory sync, and automatic rollback recovery
-on the next invocation. The journal is removed only after both files are
-durable. The corresponding private identity, client ID, and client secret
-remain only in Infisical.
-
-If a remote step fails, the bootstrap attempts to remove newly created
-Infisical secrets, the new Cloudflare service token, and the new GitHub deploy
-key, and restores public inventory files. A message ending in `compensation
-completed` means that automated cleanup succeeded; `manual recovery required`
-means an operator must inspect resources by their fixed names and IDs. Do not
-copy API response bodies, subprocess output, temporary files, or secret values
-into an incident ticket or terminal transcript during recovery.
+Grant each vault-backed secret's consumers access only through the inventory
+group that hosts it. Rotate secrets by editing the encrypted `vault.yml`
+directly (`ansible-vault edit`); see `docs/runbook-secret-rotation.md` for the
+per-secret procedure, including the four secrets with an external
+counterpart (GitHub deploy key, Cloudflare service token, age backup
+identity) that require coordinated rotation on both sides.
 
 ## MinIO
 
@@ -106,6 +63,15 @@ Use a distinct MinIO service account and buckets for shared infrastructure and
 for every project. `https://s3.vinisantana.com` is the S3 API endpoint;
 `https://minio.vinisantana.com` and local port `9001` are administrative
 consoles and must not be configured as S3 endpoints.
+
+MinIO is decommissioned with no return date (as of September 2026; both
+endpoints return HTTP 502). Its access-key pair was migrated to the vault and
+the role configuration was deliberately left active rather than disabled, so
+it resumes working immediately if the service returns. Until then,
+`minio_artifacts` publish steps fail closed — `minio_validate_access: false`
+in both environments keeps this from failing the surrounding playbook, so
+check publish results explicitly rather than assuming a green run means
+artifacts landed.
 
 ## Production
 

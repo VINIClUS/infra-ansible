@@ -1,7 +1,0 @@
----
-infisical_runtime_project_id: "{{ infisical_project_id | default('') }}"
-infisical_runtime_environment: "{{ infisical_environment | default('') }}"
-infisical_runtime_api_url: >-
-  {{ infisical_api_url | default('https://app.infisical.com') }}
-infisical_runtime_secret_paths: "{{ infisical_secret_paths | default({}) }}"
-infisical_runtime_required_keys: "{{ infisical_required_keys | default([]) }}"

@@ -17,8 +17,9 @@ inventory, secret values, Packer template builds, or domain bootstrap logic.
 ## Runtime profiles
 
 The existing integration model below is the municipal/Proxmox profile.
-`infra-ansible-inventory`, Infisical and MinIO are contracts of that profile,
-not global dependencies of every consumer of this reusable repository.
+`infra-ansible-inventory`, its ansible-vault, and MinIO are contracts of that
+profile, not global dependencies of every consumer of this reusable
+repository.
 
 The separate personal profile is composed by the private
 `personal-infra-live` repository. It uses SSM Parameter Store, KMS and IAM
@@ -32,7 +33,7 @@ Ansible consumes stable contracts from sibling repositories:
 
 - template names, VMIDs, storage pools, and bridges from Packer outputs;
 - bootstrap repository path and pinned ref for e-SUS PEC and SIHA operations;
-- Infisical paths for runtime secrets;
+- `infra-ansible-inventory` ansible-vault variables for runtime secrets;
 - MinIO buckets for artifacts, backups, and validation evidence.
 
 ## Municipal shared infrastructure and project ownership
@@ -44,21 +45,25 @@ Proxmox, edge networking, Cloudflare, MinIO, and operational infrastructure.
 Application hosts, variables, and secret paths belong to their project
 repositories.
 
-Each domain uses its own Infisical Machine Identity and MinIO service account.
-A project identity must not read the shared infrastructure project or another
-project's paths, and projects must not share infrastructure bucket credentials.
+Each domain uses its own MinIO service account. A project's ansible-vault
+variables must not read the shared infrastructure group's secrets or another
+project's, and projects must not share infrastructure bucket credentials.
 
 ## Municipal runtime secret flow
 
-`Invoke-InfisicalAnsible.ps1` passes Universal Auth bootstrap variables to the
-tools container by environment-variable name, never by value on the command
-line. The container exchanges them for an ephemeral token, exports only the
-requested project, environment, and paths, allowlists required keys, removes
-the bootstrap credentials, and then replaces itself with `ansible-playbook`.
+Roles read secrets as ordinary inventory variables (e.g. `pve_token_secret`,
+`cloudflare_api_token`), each defined in `infra-ansible-inventory` as a
+`{{ vault_* }}` indirection in a plaintext `group_vars/*/vars.yml`, resolving
+to an encrypted `group_vars/*/vault.yml`. `ansible-playbook` decrypts them at
+run time via `--vault-password-file`, itself resolved by
+`tools/vault/get-vault-pass.sh` from `ANSIBLE_VAULT_PASSWORD` or
+`vault/.vault-pass`. No launcher process, no ephemeral network token, no
+separate bootstrap-credential exchange step.
 
-The public contract is project ID, environment, secret paths, and required key
-names. Static `INFISICAL_TOKEN`, project slugs, and implicit access to all
-project secrets are unsupported.
+The public contract is the inventory group a role's tasks run against and the
+variable names it reads — the same contract as any other inventory variable.
+A role gains access to a secret only if its tasks execute against a host that
+belongs to the group hosting that secret's `vault.yml`.
 
 The first implementation layer is intentionally read-only by default. Playbooks
 that can change real infrastructure must require explicit inventory variables,
