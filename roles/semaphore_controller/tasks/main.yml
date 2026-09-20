@@ -63,12 +63,13 @@
       semaphore_controller_rollback tag.
   when: semaphore_controller_rollback_mode | bool
 
-- name: Read required Semaphore values from the controller environment
+- name: Read required Semaphore values from inventory secrets
   ansible.builtin.set_fact:
-    semaphore_controller_runtime_environment: >-
-      {{ semaphore_controller_runtime_environment | default({}) |
-         combine({item: lookup('ansible.builtin.env', item)}) }}
-  loop: "{{ semaphore_controller_required_env }}"
+    semaphore_controller_runtime_environment:
+      SEMAPHORE_DB_PASSWORD: "{{ semaphore_db_password | default('') }}"
+      SEMAPHORE_ACCESS_KEY_ENCRYPTION: >-
+        {{ semaphore_access_key_encryption | default('') }}
+      SEMAPHORE_ADMIN_PASSWORD: "{{ semaphore_admin_password | default('') }}"
   no_log: true
   when: not semaphore_controller_rollback_mode | bool
 
@@ -97,14 +98,9 @@
 - name: Read protected Semaphore transaction values
   ansible.builtin.set_fact:
     semaphore_controller_transaction_environment:
-      age_identity: >-
-        {{ lookup('ansible.builtin.env', 'ANSIBLE_BACKUP_AGE_IDENTITY') }}
-      minio_access_key: >-
-        {{ lookup('ansible.builtin.env',
-                  semaphore_controller_minio_access_key_env_var) }}
-      minio_secret_key: >-
-        {{ lookup('ansible.builtin.env',
-                  semaphore_controller_minio_secret_key_env_var) }}
+      age_identity: "{{ ansible_backup_age_identity | default('') }}"
+      minio_access_key: "{{ minio_access_key | default('') }}"
+      minio_secret_key: "{{ minio_secret_key | default('') }}"
   no_log: true
 
 - name: Validate protected Semaphore transaction contract

@@ -65,10 +65,6 @@ semaphore_controller_minio_endpoint_url: >-
 semaphore_controller_minio_region: "{{ minio_region | default('us-east-1') }}"
 semaphore_controller_minio_use_path_style: >-
   {{ minio_use_path_style | default(true) }}
-semaphore_controller_minio_access_key_env_var: >-
-  {{ minio_access_key_env_var | default('OBJECT_STORAGE_ACCESS_KEY') }}
-semaphore_controller_minio_secret_key_env_var: >-
-  {{ minio_secret_key_env_var | default('OBJECT_STORAGE_SECRET_KEY') }}
 semaphore_controller_minio_buckets: "{{ minio_buckets | default({}) }}"
 
 semaphore_controller_required_env:

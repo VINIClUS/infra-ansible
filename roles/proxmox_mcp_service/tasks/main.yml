@@ -37,11 +37,12 @@
       binding, a dedicated SSH public key, one exact --limit host, and only the
       proxmox_mcp_service tag.
 
-- name: Read required runtime values from the controller environment
+- name: Read required runtime values from inventory secrets
   ansible.builtin.set_fact:
     proxmox_mcp_service_runtime_environment: >-
       {{ proxmox_mcp_service_runtime_environment | default({}) |
-         combine({item: lookup('ansible.builtin.env', item)}) }}
+         combine({item: lookup('ansible.builtin.vars', item | lower,
+                                default='')}) }}
   loop: "{{ proxmox_mcp_service_required_env_names }}"
   no_log: true
 
