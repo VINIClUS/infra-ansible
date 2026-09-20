@@ -243,6 +243,8 @@ def prepare_public_checkout(
 def prepare_private_inventory(
     run: Callable[..., subprocess.CompletedProcess[str]],
     base_env: Mapping[str, str],
+    *,
+    vault_password_file: str = VAULT_PASSWORD_FILE,
 ) -> str:
     env = _base_child_env(base_env)
     env["GIT_SSH_COMMAND"] = (
@@ -269,15 +271,28 @@ def prepare_private_inventory(
         raise ValueError("private inventory did not resolve to an exact SHA")
     if dirty:
         raise ValueError("private inventory checkout is dirty")
+    # The validator shells out to ansible-inventory internally and resolves
+    # the vault password through the inventory repo's own ansible.cfg
+    # (tools/vault/get-vault-pass.sh); point it at the controller's password
+    # file by path, never by value, to keep it out of this subprocess's env.
+    validator_env = dict(env)
+    validator_env["ANSIBLE_VAULT_PASSWORD_FILE"] = vault_password_file
     _run_checked(
         run,
         ["pwsh", "-NoProfile", "-File", INVENTORY_VALIDATOR],
-        env,
+        validator_env,
         cwd=INVENTORY_REPO_ROOT,
     )
     _run_checked(
         run,
-        ["ansible-inventory", "-i", FIXED_INVENTORY, "--list"],
+        [
+            "ansible-inventory",
+            "-i",
+            FIXED_INVENTORY,
+            "--list",
+            "--vault-password-file",
+            vault_password_file,
+        ],
         env,
         cwd=PUBLIC_REPO_ROOT,
     )
@@ -462,7 +477,9 @@ def deploy_requested_sha(
         checkout_sha, dirty = prepare_public_checkout(requested_sha, run, environment)
         validate_request(requested_sha, main_sha, checkout_sha, dirty)
 
-        inventory_sha = prepare_private_inventory(run, environment)
+        inventory_sha = prepare_private_inventory(
+            run, environment, vault_password_file=VAULT_PASSWORD_FILE
+        )
         record_inventory_state(requested_sha, inventory_sha)
 
         def playbook_runner(run_spec: RunSpec) -> None:

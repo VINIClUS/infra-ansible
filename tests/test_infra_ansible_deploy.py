@@ -324,17 +324,41 @@ def test_inventory_is_updated_and_validated_before_it_is_recorded():
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, stdout=next(outputs), stderr="")
 
-    inventory_sha = deploy.prepare_private_inventory(fake_run, {"PATH": "/usr/bin"})
+    inventory_sha = deploy.prepare_private_inventory(
+        fake_run,
+        {"PATH": "/usr/bin"},
+        vault_password_file="/etc/infra-ansible-deploy/vault-pass",
+    )
 
     assert inventory_sha == INVENTORY_SHA
     flattened = [call[0] for call in calls]
     assert flattened[0][:4] == ["git", "-C", deploy.INVENTORY_REPO_ROOT, "fetch"]
     assert ["git", "-C", deploy.INVENTORY_REPO_ROOT, "checkout", "--detach", "origin/main"] in flattened
-    assert ["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR] in flattened
-    assert ["ansible-inventory", "-i", deploy.FIXED_INVENTORY, "--list"] in flattened
-    assert flattened.index(["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR]) < flattened.index(
-        ["ansible-inventory", "-i", deploy.FIXED_INVENTORY, "--list"]
+    validator_command = ["pwsh", "-NoProfile", "-File", deploy.INVENTORY_VALIDATOR]
+    inventory_command = [
+        "ansible-inventory",
+        "-i",
+        deploy.FIXED_INVENTORY,
+        "--list",
+        "--vault-password-file",
+        "/etc/infra-ansible-deploy/vault-pass",
+    ]
+    assert validator_command in flattened
+    assert inventory_command in flattened
+    assert flattened.index(validator_command) < flattened.index(inventory_command)
+
+    validator_call = next(
+        call for call in calls if call[0] == validator_command
     )
+    assert (
+        validator_call[1]["env"]["ANSIBLE_VAULT_PASSWORD_FILE"]
+        == "/etc/infra-ansible-deploy/vault-pass"
+    )
+    inventory_call = next(
+        call for call in calls if call[0] == inventory_command
+    )
+    assert "ANSIBLE_VAULT_PASSWORD_FILE" not in inventory_call[1]["env"]
+    assert "ANSIBLE_VAULT_PASSWORD" not in inventory_call[1]["env"]
 
 
 def test_post_switch_failure_runs_fixed_rollback():
