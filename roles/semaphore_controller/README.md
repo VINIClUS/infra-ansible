@@ -9,11 +9,14 @@ The role is disabled by default. An enabled run fails closed unless it targets
 one Debian 13 amd64 systemd host through an exact `--limit` and only the
 `semaphore_controller` tag.
 
-## Required controller environment
+## Required controller secrets
 
-- `SEMAPHORE_DB_PASSWORD`
-- `SEMAPHORE_ACCESS_KEY_ENCRYPTION` (base64-encoded 16, 24, or 32-byte key)
-- `SEMAPHORE_ADMIN_PASSWORD` (first setup only)
+Sourced from infra-ansible-inventory's `group_vars/ansible_controllers/vault.yml`
+as ordinary inventory variables, never as environment variables:
+
+- `semaphore_db_password`
+- `semaphore_access_key_encryption` (base64-encoded 16, 24, or 32-byte key)
+- `semaphore_admin_password` (first setup only)
 
 The first setup runs through protected standard input with Ansible logging
 disabled. Secrets are not command arguments. The generated cookie secrets are

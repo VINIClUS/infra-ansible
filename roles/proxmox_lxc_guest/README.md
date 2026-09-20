@@ -8,9 +8,11 @@ identity must agree with the approved LXC contract before the role can continue.
 The private inventory must define exactly one host in the
 `ansible_controller_bootstrap` group. That inventory hostname is a local
 bootstrap target, must be selected by an exact `--limit`, and supplies any
-approved overrides such as the destination VMID. Export `PVE_HOST`,
-`PVE_TOKEN_ID`, and `PVE_TOKEN_SECRET` only in the runtime environment; never
-store their values in inventory or Git.
+approved overrides such as the destination VMID. `pve_host`, `pve_token_id`,
+and `pve_token_secret` come from infra-ansible-inventory's
+`group_vars/proxmox_provisioners/vault.yml` as ordinary inventory variables;
+never store their plaintext values in this repository or pass them as
+environment variables.
 
 Run only the dedicated tag against the exact bootstrap inventory host:
 

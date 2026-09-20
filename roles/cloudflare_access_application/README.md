@@ -15,8 +15,11 @@ that matches only the configured Access service-token resource ID.
 Set exactly one of `cloudflare_access_account_id` or
 `cloudflare_access_zone_id`, set the non-secret
 `cloudflare_access_service_token_id` from private inventory, and provide the
-API token only as `CLOUDFLARE_API_TOKEN`. The API token needs Access identity
-provider, Apps, and Policies write permission for the selected scope.
+API token as the `cloudflare_api_token` inventory variable — sourced from
+infra-ansible-inventory's `group_vars/local_validation/vault.yml`
+(`vault_cloudflare_api_token`), never as a plaintext environment variable.
+The API token needs Access identity provider, Apps, and Policies write
+permission for the selected scope.
 
 The role lists applications with Cloudflare API v4's exact-domain query,
 creates missing resources, and updates drift only after matching exact domain
