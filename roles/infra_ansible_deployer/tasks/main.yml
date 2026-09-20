@@ -138,6 +138,11 @@
     mode: "0600"
   no_log: true
 
+- name: Remove the retired pre-vault bootstrap credential file
+  ansible.builtin.file:
+    path: /etc/infra-ansible-deploy.env
+    state: absent
+
 - name: Check out the exact public deployment repository SHA
   ansible.builtin.git:
     repo: "{{ infra_ansible_deployer_public_repo_url }}"

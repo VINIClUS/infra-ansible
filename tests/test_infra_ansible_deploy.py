@@ -462,6 +462,11 @@ def test_role_installs_only_the_narrow_root_boundary():
     assert 'mode: "0600"' in vault_pass_task
     assert "no_log: true" in vault_pass_task
 
+    assert "path: /etc/infra-ansible-deploy.env" in tasks
+    assert "state: absent" in tasks.split(
+        "path: /etc/infra-ansible-deploy.env", 1
+    )[1].split("- name:", 1)[0]
+
     assert "Defaults!/usr/local/sbin/infra-ansible-deploy secure_path=" in sudoers
     assert "NOPASSWD:NOSETENV:" in sudoers
     assert "/usr/local/sbin/infra-ansible-deploy ^[0-9a-f]{40}$" in sudoers
