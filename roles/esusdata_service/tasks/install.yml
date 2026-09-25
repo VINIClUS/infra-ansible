@@ -7,6 +7,15 @@
         allow_downgrade: true
       register: esusdata_service_package
 
+    - name: Install the PEC TLS root certificate
+      ansible.builtin.copy:
+        content: "{{ esusdata_service_pec_tls_root_cert | trim }}\n"
+        dest: "{{ esusdata_service_pec_tls_root_cert_path }}"
+        owner: root
+        group: observatorio
+        mode: "0644"
+      register: esusdata_service_tls_root
+
     - name: Render the managed esusdata configuration
       ansible.builtin.template:
         src: application.yml.j2
@@ -53,7 +62,8 @@
       when: >-
         esusdata_service_package is changed or
         esusdata_service_config is changed or
-        esusdata_service_secret is changed
+        esusdata_service_secret is changed or
+        esusdata_service_tls_root is changed
 
     - name: Keep esusdata running
       ansible.builtin.systemd_service:

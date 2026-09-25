@@ -26,6 +26,12 @@ esusdata_service_listen_port: 8080
 esusdata_service_trusted_proxy: 192.168.1.139
 esusdata_service_pec_destinations: []
 
+# PEM of the CA that issued the PEC's server certificate (esusdata ADR 0022):
+# the service refuses a non-loopback source without it, and the execution
+# plane then only opens verified TLS sessions. Public material, not a secret.
+esusdata_service_pec_tls_root_cert: ""
+esusdata_service_pec_tls_root_cert_path: /etc/observatorio-aps/pec-ca.pem
+
 # KEY=value lines consumed by EnvFileSecretResolver; supplied by the private
 # inventory's ansible-vault, never by this repository.
 esusdata_service_pec_env: ""

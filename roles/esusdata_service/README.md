@@ -15,8 +15,10 @@ selects the `.deb` checksum from the verified manifest, and downloads the
 package pinned to that checksum.
 
 It then installs the package, renders `/etc/observatorio-aps/application.yml`
-(the package never overwrites it), writes `pec.env` from the private
-inventory vault as `observatorio:observatorio 0600`, loads an nftables rule
+(the package never overwrites it), installs the PEC TLS root certificate that
+`observatorio.source.tls-root-cert` points to (esusdata ADR 0022: every
+session to the PEC is TLS verified against it), writes `pec.env` from the
+private inventory vault as `observatorio:observatorio 0600`, loads an nftables rule
 that admits the service port only from loopback and the edge proxy, restarts
 the unit, and waits for `GET /api/v1/ready`. Any failure restores the
 preceding configuration, reinstalls the preceding cached package, waits for it

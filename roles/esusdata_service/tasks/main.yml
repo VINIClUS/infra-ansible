@@ -28,14 +28,17 @@
       - >-
         esusdata_service_pec_destinations |
         reject('match', '^[A-Za-z0-9.-]+:[0-9]+$') | list | length == 0
+      - >-
+        esusdata_service_pec_tls_root_cert is
+        match('(?s)^-----BEGIN CERTIFICATE-----\n.+\n-----END CERTIFICATE-----\s*$')
       - ansible_limit is defined
       - ansible_limit | trim == inventory_hostname
       - ansible_play_hosts_all == [inventory_hostname]
       - ansible_run_tags | list | sort == ['esusdata_service']
     fail_msg: >-
       esusdata deployment requires Debian systemd, an exact X.Y.Z release,
-      the pinned release signer, one exact --limit host, and only the
-      esusdata_service tag.
+      the pinned release signer, the PEC TLS root certificate, one exact
+      --limit host, and only the esusdata_service tag.
 
 - name: Validate the PEC secret file content without logging it
   ansible.builtin.assert:

@@ -91,8 +91,11 @@ def run_role(
     )
 
 
+TLS_ROOT = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+
 ENABLED = {
     "esusdata_service_enabled": True,
+    "esusdata_service_pec_tls_root_cert": TLS_ROOT,
     "esusdata_service_version": "0.1.2",
     "esusdata_service_pec_destinations": ["192.168.1.253:5433"],
     "esusdata_service_pec_env": "PEC_DB_PASSWORD=secret",
@@ -138,6 +141,8 @@ def test_disabled_role_ends_before_any_contract_or_host_change(tmp_path):
         ({"esusdata_service_version": "latest"}, "esusdata-lxc", "esusdata_service"),
         ({"esusdata_service_pec_destinations": []}, "esusdata-lxc", "esusdata_service"),
         ({"esusdata_service_signer_public_key": "ssh-rsa AAAA"}, "esusdata-lxc", "esusdata_service"),
+        ({"esusdata_service_pec_tls_root_cert": ""}, "esusdata-lxc", "esusdata_service"),
+        ({"esusdata_service_pec_tls_root_cert": "not a pem"}, "esusdata-lxc", "esusdata_service"),
         ({}, None, "esusdata_service"),
         ({}, "all", "esusdata_service"),
         ({}, "esusdata-lxc", "all"),
@@ -228,6 +233,7 @@ def test_configuration_publishes_only_through_the_trusted_edge():
             {
                 "esusdata_service_pec_destinations": ["192.168.1.253:5433"],
                 "esusdata_service_secret_path": "/etc/observatorio-aps/pec.env",
+                "esusdata_service_pec_tls_root_cert_path": "/etc/observatorio-aps/pec-ca.pem",
                 "esusdata_service_public_host": "pe.esusdata.com",
                 "esusdata_service_listen_port": 8080,
                 "esusdata_service_trusted_proxy": "192.168.1.139",
@@ -240,6 +246,7 @@ def test_configuration_publishes_only_through_the_trusted_edge():
             "source": {
                 "allowed-destinations": ["192.168.1.253:5433"],
                 "secret-file": "/etc/observatorio-aps/pec.env",
+                "tls-root-cert": "/etc/observatorio-aps/pec-ca.pem",
             },
             "web": {
                 "allowed-hosts": ["pe.esusdata.com", "127.0.0.1:8080"],

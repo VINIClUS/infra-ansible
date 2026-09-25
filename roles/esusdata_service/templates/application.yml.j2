@@ -7,6 +7,8 @@ observatorio:
       - "{{ destination }}"
 {% endfor %}
     secret-file: {{ esusdata_service_secret_path }}
+    # ADR 0022: every session to a non-loopback source is TLS verified against this root.
+    tls-root-cert: {{ esusdata_service_pec_tls_root_cert_path }}
   web:
     allowed-hosts:
       - "{{ esusdata_service_public_host }}"
