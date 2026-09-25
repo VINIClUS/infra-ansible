@@ -268,6 +268,45 @@ def test_failed_deploy_records_the_release_so_schedules_stop_retrying(tmp_path):
     }
 
 
+def test_explicit_rollback_keeps_the_newer_failed_release_quarantined(tmp_path):
+    calls = []
+    state_path = tmp_path / "state.json"
+    newer_failure = {**FAILED, "failed_version": "0.1.3"}
+    state_path.write_text(
+        json.dumps({**DEPLOYED, "version": "0.1.3", **newer_failure}), encoding="utf-8"
+    )
+
+    deploy.deploy_release(
+        "v0.1.2",
+        run=git_runner(calls),
+        open_url=lambda *_args, **_kwargs: Response(release_payload()),
+        base_env={},
+        state_path=str(state_path),
+        lock=no_lock,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state == {**DEPLOYED, **newer_failure}
+    latest = deploy.Release("v0.1.3", "0.1.3")
+    assert not deploy.should_deploy(latest, state, (SHA, INVENTORY_SHA), explicit=False)
+
+
+def test_a_successful_retry_clears_its_own_failure(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(FAILED), encoding="utf-8")
+
+    deploy.deploy_release(
+        "v0.1.2",
+        run=git_runner([]),
+        open_url=lambda *_args, **_kwargs: Response(release_payload()),
+        base_env={},
+        state_path=str(state_path),
+        lock=no_lock,
+    )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == DEPLOYED
+
+
 def test_dirty_checkout_blocks_the_playbook(tmp_path):
     calls = []
 

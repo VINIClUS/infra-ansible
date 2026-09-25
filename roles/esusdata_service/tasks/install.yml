@@ -14,6 +14,7 @@
         owner: root
         group: observatorio
         mode: "0644"
+        backup: true
       register: esusdata_service_tls_root
 
     - name: Render the managed esusdata configuration
@@ -101,6 +102,16 @@
         group: observatorio
         mode: "0640"
       when: esusdata_service_config.backup_file | default('') | length > 0
+
+    - name: Restore the preceding PEC TLS root certificate
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_tls_root.backup_file }}"
+        dest: "{{ esusdata_service_pec_tls_root_cert_path }}"
+        remote_src: true
+        owner: root
+        group: observatorio
+        mode: "0644"
+      when: esusdata_service_tls_root.backup_file | default('') | length > 0
 
     - name: Restore the preceding PEC secret file
       ansible.builtin.copy:

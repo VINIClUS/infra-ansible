@@ -33,6 +33,7 @@ STATE_PATH = "/var/lib/esusdata-deploy/state.json"
 SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 RELEASES_API = "https://api.github.com/repos/VINIClUS/esusdata/releases"
 PACKAGE_NAME = "observatorio-aps"
+FAILURE_KEYS = ("failed_version", "failed_infra_sha", "failed_inventory_sha")
 
 
 class Release(NamedTuple):
@@ -363,14 +364,21 @@ def deploy_release(
                 state_path,
             )
             raise
-        write_state(
-            {
-                "version": release.version,
-                "infra_sha": infra_sha,
-                "inventory_sha": inventory_sha,
-            },
-            state_path,
-        )
+        success = {
+            "version": release.version,
+            "infra_sha": infra_sha,
+            "inventory_sha": inventory_sha,
+        }
+        # An explicit rollback to an older release must keep the newer release
+        # quarantined, or the next scheduled run would reinstall it.
+        failure = {key: state[key] for key in FAILURE_KEYS if key in state}
+        if failure and tuple(failure.get(key) for key in FAILURE_KEYS) != (
+            release.version,
+            infra_sha,
+            inventory_sha,
+        ):
+            success.update(failure)
+        write_state(success, state_path)
         return f"esusdata {release.version} deployed"
 
 
