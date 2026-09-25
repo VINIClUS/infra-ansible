@@ -24,6 +24,7 @@
         owner: observatorio
         group: observatorio
         mode: "0600"
+        backup: true
       register: esusdata_service_secret
       no_log: true
 
@@ -72,6 +73,13 @@
       retries: "{{ esusdata_service_ready_retries }}"
       delay: "{{ esusdata_service_ready_delay }}"
       changed_when: false
+
+    - name: Drop the superseded PEC secret copy once the release is ready
+      ansible.builtin.file:
+        path: "{{ esusdata_service_secret.backup_file }}"
+        state: absent
+      when: esusdata_service_secret.backup_file | default('') | length > 0
+      no_log: true
   rescue:
     - name: Restore the preceding esusdata configuration
       ansible.builtin.copy:
@@ -82,6 +90,17 @@
         group: observatorio
         mode: "0640"
       when: esusdata_service_config.backup_file | default('') | length > 0
+
+    - name: Restore the preceding PEC secret file
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_secret.backup_file }}"
+        dest: "{{ esusdata_service_secret_path }}"
+        remote_src: true
+        owner: observatorio
+        group: observatorio
+        mode: "0600"
+      when: esusdata_service_secret.backup_file | default('') | length > 0
+      no_log: true
 
     - name: Reinstall the preceding esusdata package
       ansible.builtin.apt:

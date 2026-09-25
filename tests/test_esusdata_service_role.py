@@ -195,9 +195,13 @@ def test_install_block_rolls_back_to_the_cached_preceding_release():
     rescue = [task["name"] for task in install["rescue"]]
 
     assert block[0] == "Install the verified esusdata package"
-    assert block[-1] == "Wait for esusdata readiness"
+    assert block[-2:] == [
+        "Wait for esusdata readiness",
+        "Drop the superseded PEC secret copy once the release is ready",
+    ]
     assert rescue == [
         "Restore the preceding esusdata configuration",
+        "Restore the preceding PEC secret file",
         "Reinstall the preceding esusdata package",
         "Restart the preceding esusdata release",
         "Wait for the preceding esusdata release",
@@ -207,6 +211,10 @@ def test_install_block_rolls_back_to_the_cached_preceding_release():
     assert secret["no_log"] is True
     assert secret["ansible.builtin.copy"]["owner"] == "observatorio"
     assert secret["ansible.builtin.copy"]["mode"] == "0600"
+    assert secret["ansible.builtin.copy"]["backup"] is True
+    restore = task_named(install["rescue"], "Restore the preceding PEC secret file")
+    assert restore["no_log"] is True
+    assert restore["ansible.builtin.copy"]["src"] == "{{ esusdata_service_secret.backup_file }}"
     ready = task_named(install["block"], "Wait for esusdata readiness")
     assert ready["ansible.builtin.uri"]["url"].endswith("/api/v1/ready")
 
