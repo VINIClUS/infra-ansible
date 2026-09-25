@@ -17,8 +17,8 @@
         sh -c 'baked=$(cat);
         current=$(cut -d" " -f2 /etc/ssh/ssh_host_ed25519_key.pub);
         if [ "$current" = "$baked" ]; then
-        rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && systemctl restart ssh &&
-        echo regenerated; fi;
+        rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && systemctl restart ssh ||
+        exit 1; echo regenerated; fi;
         cat /etc/ssh/ssh_host_ed25519_key.pub'
   args:
     stdin: "{{ deploy_runner_ssh_access_template_host_key.split()[1] }}"

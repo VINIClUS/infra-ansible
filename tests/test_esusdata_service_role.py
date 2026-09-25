@@ -221,6 +221,8 @@ def test_install_block_rolls_back_to_the_cached_preceding_release():
         "Reinstall the preceding esusdata package",
         "Restart the preceding esusdata release",
         "Wait for the preceding esusdata release",
+        "Stop the esusdata release that has no predecessor",
+        "Remove the esusdata release that has no predecessor",
         "Report the failed esusdata release",
     ]
     secret = task_named(install["block"], "Install the PEC secret file for the service user only")

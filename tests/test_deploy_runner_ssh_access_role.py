@@ -31,3 +31,5 @@ def test_baked_host_keys_are_replaced_before_any_ssh_access_is_granted():
     # never invalidates a host key already pinned.
     assert 'if [ "$current" = "$baked" ]' in script
     assert "ssh-keygen -A" in script
+    # A failed restart must fail the task, not print a key sshd is not serving.
+    assert "systemctl restart ssh || exit 1" in script
