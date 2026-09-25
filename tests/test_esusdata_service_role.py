@@ -200,7 +200,14 @@ def test_install_block_rolls_back_to_the_cached_preceding_release():
     block = [task["name"] for task in install["block"]]
     rescue = [task["name"] for task in install["rescue"]]
 
-    assert block[0] == "Install the verified esusdata package"
+    assert block[:2] == [
+        "Install the verified esusdata package",
+        "Require the installed esusdata version to match the release",
+    ]
+    version = task_named(
+        install["block"], "Require the installed esusdata version to match the release"
+    )
+    assert "esusdata_service_version" in version["failed_when"]
     assert block[-2:] == [
         "Wait for esusdata readiness",
         "Drop the superseded PEC secret copy once the release is ready",

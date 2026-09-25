@@ -7,6 +7,21 @@
         allow_downgrade: true
       register: esusdata_service_package
 
+    # The manifest signs the bytes, not the control metadata: a package whose
+    # Version differs from the release tag must not be recorded as that tag.
+    - name: Require the installed esusdata version to match the release
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - --show
+          - --showformat=${Version}
+          - "{{ esusdata_service_package_name }}"
+      register: esusdata_service_installed_version
+      changed_when: false
+      failed_when: >-
+        esusdata_service_installed_version.rc != 0 or
+        esusdata_service_installed_version.stdout != esusdata_service_version
+
     - name: Install the PEC TLS root certificate
       ansible.builtin.copy:
         content: "{{ esusdata_service_pec_tls_root_cert | trim }}\n"
