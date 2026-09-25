@@ -1,0 +1,210 @@
+---
+- name: Install and verify the esusdata release
+  block:
+    - name: Install the verified esusdata package
+      ansible.builtin.apt:
+        deb: "{{ esusdata_service_release_dir }}/{{ esusdata_service_deb_name }}"
+        allow_downgrade: true
+      register: esusdata_service_package
+
+    # The manifest signs the bytes, not the control metadata: a package whose
+    # Version differs from the release tag must not be recorded as that tag.
+    - name: Require the installed esusdata version to match the release
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - --show
+          - --showformat=${Version}
+          - "{{ esusdata_service_package_name }}"
+      register: esusdata_service_installed_version
+      changed_when: false
+      failed_when: >-
+        esusdata_service_installed_version.rc != 0 or
+        esusdata_service_installed_version.stdout != esusdata_service_version
+
+    - name: Install the PEC TLS root certificate
+      ansible.builtin.copy:
+        content: "{{ esusdata_service_pec_tls_root_cert | trim }}\n"
+        dest: "{{ esusdata_service_pec_tls_root_cert_path }}"
+        owner: root
+        group: observatorio
+        mode: "0644"
+        backup: true
+      register: esusdata_service_tls_root
+
+    - name: Render the managed esusdata configuration
+      ansible.builtin.template:
+        src: application.yml.j2
+        dest: "{{ esusdata_service_config_path }}"
+        owner: root
+        group: observatorio
+        mode: "0640"
+        backup: true
+      register: esusdata_service_config
+
+    - name: Install the PEC secret file for the service user only
+      ansible.builtin.copy:
+        content: "{{ esusdata_service_pec_env | trim }}\n"
+        dest: "{{ esusdata_service_secret_path }}"
+        owner: observatorio
+        group: observatorio
+        mode: "0600"
+        backup: true
+      register: esusdata_service_secret
+      no_log: true
+
+    - name: Limit the esusdata port to the edge proxy
+      ansible.builtin.template:
+        src: nftables.conf.j2
+        dest: "{{ esusdata_service_nftables_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+        validate: /usr/sbin/nft --check --file %s
+        backup: true
+      register: esusdata_service_firewall
+
+    - name: Load the esusdata ingress rules
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        enabled: true
+        state: "{{ 'restarted' if esusdata_service_firewall is changed else 'started' }}"
+
+    - name: Restart esusdata for the new package or configuration
+      ansible.builtin.systemd_service:
+        name: "{{ esusdata_service_unit_name }}"
+        enabled: true
+        state: restarted
+      when: >-
+        esusdata_service_package is changed or
+        esusdata_service_config is changed or
+        esusdata_service_secret is changed or
+        esusdata_service_tls_root is changed
+
+    - name: Keep esusdata running
+      ansible.builtin.systemd_service:
+        name: "{{ esusdata_service_unit_name }}"
+        enabled: true
+        state: started
+
+    - name: Wait for esusdata readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ esusdata_service_listen_port }}/api/v1/ready"
+        headers:
+          Host: "127.0.0.1:{{ esusdata_service_listen_port }}"
+        status_code: 200
+        follow_redirects: none
+        return_content: false
+      register: esusdata_service_ready
+      until: esusdata_service_ready.status == 200
+      retries: "{{ esusdata_service_ready_retries }}"
+      delay: "{{ esusdata_service_ready_delay }}"
+      changed_when: false
+
+    - name: Drop the superseded PEC secret copy once the release is ready
+      ansible.builtin.file:
+        path: "{{ esusdata_service_secret.backup_file }}"
+        state: absent
+      when: esusdata_service_secret.backup_file | default('') | length > 0
+      no_log: true
+  rescue:
+    - name: Restore the preceding esusdata configuration
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_config.backup_file }}"
+        dest: "{{ esusdata_service_config_path }}"
+        remote_src: true
+        owner: root
+        group: observatorio
+        mode: "0640"
+      when: esusdata_service_config.backup_file | default('') | length > 0
+
+    - name: Restore the preceding PEC TLS root certificate
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_tls_root.backup_file }}"
+        dest: "{{ esusdata_service_pec_tls_root_cert_path }}"
+        remote_src: true
+        owner: root
+        group: observatorio
+        mode: "0644"
+      when: esusdata_service_tls_root.backup_file | default('') | length > 0
+
+    - name: Restore the preceding PEC secret file
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_secret.backup_file }}"
+        dest: "{{ esusdata_service_secret_path }}"
+        remote_src: true
+        owner: observatorio
+        group: observatorio
+        mode: "0600"
+      when: esusdata_service_secret.backup_file | default('') | length > 0
+      no_log: true
+
+    - name: Restore the preceding esusdata ingress rules
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_firewall.backup_file }}"
+        dest: "{{ esusdata_service_nftables_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: esusdata_service_firewall.backup_file | default('') | length > 0
+
+    - name: Reload the preceding esusdata ingress rules
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        state: restarted
+      when: esusdata_service_firewall.backup_file | default('') | length > 0
+
+    - name: Reinstall the preceding esusdata package
+      ansible.builtin.apt:
+        deb: >-
+          {{ esusdata_service_cache_dir }}/{{ esusdata_service_previous_version }}/{{
+          esusdata_service_package_name }}_{{ esusdata_service_previous_version }}_amd64.deb
+        allow_downgrade: true
+      when:
+        - esusdata_service_previous_version | length > 0
+        - esusdata_service_previous_version != esusdata_service_version
+
+    - name: Restart the preceding esusdata release
+      ansible.builtin.systemd_service:
+        name: "{{ esusdata_service_unit_name }}"
+        state: restarted
+      when: esusdata_service_previous_version | length > 0
+
+    - name: Wait for the preceding esusdata release
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ esusdata_service_listen_port }}/api/v1/ready"
+        headers:
+          Host: "127.0.0.1:{{ esusdata_service_listen_port }}"
+        status_code: 200
+        follow_redirects: none
+        return_content: false
+      register: esusdata_service_rollback_ready
+      until: esusdata_service_rollback_ready.status == 200
+      retries: "{{ esusdata_service_ready_retries }}"
+      delay: "{{ esusdata_service_ready_delay }}"
+      when: esusdata_service_previous_version | length > 0
+
+    # A first deployment has nothing to return to: leave no failed release
+    # installed, let alone running.
+    - name: Stop the esusdata release that has no predecessor
+      ansible.builtin.systemd_service:
+        name: "{{ esusdata_service_unit_name }}"
+        state: stopped
+      failed_when: false
+      when: esusdata_service_previous_version | length == 0
+
+    - name: Remove the esusdata release that has no predecessor
+      ansible.builtin.apt:
+        name: "{{ esusdata_service_package_name }}"
+        state: absent
+      when: esusdata_service_previous_version | length == 0
+
+    - name: Report the failed esusdata release
+      ansible.builtin.fail:
+        msg: >-
+          esusdata {{ esusdata_service_version }} failed to deploy
+          ({{ ansible_failed_result.msg | default('unknown failure') }});
+          {{ ('rolled back to ' ~ esusdata_service_previous_version)
+             if esusdata_service_previous_version | length > 0
+             else 'no preceding release, so it was removed' }}.

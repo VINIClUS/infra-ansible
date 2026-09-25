@@ -1,0 +1,30 @@
+---
+esusdata_edge_route_enabled: false
+esusdata_edge_route_apply: false
+esusdata_edge_route_domain: pe.esusdata.com
+esusdata_edge_route_upstream_address: 192.168.1.145
+esusdata_edge_route_upstream_port: 8080
+esusdata_edge_route_upstream: http://192.168.1.145:8080
+
+esusdata_lxc_vmid: 170  # noqa var-naming[no-role-prefix]
+esusdata_lxc_node: pve-01  # noqa var-naming[no-role-prefix]
+esusdata_lxc_name: esusdata-lxc  # noqa var-naming[no-role-prefix]
+esusdata_lxc_private_address: 192.168.1.145  # noqa var-naming[no-role-prefix]
+esusdata_lxc_mac_address: BC:24:11:7C:73:49  # noqa var-naming[no-role-prefix]
+esusdata_lxc_onboot: true  # noqa var-naming[no-role-prefix]
+
+esusdata_edge_route_certificate_path: >-
+  /etc/letsencrypt/live/pe.esusdata.com/fullchain.pem
+esusdata_edge_route_private_key_path: >-
+  /etc/letsencrypt/live/pe.esusdata.com/privkey.pem
+
+esusdata_edge_route_config_path: >-
+  /etc/nginx/sites-available/pe.esusdata.com
+esusdata_edge_route_enabled_path: >-
+  /etc/nginx/sites-enabled/pe.esusdata.com
+esusdata_edge_route_candidate_path: >-
+  /etc/nginx/sites-available/pe.esusdata.com.candidate
+esusdata_edge_route_restore_candidate_path: >-
+  /etc/nginx/sites-available/pe.esusdata.com.restore
+esusdata_edge_route_probe_retries: 12
+esusdata_edge_route_probe_delay: 5

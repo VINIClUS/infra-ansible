@@ -1,0 +1,14 @@
+---
+- name: Record esusdata Nginx route content change
+  ansible.builtin.set_fact:
+    esusdata_edge_route_config_changed: >-
+      {{ not esusdata_edge_route_preceding_config.stat.exists or
+         esusdata_edge_route_config_comparison.rc | default(1) != 0 }}
+
+- name: Record esusdata Nginx route and symlink change
+  ansible.builtin.set_fact:
+    esusdata_edge_route_changed: >-
+      {{ esusdata_edge_route_config_changed | bool or
+         not esusdata_edge_route_preceding_enabled.stat.islnk | default(false) or
+         esusdata_edge_route_preceding_enabled.stat.lnk_source | default('') !=
+         esusdata_edge_route_config_path }}

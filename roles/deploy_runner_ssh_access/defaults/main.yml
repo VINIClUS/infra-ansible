@@ -2,6 +2,10 @@
 deploy_runner_ssh_access_node: "{{ proxmox_lxc_guest_node }}"
 deploy_runner_ssh_access_vmid: "{{ proxmox_lxc_guest_vmid }}"
 deploy_runner_ssh_access_key_path: /home/vinicius/.ssh/cnesdata-deploy-runners_ed25519
+deploy_runner_ssh_access_key_comment: cnesdata-deploy-runners
 deploy_runner_ssh_access_pve_ssh_host: 192.168.1.149
 deploy_runner_ssh_access_pve_ssh_user: root
 deploy_runner_ssh_access_pve_ssh_key: /home/vinicius/.ssh/proxmox-pve01
+# The ed25519 host key baked into the clone template. When set, a clone that
+# still presents it gets fresh host keys before any SSH; empty skips the step.
+deploy_runner_ssh_access_template_host_key: ""

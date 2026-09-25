@@ -107,6 +107,10 @@ def test_privileged_edge_and_access_runs_remain_separate():
             "protocolos_edge_route",
             ["edge_proxy_route", "protocolos_edge_route"],
         ),
+        (
+            "esusdata_edge_route",
+            ["edge_proxy_route", "esusdata_edge_route"],
+        ),
     ]
     assert len(access) == 1
     assert access[0]["hosts"] == "localhost"

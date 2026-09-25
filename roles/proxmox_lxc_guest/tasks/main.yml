@@ -19,6 +19,9 @@
       - proxmox_lxc_guest_storage == 'local-lvm'
       - proxmox_lxc_guest_bridge == 'vmbr0'
       - proxmox_lxc_guest_disk_gb | int == 32
+      - >-
+        proxmox_lxc_guest_mac_address == '' or
+        proxmox_lxc_guest_mac_address is match('^([0-9A-F]{2}:){5}[0-9A-F]{2}$')
 
 - name: Read source template configuration
   ansible.builtin.uri:
@@ -77,6 +80,10 @@
       - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
       - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
       - proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
+      - >-
+        proxmox_lxc_guest_mac_address == '' or
+        proxmox_lxc_guest_existing.proxmox_vms[0].config.net0 is
+        search('(^|,)hwaddr=' ~ proxmox_lxc_guest_mac_address ~ '(,|$)', ignorecase=true)
   when: proxmox_lxc_guest_existing.proxmox_vms | length > 0
 
 - name: Clone absent approved template
@@ -93,6 +100,30 @@
     node: "{{ proxmox_lxc_guest_node }}"
     storage: "{{ proxmox_lxc_guest_storage }}"
   when: proxmox_lxc_guest_existing.proxmox_vms | length == 0
+  no_log: true
+
+# Only a fresh clone, before its first start: an existing target with another
+# MAC fails the identity check above instead of being renumbered.
+- name: Pin the fresh clone's NIC MAC before its first start
+  community.proxmox.proxmox:
+    api_host: "{{ proxmox_lxc_guest_api_host }}"
+    api_port: "{{ proxmox_lxc_guest_api_port }}"
+    api_user: "{{ proxmox_lxc_guest_api_user }}"
+    api_token_id: "{{ proxmox_lxc_guest_api_token_id }}"
+    api_token_secret: "{{ proxmox_lxc_guest_api_token_secret }}"
+    validate_certs: true
+    vmid: "{{ proxmox_lxc_guest_vmid }}"
+    node: "{{ proxmox_lxc_guest_node }}"
+    netif:
+      net0: >-
+        {{ proxmox_lxc_guest_template.json.data.net0 |
+           regex_replace('(^|,)hwaddr=[^,]*', '') ~
+           ',hwaddr=' ~ proxmox_lxc_guest_mac_address }}
+    update: true
+    state: present
+  when:
+    - proxmox_lxc_guest_existing.proxmox_vms | length == 0
+    - proxmox_lxc_guest_mac_address | length > 0
   no_log: true
 
 - name: Reconcile non-destructive target configuration
@@ -160,6 +191,10 @@
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)bridge=vmbr0(,|$)')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)firewall=1(,|$)')
       - proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is search('(^|,)ip=dhcp(,|$)')
+      - >-
+        proxmox_lxc_guest_mac_address == '' or
+        proxmox_lxc_guest_postflight.proxmox_vms[0].config.net0 is
+        search('(^|,)hwaddr=' ~ proxmox_lxc_guest_mac_address ~ '(,|$)', ignorecase=true)
       - proxmox_lxc_guest_postflight.proxmox_vms[0].status == 'running'
 
 - name: Record redacted LXC guest summary

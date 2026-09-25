@@ -1,0 +1,40 @@
+---
+esusdata_service_enabled: false
+
+# Exact published esusdata release (without the leading "v"). The deploy
+# boundary passes it per run; the inventory never pins a moving version.
+esusdata_service_version: ""
+
+esusdata_service_package_name: observatorio-aps
+esusdata_service_unit_name: observatorio-aps.service
+esusdata_service_release_base_url: https://github.com/VINIClUS/esusdata/releases/download
+esusdata_service_cache_dir: /var/cache/esusdata-deploy
+esusdata_service_config_path: /etc/observatorio-aps/application.yml
+esusdata_service_secret_path: /etc/observatorio-aps/pec.env
+esusdata_service_allowed_signers_path: /etc/esusdata-deploy/allowed_signers
+esusdata_service_nftables_path: /etc/nftables.conf
+
+# Release trust anchor (esusdata ADR 0021, deployment/release/allowed_signers).
+# Pinned here, never fetched next to the artifacts it verifies.
+esusdata_service_signer_identity: release@observatorio-aps
+esusdata_service_signer_public_key: >-
+  ssh-ed25519
+  AAAAC3NzaC1lZDI1NTE5AAAAIPO8idi+sUZof5UFgdptQzEA8uWXHJmwqQh656Bapi30
+
+esusdata_service_public_host: pe.esusdata.com
+esusdata_service_listen_port: 8080
+esusdata_service_trusted_proxy: 192.168.1.139
+esusdata_service_pec_destinations: []
+
+# PEM of the CA that issued the PEC's server certificate (esusdata ADR 0022):
+# the service refuses a non-loopback source without it, and the execution
+# plane then only opens verified TLS sessions. Public material, not a secret.
+esusdata_service_pec_tls_root_cert: ""
+esusdata_service_pec_tls_root_cert_path: /etc/observatorio-aps/pec-ca.pem
+
+# KEY=value lines consumed by EnvFileSecretResolver; supplied by the private
+# inventory's ansible-vault, never by this repository.
+esusdata_service_pec_env: ""
+
+esusdata_service_ready_retries: 36
+esusdata_service_ready_delay: 5

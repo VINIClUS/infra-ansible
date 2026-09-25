@@ -1,0 +1,156 @@
+---
+- name: Install and verify esusdata Nginx route
+  become: true
+  block:
+    - name: Atomically install esusdata Nginx route candidate
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ esusdata_edge_route_candidate_path }}"
+          - "{{ esusdata_edge_route_config_path }}"
+      changed_when: true
+      when:
+        - esusdata_edge_route_changed | bool
+        - esusdata_edge_route_config_changed | bool
+
+    - name: Ensure esusdata Nginx route symlink
+      ansible.builtin.file:
+        src: "{{ esusdata_edge_route_config_path }}"
+        dest: "{{ esusdata_edge_route_enabled_path }}"
+        state: link
+        force: true
+      when: esusdata_edge_route_changed | bool
+
+    - name: Validate installed esusdata Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+      when: esusdata_edge_route_changed | bool
+
+    - name: Reload installed esusdata Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+      when: esusdata_edge_route_changed | bool
+
+    - name: Probe esusdata HTTP redirect
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        headers:
+          Host: "{{ esusdata_edge_route_domain }}"
+        status_code: 301
+        follow_redirects: none
+        return_content: false
+      register: esusdata_edge_route_http_probe
+      changed_when: false
+      when: esusdata_edge_route_changed | bool
+      until: esusdata_edge_route_http_probe.status == 301
+      retries: "{{ esusdata_edge_route_probe_retries }}"
+      delay: "{{ esusdata_edge_route_probe_delay }}"
+
+    - name: Probe esusdata HTTPS root
+      ansible.builtin.uri:
+        url: https://127.0.0.1/
+        headers:
+          Host: "{{ esusdata_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        follow_redirects: none
+        return_content: false
+      register: esusdata_edge_route_https_root_probe
+      changed_when: false
+      when: esusdata_edge_route_changed | bool
+      until: esusdata_edge_route_https_root_probe.status == 200
+      retries: "{{ esusdata_edge_route_probe_retries }}"
+      delay: "{{ esusdata_edge_route_probe_delay }}"
+
+    - name: Probe esusdata HTTPS readiness endpoint
+      ansible.builtin.uri:
+        url: https://127.0.0.1/api/v1/ready
+        headers:
+          Host: "{{ esusdata_edge_route_domain }}"
+        status_code: 200
+        validate_certs: false
+        follow_redirects: none
+        return_content: false
+      register: esusdata_edge_route_ready_probe
+      changed_when: false
+      when: esusdata_edge_route_changed | bool
+      until: esusdata_edge_route_ready_probe.status == 200
+      retries: "{{ esusdata_edge_route_probe_retries }}"
+      delay: "{{ esusdata_edge_route_probe_delay }}"
+  rescue:
+    - name: Stage preceding esusdata Nginx route for restoration
+      ansible.builtin.command:
+        argv:
+          - cp
+          - --archive
+          - "{{ esusdata_edge_route_config_path }}.{{ esusdata_edge_route_backup_timestamp.stdout }}.bak"
+          - "{{ esusdata_edge_route_restore_candidate_path }}"
+      changed_when: true
+      when:
+        - esusdata_edge_route_config_changed | bool
+        - esusdata_edge_route_preceding_config.stat.exists
+
+    - name: Restore preceding esusdata Nginx route
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ esusdata_edge_route_restore_candidate_path }}"
+          - "{{ esusdata_edge_route_config_path }}"
+      changed_when: true
+      when:
+        - esusdata_edge_route_config_changed | bool
+        - esusdata_edge_route_preceding_config.stat.exists
+
+    - name: Remove newly installed esusdata Nginx route
+      ansible.builtin.file:
+        path: "{{ esusdata_edge_route_config_path }}"
+        state: absent
+      when:
+        - esusdata_edge_route_config_changed | bool
+        - not esusdata_edge_route_preceding_config.stat.exists
+
+    - name: Remove replacement esusdata Nginx route symlink
+      ansible.builtin.file:
+        path: "{{ esusdata_edge_route_enabled_path }}"
+        state: absent
+
+    - name: Restore preceding esusdata Nginx symlink state
+      ansible.builtin.file:
+        src: "{{ esusdata_edge_route_preceding_enabled.stat.lnk_source }}"
+        dest: "{{ esusdata_edge_route_enabled_path }}"
+        state: link
+        force: true
+      when: esusdata_edge_route_preceding_enabled.stat.islnk | default(false)
+
+    - name: Revalidate restored esusdata Nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+
+    - name: Reload restored esusdata Nginx configuration
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Report failed esusdata Nginx route transaction
+      ansible.builtin.fail:
+        msg: >-
+          The esusdata Nginx route transaction failed and the preceding
+          file and symlink state was restored:
+          {{ ansible_failed_result.msg | default('unknown failure') }}
+  always:
+    - name: Remove esusdata Nginx route transaction candidates
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ esusdata_edge_route_candidate_path }}"
+        - "{{ esusdata_edge_route_restore_candidate_path }}"

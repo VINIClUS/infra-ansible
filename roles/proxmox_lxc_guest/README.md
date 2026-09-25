@@ -34,3 +34,7 @@ is cloned, configured, started, read back, and exposed only as the redacted
 There is no deletion path: the role never removes an LXC, replaces an existing
 VMID, or recreates a target. A mismatched existing target stops the run for
 manual investigation.
+
+`proxmox_lxc_guest_mac_address` (empty by default) pins the NIC MAC a DHCP
+reservation expects: a fresh clone gets it before its first start, and both an
+existing target and the final configuration must present it.

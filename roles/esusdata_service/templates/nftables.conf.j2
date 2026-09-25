@@ -1,0 +1,11 @@
+#!/usr/sbin/nft -f
+# Managed by infra-ansible (roles/esusdata_service); this LXC runs only esusdata.
+flush ruleset
+
+table inet esusdata_ingress {
+    chain input {
+        type filter hook input priority filter; policy accept;
+        tcp dport {{ esusdata_service_listen_port }} ip saddr { 127.0.0.1, {{ esusdata_service_trusted_proxy }} } accept
+        tcp dport {{ esusdata_service_listen_port }} drop
+    }
+}

@@ -18,3 +18,6 @@ proxmox_lxc_guest_cores: 2
 proxmox_lxc_guest_memory_mb: 4096
 proxmox_lxc_guest_disk_gb: 32
 proxmox_lxc_guest_onboot: true
+# Optional pinned NIC MAC (upper-case, colon separated) for a DHCP reservation;
+# empty keeps the MAC Proxmox generates for the clone.
+proxmox_lxc_guest_mac_address: ""

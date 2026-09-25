@@ -5,6 +5,32 @@
       - deploy_runner_ssh_access_node | length > 0
       - deploy_runner_ssh_access_vmid | int >= 100
 
+- name: Replace the SSH host keys baked into the clone template
+  ansible.builtin.command:
+    argv:
+      - ssh
+      - -i
+      - "{{ deploy_runner_ssh_access_pve_ssh_key }}"
+      - "{{ deploy_runner_ssh_access_pve_ssh_user }}@{{ deploy_runner_ssh_access_pve_ssh_host }}"
+      - >-
+        pct exec {{ deploy_runner_ssh_access_vmid }} --
+        sh -c 'baked=$(cat);
+        current=$(cut -d" " -f2 /etc/ssh/ssh_host_ed25519_key.pub);
+        if [ "$current" = "$baked" ]; then
+        rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && systemctl restart ssh ||
+        exit 1; echo regenerated; fi;
+        cat /etc/ssh/ssh_host_ed25519_key.pub'
+  args:
+    stdin: "{{ deploy_runner_ssh_access_template_host_key.split()[1] }}"
+  register: deploy_runner_ssh_access_host_key
+  changed_when: deploy_runner_ssh_access_host_key.stdout_lines[0] == 'regenerated'
+  when: deploy_runner_ssh_access_template_host_key | length > 0
+
+- name: Show the host key to pin for the target LXC
+  ansible.builtin.debug:
+    msg: "{{ deploy_runner_ssh_access_host_key.stdout_lines[-1] }}"
+  when: deploy_runner_ssh_access_template_host_key | length > 0
+
 - name: Generate the controller-to-runner admin keypair
   ansible.builtin.command:
     argv:
@@ -14,7 +40,7 @@
       - -N
       - ""
       - -C
-      - cnesdata-deploy-runners
+      - "{{ deploy_runner_ssh_access_key_comment }}"
       - -f
       - "{{ deploy_runner_ssh_access_key_path }}"
   args:
