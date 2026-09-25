@@ -23,6 +23,9 @@
       - esusdata_service_signer_public_key is match('^ssh-ed25519 [A-Za-z0-9+/=]+$')
       - esusdata_service_public_host is match('^[a-z0-9.-]+$')
       - esusdata_service_listen_port is integer
+      # Pinned with the edge route's upstream; a moving port would also strand
+      # the rollback probe on the new port.
+      - esusdata_service_listen_port == 8080
       - esusdata_service_trusted_proxy is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
       - esusdata_service_pec_destinations | length > 0
       - >-

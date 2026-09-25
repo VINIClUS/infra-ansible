@@ -345,7 +345,12 @@ def test_role_preflights_existing_certificate_san_timer_and_http_upstream():
         "Render esusdata Nginx route candidate"
     )
     upstream = task_named(tasks, "Preflight esusdata upstream over HTTP")
-    assert upstream["ansible.builtin.uri"]["url"] == "{{ esusdata_edge_route_upstream }}"
+    assert upstream["ansible.builtin.uri"]["url"] == (
+        "{{ esusdata_edge_route_upstream }}/api/v1/ready"
+    )
+    assert upstream["ansible.builtin.uri"]["headers"] == {
+        "Host": "{{ esusdata_edge_route_domain }}"
+    }
     assert upstream["ansible.builtin.uri"]["status_code"] == 200
     timer = task_named(tasks, "Require enabled certbot renewal timer")
     assert timer["ansible.builtin.command"]["argv"] == [

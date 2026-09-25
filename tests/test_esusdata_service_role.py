@@ -142,6 +142,7 @@ def test_disabled_role_ends_before_any_contract_or_host_change(tmp_path):
         ({"esusdata_service_pec_destinations": []}, "esusdata-lxc", "esusdata_service"),
         ({"esusdata_service_signer_public_key": "ssh-rsa AAAA"}, "esusdata-lxc", "esusdata_service"),
         ({"esusdata_service_pec_tls_root_cert": ""}, "esusdata-lxc", "esusdata_service"),
+        ({"esusdata_service_listen_port": 8081}, "esusdata-lxc", "esusdata_service"),
         ({"esusdata_service_pec_tls_root_cert": "not a pem"}, "esusdata-lxc", "esusdata_service"),
         ({}, None, "esusdata_service"),
         ({}, "all", "esusdata_service"),

@@ -72,9 +72,13 @@
 
 - name: Preflight esusdata upstream over HTTP
   ansible.builtin.uri:
-    url: "{{ esusdata_edge_route_upstream }}"
+    url: "{{ esusdata_edge_route_upstream }}/api/v1/ready"
     method: GET
+    # The service only answers Host names it allows; the edge forwards this one.
+    headers:
+      Host: "{{ esusdata_edge_route_domain }}"
     status_code: 200
+    follow_redirects: none
     return_content: false
   register: esusdata_edge_route_upstream_preflight
   changed_when: false
