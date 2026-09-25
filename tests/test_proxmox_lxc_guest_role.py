@@ -58,7 +58,7 @@ def test_lxc_role_defaults_to_proxied_api_port():
 def test_all_proxmox_modules_use_configured_api_port():
     module_calls = proxmox_module_calls()
 
-    assert len(module_calls) == 5
+    assert len(module_calls) == 6
     assert all(
         call.get("api_port") == "{{ proxmox_lxc_guest_api_port }}"
         for call in module_calls
@@ -183,3 +183,25 @@ def test_plan_documents_two_step_reconcile_and_start():
     assert "state: present" in task_two[reconcile:start]
     assert "update: true" in task_two[reconcile:start]
     assert "state: started" in task_two[start:]
+
+
+def test_optional_mac_is_pinned_only_on_a_fresh_clone_and_proven_after():
+    defaults = yaml.safe_load(read("roles/proxmox_lxc_guest/defaults/main.yml"))
+    names = [task["name"] for task in role_tasks()]
+    pin = task_named("Pin the fresh clone's NIC MAC before its first start")
+
+    assert defaults["proxmox_lxc_guest_mac_address"] == ""
+    assert names.index("Clone absent approved template") < names.index(
+        "Pin the fresh clone's NIC MAC before its first start"
+    ) < names.index("Start reconciled target")
+    assert pin["when"] == [
+        "proxmox_lxc_guest_existing.proxmox_vms | length == 0",
+        "proxmox_lxc_guest_mac_address | length > 0",
+    ]
+    assert "hwaddr=" in pin["community.proxmox.proxmox"]["netif"]["net0"]
+    for name in (
+        "Prove an existing target has the approved identity",
+        "Prove final target configuration",
+    ):
+        assertions = task_named(name)["ansible.builtin.assert"]["that"]
+        assert any("hwaddr=" in assertion for assertion in assertions)
