@@ -360,6 +360,12 @@ def test_role_preflights_existing_certificate_san_timer_and_http_upstream():
     ]
     san = task_named(tasks, "Read esusdata certificate subject alternative names")
     assert san["ansible.builtin.command"]["argv"][-2:] == ["-ext", "subjectAltName"]
+    names = [task["name"] for task in tasks]
+    validity = task_named(tasks, "Require a currently valid esusdata certificate chain")
+    assert validity["ansible.builtin.command"]["argv"][:2] == ["openssl", "verify"]
+    assert names.index("Require a currently valid esusdata certificate chain") < names.index(
+        "Render esusdata Nginx route candidate"
+    )
 
 
 def test_transaction_installs_symlink_validates_reloads_and_rolls_back_both_states():

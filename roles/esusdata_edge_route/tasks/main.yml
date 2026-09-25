@@ -114,6 +114,19 @@
       The existing esusdata certificate must contain exactly one DNS SAN:
       pe.esusdata.com.
 
+# The HTTPS probes skip validation (they target 127.0.0.1), so an expired or
+# not yet valid certificate would pass them; verify dates and chain here.
+- name: Require a currently valid esusdata certificate chain
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - verify
+      - -untrusted
+      - "{{ esusdata_edge_route_certificate_path }}"
+      - "{{ esusdata_edge_route_certificate_path }}"
+  changed_when: false
+  become: true
+
 - name: Require enabled certbot renewal timer
   ansible.builtin.command:
     argv:

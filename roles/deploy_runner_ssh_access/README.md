@@ -11,7 +11,14 @@ Generates (idempotently, via `creates`) a dedicated ed25519 keypair at
 `runner-cnes-prod`, then appends the public half to the target VMID's
 `/root/.ssh/authorized_keys` from inside the container by SSHing into the
 Proxmox node itself and running `pct exec` (idempotent — skips if the key line
-is already present). Requires operator SSH access to
+is already present).
+
+Template `9400` does ship baked SSH *host* keys, so every clone would share one
+SSH identity. With `deploy_runner_ssh_access_template_host_key` set to the
+template's `ssh-ed25519` host key, the role first replaces
+`/etc/ssh/ssh_host_*` (`ssh-keygen -A`) in a clone that still presents it and
+prints the new key to pin in `known_hosts`; a clone that already has its own
+keys is left alone. Empty (the default) skips the step. Requires operator SSH access to
 `deploy_runner_ssh_access_pve_ssh_host` with
 `deploy_runner_ssh_access_pve_ssh_key`.
 
