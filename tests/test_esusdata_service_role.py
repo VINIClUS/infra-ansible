@@ -202,6 +202,8 @@ def test_install_block_rolls_back_to_the_cached_preceding_release():
     assert rescue == [
         "Restore the preceding esusdata configuration",
         "Restore the preceding PEC secret file",
+        "Restore the preceding esusdata ingress rules",
+        "Reload the preceding esusdata ingress rules",
         "Reinstall the preceding esusdata package",
         "Restart the preceding esusdata release",
         "Wait for the preceding esusdata release",

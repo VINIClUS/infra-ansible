@@ -246,13 +246,32 @@ def write_state(state: Mapping[str, str], path: str = STATE_PATH) -> None:
 
 
 def should_deploy(
-    release: Release, state: Mapping[str, str], *, explicit: bool
+    release: Release,
+    state: Mapping[str, str],
+    checkouts: tuple[str, str],
+    *,
+    explicit: bool,
 ) -> bool:
-    """Scheduled runs skip the deployed release and a release that already failed."""
+    """Scheduled runs skip an attempt identical to the last success or failure.
+
+    An attempt is the release plus both checkout SHAs, so an infra or inventory
+    change (role, configuration, rotated secret) reapplies the same release.
+    """
 
     if explicit:
         return True
-    return release.version not in (state.get("version"), state.get("failed_version"))
+    attempt = (release.version, *checkouts)
+    succeeded = (
+        state.get("version"),
+        state.get("infra_sha"),
+        state.get("inventory_sha"),
+    )
+    failed = (
+        state.get("failed_version"),
+        state.get("failed_infra_sha"),
+        state.get("failed_inventory_sha"),
+    )
+    return attempt not in (succeeded, failed)
 
 
 def validate_lock_metadata(metadata, expected_uid: int = 0) -> None:
@@ -315,16 +334,34 @@ def deploy_release(
     with lock():
         release = fetch_release(requested_tag, open_url)
         state = read_state(state_path)
-        if not should_deploy(release, state, explicit=requested_tag is not None):
-            return f"esusdata {release.version} needs no deployment"
         infra_sha, inventory_sha = require_clean_checkouts(run, environment)
+        if not should_deploy(
+            release,
+            state,
+            (infra_sha, inventory_sha),
+            explicit=requested_tag is not None,
+        ):
+            return f"esusdata {release.version} needs no deployment"
         command, child_env = build_playbook_invocation(
             release, base_env=environment
         )
+        succeeded = {
+            key: state[key]
+            for key in ("version", "infra_sha", "inventory_sha")
+            if key in state
+        }
         try:
             _run_streamed(run, command, child_env, cwd=PUBLIC_REPO_ROOT)
         except subprocess.CalledProcessError:
-            write_state({**state, "failed_version": release.version}, state_path)
+            write_state(
+                {
+                    **succeeded,
+                    "failed_version": release.version,
+                    "failed_infra_sha": infra_sha,
+                    "failed_inventory_sha": inventory_sha,
+                },
+                state_path,
+            )
             raise
         write_state(
             {

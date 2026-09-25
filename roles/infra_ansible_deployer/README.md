@@ -46,6 +46,9 @@ deployment lock, requires both `/srv` checkouts to be clean, and runs only
 `playbooks/esusdata-service.yml --limit esusdata-lxc --tags esusdata_service`.
 Its SSH key comes from the inventory vault
 (`infra_ansible_deployer_esusdata_ssh_private_key`) and is installed at
-`/etc/infra-ansible-deploy/esusdata-ssh-key`. A failed release is recorded in
-`/var/lib/esusdata-deploy/state.json` so scheduled runs do not retry it; an
-explicit tag always deploys.
+`/etc/infra-ansible-deploy/esusdata-ssh-key`. The last successful and the last
+failed attempt (release plus both checkout SHAs) are recorded in
+`/var/lib/esusdata-deploy/state.json`: a scheduled run skips an attempt
+identical to either, so a failed release is not retried until the release or
+the infra/inventory checkout changes, and an infra or inventory change
+reapplies the current release. An explicit tag always deploys.

@@ -36,6 +36,7 @@
         group: root
         mode: "0755"
         validate: /usr/sbin/nft --check --file %s
+        backup: true
       register: esusdata_service_firewall
 
     - name: Load the esusdata ingress rules
@@ -101,6 +102,22 @@
         mode: "0600"
       when: esusdata_service_secret.backup_file | default('') | length > 0
       no_log: true
+
+    - name: Restore the preceding esusdata ingress rules
+      ansible.builtin.copy:
+        src: "{{ esusdata_service_firewall.backup_file }}"
+        dest: "{{ esusdata_service_nftables_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: esusdata_service_firewall.backup_file | default('') | length > 0
+
+    - name: Reload the preceding esusdata ingress rules
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        state: restarted
+      when: esusdata_service_firewall.backup_file | default('') | length > 0
 
     - name: Reinstall the preceding esusdata package
       ansible.builtin.apt:

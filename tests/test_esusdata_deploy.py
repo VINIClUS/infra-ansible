@@ -165,20 +165,38 @@ def test_playbook_command_rejects_mismatched_release():
         )
 
 
+DEPLOYED = {"version": "0.1.2", "infra_sha": SHA, "inventory_sha": INVENTORY_SHA}
+FAILED = {
+    "failed_version": "0.1.2",
+    "failed_infra_sha": SHA,
+    "failed_inventory_sha": INVENTORY_SHA,
+}
+
+
 @pytest.mark.parametrize(
     ("state", "explicit", "expected"),
     [
         ({}, False, True),
-        ({"version": "0.1.1"}, False, True),
-        ({"version": "0.1.2"}, False, False),
-        ({"version": "0.1.1", "failed_version": "0.1.2"}, False, False),
-        ({"version": "0.1.2"}, True, True),
-        ({"failed_version": "0.1.2"}, True, True),
+        ({**DEPLOYED, "version": "0.1.1"}, False, True),
+        (DEPLOYED, False, False),
+        ({**DEPLOYED, "infra_sha": "a" * 40}, False, True),
+        ({**DEPLOYED, "inventory_sha": "b" * 40}, False, True),
+        ({**DEPLOYED, "version": "0.1.1", **FAILED}, False, False),
+        ({**FAILED, "failed_inventory_sha": "b" * 40}, False, True),
+        (DEPLOYED, True, True),
+        (FAILED, True, True),
     ],
 )
-def test_scheduled_runs_skip_deployed_and_failed_releases(state, explicit, expected):
+def test_scheduled_runs_skip_only_an_attempt_identical_to_the_last_outcome(
+    state, explicit, expected
+):
     release = deploy.Release("v0.1.2", "0.1.2")
-    assert deploy.should_deploy(release, state, explicit=explicit) is expected
+    assert (
+        deploy.should_deploy(
+            release, state, (SHA, INVENTORY_SHA), explicit=explicit
+        )
+        is expected
+    )
 
 
 def test_successful_deploy_records_release_and_checkouts(tmp_path):
@@ -211,7 +229,7 @@ def test_successful_deploy_records_release_and_checkouts(tmp_path):
 def test_already_deployed_release_runs_nothing(tmp_path):
     calls = []
     state_path = tmp_path / "state.json"
-    state_path.write_text(json.dumps({"version": "0.1.2"}), encoding="utf-8")
+    state_path.write_text(json.dumps(DEPLOYED), encoding="utf-8")
 
     message = deploy.deploy_release(
         None,
@@ -223,13 +241,15 @@ def test_already_deployed_release_runs_nothing(tmp_path):
     )
 
     assert message == "esusdata 0.1.2 needs no deployment"
-    assert calls == []
+    assert not [call for call in calls if call[0][0] == "ansible-playbook"]
 
 
 def test_failed_deploy_records_the_release_so_schedules_stop_retrying(tmp_path):
     calls = []
     state_path = tmp_path / "state.json"
-    state_path.write_text(json.dumps({"version": "0.1.1"}), encoding="utf-8")
+    state_path.write_text(
+        json.dumps({**DEPLOYED, "version": "0.1.1"}), encoding="utf-8"
+    )
 
     with pytest.raises(subprocess.CalledProcessError):
         deploy.deploy_release(
@@ -242,8 +262,9 @@ def test_failed_deploy_records_the_release_so_schedules_stop_retrying(tmp_path):
         )
 
     assert json.loads(state_path.read_text(encoding="utf-8")) == {
-        "failed_version": "0.1.2",
+        **DEPLOYED,
         "version": "0.1.1",
+        **FAILED,
     }
 
 
