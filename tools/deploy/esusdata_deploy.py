@@ -16,7 +16,7 @@ import tempfile
 import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Mapping, MutableMapping, NamedTuple, Sequence
+from typing import Any, Callable, Mapping, MutableMapping, NamedTuple, Sequence
 
 
 TAG_RE = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)$")
@@ -34,7 +34,7 @@ SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 RELEASES_API = "https://api.github.com/repos/VINIClUS/esusdata/releases"
 PACKAGE_NAME = "observatorio-aps"
 FAILURE_KEYS = ("failed_version", "failed_infra_sha", "failed_inventory_sha")
-HELD_KEY = "held_version"
+HELD_KEY = "held_versions"
 
 
 class Release(NamedTuple):
@@ -216,17 +216,25 @@ def build_playbook_invocation(
     return command, _base_child_env(base_env)
 
 
-def read_state(path: str = STATE_PATH) -> dict[str, str]:
+def read_state(path: str = STATE_PATH) -> dict[str, Any]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
     if not isinstance(payload, dict):
         raise ValueError("deployment state is not an object")
-    return {key: value for key, value in payload.items() if isinstance(value, str)}
+    state: dict[str, Any] = {
+        key: value for key, value in payload.items() if isinstance(value, str)
+    }
+    held = payload.get(HELD_KEY, [])
+    if not isinstance(held, list) or not all(isinstance(v, str) for v in held):
+        raise ValueError("deployment state held_versions is not a list of versions")
+    if held:
+        state[HELD_KEY] = held
+    return state
 
 
-def write_state(state: Mapping[str, str], path: str = STATE_PATH) -> None:
+def write_state(state: Mapping[str, Any], path: str = STATE_PATH) -> None:
     destination = Path(path)
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     file_descriptor, temporary_path = tempfile.mkstemp(
@@ -249,7 +257,7 @@ def write_state(state: Mapping[str, str], path: str = STATE_PATH) -> None:
 
 def should_deploy(
     release: Release,
-    state: Mapping[str, str],
+    state: Mapping[str, Any],
     checkouts: tuple[str, str],
     *,
     explicit: bool,
@@ -258,13 +266,13 @@ def should_deploy(
 
     An attempt is the release plus both checkout SHAs, so an infra or inventory
     change (role, configuration, rotated secret) reapplies the same release.
-    A release an operator explicitly replaced stays held whatever the SHAs, so
+    Releases an operator explicitly replaced stay held whatever the SHAs, so
     only another explicit run or a newer release undoes a rollback.
     """
 
     if explicit:
         return True
-    if release.version == state.get(HELD_KEY):
+    if release.version in state.get(HELD_KEY, ()):
         return False
     attempt = (release.version, *checkouts)
     succeeded = (
@@ -383,15 +391,18 @@ def deploy_release(
             inventory_sha,
         ):
             success.update(failure)
+        held = set(state.get(HELD_KEY, ()))
         if requested_tag is not None:
-            # The release this explicit run replaced, even one that passed
-            # readiness, may be why the operator rolled back.
-            previous = state.get("version")
-            held = state.get(HELD_KEY)
-            if previous is not None and previous != release.version:
-                success[HELD_KEY] = previous
-            elif held is not None and held != release.version:
-                success[HELD_KEY] = held
+            # The releases this explicit run replaced, the running one and the
+            # one that last failed, may be why the operator chose another.
+            held.update(
+                version
+                for version in (state.get("version"), state.get("failed_version"))
+                if version is not None
+            )
+            held.discard(release.version)
+        if held:
+            success[HELD_KEY] = sorted(held)
         write_state(success, state_path)
         return f"esusdata {release.version} deployed"
 
