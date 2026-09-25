@@ -1,0 +1,26 @@
+# Managed by infra-ansible (roles/esusdata_service); local edits are overwritten.
+# Loaded after the defaults shipped in /opt/observatorio-aps/lib/app/observatorio-aps.yml.
+observatorio:
+  source:
+    allowed-destinations:
+{% for destination in esusdata_service_pec_destinations %}
+      - "{{ destination }}"
+{% endfor %}
+    secret-file: {{ esusdata_service_secret_path }}
+  web:
+    allowed-hosts:
+      - "{{ esusdata_service_public_host }}"
+      - "127.0.0.1:{{ esusdata_service_listen_port }}"
+    allowed-origins:
+      - "https://{{ esusdata_service_public_host }}"
+
+# Published through the edge proxy only: nftables limits the port to it, and
+# Tomcat trusts X-Forwarded-For/-Proto from that single address, so the session
+# cookie is Secure and login throttling sees the client address.
+server:
+  address: 0.0.0.0
+  port: {{ esusdata_service_listen_port }}
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      internal-proxies: '{{ esusdata_service_trusted_proxy | regex_escape }}'

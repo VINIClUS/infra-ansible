@@ -14,7 +14,7 @@
       - -N
       - ""
       - -C
-      - cnesdata-deploy-runners
+      - "{{ deploy_runner_ssh_access_key_comment }}"
       - -f
       - "{{ deploy_runner_ssh_access_key_path }}"
   args:

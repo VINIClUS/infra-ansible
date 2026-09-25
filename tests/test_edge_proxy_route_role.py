@@ -252,4 +252,8 @@ def test_playbook_targets_only_edge_proxy_hosts_with_exact_role_tag():
             "role": "protocolos_edge_route",
             "tags": ["edge_proxy_route", "protocolos_edge_route"],
         },
+        {
+            "role": "esusdata_edge_route",
+            "tags": ["edge_proxy_route", "esusdata_edge_route"],
+        },
     ]

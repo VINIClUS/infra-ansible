@@ -35,3 +35,17 @@ sequence. Every run decrypts the inventory's ansible-vault group_vars through
 `--vault-password-file`; secret values never appear as command-line
 arguments. A failure after the controller switch invokes the fixed rollback
 playbook before the original failure is returned.
+
+The same role installs a second, narrower boundary for esusdata:
+`/usr/local/sbin/esusdata-deploy` (`tools/deploy/esusdata_deploy.py`). The
+runner may call it with no argument, which deploys the latest published
+esusdata release when it differs from the recorded state, or with one exact
+`vX.Y.Z` tag. The script resolves the release through the public GitHub API,
+accepts only a final release that carries the signed package, takes the same
+deployment lock, requires both `/srv` checkouts to be clean, and runs only
+`playbooks/esusdata-service.yml --limit esusdata-lxc --tags esusdata_service`.
+Its SSH key comes from the inventory vault
+(`infra_ansible_deployer_esusdata_ssh_private_key`) and is installed at
+`/etc/infra-ansible-deploy/esusdata-ssh-key`. A failed release is recorded in
+`/var/lib/esusdata-deploy/state.json` so scheduled runs do not retry it; an
+explicit tag always deploys.

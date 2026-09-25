@@ -19,6 +19,13 @@ infra_ansible_deployer_state_dir: /var/lib/infra-ansible-deploy
 infra_ansible_deployer_runtime_dir: /run/infra-ansible
 infra_ansible_deployer_cache_dir: /var/cache/infra-ansible-deployer
 
+# esusdata release boundary (tools/deploy/esusdata_deploy.py). Its SSH key to
+# esusdata-lxc comes from the private inventory vault, never from this repo.
+infra_ansible_deployer_esusdata_script_path: /usr/local/sbin/esusdata-deploy
+infra_ansible_deployer_esusdata_state_dir: /var/lib/esusdata-deploy
+infra_ansible_deployer_esusdata_ssh_key_path: /etc/infra-ansible-deploy/esusdata-ssh-key
+infra_ansible_deployer_esusdata_ssh_private_key: ""
+
 infra_ansible_deployer_powershell_version: "7.6.3"
 infra_ansible_deployer_powershell_sha256: 856d0765d2332377f9d7a4aea76efdfde4de51446e7738dde2dfda41dba9e2a7
 infra_ansible_deployer_powershell_archive_url: >-

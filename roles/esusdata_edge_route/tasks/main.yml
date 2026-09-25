@@ -1,0 +1,202 @@
+---
+- name: Validate esusdata edge route enable flag
+  ansible.builtin.assert:
+    that:
+      - esusdata_edge_route_enabled is boolean
+    fail_msg: esusdata_edge_route_enabled must be a boolean.
+
+- name: Stop esusdata edge route role when disabled
+  ansible.builtin.meta: end_role
+  when: not esusdata_edge_route_enabled | bool
+
+- name: Validate exact esusdata LXC 170 edge contract
+  ansible.builtin.assert:
+    that:
+      - esusdata_edge_route_domain == 'pe.esusdata.com'
+      - esusdata_edge_route_upstream_address == '192.168.1.145'
+      - esusdata_edge_route_upstream_port is integer
+      - esusdata_edge_route_upstream_port == 8080
+      - esusdata_edge_route_upstream == 'http://192.168.1.145:8080'
+      - esusdata_lxc_vmid is integer
+      - esusdata_lxc_vmid == 170
+      - esusdata_lxc_node == 'pve-01'
+      - esusdata_lxc_name == 'esusdata-lxc'
+      - esusdata_lxc_private_address == '192.168.1.145'
+      - esusdata_lxc_private_address == esusdata_edge_route_upstream_address
+      - esusdata_lxc_mac_address == 'BC:24:11:7C:73:49'
+      - esusdata_lxc_onboot is boolean
+      - esusdata_lxc_onboot == true
+      - >-
+        esusdata_edge_route_certificate_path ==
+        '/etc/letsencrypt/live/pe.esusdata.com/fullchain.pem'
+      - >-
+        esusdata_edge_route_private_key_path ==
+        '/etc/letsencrypt/live/pe.esusdata.com/privkey.pem'
+      - >-
+        esusdata_edge_route_config_path ==
+        '/etc/nginx/sites-available/pe.esusdata.com'
+      - >-
+        esusdata_edge_route_enabled_path ==
+        '/etc/nginx/sites-enabled/pe.esusdata.com'
+      - >-
+        esusdata_edge_route_candidate_path ==
+        '/etc/nginx/sites-available/pe.esusdata.com.candidate'
+      - >-
+        esusdata_edge_route_restore_candidate_path ==
+        '/etc/nginx/sites-available/pe.esusdata.com.restore'
+      - esusdata_edge_route_probe_retries is integer
+      - esusdata_edge_route_probe_retries > 0
+      - esusdata_edge_route_probe_delay is integer
+      - esusdata_edge_route_probe_delay >= 0
+    fail_msg: >-
+      The enabled route requires the exact esusdata LXC 170 edge contract;
+      domain, upstream, VM identity, certificate, and Nginx paths are pinned.
+
+- name: Stop esusdata edge route during shared edge reconciliation without approval
+  ansible.builtin.meta: end_role
+  when:
+    - not esusdata_edge_route_apply | bool
+    - ansible_run_tags | sort == ['edge_proxy_route']
+
+- name: Require explicit approval and exact esusdata rollout limit
+  ansible.builtin.assert:
+    that:
+      - esusdata_edge_route_apply is boolean
+      - esusdata_edge_route_apply | bool
+      - ansible_limit is defined
+      - ansible_limit | trim == 'nginx'
+    fail_msg: >-
+      Enabled esusdata mutation requires explicit per-run approval with
+      --extra-vars '{"esusdata_edge_route_apply": true}' and the exact
+      --limit nginx.
+
+- name: Preflight esusdata upstream over HTTP
+  ansible.builtin.uri:
+    url: "{{ esusdata_edge_route_upstream }}"
+    method: GET
+    status_code: 200
+    return_content: false
+  register: esusdata_edge_route_upstream_preflight
+  changed_when: false
+  until: esusdata_edge_route_upstream_preflight.status == 200
+  retries: "{{ esusdata_edge_route_probe_retries }}"
+  delay: "{{ esusdata_edge_route_probe_delay }}"
+
+- name: Inspect and require existing esusdata Let's Encrypt certificate material
+  ansible.builtin.import_tasks: certificate-material.yml
+
+- name: Read esusdata certificate subject alternative names
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - x509
+      - -in
+      - "{{ esusdata_edge_route_certificate_path }}"
+      - -noout
+      - -ext
+      - subjectAltName
+  register: esusdata_edge_route_certificate_san
+  changed_when: false
+  become: true
+
+- name: Validate exact esusdata certificate SAN
+  ansible.builtin.assert:
+    that:
+      - >-
+        esusdata_edge_route_certificate_san.stdout |
+        regex_findall('DNS:([^,\\s]+)') | sort ==
+        ['pe.esusdata.com']
+    fail_msg: >-
+      The existing esusdata certificate must contain exactly one DNS SAN:
+      pe.esusdata.com.
+
+- name: Require enabled certbot renewal timer
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - certbot.timer
+  register: esusdata_edge_route_certbot_timer
+  changed_when: false
+  failed_when: >-
+    esusdata_edge_route_certbot_timer.rc != 0 or
+    esusdata_edge_route_certbot_timer.stdout | trim != 'enabled'
+  become: true
+
+- name: Render esusdata Nginx route candidate
+  ansible.builtin.template:
+    src: esusdata-edge-route.conf.j2
+    dest: "{{ esusdata_edge_route_candidate_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: Inspect preceding esusdata Nginx route
+  ansible.builtin.stat:
+    path: "{{ esusdata_edge_route_config_path }}"
+  register: esusdata_edge_route_preceding_config
+  changed_when: false
+  become: true
+
+- name: Inspect preceding esusdata Nginx route symlink
+  ansible.builtin.stat:
+    path: "{{ esusdata_edge_route_enabled_path }}"
+    follow: false
+  register: esusdata_edge_route_preceding_enabled
+  changed_when: false
+  become: true
+
+- name: Require preceding esusdata enabled path to be absent or a symlink
+  ansible.builtin.assert:
+    that:
+      - >-
+        not esusdata_edge_route_preceding_enabled.stat.exists | default(false) or
+        esusdata_edge_route_preceding_enabled.stat.islnk | default(false)
+    fail_msg: >-
+      The esusdata sites-enabled path must be absent or a symlink so its
+      preceding state can be restored transactionally.
+
+- name: Compare esusdata candidate with preceding Nginx route
+  ansible.builtin.command:
+    argv:
+      - cmp
+      - --silent
+      - "{{ esusdata_edge_route_candidate_path }}"
+      - "{{ esusdata_edge_route_config_path }}"
+  register: esusdata_edge_route_config_comparison
+  changed_when: false
+  failed_when: esusdata_edge_route_config_comparison.rc not in [0, 1]
+  when: esusdata_edge_route_preceding_config.stat.exists
+  become: true
+
+- name: Record esusdata route and symlink changes
+  ansible.builtin.import_tasks: route-state.yml
+
+- name: Generate esusdata Nginx route backup timestamp
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y%m%dT%H%M%S%NZ
+  register: esusdata_edge_route_backup_timestamp
+  changed_when: false
+  when:
+    - esusdata_edge_route_config_changed | bool
+    - esusdata_edge_route_preceding_config.stat.exists
+
+- name: Back up preceding esusdata Nginx route
+  ansible.builtin.copy:
+    src: "{{ esusdata_edge_route_config_path }}"
+    dest: "{{ esusdata_edge_route_config_path }}.{{ esusdata_edge_route_backup_timestamp.stdout }}.bak"
+    remote_src: true
+    owner: root
+    group: root
+    mode: preserve
+  when:
+    - esusdata_edge_route_config_changed | bool
+    - esusdata_edge_route_preceding_config.stat.exists
+  become: true
+
+- name: Install and verify esusdata Nginx route
+  ansible.builtin.import_tasks: transaction.yml

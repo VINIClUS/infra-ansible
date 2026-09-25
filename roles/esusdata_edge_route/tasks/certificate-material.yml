@@ -1,0 +1,25 @@
+---
+- name: Inspect existing esusdata Let's Encrypt certificate material
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: true
+  loop:
+    - "{{ esusdata_edge_route_certificate_path }}"
+    - "{{ esusdata_edge_route_private_key_path }}"
+  register: esusdata_edge_route_certificate_material
+  changed_when: false
+  become: true
+
+- name: Require existing esusdata Let's Encrypt certificate material
+  ansible.builtin.assert:
+    that:
+      - esusdata_edge_route_certificate_material.results | length == 2
+      - >-
+        esusdata_edge_route_certificate_material.results |
+        selectattr('stat.exists') | list | length == 2
+      - >-
+        esusdata_edge_route_certificate_material.results |
+        selectattr('stat.isreg') | list | length == 2
+    fail_msg: >-
+      The existing esusdata Let's Encrypt certificate and key must both be
+      present as regular files; this role never issues certificates.

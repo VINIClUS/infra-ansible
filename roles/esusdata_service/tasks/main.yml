@@ -1,0 +1,183 @@
+---
+- name: Validate esusdata service enable flag
+  ansible.builtin.assert:
+    that:
+      - esusdata_service_enabled is boolean
+    fail_msg: esusdata_service_enabled must be a boolean.
+
+- name: Stop only the esusdata service role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not esusdata_service_enabled | bool
+
+- name: Validate narrow esusdata deployment contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - ansible_service_mgr == 'systemd'
+      - esusdata_service_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - esusdata_service_package_name == 'observatorio-aps'
+      - >-
+        esusdata_service_release_base_url ==
+        'https://github.com/VINIClUS/esusdata/releases/download'
+      - esusdata_service_signer_identity == 'release@observatorio-aps'
+      - esusdata_service_signer_public_key is match('^ssh-ed25519 [A-Za-z0-9+/=]+$')
+      - esusdata_service_public_host is match('^[a-z0-9.-]+$')
+      - esusdata_service_listen_port is integer
+      - esusdata_service_trusted_proxy is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - esusdata_service_pec_destinations | length > 0
+      - >-
+        esusdata_service_pec_destinations |
+        reject('match', '^[A-Za-z0-9.-]+:[0-9]+$') | list | length == 0
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all == [inventory_hostname]
+      - ansible_run_tags | list | sort == ['esusdata_service']
+    fail_msg: >-
+      esusdata deployment requires Debian systemd, an exact X.Y.Z release,
+      the pinned release signer, one exact --limit host, and only the
+      esusdata_service tag.
+
+- name: Validate the PEC secret file content without logging it
+  ansible.builtin.assert:
+    that:
+      - esusdata_service_pec_env | length > 0
+      - >-
+        esusdata_service_pec_env.splitlines() |
+        reject('match', '^[A-Za-z_][A-Za-z0-9_]*=[^\r]+$') | list | length == 0
+    fail_msg: esusdata_service_pec_env must be non-empty KEY=value lines.
+  no_log: true
+
+- name: Set esusdata release artifact names
+  ansible.builtin.set_fact:
+    esusdata_service_release_url: >-
+      {{ esusdata_service_release_base_url }}/v{{ esusdata_service_version }}
+    esusdata_service_release_dir: >-
+      {{ esusdata_service_cache_dir }}/{{ esusdata_service_version }}
+    esusdata_service_deb_name: >-
+      {{ esusdata_service_package_name }}_{{ esusdata_service_version }}_amd64.deb
+
+- name: Install esusdata host dependencies
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - nftables
+      - openssh-client
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create root-only esusdata deployment directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop:
+    - "{{ esusdata_service_allowed_signers_path | dirname }}"
+    - "{{ esusdata_service_cache_dir }}"
+    - "{{ esusdata_service_release_dir }}"
+
+- name: Install the pinned esusdata release trust store
+  ansible.builtin.template:
+    src: allowed_signers.j2
+    dest: "{{ esusdata_service_allowed_signers_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Download the signed esusdata release manifest
+  ansible.builtin.get_url:
+    url: "{{ esusdata_service_release_url }}/{{ item }}"
+    dest: "{{ esusdata_service_release_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - SHA256SUMS
+    - SHA256SUMS.sig
+
+- name: Read the downloaded esusdata release manifest
+  ansible.builtin.slurp:
+    src: "{{ esusdata_service_release_dir }}/SHA256SUMS"
+  register: esusdata_service_manifest
+
+- name: Verify the esusdata manifest signature against the pinned signer
+  ansible.builtin.command:
+    argv:
+      - ssh-keygen
+      - -Y
+      - verify
+      - -f
+      - "{{ esusdata_service_allowed_signers_path }}"
+      - -I
+      - "{{ esusdata_service_signer_identity }}"
+      - -n
+      - file
+      - -s
+      - "{{ esusdata_service_release_dir }}/SHA256SUMS.sig"
+    stdin: "{{ esusdata_service_manifest.content | b64decode }}"
+    stdin_add_newline: false
+  changed_when: false
+
+- name: Select the package checksum from the verified manifest
+  ansible.builtin.set_fact:
+    esusdata_service_deb_sha256: >-
+      {{ esusdata_service_manifest.content | b64decode | regex_search(
+         '(?m)^([0-9a-f]{64})  ' ~ (esusdata_service_deb_name | regex_escape) ~ '$',
+         '\1') | default([''], true) | first }}
+
+- name: Require the package in the verified manifest
+  ansible.builtin.assert:
+    that:
+      - esusdata_service_deb_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      The signed manifest has no entry for {{ esusdata_service_deb_name }}.
+
+- name: Download the esusdata package pinned to the verified checksum
+  ansible.builtin.get_url:
+    url: "{{ esusdata_service_release_url }}/{{ esusdata_service_deb_name }}"
+    dest: "{{ esusdata_service_release_dir }}/{{ esusdata_service_deb_name }}"
+    checksum: "sha256:{{ esusdata_service_deb_sha256 }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Read the installed esusdata package version
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - --showformat=${db:Status-Status} ${Version}
+      - "{{ esusdata_service_package_name }}"
+  register: esusdata_service_installed
+  changed_when: false
+  failed_when: esusdata_service_installed.rc not in [0, 1]
+
+- name: Record the esusdata version to roll back to
+  ansible.builtin.set_fact:
+    esusdata_service_previous_version: >-
+      {{ (esusdata_service_installed.stdout.split(' ') | last)
+         if esusdata_service_installed.rc == 0 and
+            esusdata_service_installed.stdout is match('^installed ')
+         else '' }}
+
+- name: Install and verify the esusdata release
+  ansible.builtin.import_tasks: install.yml
+
+- name: List cached esusdata releases
+  ansible.builtin.find:
+    paths: "{{ esusdata_service_cache_dir }}"
+    file_type: directory
+  register: esusdata_service_cached
+
+- name: Keep only the current and rollback esusdata releases cached
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ esusdata_service_cached.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: >-
+    item.path | basename not in
+    [esusdata_service_version, esusdata_service_previous_version]

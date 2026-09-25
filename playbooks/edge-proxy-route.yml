@@ -8,3 +8,5 @@
       tags: [edge_proxy_route]
     - role: protocolos_edge_route
       tags: [edge_proxy_route, protocolos_edge_route]
+    - role: esusdata_edge_route
+      tags: [edge_proxy_route, esusdata_edge_route]

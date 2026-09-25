@@ -1,0 +1,10 @@
+---
+- name: Deploy one verified esusdata release
+  hosts: esusdata_service_hosts
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: esusdata_service
+      tags:
+        - esusdata_service

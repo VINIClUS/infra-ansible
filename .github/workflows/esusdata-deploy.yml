@@ -1,0 +1,44 @@
+---
+name: Deploy esusdata
+
+# Pull-based delivery: the self-hosted production runner asks GitHub for the
+# latest published esusdata release and deploys it when it is new. No
+# credential crosses from the esusdata repository into this one.
+"on":
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact published esusdata tag (vX.Y.Z); empty deploys the latest release.
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+jobs:
+  deploy:
+    name: Deploy esusdata production
+    if: >-
+      github.repository == 'VINIClUS/infra-ansible' &&
+      github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, ansible-prod]
+    environment: production
+    # Separate from ansible-production so a queued scheduled run can never
+    # cancel a pending infra deploy; the boundary's file lock serializes both.
+    concurrency:
+      group: esusdata-production
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - name: Deploy the published esusdata release
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -z "${TAG}" ]; then
+            sudo /usr/local/sbin/esusdata-deploy
+          else
+            sudo /usr/local/sbin/esusdata-deploy "${TAG}"
+          fi

@@ -12,6 +12,9 @@
         infra_ansible_deployer_inventory_repo_dest ==
         '/srv/infra-ansible-inventory'
       - infra_ansible_deployer_script_path == '/usr/local/sbin/infra-ansible-deploy'
+      - >-
+        infra_ansible_deployer_esusdata_script_path ==
+        '/usr/local/sbin/esusdata-deploy'
     fail_msg: >-
       The deployer requires Debian systemd and exact public and inventory SHAs
       at the fixed root-owned paths.
@@ -47,6 +50,17 @@
       password for the inventory repository, must be present and valid.
   no_log: true
 
+- name: Validate the esusdata deploy key from the inventory vault
+  ansible.builtin.assert:
+    that:
+      - >-
+        infra_ansible_deployer_esusdata_ssh_private_key is
+        match('(?s)^-----BEGIN OPENSSH PRIVATE KEY-----\n.+\n-----END OPENSSH PRIVATE KEY-----\n?$')
+    fail_msg: >-
+      infra_ansible_deployer_esusdata_ssh_private_key must be the dedicated
+      OpenSSH private key for esusdata-lxc.
+  no_log: true
+
 - name: Install fixed deployment boundary dependencies
   ansible.builtin.apt:
     name: "{{ infra_ansible_deployer_packages }}"
@@ -66,6 +80,8 @@
     - path: "{{ infra_ansible_deployer_config_dir }}"
       mode: "0700"
     - path: "{{ infra_ansible_deployer_state_dir }}"
+      mode: "0700"
+    - path: "{{ infra_ansible_deployer_esusdata_state_dir }}"
       mode: "0700"
     - path: /run/infra-ansible
       mode: "0700"
@@ -129,6 +145,15 @@
     mode: "0600"
   no_log: true
 
+- name: Install the dedicated esusdata SSH private key
+  ansible.builtin.copy:
+    content: "{{ infra_ansible_deployer_esusdata_ssh_private_key | trim }}\n"
+    dest: "{{ infra_ansible_deployer_esusdata_ssh_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
 - name: Install the ansible-vault password for the inventory repository
   ansible.builtin.copy:
     content: "{{ infra_ansible_deployer_runtime_secrets.ANSIBLE_VAULT_PASSWORD }}"
@@ -185,7 +210,15 @@
     group: root
     mode: "0755"
 
-- name: Install the only privileged runner command
+- name: Install the root-owned esusdata release boundary
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../tools/deploy/esusdata_deploy.py"
+    dest: "{{ infra_ansible_deployer_esusdata_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the only privileged runner commands
   ansible.builtin.template:
     src: infra-ansible-deploy.sudoers.j2
     dest: /etc/sudoers.d/infra-ansible-deploy
