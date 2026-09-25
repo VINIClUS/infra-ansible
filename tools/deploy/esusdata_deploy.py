@@ -34,6 +34,7 @@ SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt"
 RELEASES_API = "https://api.github.com/repos/VINIClUS/esusdata/releases"
 PACKAGE_NAME = "observatorio-aps"
 FAILURE_KEYS = ("failed_version", "failed_infra_sha", "failed_inventory_sha")
+HELD_KEY = "held_version"
 
 
 class Release(NamedTuple):
@@ -257,10 +258,14 @@ def should_deploy(
 
     An attempt is the release plus both checkout SHAs, so an infra or inventory
     change (role, configuration, rotated secret) reapplies the same release.
+    A release an operator explicitly replaced stays held whatever the SHAs, so
+    only another explicit run or a newer release undoes a rollback.
     """
 
     if explicit:
         return True
+    if release.version == state.get(HELD_KEY):
+        return False
     attempt = (release.version, *checkouts)
     succeeded = (
         state.get("version"),
@@ -348,7 +353,7 @@ def deploy_release(
         )
         succeeded = {
             key: state[key]
-            for key in ("version", "infra_sha", "inventory_sha")
+            for key in ("version", "infra_sha", "inventory_sha", HELD_KEY)
             if key in state
         }
         try:
@@ -378,6 +383,15 @@ def deploy_release(
             inventory_sha,
         ):
             success.update(failure)
+        if requested_tag is not None:
+            # The release this explicit run replaced, even one that passed
+            # readiness, may be why the operator rolled back.
+            previous = state.get("version")
+            held = state.get(HELD_KEY)
+            if previous is not None and previous != release.version:
+                success[HELD_KEY] = previous
+            elif held is not None and held != release.version:
+                success[HELD_KEY] = held
         write_state(success, state_path)
         return f"esusdata {release.version} deployed"
 

@@ -185,6 +185,9 @@ FAILED = {
         ({**FAILED, "failed_inventory_sha": "b" * 40}, False, True),
         (DEPLOYED, True, True),
         (FAILED, True, True),
+        ({**DEPLOYED, "held_version": "0.1.2", "infra_sha": "a" * 40}, False, False),
+        ({**DEPLOYED, "held_version": "0.1.2"}, True, True),
+        ({**DEPLOYED, "version": "0.1.1", "held_version": "0.1.0"}, False, True),
     ],
 )
 def test_scheduled_runs_skip_only_an_attempt_identical_to_the_last_outcome(
@@ -286,9 +289,52 @@ def test_explicit_rollback_keeps_the_newer_failed_release_quarantined(tmp_path):
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state == {**DEPLOYED, **newer_failure}
+    assert state == {**DEPLOYED, **newer_failure, "held_version": "0.1.3"}
     latest = deploy.Release("v0.1.3", "0.1.3")
     assert not deploy.should_deploy(latest, state, (SHA, INVENTORY_SHA), explicit=False)
+
+
+def test_explicit_rollback_holds_the_replaced_release_across_checkout_changes(
+    tmp_path,
+):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({**DEPLOYED, "version": "0.1.3"}), encoding="utf-8"
+    )
+
+    deploy.deploy_release(
+        "v0.1.2",
+        run=git_runner([]),
+        open_url=lambda *_args, **_kwargs: Response(release_payload()),
+        base_env={},
+        state_path=str(state_path),
+        lock=no_lock,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state == {**DEPLOYED, "held_version": "0.1.3"}
+    latest = deploy.Release("v0.1.3", "0.1.3")
+    changed_infra = ("a" * 40, INVENTORY_SHA)
+    assert not deploy.should_deploy(latest, state, changed_infra, explicit=False)
+    assert deploy.should_deploy(latest, state, changed_infra, explicit=True)
+
+
+def test_explicitly_redeploying_the_held_release_releases_the_hold(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({**DEPLOYED, "held_version": "0.1.2"}), encoding="utf-8"
+    )
+
+    deploy.deploy_release(
+        "v0.1.2",
+        run=git_runner([]),
+        open_url=lambda *_args, **_kwargs: Response(release_payload()),
+        base_env={},
+        state_path=str(state_path),
+        lock=no_lock,
+    )
+
+    assert json.loads(state_path.read_text(encoding="utf-8")) == DEPLOYED
 
 
 def test_a_successful_retry_clears_its_own_failure(tmp_path):

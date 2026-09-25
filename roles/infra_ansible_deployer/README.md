@@ -51,4 +51,7 @@ failed attempt (release plus both checkout SHAs) are recorded in
 `/var/lib/esusdata-deploy/state.json`: a scheduled run skips an attempt
 identical to either, so a failed release is not retried until the release or
 the infra/inventory checkout changes, and an infra or inventory change
-reapplies the current release. An explicit tag always deploys.
+reapplies the current release. An explicit tag always deploys, and holds the
+release it replaced: scheduled runs never reinstall a held version, whatever
+the checkouts, so a rollback lasts until a newer release or another explicit
+tag.
