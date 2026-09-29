@@ -135,17 +135,46 @@
         follow: false
       register: agent_context_luks_leftover
 
-    - name: Remove the container file only if this run created it
+    - name: Confirm the mapping is gone
+      ansible.builtin.command:
+        argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
+      register: agent_context_luks_gone_status
+      changed_when: false
+      failed_when: false
+
+    - name: Confirm no loop device still references the file
+      ansible.builtin.command:
+        argv: [losetup, -j, "{{ agent_context_luks_volume.container }}"]
+      register: agent_context_luks_gone_loops
+      changed_when: false
+      failed_when: false
+
+    - name: Decide whether cleanup is safe
+      ansible.builtin.set_fact:
+        agent_context_luks_cleanup_safe: >-
+          {{ agent_context_luks_created_inode | int > 0
+          and agent_context_luks_leftover.stat.exists
+          and agent_context_luks_leftover.stat.inode == agent_context_luks_created_inode | int
+          and agent_context_luks_gone_status.rc == 4
+          and agent_context_luks_gone_loops.rc == 0
+          and agent_context_luks_gone_loops.stdout | trim == '' }}
+
+    - name: Remove the container file only if this run created it and nothing references it
       ansible.builtin.file:
         path: "{{ agent_context_luks_volume.container }}"
         state: absent
-      when:
-        - agent_context_luks_created_inode | int > 0
-        - agent_context_luks_leftover.stat.exists
-        - agent_context_luks_leftover.stat.inode == agent_context_luks_created_inode | int
+      when: agent_context_luks_cleanup_safe | bool
 
-    - name: Fail the provisioning run
+    - name: Fail the provisioning run after cleanup
       ansible.builtin.fail:
         msg: >-
           Provisioning volume {{ agent_context_luks_volume.name }} failed; a container file created by this
           run was removed, anything else was left untouched.
+      when: agent_context_luks_cleanup_safe | bool
+
+    - name: Fail the provisioning run without cleanup
+      ansible.builtin.fail:
+        msg: >-
+          Provisioning volume {{ agent_context_luks_volume.name }} failed and cleanup could not be confirmed
+          safe; its container file was left in place. See the role README for manual recovery.
+      when: not agent_context_luks_cleanup_safe | bool

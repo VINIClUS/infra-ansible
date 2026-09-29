@@ -37,13 +37,14 @@
 
 - name: Read the filesystem mounted at the target
   ansible.builtin.command:
-    argv: [findmnt, -J, -o, "SOURCE,FSTYPE,OPTIONS", -M, "{{ agent_context_luks_volume.mountpoint }}"]
+    argv: [findmnt, -J, -R, -o, "SOURCE,FSTYPE,OPTIONS", -M, "{{ agent_context_luks_volume.mountpoint }}"]
   register: agent_context_luks_id_mount
   changed_when: false
   # rc 1 is "not mounted".
   failed_when: agent_context_luks_id_mount.rc not in [0, 1]
   check_mode: false
 
+# -R lists submounts; without it a nested mount would never show up.
 # A stacked mount (another filesystem over ours) or a child mount would make
 # "the mount at the target" ambiguous, so it is never accepted.
 - name: Require exactly one plain mount at the target

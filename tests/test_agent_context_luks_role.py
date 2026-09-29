@@ -280,6 +280,8 @@ if tool == "cryptsetup":
             state["mappers"][args[-1]] = {"file": os.path.realpath(target), "loop": "/dev/loop%d" % (7 + len(state["mappers"]))}
             save()
     elif cmd == "close":
+        if os.environ.get("FAKE_FAIL_CLOSE"):
+            sys.exit(5)
         if args[1] not in state["mappers"]:
             sys.exit(4)
         del state["mappers"][args[1]]
@@ -300,7 +302,12 @@ elif tool == "findmnt":
     m = state["mounts"].get(args[args.index("-M") + 1])
     if not m:
         sys.exit(1)
-    print(json.dumps({"filesystems": m if isinstance(m, list) else [m]}))
+    entries = m if isinstance(m, list) else [m]
+    if "-R" in args:  # only a recursive findmnt reports submounts and children
+        flat = [{k: v for k, v in entries[0].items() if k != "submounts"}]
+        print(json.dumps({"filesystems": flat + entries[1:] + entries[0].get("submounts", [])}))
+    else:
+        print(json.dumps({"filesystems": [{k: v for k, v in entries[0].items() if k not in ("submounts", "children")}]}))
 elif tool == "mount":
     if os.environ.get("FAKE_FAIL_MOUNT"):
         sys.exit(32)
@@ -313,7 +320,8 @@ elif tool == "umount":
     del state["mounts"][args[0]]
     save()
 elif tool == "mkfs.ext4":
-    pass
+    if os.environ.get("FAKE_FAIL_MKFS"):
+        sys.exit(1)
 else:
     sys.exit(127)
 """
@@ -591,6 +599,30 @@ def test_a_luks_header_that_appears_before_formatting_stops_the_run(lab):
     assert not (lab.containers / "data.luks").exists()
 
 
+def test_rescue_removes_the_file_once_the_mapping_is_confirmed_gone(lab):
+    lab.extra_env["FAKE_FAIL_MKFS"] = "1"
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "was removed" in out(result)
+    assert not (lab.containers / "data.luks").exists()
+    assert ["cryptsetup", "close", "agent_context_data"] in lab.calls()
+
+
+def test_a_failed_close_keeps_the_container_file(lab):
+    lab.extra_env["FAKE_FAIL_MKFS"] = "1"
+    lab.extra_env["FAKE_FAIL_CLOSE"] = "1"
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "left in place" in out(result) and "manual recovery" in out(result)
+    assert (lab.containers / "data.luks").exists()
+    assert "agent_context_data" in lab.read_state()["mappers"]
+    assert "d" * 40 not in out(result)
+
+
 def test_rescue_leaves_a_completed_sibling_volume_alone(lab):
     """The backup volume fails after data succeeded: only backup's new file goes."""
     original = (lab.bin / "fake.py").read_text(encoding="utf-8")
@@ -763,21 +795,14 @@ def test_group_writable_mountpoint_parent_is_refused(lab):
     assert "not group or world writable" in out(result)
 
 
-STACKED = [
-    {"source": "/dev/mapper/agent_context_data", "fstype": "ext4", "options": "nodev,nosuid,rw"},
-    {"source": "tmpfs", "fstype": "tmpfs", "options": "rw"},
-]
-NESTED = [
-    {
-        "source": "/dev/mapper/agent_context_data",
-        "fstype": "ext4",
-        "options": "nodev,nosuid,rw",
-        "children": [{"source": "tmpfs", "fstype": "tmpfs", "options": "rw"}],
-    }
-]
+OURS = {"source": "/dev/mapper/agent_context_data", "fstype": "ext4", "options": "nodev,nosuid,rw"}
+TMPFS = {"source": "tmpfs", "fstype": "tmpfs", "options": "rw"}
+STACKED = [OURS, TMPFS]
+NESTED = [{**OURS, "children": [TMPFS]}]
+SUBMOUNTED = [{**OURS, "submounts": [TMPFS]}]
 
 
-@pytest.mark.parametrize("stack", [STACKED, NESTED], ids=["stacked", "children"])
+@pytest.mark.parametrize("stack", [STACKED, NESTED, SUBMOUNTED], ids=["stacked", "children", "submounts"])
 @pytest.mark.parametrize("action", ["unlock", "close"])
 def test_stacked_or_nested_mounts_on_our_mapper_are_refused(lab, stack, action):
     lab.make_volume("backup", opts="nodev,nosuid,noexec")
@@ -791,6 +816,25 @@ def test_stacked_or_nested_mounts_on_our_mapper_are_refused(lab, stack, action):
     assert lab.tool_calls("umount") == [] and lab.tool_calls("mount") == []
     assert lab.tool_calls("cryptsetup", "close") == []
     assert lab.read_state()["mounts"][str(lab.data)] == stack
+
+
+def test_findmnt_is_recursive_so_nested_mounts_can_be_seen():
+    task = next(t for _, t in all_tasks() if t["name"] == "Read the filesystem mounted at the target")
+    assert "-R" in task["ansible.builtin.command"]["argv"]
+
+
+def test_close_fails_on_a_nested_mount_before_touching_either_volume(lab):
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.make_volume("data", mounted=False)
+    lab.state["mounts"][str(lab.data)] = SUBMOUNTED
+    lab.log.write_text("")
+
+    result = lab.run("close")
+
+    assert result.returncode != 0
+    assert [c[0] for c in lab.calls() if c[0] in ("umount", "mount") or c[:2] == ["cryptsetup", "close"]] == []
+    assert "agent_context_backup" in lab.read_state()["mappers"]
+    assert str(lab.backup) in lab.read_state()["mounts"]
 
 
 def test_unexpected_mapping_status_is_an_error_not_absent(lab):

@@ -61,6 +61,13 @@ created with an exclusive open, so an existing file fails instead of being
 reused; the file is checked again (same inode, not LUKS) right before
 `luksFormat`, and a failed run removes only a file it created itself.
 
+If cleanup after a failed volume cannot be confirmed safe (the mapping is still
+active or a loop device still references the file), the file is kept and the
+run fails saying so. Recover by hand: check `cryptsetup status <mapper>` and
+`losetup -j <container>`, close the mapping (`cryptsetup close <mapper>`) and
+detach the loop device (`losetup -d <device>`), then delete the leftover
+container file yourself and rerun.
+
 ## Identity checks
 
 Unlock, close and the provision preflight all identify each volume first
