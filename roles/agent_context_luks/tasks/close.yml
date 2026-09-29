@@ -1,0 +1,9 @@
+---
+# Maintenance only: unmount and close both volumes. The stack using them must
+# be stopped first; a busy mount fails the run.
+- name: Unmount and close each volume
+  ansible.builtin.include_tasks: close_volume.yml
+  loop: "{{ agent_context_luks_volumes | reverse | list }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"

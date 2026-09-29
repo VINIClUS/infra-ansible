@@ -1,0 +1,39 @@
+---
+# Expects agent_context_luks_volume. Only for a volume that is not mounted yet.
+- name: Inspect the mountpoint
+  ansible.builtin.stat:
+    path: "{{ agent_context_luks_volume.mountpoint }}"
+    follow: false
+  register: agent_context_luks_mountpoint_stat
+
+- name: Require a root-owned real directory as mountpoint
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_mountpoint_stat.stat.isdir
+      - not agent_context_luks_mountpoint_stat.stat.islnk
+      - agent_context_luks_mountpoint_stat.stat.uid == 0
+    fail_msg: "{{ agent_context_luks_volume.mountpoint }} must be a real directory owned by root, not a symlink."
+  when: agent_context_luks_mountpoint_stat.stat.exists
+
+- name: List anything hiding under the mountpoint
+  ansible.builtin.find:
+    paths: "{{ agent_context_luks_volume.mountpoint }}"
+    hidden: true
+    file_type: any
+  register: agent_context_luks_mountpoint_content
+  when: agent_context_luks_mountpoint_stat.stat.exists
+
+- name: Require an empty mountpoint before the first mount
+  ansible.builtin.assert:
+    that: agent_context_luks_mountpoint_content.matched == 0
+    fail_msg: "{{ agent_context_luks_volume.mountpoint }} is not empty; mounting would hide its content."
+  when: agent_context_luks_mountpoint_stat.stat.exists
+
+- name: Create the missing mountpoint
+  ansible.builtin.file:
+    path: "{{ agent_context_luks_volume.mountpoint }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not agent_context_luks_mountpoint_stat.stat.exists

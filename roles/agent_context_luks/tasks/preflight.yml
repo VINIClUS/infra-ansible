@@ -1,0 +1,65 @@
+---
+- name: Validate host and layout contract
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - agent_context_luks_data_size is defined
+      - agent_context_luks_backup_size is defined
+      - agent_context_luks_data_size | string is match('^[1-9][0-9]*[MG]$')
+      - agent_context_luks_backup_size | string is match('^[1-9][0-9]*[MG]$')
+      - agent_context_luks_free_space_margin | string is match('^[0-9]+[MG]$')
+      - agent_context_luks_pbkdf_memory | int >= 65536
+      - agent_context_luks_pbkdf_memory | int <= 1048576
+      - >-
+        agent_context_luks_volumes | map(attribute='container') | select('match', '^/[A-Za-z0-9._/-]+$')
+        | list | length == 2
+      - >-
+        agent_context_luks_volumes | map(attribute='mountpoint') | select('match', '^/[A-Za-z0-9._/-]+$')
+        | list | length == 2
+      - agent_context_luks_volumes | map(attribute='mapper') | select('match', '^[a-z_]+$') | list | length == 2
+      - agent_context_luks_volumes | map(attribute='container') | unique | list | length == 2
+      - agent_context_luks_volumes | map(attribute='mountpoint') | unique | list | length == 2
+      - agent_context_luks_volumes | map(attribute='mapper') | unique | list | length == 2
+      - not agent_context_luks_backup_mountpoint.startswith(agent_context_luks_data_mountpoint + '/')
+      - not agent_context_luks_data_mountpoint.startswith(agent_context_luks_backup_mountpoint + '/')
+      - "'noexec' in agent_context_luks_backup_mount_opts.split(',')"
+      - "'nodev' in agent_context_luks_data_mount_opts.split(',')"
+      - "'nosuid' in agent_context_luks_data_mount_opts.split(',')"
+      - "'nodev' in agent_context_luks_backup_mount_opts.split(',')"
+      - "'nosuid' in agent_context_luks_backup_mount_opts.split(',')"
+    fail_msg: >-
+      LUKS layout is invalid: both sizes are required as <integer>G or <integer>M, the two volumes need distinct
+      absolute container files, mountpoints and mapper names, and the backup mount must be noexec.
+
+- name: Convert the sizes to bytes
+  ansible.builtin.set_fact:
+    agent_context_luks_required_bytes: >-
+      {{ (agent_context_luks_data_size | string | regex_replace('[MG]$', '') | int
+          * (1073741824 if agent_context_luks_data_size | string is search('G$') else 1048576))
+       + (agent_context_luks_backup_size | string | regex_replace('[MG]$', '') | int
+          * (1073741824 if agent_context_luks_backup_size | string is search('G$') else 1048576))
+       + (agent_context_luks_free_space_margin | string | regex_replace('[MG]$', '') | int
+          * (1073741824 if agent_context_luks_free_space_margin | string is search('G$') else 1048576)) }}
+
+- name: Check the key material without exposing it
+  ansible.builtin.set_fact:
+    agent_context_luks_key_checks:
+      data_defined: "{{ agent_context_luks_data_key is defined }}"
+      backup_defined: "{{ agent_context_luks_backup_key is defined }}"
+      data_long: "{{ (agent_context_luks_data_key | default('') | string | length) >= 32 }}"
+      backup_long: "{{ (agent_context_luks_backup_key | default('') | string | length) >= 32 }}"
+      distinct: "{{ (agent_context_luks_data_key | default('')) != (agent_context_luks_backup_key | default('')) }}"
+  no_log: true
+
+- name: Require two long, different keys
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_key_checks.data_defined | bool
+      - agent_context_luks_key_checks.backup_defined | bool
+      - agent_context_luks_key_checks.data_long | bool
+      - agent_context_luks_key_checks.backup_long | bool
+      - agent_context_luks_key_checks.distinct | bool
+    fail_msg: >-
+      agent_context_luks_data_key and agent_context_luks_backup_key must both be defined in the private inventory
+      vault, be at least 32 characters long and differ from each other.
+  when: agent_context_luks_action in ['provision', 'unlock']

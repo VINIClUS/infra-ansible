@@ -1,0 +1,105 @@
+---
+# One-shot create and format. It never reformats: an existing container file
+# or LUKS header fails the run and there is no override variable.
+- name: Require the exact provisioning confirmation
+  ansible.builtin.assert:
+    that: agent_context_luks_confirm_provision == 'format-new-agent-context-containers'
+    fail_msg: >-
+      Refusing to provision. Set agent_context_luks_confirm_provision to the exact confirmation string
+      documented in the role README.
+
+- name: Install the LUKS and ext4 tooling
+  ansible.builtin.package:
+    name:
+      - cryptsetup-bin
+      - e2fsprogs
+    state: present
+
+- name: Create the container directory
+  ansible.builtin.file:
+    path: "{{ agent_context_luks_container_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Look for existing container files
+  ansible.builtin.stat:
+    path: "{{ item.container }}"
+    follow: false
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: agent_context_luks_existing_containers
+
+- name: Fail when a container file already exists
+  ansible.builtin.fail:
+    msg: >-
+      Container file for volume {{ item.item.name }} already exists. Provisioning never reformats; remove it
+      by hand only if you are certain it holds nothing.
+  when: item.stat.exists
+  loop: "{{ agent_context_luks_existing_containers.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Look for already active mappings
+  ansible.builtin.command:
+    argv: [cryptsetup, status, "{{ item.mapper }}"]
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: agent_context_luks_existing_mappings
+  changed_when: false
+  failed_when: false
+
+- name: Fail when a mapping name is already in use
+  ansible.builtin.fail:
+    msg: Mapping for volume {{ item.item.name }} is already active. Provisioning never reformats.
+  when: item.rc == 0
+  loop: "{{ agent_context_luks_existing_mappings.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Look for mounted targets
+  ansible.builtin.command:
+    argv: [mountpoint, -q, "{{ item.mountpoint }}"]
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: agent_context_luks_existing_mounts
+  changed_when: false
+  failed_when: false
+
+- name: Fail when a target is already a mountpoint
+  ansible.builtin.fail:
+    msg: "{{ item.item.mountpoint }} is already a mountpoint."
+  when: item.rc == 0
+  loop: "{{ agent_context_luks_existing_mounts.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Validate the mountpoints
+  ansible.builtin.include_tasks: check_mountpoint.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"
+
+- name: Measure free space on the container filesystem
+  ansible.builtin.command:
+    argv: [df, --output=avail, -B1, "{{ agent_context_luks_container_dir }}"]
+  register: agent_context_luks_free_space
+  changed_when: false
+
+- name: Require enough free space plus the margin
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_free_space.stdout_lines[-1] | trim | int >= agent_context_luks_required_bytes | int
+    fail_msg: Not enough free space on the container filesystem for both containers plus the margin.
+
+- name: Create and format each volume
+  ansible.builtin.include_tasks: provision_volume.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"

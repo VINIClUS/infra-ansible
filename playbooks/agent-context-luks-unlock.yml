@@ -1,0 +1,19 @@
+---
+- name: Unlock and mount the Agent Context LUKS volumes
+  hosts: agent_context_vps
+  become: true
+  gather_facts: true
+  serial: 1
+  vars:
+    agent_context_luks_action: unlock
+    # Modules are otherwise copied to disk with their arguments, keys included.
+    ansible_pipelining: true
+  pre_tasks:
+    - name: Allow only the unlock and close actions here
+      ansible.builtin.assert:
+        that: agent_context_luks_action in ['unlock', 'close']
+        fail_msg: This playbook only unlocks or, with -e agent_context_luks_action=close, closes the volumes.
+  roles:
+    - role: agent_context_luks
+      tags:
+        - agent_context_luks

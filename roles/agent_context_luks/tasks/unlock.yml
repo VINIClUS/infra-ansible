@@ -1,0 +1,12 @@
+---
+- name: Check the LUKS tooling
+  ansible.builtin.command:
+    argv: [cryptsetup, --version]
+  changed_when: false
+
+- name: Open and mount each volume
+  ansible.builtin.include_tasks: unlock_volume.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"

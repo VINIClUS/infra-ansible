@@ -1,0 +1,94 @@
+---
+# Expects agent_context_luks_volume. The container file did not exist when the
+# play started, so anything created here belongs to this run.
+- name: Format one volume, removing only its own new artifacts on failure
+  block:
+    - name: Allocate the container file without holes
+      ansible.builtin.command:
+        argv: [fallocate, -l, "{{ agent_context_luks_volume.size }}", "{{ agent_context_luks_volume.container }}"]
+        creates: "{{ agent_context_luks_volume.container }}"
+      register: agent_context_luks_allocated
+      changed_when: true
+
+    - name: Restrict the container file to root
+      ansible.builtin.file:
+        path: "{{ agent_context_luks_volume.container }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Refuse a container that already carries a LUKS header
+      ansible.builtin.command:
+        argv: [cryptsetup, isLuks, "{{ agent_context_luks_volume.container }}"]
+      register: agent_context_luks_header
+      changed_when: false
+      failed_when: agent_context_luks_header.rc == 0
+
+    - name: Format the LUKS2 container
+      ansible.builtin.command:
+        argv:
+          - cryptsetup
+          - luksFormat
+          - --type
+          - luks2
+          - --pbkdf
+          - argon2id
+          - --pbkdf-memory
+          - "{{ agent_context_luks_pbkdf_memory }}"
+          - --batch-mode
+          - --key-file=-
+          - "{{ agent_context_luks_volume.container }}"
+        stdin: >-
+          {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
+          else agent_context_luks_backup_key }}
+        stdin_add_newline: false
+      changed_when: true
+      no_log: true
+
+    - name: Open the new container
+      ansible.builtin.command:
+        argv:
+          - cryptsetup
+          - open
+          - --type
+          - luks2
+          - --key-file=-
+          - "{{ agent_context_luks_volume.container }}"
+          - "{{ agent_context_luks_volume.mapper }}"
+        stdin: >-
+          {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
+          else agent_context_luks_backup_key }}
+        stdin_add_newline: false
+      changed_when: true
+      no_log: true
+
+    - name: Create the ext4 filesystem with its label
+      ansible.builtin.command:
+        argv:
+          - mkfs.ext4
+          - -q
+          - -L
+          - "{{ agent_context_luks_volume.label }}"
+          - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+      changed_when: true
+
+    - name: Close the freshly formatted volume
+      ansible.builtin.command:
+        argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
+      changed_when: true
+  rescue:
+    - name: Close a half-created mapping
+      ansible.builtin.command:
+        argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
+      changed_when: false
+      failed_when: false
+
+    - name: Remove the half-created container file of this run
+      ansible.builtin.file:
+        path: "{{ agent_context_luks_volume.container }}"
+        state: absent
+      when: agent_context_luks_allocated is defined and agent_context_luks_allocated is changed
+
+    - name: Fail the provisioning run
+      ansible.builtin.fail:
+        msg: Provisioning volume {{ agent_context_luks_volume.name }} failed; its new container file was removed.

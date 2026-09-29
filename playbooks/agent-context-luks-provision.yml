@@ -1,0 +1,19 @@
+---
+- name: Provision the Agent Context LUKS containers (one-shot, never reformats)
+  hosts: agent_context_vps
+  become: true
+  gather_facts: true
+  serial: 1
+  vars:
+    agent_context_luks_action: provision
+    # Modules are otherwise copied to disk with their arguments, keys included.
+    ansible_pipelining: true
+  pre_tasks:
+    - name: Allow only the provision action here
+      ansible.builtin.assert:
+        that: agent_context_luks_action == 'provision'
+        fail_msg: This playbook only provisions.
+  roles:
+    - role: agent_context_luks
+      tags:
+        - agent_context_luks

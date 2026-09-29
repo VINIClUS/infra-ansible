@@ -1,0 +1,63 @@
+# agent_context_luks
+
+Gives the Agent Context stack on a single-disk VPS two encrypted filesystems
+backed by LUKS2 container files (loop devices) on the existing ext4 root:
+
+| Volume | Container file (default) | Mountpoint (default) | Options |
+| --- | --- | --- | --- |
+| data | `/var/lib/agent-context-luks/data.luks` | `/srv/agent-context` | `nodev,nosuid` |
+| backup | `/var/lib/agent-context-luks/backup.luks` | `/srv/infra-backups/agent-context` | `nodev,nosuid,noexec` |
+
+Data stays exec-capable because Neo4j loads plugins and native libraries from
+its data tree; tighten it once that is measured. The backup volume is a
+separate filesystem and never executes anything.
+
+Disabled by default (`agent_context_luks_enabled: false`). Every play targets
+`agent_context_vps`, which the private inventory defines; always run with an
+exact `--limit <host>`. These playbooks are deliberately not in the deploy
+boundary's allowlist or any workflow: a push to `main` never runs them, and an
+operator runs them by hand. Nothing here touches Docker, containers, Caddy,
+networking or other mounts.
+
+## Inventory (private vault)
+
+- `agent_context_luks_data_size`, `agent_context_luks_backup_size`: required,
+  `<integer>G` or `<integer>M`.
+- `agent_context_luks_data_key`, `agent_context_luks_backup_key`: required, at
+  least 32 characters, different from each other.
+
+Keys are passed to `cryptsetup` only on stdin (`--key-file=-`). They are never
+written to disk, argv, environment, facts or logs; every task that sees one has
+`no_log: true`. There is no keyfile, crypttab or auto-unlock: after each boot
+the volumes stay closed until the unlock playbook runs. The playbooks set
+`ansible_pipelining: true` because otherwise Ansible copies each module, with
+its arguments and so the key, to a temporary file on the remote disk.
+
+## Provision (one-shot)
+
+```sh
+ansible-playbook playbooks/agent-context-luks-provision.yml --limit <host> \
+  -e agent_context_luks_confirm_provision=format-new-agent-context-containers
+```
+
+Allocates each file with `fallocate` (not sparse, `0600` in a `0700` root
+directory), formats LUKS2 with `argon2id` (memory bounded by
+`agent_context_luks_pbkdf_memory`, default 256 MiB), creates a labelled ext4,
+and closes it again. Preflight requires free space for both files plus
+`agent_context_luks_free_space_margin`, and mountpoints that are root-owned,
+not symlinks, and absent or empty. It never reformats: an existing container
+file, LUKS header, active mapping or mounted target fails the run, and there is
+no override variable. If one volume fails, only its own new file is removed; a
+rerun then refuses because the other new container file exists, and the operator
+must delete that leftover file by hand first.
+
+## Unlock and close
+
+```sh
+ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host>
+ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host> -e agent_context_luks_action=close
+```
+
+Unlock opens and mounts both volumes with `state=ephemeral`, so no
+`/etc/fstab` entry can block boot; an already open and mounted volume reports
+ok. Close is for maintenance: stop the stack first, since a busy mount fails.

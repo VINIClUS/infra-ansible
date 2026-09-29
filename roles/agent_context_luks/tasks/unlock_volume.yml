@@ -1,0 +1,81 @@
+---
+# Expects agent_context_luks_volume. Idempotent: an open and mounted volume
+# reports ok and nothing changes.
+- name: Check whether the mapping is open
+  ansible.builtin.command:
+    argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
+  register: agent_context_luks_status
+  changed_when: false
+  failed_when: false
+
+- name: Check whether the target is mounted
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, SOURCE, -M, "{{ agent_context_luks_volume.mountpoint }}"]
+  register: agent_context_luks_mounted
+  changed_when: false
+  failed_when: false
+
+- name: Resolve the mapping device
+  ansible.builtin.command:
+    argv: [readlink, -f, "/dev/mapper/{{ agent_context_luks_volume.mapper }}"]
+  register: agent_context_luks_device
+  changed_when: false
+  failed_when: false
+
+- name: Refuse a target mounted from something else
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_mounted.stdout | trim in [
+          '/dev/mapper/' + agent_context_luks_volume.mapper,
+          agent_context_luks_device.stdout | trim]
+    fail_msg: "{{ agent_context_luks_volume.mountpoint }} is mounted from an unexpected device."
+  when: agent_context_luks_mounted.rc == 0
+
+- name: Require an existing container file
+  ansible.builtin.stat:
+    path: "{{ agent_context_luks_volume.container }}"
+    follow: false
+  register: agent_context_luks_container
+  when: agent_context_luks_status.rc != 0
+
+- name: Require a real LUKS container
+  ansible.builtin.command:
+    argv: [cryptsetup, isLuks, "{{ agent_context_luks_volume.container }}"]
+  changed_when: false
+  when: agent_context_luks_status.rc != 0 and agent_context_luks_container.stat.exists
+
+- name: Fail when the container file is missing
+  ansible.builtin.fail:
+    msg: Container file for volume {{ agent_context_luks_volume.name }} is missing; run the provision playbook first.
+  when: agent_context_luks_status.rc != 0 and not agent_context_luks_container.stat.exists
+
+- name: Open the LUKS volume
+  ansible.builtin.command:
+    argv:
+      - cryptsetup
+      - open
+      - --type
+      - luks2
+      - --key-file=-
+      - "{{ agent_context_luks_volume.container }}"
+      - "{{ agent_context_luks_volume.mapper }}"
+    stdin: >-
+      {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
+      else agent_context_luks_backup_key }}
+    stdin_add_newline: false
+  changed_when: true
+  no_log: true
+  when: agent_context_luks_status.rc != 0
+
+- name: Validate the mountpoint before the first mount
+  ansible.builtin.include_tasks: check_mountpoint.yml
+  when: agent_context_luks_mounted.rc != 0
+
+- name: Mount the volume without any persistent entry
+  ansible.posix.mount:
+    path: "{{ agent_context_luks_volume.mountpoint }}"
+    src: "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+    fstype: ext4
+    opts: "{{ agent_context_luks_volume.mount_opts }}"
+    state: ephemeral
+  when: agent_context_luks_mounted.rc != 0

@@ -1,0 +1,17 @@
+---
+- name: Validate LUKS role enable flag and action
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_enabled is boolean
+      - agent_context_luks_action in ['provision', 'unlock', 'close']
+    fail_msg: agent_context_luks_enabled must be a boolean and the action one of provision, unlock or close.
+
+- name: Stop only the LUKS role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not agent_context_luks_enabled | bool
+
+- name: Validate LUKS layout and sizes
+  ansible.builtin.include_tasks: preflight.yml
+
+- name: Run the requested LUKS action
+  ansible.builtin.include_tasks: "{{ agent_context_luks_action }}.yml"
