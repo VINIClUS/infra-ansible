@@ -1,26 +1,17 @@
 ---
-- name: Check whether the target is mounted
-  ansible.builtin.command:
-    argv: [mountpoint, -q, "{{ agent_context_luks_volume.mountpoint }}"]
-  register: agent_context_luks_mounted
-  changed_when: false
-  failed_when: false
+# Expects agent_context_luks_volume. Identification fails on any foreign mapping
+# or mount, so nothing that is not ours is ever unmounted or closed.
+- name: Identify what exists for the volume
+  ansible.builtin.include_tasks: identify_volume.yml
 
 - name: Unmount the volume
-  ansible.posix.mount:
-    path: "{{ agent_context_luks_volume.mountpoint }}"
-    state: unmounted
-  when: agent_context_luks_mounted.rc == 0
-
-- name: Check whether the mapping is open
   ansible.builtin.command:
-    argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
-  register: agent_context_luks_status
-  changed_when: false
-  failed_when: false
+    argv: [umount, "{{ agent_context_luks_volume.mountpoint }}"]
+  changed_when: true
+  when: agent_context_luks_identity.mounted | bool
 
 - name: Close the LUKS volume
   ansible.builtin.command:
     argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
   changed_when: true
-  when: agent_context_luks_status.rc == 0
+  when: agent_context_luks_identity.mapper_active | bool

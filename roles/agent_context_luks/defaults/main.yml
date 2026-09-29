@@ -21,9 +21,19 @@ agent_context_luks_confirm_provision: ""
 # agent_context_luks_data_key
 # agent_context_luks_backup_key
 
+# Owner of the container directory, the files and the mountpoints. Root in
+# every real run; only the execution tests point it at the test user.
+agent_context_luks_owner: root
+agent_context_luks_group: root
+
 agent_context_luks_container_dir: /var/lib/agent-context-luks
 agent_context_luks_data_container: "{{ agent_context_luks_container_dir }}/data.luks"
 agent_context_luks_backup_container: "{{ agent_context_luks_container_dir }}/backup.luks"
+
+# Both mountpoints live under this directory; it and every directory between
+# it and a mountpoint must be a real, owner-owned, not group/world-writable
+# directory (missing ones are created 0755).
+agent_context_luks_mount_root: /srv
 
 agent_context_luks_data_mountpoint: /srv/agent-context
 agent_context_luks_backup_mountpoint: /srv/infra-backups/agent-context

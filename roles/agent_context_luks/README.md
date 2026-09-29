@@ -51,6 +51,32 @@ no override variable. If one volume fails, only its own new file is removed; a
 rerun then refuses because the other new container file exists, and the operator
 must delete that leftover file by hand first.
 
+No action supports `--check` (the probes are real and the changes cannot be
+simulated), so the enabled role fails clearly under it. Owner and group are
+asserted to be root on `agent_context_vps` hosts (the variables exist only so
+the execution tests can run unprivileged). The container file is
+created with an exclusive open, so an existing file fails instead of being
+reused; the file is checked again (same inode, not LUKS) right before
+`luksFormat`, and a failed run removes only a file it created itself.
+
+## Identity checks
+
+Unlock, close and the provision preflight all identify each volume first
+(`cryptsetup status`, `losetup -j`, `blkid`, `findmnt -J`), for both volumes
+before any change:
+
+- An active mapping under our name whose backing file is not exactly the
+  configured container is foreign: the run fails and never reuses or closes it.
+- A mount at our mountpoint whose source is not our mapping is foreign: the run
+  fails and never unmounts it.
+- A mount of our mapping that is not ext4 or lacks a configured option
+  (`nodev`, `nosuid`, plus `noexec` on backup) also fails, never a silent ok.
+  Close and unlock again, or remount by hand; the role does not remount live
+  filesystems.
+- Mountpoint parents (`agent_context_luks_mount_root`, default `/srv`, and every
+  directory below it) must be real directories owned by root and not
+  group/world-writable; missing ones are created explicitly with `0755`.
+
 ## Unlock and close
 
 ```sh
@@ -58,6 +84,6 @@ ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host>
 ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host> -e agent_context_luks_action=close
 ```
 
-Unlock opens and mounts both volumes with `state=ephemeral`, so no
-`/etc/fstab` entry can block boot; an already open and mounted volume reports
+Unlock opens both volumes and mounts them with a plain
+`mount -t ext4 -o <options>` command, so no `/etc/fstab` entry can block boot; an already open and mounted volume reports
 ok. Close is for maintenance: stop the stack first, since a busy mount fails.

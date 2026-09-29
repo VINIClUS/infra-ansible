@@ -1,20 +1,46 @@
 ---
 # Expects agent_context_luks_volume. The container file did not exist when the
 # play started, so anything created here belongs to this run.
+- name: Forget state of any previous volume
+  ansible.builtin.set_fact:
+    agent_context_luks_created_inode: 0
+    agent_context_luks_opened: false
+
 - name: Format one volume, removing only its own new artifacts on failure
   block:
+    # noclobber makes the shell create the file with O_EXCL, so an existing
+    # file fails here instead of being reused. The path is an argument, never
+    # part of the script.
+    - name: Create the container file exclusively
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - 'umask 077 && set -C && : > "$1"'
+          - sh
+          - "{{ agent_context_luks_volume.container }}"
+      changed_when: true
+
+    - name: Inspect the file created by this run
+      ansible.builtin.stat:
+        path: "{{ agent_context_luks_volume.container }}"
+        follow: false
+      register: agent_context_luks_new_file
+
+    - name: Remember the inode created by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_created_inode: "{{ agent_context_luks_new_file.stat.inode }}"
+
     - name: Allocate the container file without holes
       ansible.builtin.command:
         argv: [fallocate, -l, "{{ agent_context_luks_volume.size }}", "{{ agent_context_luks_volume.container }}"]
-        creates: "{{ agent_context_luks_volume.container }}"
-      register: agent_context_luks_allocated
       changed_when: true
 
     - name: Restrict the container file to root
       ansible.builtin.file:
         path: "{{ agent_context_luks_volume.container }}"
-        owner: root
-        group: root
+        owner: "{{ agent_context_luks_owner }}"
+        group: "{{ agent_context_luks_group }}"
         mode: "0600"
 
     - name: Refuse a container that already carries a LUKS header
@@ -23,6 +49,21 @@
       register: agent_context_luks_header
       changed_when: false
       failed_when: agent_context_luks_header.rc == 0
+
+    - name: Inspect the file again immediately before formatting
+      ansible.builtin.stat:
+        path: "{{ agent_context_luks_volume.container }}"
+        follow: false
+      register: agent_context_luks_pre_format
+
+    - name: Require the very file this run created
+      ansible.builtin.assert:
+        that:
+          - agent_context_luks_pre_format.stat.exists
+          - agent_context_luks_pre_format.stat.isreg
+          - not agent_context_luks_pre_format.stat.islnk
+          - agent_context_luks_pre_format.stat.inode == agent_context_luks_created_inode | int
+        fail_msg: The container file is not the one created by this run; refusing to format it.
 
     - name: Format the LUKS2 container
       ansible.builtin.command:
@@ -62,6 +103,10 @@
       changed_when: true
       no_log: true
 
+    - name: Note that the mapping was opened by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_opened: true
+
     - name: Create the ext4 filesystem with its label
       ansible.builtin.command:
         argv:
@@ -77,18 +122,30 @@
         argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
       changed_when: true
   rescue:
-    - name: Close a half-created mapping
+    - name: Close the mapping opened by this run
       ansible.builtin.command:
         argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
-      changed_when: false
+      changed_when: true
       failed_when: false
+      when: agent_context_luks_opened | bool
 
-    - name: Remove the half-created container file of this run
+    - name: Inspect the container file left behind
+      ansible.builtin.stat:
+        path: "{{ agent_context_luks_volume.container }}"
+        follow: false
+      register: agent_context_luks_leftover
+
+    - name: Remove the container file only if this run created it
       ansible.builtin.file:
         path: "{{ agent_context_luks_volume.container }}"
         state: absent
-      when: agent_context_luks_allocated is defined and agent_context_luks_allocated is changed
+      when:
+        - agent_context_luks_created_inode | int > 0
+        - agent_context_luks_leftover.stat.exists
+        - agent_context_luks_leftover.stat.inode == agent_context_luks_created_inode | int
 
     - name: Fail the provisioning run
       ansible.builtin.fail:
-        msg: Provisioning volume {{ agent_context_luks_volume.name }} failed; its new container file was removed.
+        msg: >-
+          Provisioning volume {{ agent_context_luks_volume.name }} failed; a container file created by this
+          run was removed, anything else was left untouched.

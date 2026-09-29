@@ -8,75 +8,35 @@
       Refusing to provision. Set agent_context_luks_confirm_provision to the exact confirmation string
       documented in the role README.
 
-- name: Install the LUKS and ext4 tooling
+- name: Look for the LUKS and ext4 tooling
+  ansible.builtin.command:
+    argv: [cryptsetup, --version]
+  register: agent_context_luks_tooling
+  changed_when: false
+  failed_when: false
+
+- name: Install the LUKS and ext4 tooling when missing
   ansible.builtin.package:
     name:
       - cryptsetup-bin
       - e2fsprogs
     state: present
+  when: agent_context_luks_tooling.rc != 0
 
 - name: Create the container directory
   ansible.builtin.file:
     path: "{{ agent_context_luks_container_dir }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ agent_context_luks_owner }}"
+    group: "{{ agent_context_luks_group }}"
     mode: "0700"
 
-- name: Look for existing container files
-  ansible.builtin.stat:
-    path: "{{ item.container }}"
-    follow: false
+- name: Check that nothing exists yet for either volume
+  ansible.builtin.include_tasks: preflight_volume.yml
   loop: "{{ agent_context_luks_volumes }}"
   loop_control:
-    label: "{{ item.name }}"
-  register: agent_context_luks_existing_containers
-
-- name: Fail when a container file already exists
-  ansible.builtin.fail:
-    msg: >-
-      Container file for volume {{ item.item.name }} already exists. Provisioning never reformats; remove it
-      by hand only if you are certain it holds nothing.
-  when: item.stat.exists
-  loop: "{{ agent_context_luks_existing_containers.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-
-- name: Look for already active mappings
-  ansible.builtin.command:
-    argv: [cryptsetup, status, "{{ item.mapper }}"]
-  loop: "{{ agent_context_luks_volumes }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: agent_context_luks_existing_mappings
-  changed_when: false
-  failed_when: false
-
-- name: Fail when a mapping name is already in use
-  ansible.builtin.fail:
-    msg: Mapping for volume {{ item.item.name }} is already active. Provisioning never reformats.
-  when: item.rc == 0
-  loop: "{{ agent_context_luks_existing_mappings.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-
-- name: Look for mounted targets
-  ansible.builtin.command:
-    argv: [mountpoint, -q, "{{ item.mountpoint }}"]
-  loop: "{{ agent_context_luks_volumes }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: agent_context_luks_existing_mounts
-  changed_when: false
-  failed_when: false
-
-- name: Fail when a target is already a mountpoint
-  ansible.builtin.fail:
-    msg: "{{ item.item.mountpoint }} is already a mountpoint."
-  when: item.rc == 0
-  loop: "{{ agent_context_luks_existing_mounts.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"
 
 - name: Validate the mountpoints
   ansible.builtin.include_tasks: check_mountpoint.yml

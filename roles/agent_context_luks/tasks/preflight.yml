@@ -20,6 +20,9 @@
       - agent_context_luks_volumes | map(attribute='container') | unique | list | length == 2
       - agent_context_luks_volumes | map(attribute='mountpoint') | unique | list | length == 2
       - agent_context_luks_volumes | map(attribute='mapper') | unique | list | length == 2
+      - agent_context_luks_mount_root is match('^/[A-Za-z0-9._/-]+$')
+      - agent_context_luks_data_mountpoint.startswith(agent_context_luks_mount_root + '/')
+      - agent_context_luks_backup_mountpoint.startswith(agent_context_luks_mount_root + '/')
       - not agent_context_luks_backup_mountpoint.startswith(agent_context_luks_data_mountpoint + '/')
       - not agent_context_luks_data_mountpoint.startswith(agent_context_luks_backup_mountpoint + '/')
       - "'noexec' in agent_context_luks_backup_mount_opts.split(',')"
@@ -30,6 +33,14 @@
     fail_msg: >-
       LUKS layout is invalid: both sizes are required as <integer>G or <integer>M, the two volumes need distinct
       absolute container files, mountpoints and mapper names, and the backup mount must be noexec.
+
+- name: Require root ownership on the real target group
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_owner == 'root'
+      - agent_context_luks_group == 'root'
+    fail_msg: Containers and mountpoints must be owned by root on agent_context_vps hosts.
+  when: "'agent_context_vps' in group_names"
 
 - name: Convert the sizes to bytes
   ansible.builtin.set_fact:

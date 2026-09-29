@@ -1,5 +1,49 @@
 ---
 # Expects agent_context_luks_volume. Only for a volume that is not mounted yet.
+- name: List the mount root and the directories down to the mountpoint
+  ansible.builtin.set_fact:
+    agent_context_luks_ancestors: >-
+      {%- set ns = namespace(path=agent_context_luks_mount_root, out=[agent_context_luks_mount_root]) -%}
+      {%- set rel = agent_context_luks_volume.mountpoint[agent_context_luks_mount_root | length + 1 :] -%}
+      {%- for part in rel.split('/')[:-1] -%}
+      {%- set ns.path = ns.path + '/' + part -%}
+      {%- set ns.out = ns.out + [ns.path] -%}
+      {%- endfor -%}
+      {{ ns.out }}
+
+- name: Inspect the parent directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ agent_context_luks_ancestors }}"
+  register: agent_context_luks_ancestor_stats
+
+- name: Require trusted parent directories
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.pw_name == agent_context_luks_owner
+      - not item.stat.wgrp
+      - not item.stat.woth
+    fail_msg: "{{ item.item }} must be a real directory owned by root and not group or world writable."
+  when: item.stat.exists
+  loop: "{{ agent_context_luks_ancestor_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create missing parent directories explicitly
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: "{{ agent_context_luks_owner }}"
+    group: "{{ agent_context_luks_group }}"
+    mode: "0755"
+  when: not item.stat.exists
+  loop: "{{ agent_context_luks_ancestor_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
 - name: Inspect the mountpoint
   ansible.builtin.stat:
     path: "{{ agent_context_luks_volume.mountpoint }}"
@@ -11,7 +55,7 @@
     that:
       - agent_context_luks_mountpoint_stat.stat.isdir
       - not agent_context_luks_mountpoint_stat.stat.islnk
-      - agent_context_luks_mountpoint_stat.stat.uid == 0
+      - agent_context_luks_mountpoint_stat.stat.pw_name == agent_context_luks_owner
     fail_msg: "{{ agent_context_luks_volume.mountpoint }} must be a real directory owned by root, not a symlink."
   when: agent_context_luks_mountpoint_stat.stat.exists
 
@@ -33,7 +77,7 @@
   ansible.builtin.file:
     path: "{{ agent_context_luks_volume.mountpoint }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ agent_context_luks_owner }}"
+    group: "{{ agent_context_luks_group }}"
     mode: "0755"
   when: not agent_context_luks_mountpoint_stat.stat.exists

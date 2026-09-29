@@ -1,53 +1,26 @@
 ---
-# Expects agent_context_luks_volume. Idempotent: an open and mounted volume
-# reports ok and nothing changes.
-- name: Check whether the mapping is open
-  ansible.builtin.command:
-    argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
-  register: agent_context_luks_status
-  changed_when: false
-  failed_when: false
+# Expects agent_context_luks_volume. Idempotent: an open, mounted and correctly
+# configured volume reports ok and nothing changes.
+- name: Identify what exists for the volume
+  ansible.builtin.include_tasks: identify_volume.yml
 
-- name: Check whether the target is mounted
-  ansible.builtin.command:
-    argv: [findmnt, -n, -o, SOURCE, -M, "{{ agent_context_luks_volume.mountpoint }}"]
-  register: agent_context_luks_mounted
-  changed_when: false
-  failed_when: false
-
-- name: Resolve the mapping device
-  ansible.builtin.command:
-    argv: [readlink, -f, "/dev/mapper/{{ agent_context_luks_volume.mapper }}"]
-  register: agent_context_luks_device
-  changed_when: false
-  failed_when: false
-
-- name: Refuse a target mounted from something else
-  ansible.builtin.assert:
-    that:
-      - agent_context_luks_mounted.stdout | trim in [
-          '/dev/mapper/' + agent_context_luks_volume.mapper,
-          agent_context_luks_device.stdout | trim]
-    fail_msg: "{{ agent_context_luks_volume.mountpoint }} is mounted from an unexpected device."
-  when: agent_context_luks_mounted.rc == 0
-
-- name: Require an existing container file
+- name: Inspect the container file
   ansible.builtin.stat:
     path: "{{ agent_context_luks_volume.container }}"
     follow: false
   register: agent_context_luks_container
-  when: agent_context_luks_status.rc != 0
+  when: not agent_context_luks_identity.mapper_active | bool
 
-- name: Require a real LUKS container
-  ansible.builtin.command:
-    argv: [cryptsetup, isLuks, "{{ agent_context_luks_volume.container }}"]
-  changed_when: false
-  when: agent_context_luks_status.rc != 0 and agent_context_luks_container.stat.exists
-
-- name: Fail when the container file is missing
-  ansible.builtin.fail:
-    msg: Container file for volume {{ agent_context_luks_volume.name }} is missing; run the provision playbook first.
-  when: agent_context_luks_status.rc != 0 and not agent_context_luks_container.stat.exists
+- name: Require an existing LUKS container file before opening
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_container.stat.exists
+      - agent_context_luks_container.stat.isreg
+      - agent_context_luks_identity.luks_uuid != ''
+    fail_msg: >-
+      Container file for volume {{ agent_context_luks_volume.name }} is missing or is not a LUKS container;
+      run the provision playbook first.
+  when: not agent_context_luks_identity.mapper_active | bool
 
 - name: Open the LUKS volume
   ansible.builtin.command:
@@ -65,17 +38,36 @@
     stdin_add_newline: false
   changed_when: true
   no_log: true
-  when: agent_context_luks_status.rc != 0
+  when: not agent_context_luks_identity.mapper_active | bool
+
+# An existing mount of our mapping is never adjusted silently: drift fails the
+# run so an operator decides (close and unlock again, or remount by hand).
+- name: Refuse a mount of our mapping that drifted from the configuration
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_identity.mount_fstype == 'ext4'
+      - >-
+        agent_context_luks_volume.mount_opts.split(',')
+        | difference(agent_context_luks_identity.mount_options) | length == 0
+    fail_msg: >-
+      {{ agent_context_luks_volume.mountpoint }} is mounted but is not ext4 with the options
+      {{ agent_context_luks_volume.mount_opts }} (found {{ agent_context_luks_identity.mount_fstype }}
+      {{ agent_context_luks_identity.mount_options | join(',') }}). Close and unlock again, or remount it by hand.
+  when: agent_context_luks_identity.mounted | bool
 
 - name: Validate the mountpoint before the first mount
   ansible.builtin.include_tasks: check_mountpoint.yml
-  when: agent_context_luks_mounted.rc != 0
+  when: not agent_context_luks_identity.mounted | bool
 
 - name: Mount the volume without any persistent entry
-  ansible.posix.mount:
-    path: "{{ agent_context_luks_volume.mountpoint }}"
-    src: "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
-    fstype: ext4
-    opts: "{{ agent_context_luks_volume.mount_opts }}"
-    state: ephemeral
-  when: agent_context_luks_mounted.rc != 0
+  ansible.builtin.command:
+    argv:
+      - mount
+      - -t
+      - ext4
+      - -o
+      - "{{ agent_context_luks_volume.mount_opts }}"
+      - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+      - "{{ agent_context_luks_volume.mountpoint }}"
+  changed_when: true
+  when: not agent_context_luks_identity.mounted | bool

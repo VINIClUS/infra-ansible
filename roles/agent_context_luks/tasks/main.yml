@@ -10,6 +10,11 @@
   ansible.builtin.meta: end_role
   when: not agent_context_luks_enabled | bool
 
+- name: Refuse check mode for every action
+  ansible.builtin.assert:
+    that: not ansible_check_mode
+    fail_msg: This role does not support --check; its probes are real and its changes cannot be simulated.
+
 - name: Validate LUKS layout and sizes
   ansible.builtin.include_tasks: preflight.yml
 

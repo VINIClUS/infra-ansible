@@ -1,5 +1,7 @@
 import os
+import json
 import re
+import sys
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,9 +104,12 @@ def test_no_persistent_mount_crypttab_or_keyfile():
     for name, task in all_tasks():
         mount = task.get("ansible.posix.mount")
         if mount:
-            assert mount["state"] in {"ephemeral", "unmounted"}
+            raise AssertionError("no module may write mount state")
         assert "ansible.builtin.lineinfile" not in task
         assert "fstab" not in yaml.safe_dump(task.get("ansible.posix.mount", {}))
+    mount = next(t for _, t in all_tasks() if t["name"] == "Mount the volume without any persistent entry")
+    assert mount["ansible.builtin.command"]["argv"][:4] == ["mount", "-t", "ext4", "-o"]
+    assert "ansible.posix" not in text
     assert "--key-file=/" not in text and "--key-file=" + "{{" not in text
     assert not (ROLE / "templates").exists()
 
@@ -117,8 +122,9 @@ def test_provision_guard_and_never_reformat_logic():
     guard = provision[0]["ansible.builtin.assert"]["that"]
     assert guard == f"agent_context_luks_confirm_provision == '{CONFIRM}'"
     assert text.index("confirmation") < text.index("ansible.builtin.package")
-    failing = [t for t in provision if "ansible.builtin.fail" in t]
-    assert any("stat.exists" in t["when"] for t in failing)
+    refusal = next(t for t in load(ROLE / "tasks/preflight_volume.yml") if "ansible.builtin.assert" in t)
+    assert "not agent_context_luks_existing_container.stat.exists" in refusal["ansible.builtin.assert"]["that"]
+    assert "agent_context_luks_identity.luks_uuid == ''" in refusal["ansible.builtin.assert"]["that"]
     header = next(t for t in walk(volume) if "isLuks" in yaml.safe_dump(t))
     assert header["failed_when"] == "agent_context_luks_header.rc == 0"
     # No override: nothing can skip the checks or force a format.
@@ -178,6 +184,19 @@ def test_role_never_touches_docker_proxy_or_networking():
         assert word not in text
 
 
+def test_ownership_is_pinned_to_root_on_the_real_group():
+    text = (ROLE / "tasks/preflight.yml").read_text(encoding="utf-8")
+    guard = next(t for t in load(ROLE / "tasks/preflight.yml") if t["name"].startswith("Require root ownership"))
+
+    assert guard["ansible.builtin.assert"]["that"] == [
+        "agent_context_luks_owner == 'root'",
+        "agent_context_luks_group == 'root'",
+    ]
+    assert guard["when"] == "'agent_context_vps' in group_names"
+    assert "agent_context_luks_owner: root" in (ROLE / "defaults/main.yml").read_text(encoding="utf-8")
+    assert text.count("agent_context_luks_owner") == 1
+
+
 def test_playbooks_are_not_deployable_by_push():
     deploy = (ROOT / "tools/deploy/infra_ansible_deploy.py").read_text(encoding="utf-8")
     assert "agent-context-luks" not in deploy
@@ -197,10 +216,163 @@ def test_playbooks_are_not_deployable_by_push():
     assert not any("agent-context-luks" in run.playbook for run in module.FIXED_RUNS)
 
 
-def run_playbook(tmp_path, variables, action):
-    playbook = tmp_path / "play.yml"
-    playbook.write_text(
-        f"""---
+FAKE = r"""#!/usr/bin/env python3
+import hashlib, json, os, sys
+
+tool = os.path.basename(sys.argv[0])
+args = sys.argv[1:]
+state_path = os.environ["FAKE_STATE"]
+state = json.load(open(state_path))
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write(json.dumps([tool, *args]) + "\n")
+MAGIC = b"LUKS\xba\xbe"
+
+
+def save():
+    json.dump(state, open(state_path, "w"))
+
+
+def is_luks(path):
+    try:
+        return open(path, "rb").read(6) == MAGIC
+    except OSError:
+        return False
+
+
+def uuid_of(path):
+    return "11111111-2222-3333-4444-" + hashlib.md5(path.encode()).hexdigest()[:12]
+
+
+if tool == "cryptsetup":
+    cmd = args[0]
+    if cmd == "--version":
+        print("cryptsetup 2.7.0")
+    elif cmd == "status":
+        m = state["mappers"].get(args[1])
+        if not m:
+            print("/dev/mapper/%s is inactive." % args[1])
+            sys.exit(4)
+        print("/dev/mapper/%s is active." % args[1])
+        print("  type:    LUKS2\n  device:  %s\n  loop:    %s\n  mode:    read/write" % (m["loop"], m["file"]))
+    elif cmd == "isLuks":
+        if os.environ.get("FAKE_ISLUKS"):
+            sys.exit(0)
+        if os.environ.get("FAKE_SWAP"):
+            os.rename(args[1], args[1] + ".original")
+            open(args[1], "wb").write(b"someone else's data")
+        sys.exit(0 if is_luks(args[1]) else 1)
+    elif cmd in ("luksFormat", "open"):
+        key = sys.stdin.read()
+        if "--key-file=-" not in args or len(key) < 32:
+            sys.exit(2)
+        target = args[-1] if cmd == "luksFormat" else args[-2]
+        if cmd == "luksFormat":
+            if os.environ.get("FAKE_FAIL_FORMAT"):
+                sys.exit(1)
+            with open(target, "r+b") as f:
+                f.write(MAGIC)
+        else:
+            if not is_luks(target):
+                sys.exit(1)
+            state["mappers"][args[-1]] = {"file": os.path.realpath(target), "loop": "/dev/loop%d" % (7 + len(state["mappers"]))}
+            save()
+    elif cmd == "close":
+        if args[1] not in state["mappers"]:
+            sys.exit(4)
+        del state["mappers"][args[1]]
+        save()
+elif tool == "losetup":
+    target = os.path.realpath(args[1])
+    for m in state["mappers"].values():
+        if m["file"] == target:
+            print("%s: [0042]:7 (%s)" % (m["loop"], target))
+elif tool == "blkid":
+    path = args[-1]
+    if not is_luks(path):
+        sys.exit(2)
+    print(uuid_of(path))
+elif tool == "findmnt":
+    m = state["mounts"].get(args[args.index("-M") + 1])
+    if not m:
+        sys.exit(1)
+    print(json.dumps({"filesystems": [m]}))
+elif tool == "mount":
+    opts, src, dst = args[args.index("-o") + 1], args[-2], args[-1]
+    state["mounts"][dst] = {"source": src, "fstype": "ext4", "options": opts + ",rw,relatime"}
+    save()
+elif tool == "umount":
+    if args[0] not in state["mounts"]:
+        sys.exit(32)
+    del state["mounts"][args[0]]
+    save()
+elif tool == "mkfs.ext4":
+    pass
+else:
+    sys.exit(127)
+"""
+
+KEYS = {"agent_context_luks_data_key": "d" * 40, "agent_context_luks_backup_key": "b" * 40}
+CONFIRMED = {"agent_context_luks_confirm_provision": CONFIRM}
+
+
+class Lab:
+    """A throwaway root: fake tools on PATH, temp paths, state kept in JSON."""
+
+    def __init__(self, tmp_path: Path):
+        self.root = tmp_path
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "fake.py"
+        fake.write_text(FAKE, encoding="utf-8")
+        for tool in ("cryptsetup", "losetup", "blkid", "findmnt", "mount", "umount", "mkfs.ext4"):
+            (self.bin / tool).symlink_to(fake)
+        fake.chmod(0o755)
+        self.state_path = tmp_path / "state.json"
+        self.log = tmp_path / "calls.log"
+        self.log.touch()
+        self.state = {"mappers": {}, "mounts": {}}
+        self.containers = tmp_path / "containers"
+        self.srv = tmp_path / "srv"
+        self.data = self.srv / "agent-context"
+        self.backup = self.srv / "backups" / "agent-context"
+        self.extra_env = {}
+        self.write_state()
+
+    def write_state(self):
+        self.state_path.write_text(json.dumps(self.state), encoding="utf-8")
+
+    def read_state(self):
+        return json.loads(self.state_path.read_text(encoding="utf-8"))
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def variables(self, **extra):
+        import getpass
+        import grp
+
+        return {
+            "agent_context_luks_enabled": True,
+            "agent_context_luks_data_size": "1M",
+            "agent_context_luks_backup_size": "1M",
+            "agent_context_luks_free_space_margin": "1M",
+            "agent_context_luks_pbkdf_memory": 65536,
+            "agent_context_luks_owner": getpass.getuser(),
+            "agent_context_luks_group": grp.getgrgid(os.getgid()).gr_name,
+            "agent_context_luks_container_dir": str(self.containers),
+            "agent_context_luks_mount_root": str(self.srv),
+            "agent_context_luks_data_mountpoint": str(self.data),
+            "agent_context_luks_backup_mountpoint": str(self.backup),
+            "ansible_facts": {"os_family": "Debian"},
+            "ansible_python_interpreter": sys.executable,
+            **extra,
+        }
+
+    def run(self, action, check=False, **extra):
+        self.write_state()
+        playbook = self.root / "play.yml"
+        playbook.write_text(
+            f"""---
 - hosts: all
   gather_facts: false
   vars:
@@ -209,33 +381,67 @@ def run_playbook(tmp_path, variables, action):
     - ansible.builtin.import_role:
         name: agent_context_luks
 """,
-        encoding="utf-8",
-    )
-    import json
+            encoding="utf-8",
+        )
+        command = ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)]
+        command += ["-e", json.dumps(self.variables(**extra))]
+        if check:
+            command.append("--check")
+        env = {
+            **os.environ,
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "ANSIBLE_ROLES_PATH": str(ROOT / "roles"),
+            "ANSIBLE_LOCAL_TEMP": str(self.root / "ans-local"),
+            "ANSIBLE_REMOTE_TEMP": str(self.root / "ans-remote"),
+            "ANSIBLE_PIPELINING": "1",
+            "ANSIBLE_HOME": str(self.root / "ans-home"),
+            "FAKE_STATE": str(self.state_path),
+            "FAKE_LOG": str(self.log),
+            **self.extra_env,
+        }
+        return subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, check=False)
 
-    return subprocess.run(
-        ["ansible-playbook", "-i", "vault-less,", "-c", "local", str(playbook), "-e", json.dumps(variables)],
-        cwd=ROOT,
-        env={**os.environ, "ANSIBLE_ROLES_PATH": str(ROOT / "roles")},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    def provision(self, **extra):
+        return self.run("provision", **{**KEYS, **CONFIRMED, **extra})
+
+    def unlock(self, **extra):
+        return self.run("unlock", **{**KEYS, **extra})
+
+    def make_volume(self, name, mounted=True, opts="nodev,nosuid,rw,relatime"):
+        """Bring a volume to the state a successful provision + unlock leaves."""
+        file = self.containers / f"{name}.luks"
+        file.parent.mkdir(exist_ok=True)
+        file.write_bytes(b"LUKS\xba\xbe" + b"\0" * 1024)
+        mapper = f"agent_context_{name}"
+        self.state["mappers"][mapper] = {"file": os.path.realpath(file), "loop": "/dev/loop9"}
+        mountpoint = self.data if name == "data" else self.backup
+        mountpoint.mkdir(parents=True, exist_ok=True)
+        if mounted:
+            self.state["mounts"][str(mountpoint)] = {
+                "source": f"/dev/mapper/{mapper}",
+                "fstype": "ext4",
+                "options": opts,
+            }
+        return file
+
+    def tool_calls(self, tool, first=None):
+        return [c for c in self.calls() if c[0] == tool and (first is None or c[1] == first)]
 
 
-BASE = {
-    "agent_context_luks_enabled": True,
-    "agent_context_luks_data_size": "20G",
-    "agent_context_luks_backup_size": "10G",
-    "ansible_facts": {"os_family": "Debian"},
-}
+def out(result):
+    return result.stdout + result.stderr
 
 
-def test_disabled_role_changes_nothing(tmp_path):
-    result = run_playbook(tmp_path, {"agent_context_luks_enabled": False}, "provision")
+@pytest.fixture
+def lab(tmp_path):
+    return Lab(tmp_path)
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "cryptsetup" not in result.stdout
+
+def test_disabled_role_changes_nothing(lab):
+    result = lab.run("provision", agent_context_luks_enabled=False)
+
+    assert result.returncode == 0, out(result)
+    assert lab.calls() == []
 
 
 @pytest.mark.parametrize(
@@ -247,46 +453,302 @@ def test_disabled_role_changes_nothing(tmp_path):
         ({"agent_context_luks_data_key": "a" * 40, "agent_context_luks_backup_key": "a" * 40}, "differ"),
     ],
 )
-def test_bad_keys_fail_clearly_without_leaking_them(tmp_path, keys, message):
-    result = run_playbook(tmp_path, {**BASE, **keys}, "unlock")
-    out = result.stdout + result.stderr
+def test_bad_keys_fail_clearly_without_leaking_them(lab, keys, message):
+    result = lab.run("unlock", **keys)
 
     assert result.returncode != 0
-    assert message in out
-    assert not any(value in out for value in keys.values() if len(value) > 8)
+    assert message in out(result)
+    assert not any(value in out(result) for value in keys.values() if len(value) > 8)
+    assert lab.calls() == []
 
 
-def test_provision_without_confirmation_fails_before_any_change(tmp_path):
-    keys = {"agent_context_luks_data_key": "a" * 40, "agent_context_luks_backup_key": "b" * 40}
-    result = run_playbook(tmp_path, {**BASE, **keys}, "provision")
+def test_provision_without_confirmation_fails_before_any_change(lab):
+    result = lab.run("provision", **KEYS)
 
     assert result.returncode != 0
-    assert "Refusing to provision" in result.stdout + result.stderr
-    assert "Install the LUKS" not in result.stdout
+    assert "Refusing to provision" in out(result)
+    assert lab.calls() == []
+    assert not lab.containers.exists()
 
 
-@pytest.mark.skipif(
-    os.environ.get("AGENT_CONTEXT_LUKS_DOCKER_TEST") != "1" or shutil.which("docker") is None,
-    reason="set AGENT_CONTEXT_LUKS_DOCKER_TEST=1 to run the privileged cryptsetup round trip",
-)
-def test_cryptsetup_round_trip_in_a_throwaway_container():
-    script = r"""
-set -eu
-apt-get update -qq >/dev/null && apt-get install -y -qq cryptsetup-bin e2fsprogs >/dev/null
-f=/tmp/rt.luks; k=$(printf 'k%.0s' $(seq 1 40))
-fallocate -l 64M "$f"
-printf %s "$k" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --pbkdf-memory 65536 --batch-mode --key-file=- "$f"
-printf %s "$k" | cryptsetup open --type luks2 --key-file=- "$f" rt
-mkfs.ext4 -q -L rt /dev/mapper/rt
-mkdir -p /mnt/rt && mount -o nodev,nosuid,noexec /dev/mapper/rt /mnt/rt
-umount /mnt/rt; cryptsetup close rt
-cryptsetup isLuks "$f"
-echo ROUNDTRIP_OK
-"""
-    result = subprocess.run(
-        ["timeout", "120", "docker", "run", "--rm", "--privileged", "debian:stable-slim", "bash", "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
+@pytest.mark.parametrize("action", ["provision", "unlock", "close"])
+def test_check_mode_is_refused_accurately_for_every_action(lab, action):
+    result = lab.run(action, check=True, **KEYS, **CONFIRMED)
+
+    assert result.returncode != 0
+    assert "does not support --check" in out(result)
+    assert lab.calls() == []
+
+
+def test_disabled_role_is_still_a_no_op_under_check_mode(lab):
+    result = lab.run("provision", check=True, agent_context_luks_enabled=False)
+
+    assert result.returncode == 0, out(result)
+
+
+def test_provision_creates_both_volumes_with_stdin_keys_and_no_leaks(lab):
+    result = lab.provision()
+
+    assert result.returncode == 0, out(result)
+    for name in ("data", "backup"):
+        file = lab.containers / f"{name}.luks"
+        assert file.stat().st_size == 1024 * 1024
+        assert oct(file.stat().st_mode & 0o777) == "0o600"
+    assert oct(lab.containers.stat().st_mode & 0o777) == "0o700"
+    formats = lab.tool_calls("cryptsetup", "luksFormat")
+    assert len(formats) == 2
+    for call in formats:
+        assert {"luks2", "argon2id", "--batch-mode", "--key-file=-"} <= set(call)
+    assert not any("d" * 40 in line or "b" * 40 in line for line in lab.log.read_text().splitlines())
+    assert "d" * 40 not in out(result)
+    assert lab.read_state()["mappers"] == {}
+    assert lab.read_state()["mounts"] == {}
+    assert lab.data.parent.is_dir() and lab.backup.parent.is_dir()
+
+
+def test_provision_refuses_an_existing_container_file(lab):
+    lab.containers.mkdir()
+    existing = lab.containers / "data.luks"
+    existing.write_bytes(b"precious")
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "never reformats" in out(result)
+    assert existing.read_bytes() == b"precious"
+    assert lab.tool_calls("cryptsetup", "luksFormat") == []
+
+
+def test_provision_refuses_an_existing_luks_header(lab):
+    file = lab.make_volume("backup", mounted=False)
+    lab.state["mappers"].clear()
+    header_before = file.read_bytes()
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "never reformats" in out(result)
+    assert file.read_bytes() == header_before
+    assert lab.tool_calls("cryptsetup", "luksFormat") == []
+    assert not (lab.containers / "data.luks").exists()
+
+
+def test_exclusive_create_never_touches_a_file_that_appears_late(lab):
+    """The shell create is O_EXCL: it fails on an existing file even if the preflight was raced."""
+    lab.containers.mkdir()
+    target = lab.containers / "x.luks"
+    target.write_bytes(b"keep")
+    task = next(t for _, t in all_tasks() if t["name"] == "Create the container file exclusively")
+    argv = task["ansible.builtin.command"]["argv"]
+    argv = [str(target) if part.startswith("{{") else part for part in argv]
+
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+
+    assert result.returncode != 0
+    assert target.read_bytes() == b"keep"
+
+
+def test_rescue_removes_the_file_created_in_this_run(lab):
+    lab.extra_env["FAKE_FAIL_FORMAT"] = "1"
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "failed" in out(result)
+    assert not (lab.containers / "data.luks").exists()
+    assert not (lab.containers / "backup.luks").exists()
+
+
+def test_rescue_never_removes_a_file_that_is_not_the_one_created_in_this_run(lab):
+    lab.extra_env["FAKE_SWAP"] = "1"
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "not the one created by this run" in out(result)
+    assert (lab.containers / "data.luks").read_bytes() == b"someone else's data"
+    assert (lab.containers / "data.luks.original").exists()
+    assert lab.tool_calls("cryptsetup", "luksFormat") == []
+
+
+def test_a_luks_header_that_appears_before_formatting_stops_the_run(lab):
+    lab.extra_env["FAKE_ISLUKS"] = "1"
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "Refuse a container that already carries a LUKS header" in out(result)
+    assert lab.tool_calls("cryptsetup", "luksFormat") == []
+    assert not (lab.containers / "data.luks").exists()
+
+
+def test_rescue_leaves_a_completed_sibling_volume_alone(lab):
+    """The backup volume fails after data succeeded: only backup's new file goes."""
+    original = (lab.bin / "fake.py").read_text(encoding="utf-8")
+    patched = original.replace(
+        'if os.environ.get("FAKE_FAIL_FORMAT"):',
+        'if os.environ.get("FAKE_FAIL_FORMAT") or target.endswith("backup.luks"):',
     )
-    assert "ROUNDTRIP_OK" in result.stdout, result.stdout + result.stderr
+    (lab.bin / "fake.py").write_text(patched, encoding="utf-8")
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert (lab.containers / "data.luks").exists()
+    assert not (lab.containers / "backup.luks").exists()
+    # data was closed after its own format; backup never opened, so nothing else was closed.
+    assert lab.tool_calls("cryptsetup", "close") == [["cryptsetup", "close", "agent_context_data"]]
+
+
+def test_unlock_opens_and_mounts_both_volumes_with_the_configured_options(lab):
+    assert lab.provision().returncode == 0
+    lab.state = lab.read_state()
+
+    result = lab.unlock()
+
+    assert result.returncode == 0, out(result)
+    mounts = lab.read_state()["mounts"]
+    assert mounts[str(lab.data)]["options"].startswith("nodev,nosuid,")
+    assert "noexec" not in mounts[str(lab.data)]["options"].split(",")
+    assert mounts[str(lab.backup)]["options"].startswith("nodev,nosuid,noexec,")
+    assert all(m["source"].startswith("/dev/mapper/agent_context_") for m in mounts.values())
+
+
+def test_unlock_is_idempotent(lab):
+    lab.make_volume("data")
+    lab.make_volume("backup", opts="nodev,nosuid,noexec,rw")
+
+    result = lab.unlock()
+
+    assert result.returncode == 0, out(result)
+    assert "changed=0" in out(result)
+    assert lab.tool_calls("mount") == [] and lab.tool_calls("cryptsetup", "open") == []
+
+
+def test_unlock_refuses_a_foreign_mapper_under_our_name(lab):
+    lab.make_volume("data", mounted=False)
+    lab.make_volume("backup")
+    lab.state["mappers"]["agent_context_data"]["file"] = "/somewhere/else.img"
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "foreign" in out(result) and "not backed by the configured container" in out(result)
+    assert lab.tool_calls("mount") == []
+    assert lab.tool_calls("cryptsetup", "close") == []
+    assert "agent_context_data" in lab.read_state()["mappers"]
+
+
+def test_unlock_refuses_a_foreign_mount_at_the_target(lab):
+    lab.make_volume("data", mounted=False)
+    lab.state["mounts"][str(lab.data)] = {"source": "/dev/sdz1", "fstype": "ext4", "options": "rw"}
+    lab.make_volume("backup")
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "foreign" in out(result) and "/dev/sdz1" in out(result)
+    assert lab.tool_calls("umount") == []
+    assert lab.read_state()["mounts"][str(lab.data)]["source"] == "/dev/sdz1"
+
+
+@pytest.mark.parametrize(
+    "name, options",
+    [
+        ("data", "rw,relatime"),
+        ("data", "nodev,rw"),
+        ("backup", "nodev,nosuid,rw"),
+    ],
+)
+def test_unlock_fails_on_mount_option_drift_instead_of_reporting_ok(lab, name, options):
+    other = "backup" if name == "data" else "data"
+    lab.make_volume(name, opts=options)
+    lab.make_volume(other, opts="nodev,nosuid,noexec,rw")
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "Close and unlock again, or remount it by hand" in out(result)
+    assert lab.tool_calls("mount") == []
+
+
+def test_unlock_fails_when_the_filesystem_type_drifted(lab):
+    lab.make_volume("data")
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.state["mounts"][str(lab.data)]["fstype"] = "xfs"
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "not ext4" in out(result)
+
+
+def test_unlock_refuses_a_missing_container_without_a_mapping(lab):
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "run the provision playbook first" in out(result)
+
+
+def test_close_unmounts_and_closes_only_our_volumes(lab):
+    lab.make_volume("data")
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+
+    result = lab.run("close")
+
+    assert result.returncode == 0, out(result)
+    assert lab.read_state() == {"mappers": {}, "mounts": {}}
+
+
+def test_close_refuses_a_foreign_mount(lab):
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.make_volume("data", mounted=False)
+    lab.state["mounts"][str(lab.data)] = {"source": "/dev/sdz1", "fstype": "ext4", "options": "rw"}
+
+    result = lab.run("close")
+
+    assert result.returncode != 0
+    assert "foreign" in out(result)
+    assert lab.tool_calls("umount") == [] and lab.tool_calls("cryptsetup", "close") == []
+    assert lab.read_state()["mounts"][str(lab.data)]["source"] == "/dev/sdz1"
+
+
+def test_close_refuses_a_foreign_mapper_and_never_closes_it(lab):
+    lab.make_volume("data")
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.state["mappers"]["agent_context_backup"]["file"] = "/somewhere/else.img"
+
+    result = lab.run("close")
+
+    assert result.returncode != 0
+    assert "agent_context_backup" in lab.read_state()["mappers"]
+    assert lab.tool_calls("cryptsetup", "close") == []
+
+
+def test_mountpoint_parent_symlink_is_refused(lab):
+    real = lab.root / "elsewhere"
+    real.mkdir()
+    lab.srv.mkdir()
+    (lab.srv / "backups").symlink_to(real)
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "must be a real directory" in out(result)
+    assert not (real / "agent-context").exists()
+
+
+def test_mountpoint_parents_are_created_explicitly_with_0755(lab):
+    assert lab.provision().returncode == 0
+    for path in (lab.srv, lab.backup.parent, lab.data, lab.backup):
+        assert oct(path.stat().st_mode & 0o777) == "0o755"
+
+
+def test_group_writable_mountpoint_parent_is_refused(lab):
+    lab.srv.mkdir()
+    lab.srv.chmod(0o775)
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert "not group or world writable" in out(result)
