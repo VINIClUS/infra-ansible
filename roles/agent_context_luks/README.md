@@ -14,7 +14,9 @@ separate filesystem and never executes anything.
 
 Disabled by default (`agent_context_luks_enabled: false`). Every play targets
 `agent_context_vps`, which the private inventory defines; always run with an
-exact `--limit <host>`. These playbooks are deliberately not in the deploy
+exact `--limit <host>`; each playbook asserts that exactly one host is in the
+play. Every configured path must be absolute and normalized, and the mount root
+must not be `/` or inside `/proc`, `/sys`, `/dev`, `/run` or `/tmp`. These playbooks are deliberately not in the deploy
 boundary's allowlist or any workflow: a push to `main` never runs them, and an
 operator runs them by hand. Nothing here touches Docker, containers, Caddy,
 networking or other mounts.
@@ -69,6 +71,12 @@ before any change:
   configured container is foreign: the run fails and never reuses or closes it.
 - A mount at our mountpoint whose source is not our mapping is foreign: the run
   fails and never unmounts it.
+- A stacked mount (another filesystem over ours) or a mount with children at
+  our mountpoint is ambiguous and fails; exactly one plain mount is accepted.
+- Unexpected tool exit codes are errors, never "absent" (`cryptsetup status`
+  4 means inactive, `blkid` must report `crypto_LUKS` for a container).
+- A mapping opened by a failed unlock is closed again, only if this run opened
+  it and only after identifying it once more.
 - A mount of our mapping that is not ext4 or lacks a configured option
   (`nodev`, `nosuid`, plus `noexec` on backup) also fails, never a silent ok.
   Close and unlock again, or remount by hand; the role does not remount live

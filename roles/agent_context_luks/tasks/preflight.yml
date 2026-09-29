@@ -52,6 +52,25 @@
        + (agent_context_luks_free_space_margin | string | regex_replace('[MG]$', '') | int
           * (1073741824 if agent_context_luks_free_space_margin | string is search('G$') else 1048576)) }}
 
+- name: Require normalized absolute paths
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_config_paths | reject('match', '^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$') | list | length == 0
+      - agent_context_luks_config_paths | select('search', '(^|/)[.]{1,2}(/|$)') | list | length == 0
+      - agent_context_luks_mount_root != '/'
+      - (agent_context_luks_mount_root + '/') is not match('^/(proc|sys|dev|run|tmp)/')
+    fail_msg: >-
+      Every configured path must be absolute and normalized (no ".", ".." or empty segments, no trailing slash),
+      and the mount root must not be / or inside /proc, /sys, /dev, /run or /tmp.
+  vars:
+    agent_context_luks_config_paths:
+      - "{{ agent_context_luks_container_dir }}"
+      - "{{ agent_context_luks_data_container }}"
+      - "{{ agent_context_luks_backup_container }}"
+      - "{{ agent_context_luks_mount_root }}"
+      - "{{ agent_context_luks_data_mountpoint }}"
+      - "{{ agent_context_luks_backup_mountpoint }}"
+
 - name: Check the key material without exposing it
   ansible.builtin.set_fact:
     agent_context_luks_key_checks:

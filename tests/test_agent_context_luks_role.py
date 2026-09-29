@@ -4,6 +4,7 @@ import re
 import sys
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -248,6 +249,8 @@ if tool == "cryptsetup":
     if cmd == "--version":
         print("cryptsetup 2.7.0")
     elif cmd == "status":
+        if os.environ.get("FAKE_STATUS_RC"):
+            sys.exit(int(os.environ["FAKE_STATUS_RC"]))
         m = state["mappers"].get(args[1])
         if not m:
             print("/dev/mapper/%s is inactive." % args[1])
@@ -290,13 +293,17 @@ elif tool == "blkid":
     path = args[-1]
     if not is_luks(path):
         sys.exit(2)
-    print(uuid_of(path))
+    print("DEVNAME=" + path)
+    print("UUID=" + uuid_of(path))
+    print("TYPE=" + os.environ.get("FAKE_BLKID_TYPE", "crypto_LUKS"))
 elif tool == "findmnt":
     m = state["mounts"].get(args[args.index("-M") + 1])
     if not m:
         sys.exit(1)
-    print(json.dumps({"filesystems": [m]}))
+    print(json.dumps({"filesystems": m if isinstance(m, list) else [m]}))
 elif tool == "mount":
+    if os.environ.get("FAKE_FAIL_MOUNT"):
+        sys.exit(32)
     opts, src, dst = args[args.index("-o") + 1], args[-2], args[-1]
     state["mounts"][dst] = {"source": src, "fstype": "ext4", "options": opts + ",rw,relatime"}
     save()
@@ -332,7 +339,7 @@ class Lab:
         self.log.touch()
         self.state = {"mappers": {}, "mounts": {}}
         self.containers = tmp_path / "containers"
-        self.srv = tmp_path / "srv"
+        self.srv = Path(tempfile.mkdtemp(dir="/var/tmp", prefix="acl-test-")) / "srv"
         self.data = self.srv / "agent-context"
         self.backup = self.srv / "backups" / "agent-context"
         self.extra_env = {}
@@ -434,7 +441,9 @@ def out(result):
 
 @pytest.fixture
 def lab(tmp_path):
-    return Lab(tmp_path)
+    lab = Lab(tmp_path)
+    yield lab
+    shutil.rmtree(lab.srv.parent, ignore_errors=True)
 
 
 def test_disabled_role_changes_nothing(lab):
@@ -752,3 +761,158 @@ def test_group_writable_mountpoint_parent_is_refused(lab):
 
     assert result.returncode != 0
     assert "not group or world writable" in out(result)
+
+
+STACKED = [
+    {"source": "/dev/mapper/agent_context_data", "fstype": "ext4", "options": "nodev,nosuid,rw"},
+    {"source": "tmpfs", "fstype": "tmpfs", "options": "rw"},
+]
+NESTED = [
+    {
+        "source": "/dev/mapper/agent_context_data",
+        "fstype": "ext4",
+        "options": "nodev,nosuid,rw",
+        "children": [{"source": "tmpfs", "fstype": "tmpfs", "options": "rw"}],
+    }
+]
+
+
+@pytest.mark.parametrize("stack", [STACKED, NESTED], ids=["stacked", "children"])
+@pytest.mark.parametrize("action", ["unlock", "close"])
+def test_stacked_or_nested_mounts_on_our_mapper_are_refused(lab, stack, action):
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.make_volume("data", mounted=False)
+    lab.state["mounts"][str(lab.data)] = stack
+
+    result = lab.run(action, **KEYS)
+
+    assert result.returncode != 0
+    assert "stacked or nested mounts" in out(result)
+    assert lab.tool_calls("umount") == [] and lab.tool_calls("mount") == []
+    assert lab.tool_calls("cryptsetup", "close") == []
+    assert lab.read_state()["mounts"][str(lab.data)] == stack
+
+
+def test_unexpected_mapping_status_is_an_error_not_absent(lab):
+    lab.make_volume("data", mounted=False)
+    lab.extra_env["FAKE_STATUS_RC"] = "1"
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert lab.tool_calls("cryptsetup", "open") == []
+
+
+def test_inactive_mapping_status_4_still_means_absent(lab):
+    assert lab.provision().returncode == 0
+    lab.state = lab.read_state()
+
+    assert lab.unlock().returncode == 0
+
+
+def test_a_container_that_is_not_crypto_luks_is_refused(lab):
+    assert lab.provision().returncode == 0
+    lab.state = lab.read_state()
+    lab.extra_env["FAKE_BLKID_TYPE"] = "ext4"
+    lab.log.write_text("")
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "not a LUKS container" in out(result)
+    assert lab.tool_calls("cryptsetup", "open") == []
+
+
+def test_failed_unlock_closes_only_the_mapping_opened_in_this_run(lab):
+    assert lab.provision().returncode == 0
+    lab.state = lab.read_state()
+    lab.extra_env["FAKE_FAIL_MOUNT"] = "1"
+    lab.log.write_text("")
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "was closed" in out(result)
+    assert lab.read_state()["mappers"] == {}
+    assert ["cryptsetup", "close", "agent_context_data"] in lab.calls()
+
+
+def test_failed_unlock_never_closes_a_mapping_it_did_not_open(lab):
+    lab.make_volume("data", mounted=False)
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.extra_env["FAKE_FAIL_MOUNT"] = "1"
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "agent_context_data" in lab.read_state()["mappers"]
+    assert lab.tool_calls("cryptsetup", "close") == []
+
+
+@pytest.mark.parametrize(
+    "variable, value",
+    [
+        ("agent_context_luks_data_mountpoint", "{srv}/../agent-context"),
+        ("agent_context_luks_data_mountpoint", "{srv}//agent-context"),
+        ("agent_context_luks_data_mountpoint", "{srv}/./agent-context"),
+        ("agent_context_luks_data_mountpoint", "{srv}/agent-context/"),
+        ("agent_context_luks_backup_mountpoint", "{srv}/backups/../../evil"),
+        ("agent_context_luks_container_dir", "{root}/containers/../elsewhere"),
+        ("agent_context_luks_container_dir", "relative/containers"),
+        ("agent_context_luks_mount_root", "{srv}/."),
+        ("agent_context_luks_mount_root", "/"),
+        ("agent_context_luks_mount_root", "/tmp/acl"),
+        ("agent_context_luks_mount_root", "/run/acl"),
+        ("agent_context_luks_mount_root", "/proc"),
+    ],
+)
+def test_unnormalized_or_unsafe_paths_are_refused_before_any_change(lab, variable, value):
+    result = lab.provision(**{variable: value.format(srv=lab.srv, root=lab.root)})
+
+    assert result.returncode != 0
+    assert "absolute and normalized" in out(result) or "must be" in out(result)
+    assert lab.calls() == []
+    assert not lab.containers.exists()
+
+
+def two_host_inventory(tmp_path, hosts):
+    inventory = tmp_path / "inventory.ini"
+    lines = ["[agent_context_vps]"] + [f"{h} ansible_connection=local" for h in hosts]
+    inventory.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return inventory
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_playbooks_refuse_more_than_one_host(tmp_path, name):
+    inventory = two_host_inventory(tmp_path, ["one", "two"])
+
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), f"playbooks/agent-context-luks-{name}.yml",
+         "-e", "ansible_become=false", "-e", f"ansible_python_interpreter={sys.executable}"],
+        cwd=ROOT,
+        env={**os.environ, "ANSIBLE_HOME": str(tmp_path / "home")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "exactly one host" in out(result)
+    assert "agent_context_luks :" not in result.stdout
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+def test_playbooks_accept_a_single_host_and_stay_inert_when_disabled(tmp_path, name):
+    inventory = two_host_inventory(tmp_path, ["one"])
+
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), f"playbooks/agent-context-luks-{name}.yml",
+         "-e", "ansible_become=false", "-e", f"ansible_python_interpreter={sys.executable}"],
+        cwd=ROOT,
+        env={**os.environ, "ANSIBLE_HOME": str(tmp_path / "home")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, out(result)

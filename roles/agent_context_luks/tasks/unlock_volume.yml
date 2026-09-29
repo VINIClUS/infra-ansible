@@ -22,52 +22,81 @@
       run the provision playbook first.
   when: not agent_context_luks_identity.mapper_active | bool
 
-- name: Open the LUKS volume
-  ansible.builtin.command:
-    argv:
-      - cryptsetup
-      - open
-      - --type
-      - luks2
-      - --key-file=-
-      - "{{ agent_context_luks_volume.container }}"
-      - "{{ agent_context_luks_volume.mapper }}"
-    stdin: >-
-      {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
-      else agent_context_luks_backup_key }}
-    stdin_add_newline: false
-  changed_when: true
-  no_log: true
-  when: not agent_context_luks_identity.mapper_active | bool
+- name: Forget whether an earlier volume was opened
+  ansible.builtin.set_fact:
+    agent_context_luks_opened: false
 
-# An existing mount of our mapping is never adjusted silently: drift fails the
-# run so an operator decides (close and unlock again, or remount by hand).
-- name: Refuse a mount of our mapping that drifted from the configuration
-  ansible.builtin.assert:
-    that:
-      - agent_context_luks_identity.mount_fstype == 'ext4'
-      - >-
-        agent_context_luks_volume.mount_opts.split(',')
-        | difference(agent_context_luks_identity.mount_options) | length == 0
-    fail_msg: >-
-      {{ agent_context_luks_volume.mountpoint }} is mounted but is not ext4 with the options
-      {{ agent_context_luks_volume.mount_opts }} (found {{ agent_context_luks_identity.mount_fstype }}
-      {{ agent_context_luks_identity.mount_options | join(',') }}). Close and unlock again, or remount it by hand.
-  when: agent_context_luks_identity.mounted | bool
+- name: Open and mount the volume, closing only what this run opened on failure
+  block:
+    - name: Open the LUKS volume
+      ansible.builtin.command:
+        argv:
+          - cryptsetup
+          - open
+          - --type
+          - luks2
+          - --key-file=-
+          - "{{ agent_context_luks_volume.container }}"
+          - "{{ agent_context_luks_volume.mapper }}"
+        stdin: >-
+          {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
+          else agent_context_luks_backup_key }}
+        stdin_add_newline: false
+      changed_when: true
+      no_log: true
+      when: not agent_context_luks_identity.mapper_active | bool
 
-- name: Validate the mountpoint before the first mount
-  ansible.builtin.include_tasks: check_mountpoint.yml
-  when: not agent_context_luks_identity.mounted | bool
+    - name: Note that the mapping was opened by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_opened: true
+      when: not agent_context_luks_identity.mapper_active | bool
 
-- name: Mount the volume without any persistent entry
-  ansible.builtin.command:
-    argv:
-      - mount
-      - -t
-      - ext4
-      - -o
-      - "{{ agent_context_luks_volume.mount_opts }}"
-      - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
-      - "{{ agent_context_luks_volume.mountpoint }}"
-  changed_when: true
-  when: not agent_context_luks_identity.mounted | bool
+    # An existing mount of our mapping is never adjusted silently: drift fails the
+    # run so an operator decides (close and unlock again, or remount by hand).
+    - name: Refuse a mount of our mapping that drifted from the configuration
+      ansible.builtin.assert:
+        that:
+          - agent_context_luks_identity.mount_fstype == 'ext4'
+          - >-
+            agent_context_luks_volume.mount_opts.split(',')
+            | difference(agent_context_luks_identity.mount_options) | length == 0
+        fail_msg: >-
+          {{ agent_context_luks_volume.mountpoint }} is mounted but is not ext4 with the options
+          {{ agent_context_luks_volume.mount_opts }} (found {{ agent_context_luks_identity.mount_fstype }}
+          {{ agent_context_luks_identity.mount_options | join(',') }}). Close and unlock again, or remount it by hand.
+      when: agent_context_luks_identity.mounted | bool
+
+    - name: Validate the mountpoint before the first mount
+      ansible.builtin.include_tasks: check_mountpoint.yml
+      when: not agent_context_luks_identity.mounted | bool
+
+    - name: Mount the volume without any persistent entry
+      ansible.builtin.command:
+        argv:
+          - mount
+          - -t
+          - ext4
+          - -o
+          - "{{ agent_context_luks_volume.mount_opts }}"
+          - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+          - "{{ agent_context_luks_volume.mountpoint }}"
+      changed_when: true
+      when: not agent_context_luks_identity.mounted | bool
+  rescue:
+    - name: Identify the volume again before undoing anything
+      ansible.builtin.include_tasks: identify_volume.yml
+
+    - name: Close the mapping opened by this run
+      ansible.builtin.command:
+        argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
+      changed_when: true
+      when:
+        - agent_context_luks_opened | bool
+        - agent_context_luks_identity.mapper_active | bool
+        - not agent_context_luks_identity.mounted | bool
+
+    - name: Fail the unlock run
+      ansible.builtin.fail:
+        msg: >-
+          Unlocking volume {{ agent_context_luks_volume.name }} failed; a mapping opened by this run was
+          closed, anything else was left untouched.

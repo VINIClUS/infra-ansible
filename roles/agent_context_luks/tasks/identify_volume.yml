@@ -14,7 +14,8 @@
     argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
   register: agent_context_luks_id_status
   changed_when: false
-  failed_when: false
+  # rc 4 is "inactive"; anything else is an error, never "absent".
+  failed_when: agent_context_luks_id_status.rc not in [0, 4]
   check_mode: false
 
 - name: List the loop devices backing the container
@@ -22,15 +23,16 @@
     argv: [losetup, -j, "{{ agent_context_luks_volume.container }}"]
   register: agent_context_luks_id_loops
   changed_when: false
-  failed_when: false
+  failed_when: agent_context_luks_id_loops.rc not in [0, 1]
   check_mode: false
 
-- name: Read the LUKS UUID of the container
+# rc 2 is "nothing recognised" (missing file or no signature).
+- name: Read the signature of the container
   ansible.builtin.command:
-    argv: [blkid, -o, value, -s, UUID, "{{ agent_context_luks_volume.container }}"]
+    argv: [blkid, -p, -o, export, -s, UUID, -s, TYPE, "{{ agent_context_luks_volume.container }}"]
   register: agent_context_luks_id_uuid
   changed_when: false
-  failed_when: false
+  failed_when: agent_context_luks_id_uuid.rc not in [0, 2]
   check_mode: false
 
 - name: Read the filesystem mounted at the target
@@ -38,8 +40,20 @@
     argv: [findmnt, -J, -o, "SOURCE,FSTYPE,OPTIONS", -M, "{{ agent_context_luks_volume.mountpoint }}"]
   register: agent_context_luks_id_mount
   changed_when: false
-  failed_when: false
+  # rc 1 is "not mounted".
+  failed_when: agent_context_luks_id_mount.rc not in [0, 1]
   check_mode: false
+
+# A stacked mount (another filesystem over ours) or a child mount would make
+# "the mount at the target" ambiguous, so it is never accepted.
+- name: Require exactly one plain mount at the target
+  ansible.builtin.assert:
+    that:
+      - (agent_context_luks_id_mount.stdout | from_json).filesystems | length == 1
+      - "'children' not in (agent_context_luks_id_mount.stdout | from_json).filesystems[0]"
+    fail_msg: >-
+      {{ agent_context_luks_volume.mountpoint }} has stacked or nested mounts; refusing to touch it. It is foreign.
+  when: agent_context_luks_id_mount.rc == 0
 
 - name: Parse the mounted filesystem
   ansible.builtin.set_fact:
@@ -60,7 +74,11 @@
         {{ agent_context_luks_id_status.stdout
         | regex_findall('^\s*loop:\s+(.+?)\s*$', multiline=True) | first | default('') }}
       loop_devices: "{{ agent_context_luks_id_loops.stdout_lines | map('regex_replace', ':.*$', '') | list }}"
-      luks_uuid: "{{ agent_context_luks_id_uuid.stdout | trim if agent_context_luks_id_uuid.rc == 0 else '' }}"
+      container_type: >-
+        {{ agent_context_luks_id_uuid.stdout | regex_findall('^TYPE=(.+)$', multiline=True) | first | default('') }}
+      luks_uuid: >-
+        {{ (agent_context_luks_id_uuid.stdout | regex_findall('^UUID=(.+)$', multiline=True) | first | default(''))
+        if 'TYPE=crypto_LUKS' in agent_context_luks_id_uuid.stdout_lines else '' }}
       mounted: "{{ agent_context_luks_id_mount.rc == 0 }}"
       mount_source: "{{ agent_context_luks_id_fs.source | default('') }}"
       mount_fstype: "{{ agent_context_luks_id_fs.fstype | default('') }}"

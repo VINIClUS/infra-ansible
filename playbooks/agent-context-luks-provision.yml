@@ -9,6 +9,10 @@
     # Modules are otherwise copied to disk with their arguments, keys included.
     ansible_pipelining: true
   pre_tasks:
+    - name: Require exactly one target host
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | length == 1
+        fail_msg: Run with an exact --limit that selects exactly one host.
     - name: Allow only the provision action here
       ansible.builtin.assert:
         that: agent_context_luks_action == 'provision'
