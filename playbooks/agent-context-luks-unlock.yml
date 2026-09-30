@@ -4,16 +4,20 @@
   become: true
   gather_facts: true
   serial: 1
+  any_errors_fatal: true
   vars:
     agent_context_luks_action: unlock
     # Modules are otherwise copied to disk with their arguments, keys included.
     ansible_pipelining: true
+    agent_context_luks_allowed_actions: [unlock, close]
   pre_tasks:
     - name: Require exactly one target host
+      tags: always
       ansible.builtin.assert:
         that: ansible_play_hosts_all | length == 1
         fail_msg: Run with an exact --limit that selects exactly one host.
     - name: Allow only the unlock and close actions here
+      tags: always
       ansible.builtin.assert:
         that: agent_context_luks_action in ['unlock', 'close']
         fail_msg: This playbook only unlocks or, with -e agent_context_luks_action=close, closes the volumes.

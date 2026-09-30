@@ -7,6 +7,10 @@ agent_context_luks_enabled: false
 # chosen by the operator.
 agent_context_luks_action: unlock
 
+# Actions the calling playbook permits. The playbooks narrow it; the role
+# checks it itself so the guard survives any --tags/--skip-tags selection.
+agent_context_luks_allowed_actions: [provision, unlock, close]
+
 # One-shot guard: provisioning refuses to run unless this equals
 # "format-new-agent-context-containers". Never set it in inventory.
 agent_context_luks_confirm_provision: ""

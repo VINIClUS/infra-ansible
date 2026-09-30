@@ -1,28 +1,7 @@
 ---
 # One-shot create and format. It never reformats: an existing container file
-# or LUKS header fails the run and there is no override variable.
-- name: Require the exact provisioning confirmation
-  ansible.builtin.assert:
-    that: agent_context_luks_confirm_provision == 'format-new-agent-context-containers'
-    fail_msg: >-
-      Refusing to provision. Set agent_context_luks_confirm_provision to the exact confirmation string
-      documented in the role README.
-
-- name: Look for the LUKS and ext4 tooling
-  ansible.builtin.command:
-    argv: [cryptsetup, --version]
-  register: agent_context_luks_tooling
-  changed_when: false
-  failed_when: false
-
-- name: Install the LUKS and ext4 tooling when missing
-  ansible.builtin.package:
-    name:
-      - cryptsetup-bin
-      - e2fsprogs
-    state: present
-  when: agent_context_luks_tooling.rc != 0
-
+# or LUKS header fails the run and there is no override variable. The
+# confirmation guard and the tool checks run earlier (main.yml, preflight).
 - name: Create the container directory
   ansible.builtin.file:
     path: "{{ agent_context_luks_container_dir }}"

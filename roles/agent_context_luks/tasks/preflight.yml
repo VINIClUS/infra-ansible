@@ -77,6 +77,40 @@
       - "{{ agent_context_luks_data_mountpoint }}"
       - "{{ agent_context_luks_backup_mountpoint }}"
 
+- name: Validate every field of every volume item
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_volumes | length == 2
+      - agent_context_luks_volumes | map(attribute='name') | sort | list == ['backup', 'data']
+      - agent_context_luks_item.name in ['data', 'backup']
+      - agent_context_luks_item.container is match('^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$')
+      - agent_context_luks_item.mountpoint is match('^/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$')
+      - agent_context_luks_item.container is not search('(^|/)[.]{1,2}(/|$)')
+      - agent_context_luks_item.mountpoint is not search('(^|/)[.]{1,2}(/|$)')
+      - (agent_context_luks_item.container | dirname) == agent_context_luks_container_dir
+      - agent_context_luks_item.mountpoint.startswith(agent_context_luks_mount_root + '/')
+      - agent_context_luks_item.container is not match('^/(proc|sys|dev|run)(/|$)')
+      - agent_context_luks_item.mapper is match('^[a-z][a-z_]{0,30}$')
+      - agent_context_luks_item.label is match('^[A-Za-z0-9_-]{1,16}$')
+      # One source of truth: an item cannot drift from the scalar variables
+      # that the rest of the preflight validates.
+      - agent_context_luks_item.container == vars[agent_context_luks_pfx ~ 'container']
+      - agent_context_luks_item.mountpoint == vars[agent_context_luks_pfx ~ 'mountpoint']
+      - agent_context_luks_item.mapper == vars[agent_context_luks_pfx ~ 'mapper']
+      - agent_context_luks_item.label == vars[agent_context_luks_pfx ~ 'label']
+      - agent_context_luks_item.mount_opts == vars[agent_context_luks_pfx ~ 'mount_opts']
+      - agent_context_luks_item.size | string == vars[agent_context_luks_pfx ~ 'size'] | string
+    fail_msg: >-
+      Volume item {{ agent_context_luks_item.name | default('?') }} is invalid: container, mountpoint and mapper
+      must be absolute, normalized (no "..", ".", "//"), inside the container directory or mount root, and match
+      the agent_context_luks_data_* and agent_context_luks_backup_* variables exactly.
+  vars:
+    agent_context_luks_pfx: "agent_context_luks_{{ agent_context_luks_item.name | default('none') }}_"
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_item
+    label: "{{ agent_context_luks_item.name | default('?') }}"
+
 - name: Check the key material without exposing it
   ansible.builtin.set_fact:
     agent_context_luks_key_checks:
@@ -114,3 +148,6 @@
       vault, be strings (quote all-digit keys), have no leading or trailing whitespace, be at least 32 characters
       long and differ from each other.
   when: agent_context_luks_action in ['provision', 'unlock']
+
+- name: Check that every binary the role runs is present
+  ansible.builtin.include_tasks: tools.yml

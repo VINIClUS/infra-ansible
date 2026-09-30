@@ -118,11 +118,14 @@ def test_no_persistent_mount_crypttab_or_keyfile():
 def test_provision_guard_and_never_reformat_logic():
     provision = load(ROLE / "tasks/provision.yml")
     volume = load(ROLE / "tasks/provision_volume.yml")
-    text = (ROLE / "tasks/provision.yml").read_text(encoding="utf-8")
+    main = load(ROLE / "tasks/main.yml")
 
-    guard = provision[0]["ansible.builtin.assert"]["that"]
-    assert guard == f"agent_context_luks_confirm_provision == '{CONFIRM}'"
-    assert text.index("confirmation") < text.index("ansible.builtin.package")
+    guard = next(t for t in main if t["name"] == "Require the exact provisioning confirmation")
+    assert guard["ansible.builtin.assert"]["that"] == f"agent_context_luks_confirm_provision == '{CONFIRM}'"
+    # The guard sits in main.yml before preflight, which is where packages may be installed.
+    names = [t["name"] for t in main]
+    assert names.index(guard["name"]) < names.index("Validate LUKS layout and sizes")
+    assert "ansible.builtin.package" not in (ROLE / "tasks/provision.yml").read_text(encoding="utf-8")
     refusal = next(t for t in load(ROLE / "tasks/preflight_volume.yml") if "ansible.builtin.assert" in t)
     assert "not agent_context_luks_existing_container.stat.exists" in refusal["ansible.builtin.assert"]["that"]
     assert "agent_context_luks_identity.luks_uuid == ''" in refusal["ansible.builtin.assert"]["that"]
@@ -131,7 +134,8 @@ def test_provision_guard_and_never_reformat_logic():
     # No override: nothing can skip the checks or force a format.
     role_text = "\n".join(p.read_text(encoding="utf-8") for p in ROLE.rglob("*.yml"))
     assert not re.search(r"force|overwrite|reformat_", role_text.replace("Never reformats", ""))
-    assert (ROLE / "tasks/provision.yml").read_text(encoding="utf-8").count(CONFIRM) == 1
+    assert (ROLE / "tasks/main.yml").read_text(encoding="utf-8").count(CONFIRM) == 1
+    assert CONFIRM not in (ROLE / "tasks/provision.yml").read_text(encoding="utf-8")
 
 
 def test_luks2_argon2id_parameters_and_fallocate():
@@ -1012,3 +1016,202 @@ def test_two_distinct_string_keys_pass_preflight(lab):
     result = lab.run("unlock", agent_context_luks_data_key="1" * 40, agent_context_luks_backup_key="2" * 40)
 
     assert "be strings" not in out(result)
+
+
+def run_playbook(lab, name, hosts, *args, **variables):
+    inventory = two_host_inventory(lab.root, hosts)
+    env = {
+        **os.environ,
+        "PATH": f"{lab.bin}:{os.environ['PATH']}",
+        "ANSIBLE_HOME": str(lab.root / "home"),
+        "ANSIBLE_LOCAL_TEMP": str(lab.root / "ans-local"),
+        "ANSIBLE_REMOTE_TEMP": str(lab.root / "ans-remote"),
+        "FAKE_STATE": str(lab.state_path),
+        "FAKE_LOG": str(lab.log),
+    }
+    command = ["ansible-playbook", "-i", str(inventory), f"playbooks/agent-context-luks-{name}.yml"]
+    command += ["-e", "ansible_become=false", *args]
+    command += ["-e", json.dumps({**lab.variables(**variables)})]
+    return subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, check=False)
+
+
+GUARD_NAMES = ["Require exactly one target host", "Validate LUKS role enable flag and action"]
+TAG_SELECTIONS = [
+    ["--tags", "agent_context_luks"],
+    ["--skip-tags", "always"],
+    ["--tags", "agent_context_luks", "--skip-tags", "always"],
+    ["--skip-tags", "agent_context_luks,always"],
+]
+
+
+def test_role_guards_are_the_first_tasks_and_carry_no_tag_that_can_be_skipped():
+    main = load(ROLE / "tasks/main.yml")
+    assert [t["name"] for t in main[:2]] == GUARD_NAMES
+    for task in main:
+        assert "tags" not in task, "role tasks must inherit only the play's role tag"
+    # No guard may depend on a playbook pre_task.
+    for name in PLAYBOOKS:
+        play = load(ROOT / f"playbooks/agent-context-luks-{name}.yml")[0]
+        assert play["any_errors_fatal"] is True
+        assert play["serial"] == 1
+        for task in play["pre_tasks"]:
+            assert task["tags"] == "always"
+        assert play["vars"]["agent_context_luks_allowed_actions"]
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+@pytest.mark.parametrize("selection", TAG_SELECTIONS, ids=lambda s: " ".join(s))
+def test_guards_still_run_under_any_tag_selection(lab, name, selection):
+    listing = run_playbook(lab, name, ["one"], "--list-tasks", *selection)
+
+    assert listing.returncode == 0, out(listing)
+    if "agent_context_luks,always" in selection:
+        assert "Require exactly one target host" not in listing.stdout  # role skipped entirely
+        return
+    for guard in GUARD_NAMES:
+        assert guard in listing.stdout, (selection, listing.stdout)
+
+
+@pytest.mark.parametrize("name", PLAYBOOKS)
+@pytest.mark.parametrize("selection", TAG_SELECTIONS[:3], ids=lambda s: " ".join(s))
+def test_tagged_run_on_two_hosts_fails_before_any_mutation(lab, name, selection):
+    action = {"provision": {**KEYS, **CONFIRMED}, "unlock": KEYS}[name]
+
+    result = run_playbook(lab, name, ["one", "two"], *selection, **action)
+
+    assert result.returncode != 0
+    assert "exactly one host" in out(result)
+    # Only fact gathering (findmnt --list) may have run: no role probe, no mutation.
+    assert [c for c in lab.calls() if c[:2] != ["findmnt", "--list"]] == []
+    assert not lab.containers.exists()
+    assert not lab.srv.exists()
+
+
+@pytest.mark.parametrize("name, action", [("provision", "unlock"), ("unlock", "provision")])
+def test_the_role_alone_refuses_an_action_its_playbook_does_not_allow(lab, name, action):
+    result = run_playbook(
+        lab, name, ["one"], "--tags", "agent_context_luks", "--skip-tags", "always", "-e", f"agent_context_luks_action={action}",
+        **KEYS, **CONFIRMED,
+    )
+
+    assert result.returncode != 0
+    assert "playbook in use permits" in out(result)
+    assert lab.calls() == []
+    assert not lab.containers.exists()
+
+
+VOLUME_FIELDS = ["container", "mountpoint", "mapper", "label", "mount_opts", "size", "name"]
+
+
+@pytest.mark.parametrize("field, value", [
+    ("container", "{c}/../escape.luks"),
+    ("container", "{c}//data.luks"),
+    ("container", "/etc/data.luks"),
+    ("container", "{c}/sub/data.luks"),
+    ("container", "relative.luks"),
+    ("mountpoint", "{s}/../etc/new-volume"),
+    ("mountpoint", "{s}//x"),
+    ("mountpoint", "/etc/new-volume"),
+    ("mountpoint", "{s}/./x"),
+    ("mapper", "../x"),
+    ("mapper", "evil name"),
+    ("label", "a b"),
+    ("label", "x" * 17),
+    ("mount_opts", "nodev,nosuid,dev"),
+    ("size", "99G"),
+    ("name", "other"),
+])
+@pytest.mark.parametrize("index", [0, 1])
+def test_every_field_of_every_volume_item_is_validated(lab, field, value, index):
+    volumes = json.loads(json.dumps(lab_volumes(lab)))
+    volumes[index][field] = value.format(c=lab.containers, s=lab.srv)
+
+    result = lab.run("unlock", agent_context_luks_volumes=volumes, **KEYS)
+
+    assert result.returncode != 0, out(result)
+    assert lab.calls() == []
+
+
+def lab_volumes(lab):
+    opts = {"data": "nodev,nosuid", "backup": "nodev,nosuid,noexec"}
+    return [
+        {
+            "name": name,
+            "size": "1M",
+            "container": f"{lab.containers}/{name}.luks",
+            "mountpoint": str(mount),
+            "mapper": f"agent_context_{name}",
+            "label": f"ac-{name}",
+            "mount_opts": opts[name],
+        }
+        for name, mount in (("data", lab.data), ("backup", lab.backup))
+    ]
+
+
+def test_an_untouched_effective_list_passes(lab):
+    result = lab.run("unlock", agent_context_luks_volumes=lab_volumes(lab), **KEYS)
+
+    assert "is invalid" not in out(result)
+
+
+PROVISION_TOOLS = ["cryptsetup", "mkfs.ext4", "fallocate", "losetup", "blkid", "findmnt", "mount", "umount", "df"]
+
+
+def hide_tool(lab, *hidden):
+    """A PATH without the given tools: fakes stay, every other executable is linked."""
+    sysbin = lab.root / "sysbin"
+    sysbin.mkdir()
+    fakes = {p.name for p in lab.bin.iterdir()}
+    for hidden_tool in hidden:
+        (lab.bin / hidden_tool).unlink(missing_ok=True)
+    seen = set()
+    for directory in os.environ["PATH"].split(":"):
+        if not os.path.isdir(directory):
+            continue
+        for entry in os.scandir(directory):
+            if entry.name in seen or entry.name in fakes or entry.name in hidden or not os.access(entry.path, os.X_OK):
+                continue
+            seen.add(entry.name)
+            (sysbin / entry.name).symlink_to(entry.path)
+    lab.extra_env["PATH"] = f"{lab.bin}:{sysbin}"
+
+
+@pytest.mark.parametrize("missing", ["mkfs.ext4", "cryptsetup", "fallocate"])
+def test_provision_with_one_missing_tool_never_reaches_allocation(lab, missing):
+    hide_tool(lab, missing)
+
+    result = lab.provision()
+
+    assert result.returncode != 0
+    assert lab.calls() == []
+    assert not lab.containers.exists()
+    assert not (lab.containers / "data.luks").exists()
+
+
+@pytest.mark.parametrize("missing", ["cryptsetup", "findmnt", "blkid"])
+@pytest.mark.parametrize("action", ["unlock", "close"])
+def test_unlock_and_close_fail_on_a_missing_tool_and_install_nothing(lab, missing, action):
+    hide_tool(lab, missing)
+
+    result = lab.run(action, **KEYS)
+
+    assert result.returncode != 0
+    assert f"Required tools are missing: {missing}" in out(result)
+    assert lab.calls() == []
+
+
+def test_every_binary_the_role_executes_is_probed_and_packaged():
+    tools = load(ROLE / "tasks/tools.yml")
+    facts = next(t for t in tools if "ansible.builtin.set_fact" in t)["ansible.builtin.set_fact"]
+    listed = facts["agent_context_luks_tool_packages"]
+    install = next(t for t in tools if "ansible.builtin.package" in t)
+    assert {"cryptsetup": "cryptsetup-bin", "mkfs.ext4": "e2fsprogs"}.items() <= listed.items()
+    assert install["when"][0] == "agent_context_luks_action == 'provision'"
+    used = set()
+    for _, task in all_tasks():
+        command = task.get("ansible.builtin.command")
+        if command and "argv" in command and not command["argv"][0].startswith("{{"):
+            used.add(command["argv"][0])
+    probed = "".join(str(v) for v in facts.values())
+    for binary in used - {"sh", "realpath", "stat"}:
+        assert binary in probed, binary

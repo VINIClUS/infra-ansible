@@ -1,0 +1,17 @@
+---
+- name: Look for each binary on PATH
+  ansible.builtin.command:
+    argv: [sh, -c, 'command -v -- "$1"', probe, "{{ agent_context_luks_tool }}"]
+  loop: "{{ agent_context_luks_tools }}"
+  loop_control:
+    loop_var: agent_context_luks_tool
+  register: agent_context_luks_probe
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Note the missing binaries
+  ansible.builtin.set_fact:
+    agent_context_luks_missing_tools: >-
+      {{ agent_context_luks_probe.results | rejectattr('rc', 'equalto', 0)
+      | map(attribute='agent_context_luks_tool') | list }}
