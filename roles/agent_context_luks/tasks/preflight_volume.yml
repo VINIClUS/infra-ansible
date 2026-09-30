@@ -1,0 +1,21 @@
+---
+# Expects agent_context_luks_volume. Provisioning needs a clean slate.
+- name: Identify what exists for the volume
+  ansible.builtin.include_tasks: identify_volume.yml
+
+- name: Look for an existing container file
+  ansible.builtin.stat:
+    path: "{{ agent_context_luks_volume.container }}"
+    follow: false
+  register: agent_context_luks_existing_container
+
+- name: Refuse to reuse anything that already exists
+  ansible.builtin.assert:
+    that:
+      - not agent_context_luks_existing_container.stat.exists
+      - agent_context_luks_identity.luks_uuid == ''
+      - not agent_context_luks_identity.mapper_active | bool
+      - not agent_context_luks_identity.mounted | bool
+    fail_msg: >-
+      Volume {{ agent_context_luks_volume.name }} already has a container file, a LUKS header, an active mapping
+      or a mount. Provisioning never reformats; remove leftovers by hand only if you are certain they hold nothing.

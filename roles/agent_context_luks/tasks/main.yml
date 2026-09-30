@@ -1,0 +1,42 @@
+---
+# The safety guards live here, as the first tasks of the role, and not in the
+# playbook pre_tasks: --tags agent_context_luks would skip untagged pre_tasks
+# while still running the role. Nothing below carries the "always" tag, so
+# --skip-tags always cannot drop them either.
+- name: Require exactly one target host
+  ansible.builtin.assert:
+    that: ansible_play_hosts_all | length == 1
+    fail_msg: Run with an exact --limit that selects exactly one host.
+
+- name: Validate LUKS role enable flag and action
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_enabled is boolean
+      - agent_context_luks_action in ['provision', 'unlock', 'close']
+      - agent_context_luks_action in agent_context_luks_allowed_actions
+    fail_msg: >-
+      agent_context_luks_enabled must be a boolean and the action one of provision, unlock or close,
+      and one that the playbook in use permits.
+
+- name: Stop only the LUKS role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not agent_context_luks_enabled | bool
+
+- name: Refuse check mode for every action
+  ansible.builtin.assert:
+    that: not ansible_check_mode
+    fail_msg: This role does not support --check; its probes are real and its changes cannot be simulated.
+
+- name: Require the exact provisioning confirmation
+  ansible.builtin.assert:
+    that: agent_context_luks_confirm_provision == 'format-new-agent-context-containers'
+    fail_msg: >-
+      Refusing to provision. Set agent_context_luks_confirm_provision to the exact confirmation string
+      documented in the role README.
+  when: agent_context_luks_action == 'provision'
+
+- name: Validate LUKS layout and sizes
+  ansible.builtin.include_tasks: preflight.yml
+
+- name: Run the requested LUKS action
+  ansible.builtin.include_tasks: "{{ agent_context_luks_action }}.yml"

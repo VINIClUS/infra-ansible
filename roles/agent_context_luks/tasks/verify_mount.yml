@@ -1,0 +1,14 @@
+---
+# Expects agent_context_luks_volume and a fresh agent_context_luks_identity of a mounted volume.
+- name: Refuse a mount of our mapping that drifted from the configuration
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_identity.mount_fstype == 'ext4'
+      - >-
+        agent_context_luks_volume.mount_opts.split(',')
+        | difference(agent_context_luks_identity.mount_options) | length == 0
+    fail_msg: >-
+      {{ agent_context_luks_volume.mountpoint }} is mounted but is not ext4 with the options
+      {{ agent_context_luks_volume.mount_opts }} (found {{ agent_context_luks_identity.mount_fstype }}
+      {{ agent_context_luks_identity.mount_options | join(',') }}). Close and unlock again, or remount it by hand.
+  when: agent_context_luks_identity.mounted | bool

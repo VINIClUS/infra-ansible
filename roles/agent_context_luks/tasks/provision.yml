@@ -1,0 +1,44 @@
+---
+# One-shot create and format. It never reformats: an existing container file
+# or LUKS header fails the run and there is no override variable. The
+# confirmation guard and the tool checks run earlier (main.yml, preflight).
+- name: Create the container directory
+  ansible.builtin.file:
+    path: "{{ agent_context_luks_container_dir }}"
+    state: directory
+    owner: "{{ agent_context_luks_owner }}"
+    group: "{{ agent_context_luks_group }}"
+    mode: "0700"
+
+- name: Check that nothing exists yet for either volume
+  ansible.builtin.include_tasks: preflight_volume.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"
+
+- name: Validate the mountpoints
+  ansible.builtin.include_tasks: check_mountpoint.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"
+
+- name: Measure free space on the container filesystem
+  ansible.builtin.command:
+    argv: [df, --output=avail, -B1, "{{ agent_context_luks_container_dir }}"]
+  register: agent_context_luks_free_space
+  changed_when: false
+
+- name: Require enough free space plus the margin
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_free_space.stdout_lines[-1] | trim | int >= agent_context_luks_required_bytes | int
+    fail_msg: Not enough free space on the container filesystem for both containers plus the margin.
+
+- name: Create and format each volume
+  ansible.builtin.include_tasks: provision_volume.yml
+  loop: "{{ agent_context_luks_volumes }}"
+  loop_control:
+    loop_var: agent_context_luks_volume
+    label: "{{ agent_context_luks_volume.name }}"

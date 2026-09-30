@@ -1,0 +1,198 @@
+---
+# Expects agent_context_luks_volume. Read-only (runs in check mode too). Gathers
+# what actually exists for this volume, refuses anything that is not ours and
+# publishes agent_context_luks_identity. Shared by preflight, unlock and close.
+- name: Resolve the configured container path
+  ansible.builtin.command:
+    argv: [realpath, -m, "{{ agent_context_luks_volume.container }}"]
+  register: agent_context_luks_id_real
+  changed_when: false
+  check_mode: false
+
+- name: Read the mapping status
+  ansible.builtin.command:
+    argv: [cryptsetup, status, "{{ agent_context_luks_volume.mapper }}"]
+  register: agent_context_luks_id_status
+  changed_when: false
+  # rc 4 is "inactive"; anything else is an error, never "absent".
+  failed_when: agent_context_luks_id_status.rc not in [0, 4]
+  check_mode: false
+
+- name: List the loop devices backing the container
+  ansible.builtin.command:
+    argv: [losetup, -j, "{{ agent_context_luks_volume.container }}"]
+  register: agent_context_luks_id_loops
+  changed_when: false
+  failed_when: agent_context_luks_id_loops.rc not in [0, 1]
+  check_mode: false
+
+# rc 2 is "nothing recognised" (missing file or no signature).
+- name: Read the signature of the container
+  ansible.builtin.command:
+    argv: [blkid, -p, -o, export, -s, UUID, -s, TYPE, "{{ agent_context_luks_volume.container }}"]
+  register: agent_context_luks_id_uuid
+  changed_when: false
+  failed_when: agent_context_luks_id_uuid.rc not in [0, 2]
+  check_mode: false
+
+- name: Read the filesystem mounted at the target
+  ansible.builtin.command:
+    argv: [findmnt, -J, -R, -o, "SOURCE,FSTYPE,OPTIONS", -M, "{{ agent_context_luks_volume.mountpoint }}"]
+  register: agent_context_luks_id_mount
+  changed_when: false
+  # rc 1 is "not mounted".
+  failed_when: agent_context_luks_id_mount.rc not in [0, 1]
+  check_mode: false
+
+# Every mount of the mapped device, wherever it is: a mapper mounted somewhere
+# else (or twice, or bind mounted) must be refused before anything changes.
+- name: Read every mount of the mapped device
+  ansible.builtin.command:
+    argv:
+      - findmnt
+      - -J
+      - -l
+      - -o
+      - TARGET,SOURCE,FSTYPE,OPTIONS
+      - -S
+      - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+  register: agent_context_luks_id_by_source
+  changed_when: false
+  failed_when: agent_context_luks_id_by_source.rc not in [0, 1]
+  check_mode: false
+
+- name: Refuse a mapper that is mounted anywhere but the configured target
+  ansible.builtin.assert:
+    that:
+      - (agent_context_luks_id_by_source.stdout | from_json).filesystems | length == 1
+      - >-
+        (agent_context_luks_id_by_source.stdout | from_json).filesystems[0].target
+        == agent_context_luks_volume.mountpoint
+    fail_msg: >-
+      /dev/mapper/{{ agent_context_luks_volume.mapper }} is mounted at
+      {{ (agent_context_luks_id_by_source.stdout | from_json).filesystems | map(attribute='target') | join(', ') }},
+      not exactly once at {{ agent_context_luks_volume.mountpoint }}. Nothing was changed; unmount the extra
+      mounts by hand first.
+  when: agent_context_luks_id_by_source.rc == 0
+
+# -R lists submounts; without it a nested mount would never show up.
+# A stacked mount (another filesystem over ours) or a child mount would make
+# "the mount at the target" ambiguous, so it is never accepted.
+- name: Require exactly one plain mount at the target
+  ansible.builtin.assert:
+    that:
+      - (agent_context_luks_id_mount.stdout | from_json).filesystems | length == 1
+      - "'children' not in (agent_context_luks_id_mount.stdout | from_json).filesystems[0]"
+    fail_msg: >-
+      {{ agent_context_luks_volume.mountpoint }} has stacked or nested mounts; refusing to touch it. It is foreign.
+  when: agent_context_luks_id_mount.rc == 0
+
+- name: Parse the mounted filesystem
+  ansible.builtin.set_fact:
+    agent_context_luks_id_fs: >-
+      {{ (agent_context_luks_id_mount.stdout | from_json).filesystems[0]
+      if agent_context_luks_id_mount.rc == 0 else {} }}
+
+- name: Publish the volume identity
+  ansible.builtin.set_fact:
+    agent_context_luks_identity:
+      container_real: "{{ agent_context_luks_id_real.stdout | trim }}"
+      mapper: "{{ agent_context_luks_volume.mapper }}"
+      mapper_active: "{{ agent_context_luks_id_status.rc == 0 }}"
+      mapper_device: >-
+        {{ agent_context_luks_id_status.stdout
+        | regex_findall('^\s*device:\s+(\S+)', multiline=True) | first | default('') }}
+      mapper_backing: >-
+        {{ agent_context_luks_id_status.stdout
+        | regex_findall('^\s*loop:\s+(.+?)\s*$', multiline=True) | first | default('') }}
+      loop_devices: "{{ agent_context_luks_id_loops.stdout_lines | map('regex_replace', ':.*$', '') | list }}"
+      container_type: >-
+        {{ agent_context_luks_id_uuid.stdout | regex_findall('^TYPE=(.+)$', multiline=True) | first | default('') }}
+      luks_uuid: >-
+        {{ (agent_context_luks_id_uuid.stdout | regex_findall('^UUID=(.+)$', multiline=True) | first | default(''))
+        if 'TYPE=crypto_LUKS' in agent_context_luks_id_uuid.stdout_lines else '' }}
+      mounted: "{{ agent_context_luks_id_mount.rc == 0 }}"
+      mount_source: "{{ agent_context_luks_id_fs.source | default('') }}"
+      mount_fstype: "{{ agent_context_luks_id_fs.fstype | default('') }}"
+      mount_options: "{{ agent_context_luks_id_fs.options | default('') | split(',') }}"
+
+- name: Refuse an active mapping that is not backed by the configured container
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_identity.mapper_backing == agent_context_luks_identity.container_real
+      - agent_context_luks_identity.mapper_device in agent_context_luks_identity.loop_devices
+    fail_msg: >-
+      Mapping {{ agent_context_luks_volume.mapper }} is active but is not backed by the configured container
+      {{ agent_context_luks_volume.container }}. It is foreign; it was left untouched.
+  when: agent_context_luks_identity.mapper_active | bool
+
+- name: Refuse a mount that does not come from our mapping
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_identity.mapper_active | bool
+      - agent_context_luks_identity.mount_source == '/dev/mapper/' + agent_context_luks_volume.mapper
+    fail_msg: >-
+      {{ agent_context_luks_volume.mountpoint }} is mounted from {{ agent_context_luks_identity.mount_source }},
+      not from /dev/mapper/{{ agent_context_luks_volume.mapper }}. It is foreign; it was left untouched.
+  when: agent_context_luks_identity.mounted | bool
+
+# An active mapping is only ours when its type, its on-disk header and its
+# device-mapper UUID all agree. Anything else fails closed: closing a mapping
+# whose header is damaged would destroy the last access to the data.
+- name: Verify the header and identity of the active mapping
+  when:
+    - agent_context_luks_identity.mapper_active | bool
+    - agent_context_luks_action != 'provision'
+  block:
+    - name: Check the header of the backing file
+      ansible.builtin.command:
+        argv: [cryptsetup, isLuks, --type, luks2, "{{ agent_context_luks_volume.container }}"]
+      register: agent_context_luks_id_header
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the LUKS UUID of the backing file
+      ansible.builtin.command:
+        argv: [cryptsetup, luksUUID, "{{ agent_context_luks_volume.container }}"]
+      register: agent_context_luks_id_luksuuid
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the device-mapper UUID of the mapping
+      ansible.builtin.command:
+        argv: [dmsetup, info, -c, --noheadings, -o, uuid, "{{ agent_context_luks_volume.mapper }}"]
+      register: agent_context_luks_id_dmuuid
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Work out what the mapping and the header say
+      ansible.builtin.set_fact:
+        agent_context_luks_id_proof:
+          type: >-
+            {{ agent_context_luks_id_status.stdout
+            | regex_findall('^\s*type:\s+(\S+)', multiline=True) | first | default('') }}
+          header_ok: "{{ agent_context_luks_id_header.rc == 0 }}"
+          luks_uuid: >-
+            {{ agent_context_luks_id_luksuuid.stdout | trim | lower if agent_context_luks_id_luksuuid.rc == 0 else '' }}
+          dm_uuid: >-
+            {{ agent_context_luks_id_dmuuid.stdout | trim | lower if agent_context_luks_id_dmuuid.rc == 0 else '' }}
+
+    - name: Refuse a mapping that is not the LUKS2 volume of this container
+      ansible.builtin.assert:
+        that:
+          - agent_context_luks_id_proof.type == 'LUKS2'
+          - agent_context_luks_id_proof.header_ok | bool
+          - agent_context_luks_id_proof.luks_uuid | length > 0
+          - >-
+            agent_context_luks_id_proof.dm_uuid ==
+            'crypt-luks2-' ~ (agent_context_luks_id_proof.luks_uuid | replace('-', ''))
+            ~ '-' ~ (agent_context_luks_volume.mapper | lower)
+        fail_msg: >-
+          Mapping {{ agent_context_luks_volume.mapper }} is active but is not verifiably the LUKS2 volume stored in
+          {{ agent_context_luks_volume.container }} (mapping type "{{ agent_context_luks_id_proof.type }}", header
+          readable as LUKS2: {{ agent_context_luks_id_proof.header_ok }}, header and device-mapper UUIDs must
+          agree). Refusing to unlock or close it. If the header is damaged, back up the header and the data
+          before doing anything else; closing would destroy the last access to them. Nothing was changed.

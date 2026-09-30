@@ -1,0 +1,120 @@
+---
+# Expects agent_context_luks_volume. Idempotent: an open, mounted and correctly
+# configured volume reports ok and nothing changes.
+- name: Identify what exists for the volume
+  ansible.builtin.include_tasks: identify_volume.yml
+
+- name: Inspect the container file
+  ansible.builtin.stat:
+    path: "{{ agent_context_luks_volume.container }}"
+    follow: false
+  register: agent_context_luks_container
+  when: not agent_context_luks_identity.mapper_active | bool
+
+- name: Require an existing LUKS container file before opening
+  ansible.builtin.assert:
+    that:
+      - agent_context_luks_container.stat.exists
+      - agent_context_luks_container.stat.isreg
+      - agent_context_luks_identity.luks_uuid != ''
+    fail_msg: >-
+      Container file for volume {{ agent_context_luks_volume.name }} is missing or is not a LUKS container;
+      run the provision playbook first.
+  when: not agent_context_luks_identity.mapper_active | bool
+
+- name: Forget whether an earlier volume was opened
+  ansible.builtin.set_fact:
+    agent_context_luks_opened: false
+    agent_context_luks_mounted_by_run: false
+
+- name: Open and mount the volume, undoing only what this run did on failure
+  block:
+    - name: Open the LUKS volume
+      ansible.builtin.command:
+        argv:
+          - cryptsetup
+          - open
+          - --type
+          - luks2
+          - --key-file=-
+          - "{{ agent_context_luks_volume.container }}"
+          - "{{ agent_context_luks_volume.mapper }}"
+        stdin: >-
+          {{ agent_context_luks_data_key if agent_context_luks_volume.name == 'data'
+          else agent_context_luks_backup_key }}
+        stdin_add_newline: false
+      changed_when: true
+      no_log: true
+      when: not agent_context_luks_identity.mapper_active | bool
+
+    - name: Note that the mapping was opened by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_opened: true
+      when: not agent_context_luks_identity.mapper_active | bool
+
+    # An existing mount of our mapping is never adjusted silently: drift fails the
+    # run so an operator decides (close and unlock again, or remount by hand).
+    - name: Verify the existing mount
+      ansible.builtin.include_tasks: verify_mount.yml
+      when: agent_context_luks_identity.mounted | bool
+
+    - name: Validate the mountpoint before the first mount
+      ansible.builtin.include_tasks: check_mountpoint.yml
+      when: not agent_context_luks_identity.mounted | bool
+
+    - name: Mount the volume without any persistent entry
+      ansible.builtin.command:
+        argv:
+          - mount
+          - -t
+          - ext4
+          - -o
+          - "{{ agent_context_luks_volume.mount_opts }}"
+          - "/dev/mapper/{{ agent_context_luks_volume.mapper }}"
+          - "{{ agent_context_luks_volume.mountpoint }}"
+      changed_when: true
+      when: not agent_context_luks_identity.mounted | bool
+
+    - name: Note that the mount was made by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_mounted_by_run: true
+      when: not agent_context_luks_identity.mounted | bool
+
+    # The result is checked, not assumed: the options that are really applied
+    # must match, by the same check that detects drift on an existing mount.
+    - name: Identify the volume after mounting
+      ansible.builtin.include_tasks: identify_volume.yml
+      when: agent_context_luks_mounted_by_run | bool
+
+    - name: Verify the new mount
+      ansible.builtin.include_tasks: verify_mount.yml
+      when: agent_context_luks_mounted_by_run | bool
+  rescue:
+    - name: Identify the volume again before undoing anything
+      ansible.builtin.include_tasks: identify_volume.yml
+
+    - name: Unmount a mount made by this run that failed verification
+      ansible.builtin.command:
+        argv: [umount, "{{ agent_context_luks_volume.mountpoint }}"]
+      changed_when: true
+      when:
+        - agent_context_luks_mounted_by_run | bool
+        - agent_context_luks_identity.mounted | bool
+
+    - name: Identify the volume once more after undoing the mount
+      ansible.builtin.include_tasks: identify_volume.yml
+
+    - name: Close the mapping opened by this run
+      ansible.builtin.command:
+        argv: [cryptsetup, close, "{{ agent_context_luks_volume.mapper }}"]
+      changed_when: true
+      when:
+        - agent_context_luks_opened | bool
+        - agent_context_luks_identity.mapper_active | bool
+        - not agent_context_luks_identity.mounted | bool
+
+    - name: Fail the unlock run
+      ansible.builtin.fail:
+        msg: >-
+          Unlocking volume {{ agent_context_luks_volume.name }} failed; a mapping opened by this run was
+          closed, anything else was left untouched.

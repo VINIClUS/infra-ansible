@@ -1,0 +1,78 @@
+---
+# Disabled by default. The private inventory enables it only for the
+# agent_context_vps group, and every run must use an exact --limit.
+agent_context_luks_enabled: false
+
+# provision | unlock | close. The playbooks fix this; only unlock/close can be
+# chosen by the operator.
+agent_context_luks_action: unlock
+
+# Actions the calling playbook permits. The playbooks narrow it; the role
+# checks it itself so the guard survives any --tags/--skip-tags selection.
+agent_context_luks_allowed_actions: [provision, unlock, close]
+
+# One-shot guard: provisioning refuses to run unless this equals
+# "format-new-agent-context-containers". Never set it in inventory.
+agent_context_luks_confirm_provision: ""
+
+# Required, no default (fixed by the private inventory): "<integer>G" or
+# "<integer>M".
+# agent_context_luks_data_size
+# agent_context_luks_backup_size
+
+# Required, no default, from the private inventory vault. At least 32
+# characters each and different from one another. Only ever sent on stdin.
+# agent_context_luks_data_key
+# agent_context_luks_backup_key
+
+# Owner of the container directory, the files and the mountpoints. Root in
+# every real run; only the execution tests point it at the test user.
+agent_context_luks_owner: root
+agent_context_luks_group: root
+
+agent_context_luks_container_dir: /var/lib/agent-context-luks
+agent_context_luks_data_container: "{{ agent_context_luks_container_dir }}/data.luks"
+agent_context_luks_backup_container: "{{ agent_context_luks_container_dir }}/backup.luks"
+
+# Both mountpoints live under this directory; it and every directory between
+# it and a mountpoint must be a real, owner-owned, not group/world-writable
+# directory (missing ones are created 0755).
+agent_context_luks_mount_root: /srv
+
+agent_context_luks_data_mountpoint: /srv/agent-context
+agent_context_luks_backup_mountpoint: /srv/infra-backups/agent-context
+
+agent_context_luks_data_mapper: agent_context_data
+agent_context_luks_backup_mapper: agent_context_backup
+
+agent_context_luks_data_label: ac-data
+agent_context_luks_backup_label: ac-backup
+
+# Data stays exec-capable: Neo4j loads plugins and native libraries from its
+# data tree, and a noexec data mount is a follow-up once that is measured.
+# Backup only stores dumps and never executes anything.
+agent_context_luks_data_mount_opts: nodev,nosuid
+agent_context_luks_backup_mount_opts: nodev,nosuid,noexec
+
+# argon2id memory in KiB. Bounded (256 MiB) because the VPS is small and
+# already runs other production apps.
+agent_context_luks_pbkdf_memory: 262144
+
+# Free space kept on the container filesystem after both files are allocated.
+agent_context_luks_free_space_margin: 2G
+
+agent_context_luks_volumes:
+  - name: data
+    size: "{{ agent_context_luks_data_size }}"
+    container: "{{ agent_context_luks_data_container }}"
+    mountpoint: "{{ agent_context_luks_data_mountpoint }}"
+    mapper: "{{ agent_context_luks_data_mapper }}"
+    label: "{{ agent_context_luks_data_label }}"
+    mount_opts: "{{ agent_context_luks_data_mount_opts }}"
+  - name: backup
+    size: "{{ agent_context_luks_backup_size }}"
+    container: "{{ agent_context_luks_backup_container }}"
+    mountpoint: "{{ agent_context_luks_backup_mountpoint }}"
+    mapper: "{{ agent_context_luks_backup_mapper }}"
+    label: "{{ agent_context_luks_backup_label }}"
+    mount_opts: "{{ agent_context_luks_backup_mount_opts }}"

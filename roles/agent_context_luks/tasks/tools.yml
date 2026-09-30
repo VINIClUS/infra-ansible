@@ -1,0 +1,44 @@
+---
+# Runs in preflight: a missing tool must fail (or be installed, for provision
+# only) before any file is allocated or any device touched.
+- name: Work out which binaries this action runs
+  ansible.builtin.set_fact:
+    agent_context_luks_tools: >-
+      {{ ['cryptsetup', 'dmsetup', 'losetup', 'blkid', 'findmnt', 'mount', 'umount']
+      + (['mkfs.ext4', 'fallocate', 'df'] if agent_context_luks_action == 'provision' else []) }}
+    agent_context_luks_tool_packages:
+      cryptsetup: cryptsetup-bin
+      dmsetup: dmsetup
+      mkfs.ext4: e2fsprogs
+      losetup: util-linux
+      blkid: util-linux
+      findmnt: util-linux
+      mount: util-linux
+      umount: util-linux
+      fallocate: util-linux
+      df: coreutils
+
+- name: Probe the binaries
+  ansible.builtin.include_tasks: probe_tools.yml
+
+- name: Install the packages of missing tools when provisioning
+  ansible.builtin.package:
+    name: "{{ agent_context_luks_missing_tools | map('extract', agent_context_luks_tool_packages) | unique | list }}"
+    state: present
+  when:
+    - agent_context_luks_action == 'provision'
+    - agent_context_luks_missing_tools | length > 0
+
+- name: Probe the binaries again after installing
+  ansible.builtin.include_tasks: probe_tools.yml
+  when:
+    - agent_context_luks_action == 'provision'
+    - agent_context_luks_missing_tools | length > 0
+
+- name: Require every binary
+  ansible.builtin.assert:
+    that: agent_context_luks_missing_tools | length == 0
+    fail_msg: >-
+      Required tools are missing: {{ agent_context_luks_missing_tools | join(', ') }}. Install the packages
+      {{ agent_context_luks_missing_tools | map('extract', agent_context_luks_tool_packages) | unique | join(', ') }}
+      (provision installs them itself; unlock and close never install anything).
