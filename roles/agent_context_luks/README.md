@@ -94,6 +94,13 @@ before any change:
 
 ## Unlock and close
 
+Unlock treats each volume independently: a data volume left unlocked because the
+backup volume failed is intended, and only what a failed volume's own step
+opened or mounted is undone. Configured mount options may not contain `dev`,
+`suid`, `defaults`, `user`, `users` (or `exec` on backup), since `mount` applies
+the last conflicting option; after mounting, the options really in force are
+checked with the same `findmnt` comparison that detects drift.
+
 ```sh
 ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host>
 ansible-playbook playbooks/agent-context-luks-unlock.yml --limit <host> -e agent_context_luks_action=close

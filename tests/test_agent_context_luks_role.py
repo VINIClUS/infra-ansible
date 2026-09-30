@@ -312,6 +312,9 @@ elif tool == "mount":
     if os.environ.get("FAKE_FAIL_MOUNT"):
         sys.exit(32)
     opts, src, dst = args[args.index("-o") + 1], args[-2], args[-1]
+    drop = os.environ.get("FAKE_MOUNT_DROP")
+    if drop:
+        opts = ",".join(o for o in opts.split(",") if o != drop)
     state["mounts"][dst] = {"source": src, "fstype": "ext4", "options": opts + ",rw,relatime"}
     save()
 elif tool == "umount":
@@ -960,3 +963,41 @@ def test_playbooks_accept_a_single_host_and_stay_inert_when_disabled(tmp_path, n
     )
 
     assert result.returncode == 0, out(result)
+
+
+@pytest.mark.parametrize(
+    "variable, value",
+    [
+        ("agent_context_luks_data_mount_opts", "nodev,nosuid,dev"),
+        ("agent_context_luks_data_mount_opts", "nodev,nosuid,suid"),
+        ("agent_context_luks_data_mount_opts", "defaults,nodev,nosuid"),
+        ("agent_context_luks_data_mount_opts", "nodev,nosuid,user"),
+        ("agent_context_luks_data_mount_opts", "nodev,nosuid,users"),
+        ("agent_context_luks_backup_mount_opts", "nodev,nosuid,noexec,dev"),
+        ("agent_context_luks_backup_mount_opts", "nodev,nosuid,noexec,suid"),
+        ("agent_context_luks_backup_mount_opts", "nodev,nosuid,noexec,exec"),
+        ("agent_context_luks_backup_mount_opts", "defaults,nodev,nosuid,noexec"),
+    ],
+)
+def test_conflicting_or_implying_mount_options_are_refused(lab, variable, value):
+    result = lab.unlock(**{variable: value})
+
+    assert result.returncode != 0
+    assert "LUKS layout is invalid" in out(result)
+    assert lab.calls() == []
+
+
+@pytest.mark.parametrize("dropped", ["nodev", "nosuid"])
+def test_a_mount_that_comes_up_without_a_required_flag_fails_and_is_undone(lab, dropped):
+    assert lab.provision().returncode == 0
+    lab.state = lab.read_state()
+    lab.extra_env["FAKE_MOUNT_DROP"] = dropped
+    lab.log.write_text("")
+
+    result = lab.unlock()
+
+    assert result.returncode != 0
+    assert "Close and unlock again, or remount it by hand" in out(result)
+    assert lab.read_state()["mounts"] == {}
+    assert lab.read_state()["mappers"] == {}
+    assert ["umount", str(lab.data)] in lab.calls()

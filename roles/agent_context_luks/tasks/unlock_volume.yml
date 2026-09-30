@@ -25,8 +25,9 @@
 - name: Forget whether an earlier volume was opened
   ansible.builtin.set_fact:
     agent_context_luks_opened: false
+    agent_context_luks_mounted_by_run: false
 
-- name: Open and mount the volume, closing only what this run opened on failure
+- name: Open and mount the volume, undoing only what this run did on failure
   block:
     - name: Open the LUKS volume
       ansible.builtin.command:
@@ -53,17 +54,8 @@
 
     # An existing mount of our mapping is never adjusted silently: drift fails the
     # run so an operator decides (close and unlock again, or remount by hand).
-    - name: Refuse a mount of our mapping that drifted from the configuration
-      ansible.builtin.assert:
-        that:
-          - agent_context_luks_identity.mount_fstype == 'ext4'
-          - >-
-            agent_context_luks_volume.mount_opts.split(',')
-            | difference(agent_context_luks_identity.mount_options) | length == 0
-        fail_msg: >-
-          {{ agent_context_luks_volume.mountpoint }} is mounted but is not ext4 with the options
-          {{ agent_context_luks_volume.mount_opts }} (found {{ agent_context_luks_identity.mount_fstype }}
-          {{ agent_context_luks_identity.mount_options | join(',') }}). Close and unlock again, or remount it by hand.
+    - name: Verify the existing mount
+      ansible.builtin.include_tasks: verify_mount.yml
       when: agent_context_luks_identity.mounted | bool
 
     - name: Validate the mountpoint before the first mount
@@ -82,8 +74,34 @@
           - "{{ agent_context_luks_volume.mountpoint }}"
       changed_when: true
       when: not agent_context_luks_identity.mounted | bool
+
+    - name: Note that the mount was made by this run
+      ansible.builtin.set_fact:
+        agent_context_luks_mounted_by_run: true
+      when: not agent_context_luks_identity.mounted | bool
+
+    # The result is checked, not assumed: the options that are really applied
+    # must match, by the same check that detects drift on an existing mount.
+    - name: Identify the volume after mounting
+      ansible.builtin.include_tasks: identify_volume.yml
+      when: agent_context_luks_mounted_by_run | bool
+
+    - name: Verify the new mount
+      ansible.builtin.include_tasks: verify_mount.yml
+      when: agent_context_luks_mounted_by_run | bool
   rescue:
     - name: Identify the volume again before undoing anything
+      ansible.builtin.include_tasks: identify_volume.yml
+
+    - name: Unmount a mount made by this run that failed verification
+      ansible.builtin.command:
+        argv: [umount, "{{ agent_context_luks_volume.mountpoint }}"]
+      changed_when: true
+      when:
+        - agent_context_luks_mounted_by_run | bool
+        - agent_context_luks_identity.mounted | bool
+
+    - name: Identify the volume once more after undoing the mount
       ansible.builtin.include_tasks: identify_volume.yml
 
     - name: Close the mapping opened by this run

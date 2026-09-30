@@ -30,6 +30,12 @@
       - "'nosuid' in agent_context_luks_data_mount_opts.split(',')"
       - "'nodev' in agent_context_luks_backup_mount_opts.split(',')"
       - "'nosuid' in agent_context_luks_backup_mount_opts.split(',')"
+      # mount applies the last of conflicting options, so an inverse or an
+      # option that implies one would silently drop a protection.
+      - >-
+        (agent_context_luks_data_mount_opts.split(',') + agent_context_luks_backup_mount_opts.split(','))
+        | intersect(['dev', 'suid', 'defaults', 'user', 'users']) | length == 0
+      - "'exec' not in agent_context_luks_backup_mount_opts.split(',')"
     fail_msg: >-
       LUKS layout is invalid: both sizes are required as <integer>G or <integer>M, the two volumes need distinct
       absolute container files, mountpoints and mapper names, and the backup mount must be noexec.
