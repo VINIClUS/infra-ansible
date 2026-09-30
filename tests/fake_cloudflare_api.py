@@ -29,6 +29,8 @@ class FakeCloudflare:
         self.policies = {}
         self.service_tokens = []
         self.secret_counter = 0
+        # (method, path suffix) pairs that answer HTTP 500.
+        self.fail = []
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -90,6 +92,8 @@ class FakeCloudflare:
                 if handled is None:
                     return self._send(404, errors=[{"code": 7003, "message": "No route"}])
                 status, result, listing = handled
+                if status >= 400:
+                    return self._send(status, errors=[{"code": 9999, "message": "injected failure"}])
                 return self._send(status, result, list_result=listing)
 
             def do_GET(self):
@@ -111,6 +115,8 @@ class FakeCloudflare:
 
     def route(self, method, path, query, body):
         path = path.removeprefix("/client/v4")
+        if any(method == m and path.endswith(suffix) for m, suffix in self.fail):
+            return 500, None, False
         acct = f"/accounts/{ACCOUNT}"
         if path == f"{acct}/cfd_tunnel":
             if method == "GET":

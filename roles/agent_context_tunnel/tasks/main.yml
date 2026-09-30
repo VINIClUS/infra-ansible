@@ -235,6 +235,15 @@
       {{ agent_context_tunnel_id | length == 0 or agent_context_tunnel_token_matches | length == 0
       or agent_context_tunnel_rotate_service_token | bool }}
 
+- name: Refuse to write credentials without a retrievable service token secret
+  ansible.builtin.assert:
+    that: >-
+      not agent_context_tunnel_secret_needed | bool or agent_context_tunnel_token_matches | length == 0
+      or agent_context_tunnel_rotate_service_token | bool
+    fail_msg: >-
+      A new tunnel needs credentials, but the service token exists and its secret is not retrievable; set
+      agent_context_tunnel_rotate_service_token=true or supply existing credentials.
+
 - name: Refuse to produce secrets without a credentials output path
   ansible.builtin.assert:
     that: not agent_context_tunnel_secret_needed | bool or agent_context_tunnel_credentials_output | length > 0
@@ -251,6 +260,7 @@
     agent_context_tunnel_service_token_effective_id: >-
       {{ agent_context_tunnel_token_id | default('', true) or 'service-token-id-pending' }}
     agent_context_tunnel_secret_token: {}
+    agent_context_tunnel_secret_tunnel_token: ''
   no_log: true
 
 - name: Build the human policy include list
@@ -303,6 +313,27 @@
     - agent_context_tunnel_id | length == 0
     - not ansible_check_mode
 
+# The tunnel token is re-fetchable, so it is read BEFORE the one-time service token secret exists; the
+# credentials file is then written right after the secret, with no API call in between.
+- name: Fetch the tunnel token
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: fetch tunnel token
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/token
+  when:
+    - agent_context_tunnel_secret_needed | bool
+    - not ansible_check_mode
+
+- name: Keep the tunnel token in memory only
+  ansible.builtin.set_fact:
+    agent_context_tunnel_secret_tunnel_token: "{{ agent_context_tunnel_response.json.result }}"
+  when:
+    - agent_context_tunnel_secret_needed | bool
+    - not ansible_check_mode
+  no_log: true
+
 - name: Create the missing service token
   ansible.builtin.include_tasks: api.yml
   vars:
@@ -339,28 +370,16 @@
     - not ansible_check_mode
   no_log: true
 
-- name: Fetch the tunnel token
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: GET
-    agent_context_tunnel_api_purpose: fetch tunnel token
-    agent_context_tunnel_api_path: >-
-      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/token
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-
 - name: Write the credentials file, mode 0600, never over an existing file
   ansible.builtin.copy:
     dest: "{{ agent_context_tunnel_credentials_output }}"
     content: >-
       {{ {'tunnel_id': agent_context_tunnel_id,
-          'tunnel_token': agent_context_tunnel_response.json.result,
+          'tunnel_token': agent_context_tunnel_secret_tunnel_token,
           'service_token_id': agent_context_tunnel_token_id,
           'service_token_client_id': agent_context_tunnel_secret_token.client_id
                                      | default(agent_context_tunnel_token_client_id),
-          'service_token_client_secret': agent_context_tunnel_secret_token.client_secret
-                                         | default('')} | to_nice_json }}
+          'service_token_client_secret': agent_context_tunnel_secret_token.client_secret} | to_nice_json }}
     mode: "0600"
     force: false
   when:
@@ -374,43 +393,6 @@
       {{ [agent_context_tunnel_policies[0] | combine({'include': [{'service_token':
          {'token_id': agent_context_tunnel_service_token_effective_id}}]})] + agent_context_tunnel_policies[1:] }}
   no_log: true
-
-- name: Reconcile the tunnel ingress configuration
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: PUT
-    agent_context_tunnel_api_purpose: update tunnel configuration
-    agent_context_tunnel_api_path: >-
-      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
-    agent_context_tunnel_api_body:
-      config:
-        ingress: "{{ agent_context_tunnel_desired_ingress }}"
-  when:
-    - agent_context_tunnel_config_differs | bool
-    - not ansible_check_mode
-
-- name: Create the missing proxied CNAME
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: POST
-    agent_context_tunnel_api_purpose: create DNS record
-    agent_context_tunnel_api_path: "/zones/{{ agent_context_tunnel_zone_id }}/dns_records"
-    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
-  when:
-    - agent_context_tunnel_dns_action == 'create'
-    - not ansible_check_mode
-
-- name: Update the drifted CNAME to this tunnel
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: PATCH
-    agent_context_tunnel_api_purpose: update DNS record
-    agent_context_tunnel_api_path: >-
-      /zones/{{ agent_context_tunnel_zone_id }}/dns_records/{{ agent_context_tunnel_dns_records[0].id }}
-    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
-  when:
-    - agent_context_tunnel_dns_action == 'update'
-    - not ansible_check_mode
 
 - name: Create the missing Access application
   ansible.builtin.include_tasks: api.yml
@@ -452,6 +434,45 @@
   loop_control:
     loop_var: agent_context_tunnel_policy
     label: "{{ agent_context_tunnel_policy.name }}"
+
+# Access (application and policies) is reconciled before anything is published: the tunnel ingress and
+# the DNS record come last, so the hostname is never reachable without Access.
+- name: Reconcile the tunnel ingress configuration
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: PUT
+    agent_context_tunnel_api_purpose: update tunnel configuration
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
+    agent_context_tunnel_api_body:
+      config:
+        ingress: "{{ agent_context_tunnel_desired_ingress }}"
+  when:
+    - agent_context_tunnel_config_differs | bool
+    - not ansible_check_mode
+
+- name: Create the missing proxied CNAME
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: POST
+    agent_context_tunnel_api_purpose: create DNS record
+    agent_context_tunnel_api_path: "/zones/{{ agent_context_tunnel_zone_id }}/dns_records"
+    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
+  when:
+    - agent_context_tunnel_dns_action == 'create'
+    - not ansible_check_mode
+
+- name: Update the drifted CNAME to this tunnel
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: PATCH
+    agent_context_tunnel_api_purpose: update DNS record
+    agent_context_tunnel_api_path: >-
+      /zones/{{ agent_context_tunnel_zone_id }}/dns_records/{{ agent_context_tunnel_dns_records[0].id }}
+    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
+  when:
+    - agent_context_tunnel_dns_action == 'update'
+    - not ansible_check_mode
 
 - name: Warn about a left-over human policy
   ansible.builtin.debug:

@@ -301,3 +301,70 @@ def test_required_inputs_are_asserted(tmp_path):
             assert result.returncode != 0, name
             assert name in result.stdout + result.stderr
         assert fake.requests == []
+
+
+def order_of(fake, needle_method, needle_path):
+    for index, (method, path) in enumerate(fake.requests):
+        if method == needle_method and path.endswith(needle_path):
+            return index
+    return None
+
+
+@needs_ansible
+def test_access_failure_publishes_no_dns_record(tmp_path):
+    with FakeCloudflare() as fake:
+        fake.fail.append(("POST", "/access/apps"))
+        result = run(fake, tmp_path / "creds.json")
+        assert result.returncode != 0
+        assert "injected failure" in result.stdout + result.stderr
+        assert fake.dns == []
+        assert fake.configs == {}
+        assert not any(path.endswith("/dns_records") and method != "GET" for method, path in fake.requests)
+        assert_no_secrets(result)
+
+
+@needs_ansible
+def test_access_is_reconciled_before_config_and_dns(tmp_path):
+    with FakeCloudflare() as fake:
+        assert run(fake, tmp_path / "creds.json").returncode == 0
+        app = order_of(fake, "POST", "/access/apps")
+        policy = order_of(fake, "POST", "/policies")
+        assert app < policy < order_of(fake, "PUT", "/configurations")
+        assert policy < order_of(fake, "POST", "/dns_records")
+
+
+@needs_ansible
+def test_tunnel_token_failure_happens_before_the_service_token_exists(tmp_path):
+    output = tmp_path / "creds.json"
+    with FakeCloudflare() as fake:
+        fake.fail.append(("GET", "/token"))
+        result = run(fake, output)
+        assert result.returncode != 0
+        assert fake.service_tokens == []
+        assert not output.exists()
+        assert_no_secrets(result)
+
+
+@needs_ansible
+def test_credentials_are_written_right_after_the_service_token_secret(tmp_path):
+    with FakeCloudflare() as fake:
+        fake.fail.append(("POST", "/access/apps"))
+        output = tmp_path / "creds.json"
+        assert run(fake, output).returncode != 0
+        # A later failure must not lose the one-time secret.
+        assert json.loads(output.read_text(encoding="utf-8"))["service_token_client_secret"].startswith(CLIENT_SECRET)
+        token_post = order_of(fake, "POST", "/service_tokens")
+        assert order_of(fake, "GET", "/token") < token_post
+        assert token_post + 1 == order_of(fake, "POST", "/access/apps")
+
+
+@needs_ansible
+def test_new_tunnel_with_existing_service_token_refuses_an_empty_secret(tmp_path):
+    output = tmp_path / "creds.json"
+    with FakeCloudflare() as fake:
+        fake.service_tokens.append({"id": "tok", "name": "agent-context-clients", "client_id": "cid.invalid"})
+        result = run(fake, output)
+        assert result.returncode != 0
+        assert "agent_context_tunnel_rotate_service_token=true" in result.stdout + result.stderr
+        assert fake.mutating() == []
+        assert not output.exists()
