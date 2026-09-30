@@ -1,0 +1,78 @@
+---
+# One Cloudflare API call. Inputs: agent_context_tunnel_api_method (GET, POST,
+# PUT or PATCH; nothing destructive), agent_context_tunnel_api_path,
+# agent_context_tunnel_api_purpose, optional agent_context_tunnel_api_body and
+# agent_context_tunnel_api_list. Result: agent_context_tunnel_response.
+- name: Allow only non-destructive Cloudflare API methods
+  ansible.builtin.assert:
+    that: agent_context_tunnel_api_method in ['GET', 'POST', 'PUT', 'PATCH']
+    fail_msg: Only GET, POST, PUT and PATCH Cloudflare API calls are allowed.
+
+- name: Read from the Cloudflare API
+  ansible.builtin.uri:
+    url: "{{ agent_context_tunnel_api_base_url }}{{ agent_context_tunnel_api_path }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ agent_context_tunnel_api_token }}"
+    status_code: [200, 400, 401, 403, 404, 409, 429, 500, 502, 503]
+    return_content: false
+  check_mode: false
+  when: agent_context_tunnel_api_method == 'GET'
+  register: agent_context_tunnel_read
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Write to the Cloudflare API
+  ansible.builtin.uri:
+    url: "{{ agent_context_tunnel_api_base_url }}{{ agent_context_tunnel_api_path }}"
+    method: "{{ agent_context_tunnel_api_method }}"
+    headers:
+      Authorization: "Bearer {{ agent_context_tunnel_api_token }}"
+    body_format: json
+    body: "{{ agent_context_tunnel_api_body | default({}) }}"
+    status_code: [200, 400, 401, 403, 404, 409, 429, 500, 502, 503]
+    return_content: false
+  when:
+    - agent_context_tunnel_api_method != 'GET'
+    - not ansible_check_mode
+  register: agent_context_tunnel_write
+  changed_when: true
+  failed_when: false
+  no_log: true
+
+- name: Keep only the Cloudflare API response
+  ansible.builtin.set_fact:
+    agent_context_tunnel_response: >-
+      {{ {'status': (agent_context_tunnel_read if agent_context_tunnel_api_method == 'GET'
+                     else agent_context_tunnel_write).status | default(0),
+          'json': (agent_context_tunnel_read if agent_context_tunnel_api_method == 'GET'
+                   else agent_context_tunnel_write).json | default({})} }}
+  no_log: true
+
+- name: Keep only the Cloudflare error codes and messages
+  ansible.builtin.set_fact:
+    agent_context_tunnel_error_list: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for error in agent_context_tunnel_response.json.errors | default([]) -%}
+      {%- set ns.out = ns.out + [{'code': error.code | default(''), 'message': error.message | default('')}] -%}
+      {%- endfor -%}
+      {{ ns.out | to_json }}
+
+- name: Fail with only the Cloudflare error codes and messages
+  ansible.builtin.assert:
+    that: agent_context_tunnel_response.json.success | default(false) | bool
+    fail_msg: >-
+      Cloudflare API call failed ({{ agent_context_tunnel_api_purpose }}): HTTP
+      {{ agent_context_tunnel_response.status }}, errors
+      {{ agent_context_tunnel_error_list }}.
+
+- name: Refuse paginated or malformed Cloudflare list results
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_response.json.result is sequence
+      - agent_context_tunnel_response.json.result_info.total_pages | default(1) | int <= 1
+    fail_msg: >-
+      Cloudflare list ({{ agent_context_tunnel_api_purpose }}) is malformed or multi-page;
+      refusing to decide from incomplete results.
+  when: agent_context_tunnel_api_list | default(false) | bool

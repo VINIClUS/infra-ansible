@@ -1,0 +1,10 @@
+---
+# Manual playbook: not in the deploy allowlist or any workflow. Run it with
+# --check first to preview the Cloudflare changes, then for real.
+- name: Reconcile the Agent Context Cloudflare tunnel and Access application
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: agent_context_tunnel
+      tags: [agent_context_tunnel]
