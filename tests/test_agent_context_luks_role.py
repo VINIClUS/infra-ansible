@@ -245,7 +245,7 @@ def is_luks(path):
 
 
 def uuid_of(path):
-    return "11111111-2222-3333-4444-" + hashlib.md5(path.encode()).hexdigest()[:12]
+    return "11111111-2222-3333-4444-" + hashlib.md5(os.path.realpath(path).encode()).hexdigest()[:12]
 
 
 if tool == "cryptsetup":
@@ -260,14 +260,18 @@ if tool == "cryptsetup":
             print("/dev/mapper/%s is inactive." % args[1])
             sys.exit(4)
         print("/dev/mapper/%s is active." % args[1])
-        print("  type:    LUKS2\n  device:  %s\n  loop:    %s\n  mode:    read/write" % (m["loop"], m["file"]))
+        print("  type:    %s\n  device:  %s\n  loop:    %s\n  mode:    read/write" % (m.get("type", "LUKS2"), m["loop"], m["file"]))
     elif cmd == "isLuks":
         if os.environ.get("FAKE_ISLUKS"):
             sys.exit(0)
         if os.environ.get("FAKE_SWAP"):
-            os.rename(args[1], args[1] + ".original")
-            open(args[1], "wb").write(b"someone else's data")
-        sys.exit(0 if is_luks(args[1]) else 1)
+            os.rename(args[-1], args[-1] + ".original")
+            open(args[-1], "wb").write(b"someone else's data")
+        sys.exit(0 if is_luks(args[-1]) else 1)
+    elif cmd == "luksUUID":
+        if not is_luks(args[-1]):
+            sys.exit(1)
+        print(uuid_of(args[-1]))
     elif cmd in ("luksFormat", "open"):
         key = sys.stdin.read()
         if "--key-file=-" not in args or len(key) < 32:
@@ -290,6 +294,11 @@ if tool == "cryptsetup":
             sys.exit(4)
         del state["mappers"][args[1]]
         save()
+elif tool == "dmsetup":
+    m = state["mappers"].get(args[-1])
+    if not m:
+        sys.exit(1)
+    print(m.get("dm_uuid") or "CRYPT-LUKS2-%s-%s" % (uuid_of(m["file"]).replace("-", ""), args[-1]))
 elif tool == "losetup":
     target = os.path.realpath(args[1])
     for m in state["mappers"].values():
@@ -302,6 +311,16 @@ elif tool == "blkid":
     print("DEVNAME=" + path)
     print("UUID=" + uuid_of(path))
     print("TYPE=" + os.environ.get("FAKE_BLKID_TYPE", "crypto_LUKS"))
+elif tool == "findmnt" and "-S" in args:
+    source = args[args.index("-S") + 1]
+    found = []
+    for target, value in state["mounts"].items():
+        for entry in value if isinstance(value, list) else [value]:
+            if entry["source"] == source:
+                found.append({"target": target, **{k: v for k, v in entry.items() if k not in ("submounts", "children")}})
+    if not found:
+        sys.exit(1)
+    print(json.dumps({"filesystems": found}))
 elif tool == "findmnt":
     m = state["mounts"].get(args[args.index("-M") + 1])
     if not m:
@@ -346,7 +365,7 @@ class Lab:
         self.bin.mkdir()
         fake = self.bin / "fake.py"
         fake.write_text(FAKE, encoding="utf-8")
-        for tool in ("cryptsetup", "losetup", "blkid", "findmnt", "mount", "umount", "mkfs.ext4"):
+        for tool in ("cryptsetup", "losetup", "blkid", "findmnt", "mount", "umount", "mkfs.ext4", "dmsetup"):
             (self.bin / tool).symlink_to(fake)
         fake.chmod(0o755)
         self.state_path = tmp_path / "state.json"
@@ -1215,3 +1234,119 @@ def test_every_binary_the_role_executes_is_probed_and_packaged():
     probed = "".join(str(v) for v in facts.values())
     for binary in used - {"sh", "realpath", "stat"}:
         assert binary in probed, binary
+
+
+def two_volumes(lab, **data_mapping):
+    lab.make_volume("data")
+    lab.make_volume("backup", opts="nodev,nosuid,noexec")
+    lab.state["mappers"]["agent_context_data"].update(data_mapping)
+    lab.log.write_text("")
+    return lab.state["mappers"]["agent_context_data"]
+
+
+def assert_nothing_changed(lab, before):
+    assert lab.tool_calls("umount") == [] and lab.tool_calls("mount") == []
+    assert lab.tool_calls("cryptsetup", "close") == [] and lab.tool_calls("cryptsetup", "open") == []
+    assert lab.read_state() == before
+
+
+def wipe_header(lab):
+    (lab.containers / "data.luks").write_bytes(b"\0" * 1024)
+
+
+MAPPING_PROBLEMS = {
+    "wiped-header": lambda lab: wipe_header(lab),
+    "plain-mapping": lambda lab: lab.state["mappers"]["agent_context_data"].update(
+        {"type": "PLAIN", "dm_uuid": "CRYPT-PLAIN-agent_context_data"}),
+    "uuid-mismatch": lambda lab: lab.state["mappers"]["agent_context_data"].update(
+        {"dm_uuid": "CRYPT-LUKS2-" + "ab" * 16 + "-agent_context_data"}),
+    "no-dm-uuid": lambda lab: lab.state["mappers"]["agent_context_data"].update({"dm_uuid": "-"}),
+}
+
+
+@pytest.mark.parametrize("problem", MAPPING_PROBLEMS)
+@pytest.mark.parametrize("action", ["unlock", "close"])
+def test_an_active_mapping_must_prove_it_is_the_luks2_volume_of_the_container(lab, problem, action):
+    two_volumes(lab)
+    MAPPING_PROBLEMS[problem](lab)
+    lab.write_state()
+    before = lab.read_state()
+
+    result = lab.run(action, **KEYS)
+
+    assert result.returncode != 0
+    assert "not verifiably the LUKS2 volume" in out(result)
+    assert "back up the header" in out(result)
+    assert_nothing_changed(lab, before)
+
+
+def test_the_verified_happy_path_still_closes_and_reunlocks(lab):
+    two_volumes(lab)
+
+    closed = lab.run("close")
+    assert closed.returncode == 0, out(closed)
+    assert lab.read_state() == {"mappers": {}, "mounts": {}}
+    assert lab.tool_calls("cryptsetup", "luksUUID") and lab.tool_calls("dmsetup")
+
+    reopened = lab.unlock()
+    assert reopened.returncode == 0, out(reopened)
+    again = lab.unlock()
+    assert again.returncode == 0, out(again)
+    assert len(lab.read_state()["mounts"]) == 2
+
+
+def test_the_header_and_uuid_checks_are_skipped_only_when_provisioning():
+    task = next(t for t in load(ROLE / "tasks/identify_volume.yml") if "block" in t)
+    assert "agent_context_luks_action != 'provision'" in task["when"]
+    argv = [t["ansible.builtin.command"]["argv"] for t in task["block"] if "ansible.builtin.command" in t]
+    assert ["cryptsetup", "isLuks", "--type", "luks2"] == argv[0][:4]
+    assert argv[1][:2] == ["cryptsetup", "luksUUID"] and argv[2][0] == "dmsetup"
+
+
+ELSEWHERE = {"source": "/dev/mapper/agent_context_data", "fstype": "ext4", "options": "nodev,nosuid,rw"}
+
+
+@pytest.mark.parametrize(
+    "mounts",
+    [
+        {"elsewhere": [ELSEWHERE]},
+        {"target": [ELSEWHERE], "elsewhere": [ELSEWHERE]},
+        {"elsewhere": [ELSEWHERE], "elsewhere2": [ELSEWHERE]},
+    ],
+    ids=["only-elsewhere", "target-and-elsewhere", "two-elsewhere"],
+)
+@pytest.mark.parametrize("action", ["unlock", "close"])
+def test_a_mapper_mounted_anywhere_but_the_target_is_refused_before_any_change(lab, mounts, action):
+    two_volumes(lab)
+    del lab.state["mounts"][str(lab.data)]
+    for where, value in mounts.items():
+        target = str(lab.data) if where == "target" else str(lab.srv / where)
+        lab.state["mounts"][target] = value[0]
+    lab.write_state()
+    before = lab.read_state()
+
+    result = lab.run(action, **KEYS)
+
+    assert result.returncode != 0
+    assert "not exactly once at" in out(result)
+    assert_nothing_changed(lab, before)
+
+
+@pytest.mark.parametrize("action", ["unlock", "close"])
+def test_an_unrelated_device_at_the_target_is_refused_before_any_change(lab, action):
+    two_volumes(lab)
+    lab.state["mounts"][str(lab.data)] = {"source": "/dev/sdz1", "fstype": "ext4", "options": "rw"}
+    lab.write_state()
+    before = lab.read_state()
+
+    result = lab.run(action, **KEYS)
+
+    assert result.returncode != 0
+    assert "foreign" in out(result)
+    assert_nothing_changed(lab, before)
+
+
+def test_the_mount_probe_is_by_source_and_flat():
+    task = next(t for _, t in all_tasks() if t["name"] == "Read every mount of the mapped device")
+    argv = task["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["findmnt", "-J", "-l"] and "-S" in argv

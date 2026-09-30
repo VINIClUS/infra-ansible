@@ -4,10 +4,11 @@
 - name: Work out which binaries this action runs
   ansible.builtin.set_fact:
     agent_context_luks_tools: >-
-      {{ ['cryptsetup', 'losetup', 'blkid', 'findmnt', 'mount', 'umount']
+      {{ ['cryptsetup', 'dmsetup', 'losetup', 'blkid', 'findmnt', 'mount', 'umount']
       + (['mkfs.ext4', 'fallocate', 'df'] if agent_context_luks_action == 'provision' else []) }}
     agent_context_luks_tool_packages:
       cryptsetup: cryptsetup-bin
+      dmsetup: dmsetup
       mkfs.ext4: e2fsprogs
       losetup: util-linux
       blkid: util-linux
