@@ -471,6 +471,11 @@ def test_disabled_role_changes_nothing(lab):
         ({"agent_context_luks_data_key": "a" * 40}, "must both be defined"),
         ({"agent_context_luks_data_key": "short", "agent_context_luks_backup_key": "b" * 40}, "at least 32"),
         ({"agent_context_luks_data_key": "a" * 40, "agent_context_luks_backup_key": "a" * 40}, "differ"),
+        ({"agent_context_luks_data_key": 10**39, "agent_context_luks_backup_key": "1" + "0" * 39}, "be strings"),
+        ({"agent_context_luks_data_key": 10**39, "agent_context_luks_backup_key": "b" * 40}, "be strings"),
+        ({"agent_context_luks_data_key": "a" * 40, "agent_context_luks_backup_key": True}, "be strings"),
+        ({"agent_context_luks_data_key": " " + "a" * 40, "agent_context_luks_backup_key": "b" * 40}, "whitespace"),
+        ({"agent_context_luks_data_key": "a" * 40, "agent_context_luks_backup_key": "b" * 40 + "\n"}, "whitespace"),
     ],
 )
 def test_bad_keys_fail_clearly_without_leaking_them(lab, keys, message):
@@ -478,7 +483,7 @@ def test_bad_keys_fail_clearly_without_leaking_them(lab, keys, message):
 
     assert result.returncode != 0
     assert message in out(result)
-    assert not any(value in out(result) for value in keys.values() if len(value) > 8)
+    assert not any(value in out(result) for value in map(str, keys.values()) if len(value) > 8)
     assert lab.calls() == []
 
 
@@ -1001,3 +1006,9 @@ def test_a_mount_that_comes_up_without_a_required_flag_fails_and_is_undone(lab, 
     assert lab.read_state()["mounts"] == {}
     assert lab.read_state()["mappers"] == {}
     assert ["umount", str(lab.data)] in lab.calls()
+
+
+def test_two_distinct_string_keys_pass_preflight(lab):
+    result = lab.run("unlock", agent_context_luks_data_key="1" * 40, agent_context_luks_backup_key="2" * 40)
+
+    assert "be strings" not in out(result)

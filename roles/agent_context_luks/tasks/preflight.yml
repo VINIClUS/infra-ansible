@@ -84,7 +84,17 @@
       backup_defined: "{{ agent_context_luks_backup_key is defined }}"
       data_long: "{{ (agent_context_luks_data_key | default('') | string | length) >= 32 }}"
       backup_long: "{{ (agent_context_luks_backup_key | default('') | string | length) >= 32 }}"
-      distinct: "{{ (agent_context_luks_data_key | default('')) != (agent_context_luks_backup_key | default('')) }}"
+      data_string: "{{ agent_context_luks_data_key | default('') is string }}"
+      backup_string: "{{ agent_context_luks_backup_key | default('') is string }}"
+      data_plain: >-
+        {{ (agent_context_luks_data_key | default('') | string)
+        == (agent_context_luks_data_key | default('') | string | trim) }}
+      backup_plain: >-
+        {{ (agent_context_luks_backup_key | default('') | string)
+        == (agent_context_luks_backup_key | default('') | string | trim) }}
+      distinct: >-
+        {{ (agent_context_luks_data_key | default('') | string)
+        != (agent_context_luks_backup_key | default('') | string) }}
   no_log: true
 
 - name: Require two long, different keys
@@ -92,10 +102,15 @@
     that:
       - agent_context_luks_key_checks.data_defined | bool
       - agent_context_luks_key_checks.backup_defined | bool
+      - agent_context_luks_key_checks.data_string | bool
+      - agent_context_luks_key_checks.backup_string | bool
+      - agent_context_luks_key_checks.data_plain | bool
+      - agent_context_luks_key_checks.backup_plain | bool
       - agent_context_luks_key_checks.data_long | bool
       - agent_context_luks_key_checks.backup_long | bool
       - agent_context_luks_key_checks.distinct | bool
     fail_msg: >-
       agent_context_luks_data_key and agent_context_luks_backup_key must both be defined in the private inventory
-      vault, be at least 32 characters long and differ from each other.
+      vault, be strings (quote all-digit keys), have no leading or trailing whitespace, be at least 32 characters
+      long and differ from each other.
   when: agent_context_luks_action in ['provision', 'unlock']
