@@ -284,7 +284,8 @@
     agent_context_tunnel_api_method: GET
     agent_context_tunnel_api_purpose: list identity providers
     agent_context_tunnel_api_list: true
-    agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/identity_providers"
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/identity_providers?per_page=100
   when: agent_context_tunnel_allowed_emails | length > 0
 
 - name: Require a login method for email access
