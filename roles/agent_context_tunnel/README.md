@@ -58,3 +58,15 @@ Every task that carries the Authorization header or a secret is `no_log: true`.
 Supply the real API token from the vault or the environment (`cloudflare_api_token`) and never with `-e` on the command line: high verbosity echoes extra vars.
 Failures surface only the Cloudflare error codes and messages. The API base URL
 must be exactly `https://api.cloudflare.com/client/v4` (a loopback URL is accepted only for the local fake API used by the tests).
+
+## Safety checks added by review
+
+- `agent_context_tunnel_identity_provider_id`: when `agent_context_tunnel_allowed_emails` is set, either this
+  provider id (applied as the app `allowed_idps`) or an existing One-Time PIN provider in the account is
+  required. The role never creates identity providers.
+- The role refuses to publish (ingress config and DNS) while the Access application has a policy it does not
+  manage that is `bypass` or `allow` for everyone, including reusable policies attached to the app. The
+  error lists policy names only.
+- The credentials file is reserved exclusively (mode 0600, owned by the operator) before any tunnel or token
+  is created, so an unwritable destination fails with nothing changed. A placeholder left empty by a failed
+  run is removed; a file with secrets in it is never touched.

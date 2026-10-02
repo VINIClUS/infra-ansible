@@ -203,6 +203,8 @@
       {{ 'create' if agent_context_tunnel_app_id | length == 0 else
       ('update' if agent_context_tunnel_app.name | default('') != agent_context_tunnel_application_name
       or agent_context_tunnel_app.session_duration | default('') != agent_context_tunnel_session_duration
+      or (agent_context_tunnel_identity_provider_id | length > 0
+      and agent_context_tunnel_app.allowed_idps | default([]) != [agent_context_tunnel_identity_provider_id])
       else 'none') }}
 
 - name: List the application policies
@@ -219,7 +221,9 @@
 - name: Record the existing policies
   ansible.builtin.set_fact:
     agent_context_tunnel_existing_policies: >-
-      {{ agent_context_tunnel_response.json.result if agent_context_tunnel_app_id | length > 0 else [] }}
+      {{ (agent_context_tunnel_response.json.result | default([])
+      + agent_context_tunnel_app.policies | default([]) | selectattr('name', 'defined') | list)
+      | unique(attribute='id') | list if agent_context_tunnel_app_id | length > 0 else [] }}
   no_log: true
 
 - name: Find the service token by exact name
@@ -274,6 +278,50 @@
   ansible.builtin.include_tasks: output_guards.yml
   when: agent_context_tunnel_secret_needed | bool
 
+- name: Find the account identity providers
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list identity providers
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/identity_providers"
+  when: agent_context_tunnel_allowed_emails | length > 0
+
+- name: Require a login method for email access
+  ansible.builtin.assert:
+    that: >-
+      agent_context_tunnel_allowed_emails | length == 0
+      or agent_context_tunnel_identity_provider_id | length > 0
+      or agent_context_tunnel_response.json.result | selectattr('type', 'equalto', 'onetimepin') | list | length > 0
+    fail_msg: >-
+      agent_context_tunnel_allowed_emails needs a login method: set agent_context_tunnel_identity_provider_id
+      or enable the One-Time PIN identity provider in the account first. This role never creates identity
+      providers.
+
+- name: Collect unmanaged permissive policies on the application
+  ansible.builtin.set_fact:
+    agent_context_tunnel_permissive_policies: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- set managed = [agent_context_tunnel_service_policy_name]
+      + ([agent_context_tunnel_human_policy_name] if agent_context_tunnel_allowed_emails | length > 0 else []) -%}
+      {%- for policy in agent_context_tunnel_existing_policies -%}
+      {%- if policy.name not in managed -%}
+      {%- set everyone = policy.include | default([]) | selectattr('everyone', 'defined') | list | length > 0 -%}
+      {%- if policy.decision | default('') == 'bypass' or (policy.decision | default('') == 'allow' and everyone) -%}
+      {%- set ns.out = ns.out + [policy.name] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  no_log: true
+
+- name: Refuse an application with an unmanaged permissive policy
+  ansible.builtin.assert:
+    that: agent_context_tunnel_permissive_policies | length == 0
+    fail_msg: >-
+      Refusing to publish: the Access application has policies this role does not manage that bypass or
+      allow everyone: {{ agent_context_tunnel_permissive_policies | join(', ') }}. Fix them by hand first.
+
 - name: Record the service token id to use in policies
   ansible.builtin.set_fact:
     agent_context_tunnel_service_token_effective_id: >-
@@ -310,102 +358,160 @@
   no_log: true
 
 # ---- Mutations, in dependency order ----
-- name: Create the missing remotely managed tunnel
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: POST
-    agent_context_tunnel_api_purpose: create tunnel
-    agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel"
-    agent_context_tunnel_api_body:
-      name: "{{ agent_context_tunnel_name }}"
-      config_src: cloudflare
-  when:
-    - agent_context_tunnel_id | length == 0
-    - not ansible_check_mode
-
-- name: Record the created tunnel id
-  ansible.builtin.set_fact:
-    agent_context_tunnel_id: "{{ agent_context_tunnel_response.json.result.id }}"
-    agent_context_tunnel_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
-    agent_context_tunnel_dns_content: "{{ agent_context_tunnel_response.json.result.id }}.cfargotunnel.com"
-  when:
-    - agent_context_tunnel_id | length == 0
-    - not ansible_check_mode
-  no_log: true
-
-# The tunnel token is re-fetchable, so it is read BEFORE the one-time service token secret exists; the
-# credentials file is then written right after the secret, with no API call in between.
-- name: Fetch the tunnel token
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: GET
-    agent_context_tunnel_api_purpose: fetch tunnel token
-    agent_context_tunnel_api_path: >-
-      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/token
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-
-- name: Keep the tunnel token in memory only
-  ansible.builtin.set_fact:
-    agent_context_tunnel_secret_tunnel_token: "{{ agent_context_tunnel_response.json.result }}"
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-  no_log: true
-
-- name: Create the missing service token
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: POST
-    agent_context_tunnel_api_purpose: create service token
-    agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens"
-    agent_context_tunnel_api_body:
-      name: "{{ agent_context_tunnel_service_token_name }}"
-      duration: "{{ agent_context_tunnel_service_token_duration }}"
-  when:
-    - agent_context_tunnel_token_id | length == 0
-    - not ansible_check_mode
-
-- name: Rotate the existing service token only when requested
-  ansible.builtin.include_tasks: api.yml
-  vars:
-    agent_context_tunnel_api_method: POST
-    agent_context_tunnel_api_purpose: rotate service token
-    agent_context_tunnel_api_path: >-
-      /accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens/{{
-      agent_context_tunnel_token_id }}/rotate
-  when:
-    - agent_context_tunnel_token_id | length > 0
-    - agent_context_tunnel_rotate_service_token | bool
-    - not ansible_check_mode
-
-- name: Keep the service token secrets in memory only
-  ansible.builtin.set_fact:
-    agent_context_tunnel_secret_token: "{{ agent_context_tunnel_response.json.result }}"
-    agent_context_tunnel_token_id: "{{ agent_context_tunnel_response.json.result.id }}"
-    agent_context_tunnel_service_token_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
-  when:
-    - agent_context_tunnel_token_matches | length == 0 or agent_context_tunnel_rotate_service_token | bool
-    - not ansible_check_mode
-  no_log: true
-
-- name: Write the credentials file, mode 0600, never over an existing file
+# Reserve the credentials file for real before the first mutation, so an unwritable destination fails
+# while nothing has been created yet.
+- name: Reserve the credentials file exclusively, mode 0600
   ansible.builtin.copy:
     dest: "{{ agent_context_tunnel_credentials_output }}"
-    content: >-
-      {{ {'tunnel_id': agent_context_tunnel_id,
-          'tunnel_token': agent_context_tunnel_secret_tunnel_token,
-          'service_token_id': agent_context_tunnel_token_id,
-          'service_token_client_id': agent_context_tunnel_secret_token.client_id
-                                     | default(agent_context_tunnel_token_client_id),
-          'service_token_client_secret': agent_context_tunnel_secret_token.client_secret} | to_nice_json }}
+    content: ""
     mode: "0600"
     force: false
   when:
     - agent_context_tunnel_secret_needed | bool
     - not ansible_check_mode
-  no_log: true
+
+- name: Confirm the reservation is our own empty regular file
+  ansible.builtin.stat:
+    path: "{{ agent_context_tunnel_credentials_output }}"
+    follow: false
+  check_mode: false
+  register: agent_context_tunnel_reservation
+  when:
+    - agent_context_tunnel_secret_needed | bool
+    - not ansible_check_mode
+
+- name: Require the reservation to be a fresh private regular file
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_reservation.stat.exists
+      - agent_context_tunnel_reservation.stat.isreg
+      - agent_context_tunnel_reservation.stat.size == 0
+      - agent_context_tunnel_reservation.stat.mode == '0600'
+      - agent_context_tunnel_reservation.stat.uid == (lookup('ansible.builtin.pipe', 'id -u') | int)
+    fail_msg: The credentials file could not be reserved exclusively; refusing to continue.
+  when:
+    - agent_context_tunnel_secret_needed | bool
+    - not ansible_check_mode
+
+- name: Create the tunnel and service token and persist their secrets
+  block:
+    - name: Create the missing remotely managed tunnel
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: create tunnel
+        agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel"
+        agent_context_tunnel_api_body:
+          name: "{{ agent_context_tunnel_name }}"
+          config_src: cloudflare
+      when:
+        - agent_context_tunnel_id | length == 0
+        - not ansible_check_mode
+
+    - name: Record the created tunnel id
+      ansible.builtin.set_fact:
+        agent_context_tunnel_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_dns_content: "{{ agent_context_tunnel_response.json.result.id }}.cfargotunnel.com"
+      when:
+        - agent_context_tunnel_id | length == 0
+        - not ansible_check_mode
+      no_log: true
+
+    # The tunnel token is re-fetchable, so it is read BEFORE the one-time service token secret exists; the
+    # credentials file is then written right after the secret, with no API call in between.
+    - name: Fetch the tunnel token
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: GET
+        agent_context_tunnel_api_purpose: fetch tunnel token
+        agent_context_tunnel_api_path: >-
+          /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/token
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Keep the tunnel token in memory only
+      ansible.builtin.set_fact:
+        agent_context_tunnel_secret_tunnel_token: "{{ agent_context_tunnel_response.json.result }}"
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+      no_log: true
+
+    - name: Create the missing service token
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: create service token
+        agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens"
+        agent_context_tunnel_api_body:
+          name: "{{ agent_context_tunnel_service_token_name }}"
+          duration: "{{ agent_context_tunnel_service_token_duration }}"
+      when:
+        - agent_context_tunnel_token_id | length == 0
+        - not ansible_check_mode
+
+    - name: Rotate the existing service token only when requested
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: rotate service token
+        agent_context_tunnel_api_path: >-
+          /accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens/{{
+          agent_context_tunnel_token_id }}/rotate
+      when:
+        - agent_context_tunnel_token_id | length > 0
+        - agent_context_tunnel_rotate_service_token | bool
+        - not ansible_check_mode
+
+    - name: Keep the service token secrets in memory only
+      ansible.builtin.set_fact:
+        agent_context_tunnel_secret_token: "{{ agent_context_tunnel_response.json.result }}"
+        agent_context_tunnel_token_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_service_token_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
+      when:
+        - agent_context_tunnel_token_matches | length == 0 or agent_context_tunnel_rotate_service_token | bool
+        - not ansible_check_mode
+      no_log: true
+
+    - name: Write the credentials into the reserved file, mode 0600
+      ansible.builtin.copy:
+        dest: "{{ agent_context_tunnel_credentials_output }}"
+        content: >-
+          {{ {'tunnel_id': agent_context_tunnel_id,
+              'tunnel_token': agent_context_tunnel_secret_tunnel_token,
+              'service_token_id': agent_context_tunnel_token_id,
+              'service_token_client_id': agent_context_tunnel_secret_token.client_id
+                                         | default(agent_context_tunnel_token_client_id),
+              'service_token_client_secret': agent_context_tunnel_secret_token.client_secret} | to_nice_json }}
+        mode: "0600"
+        force: true
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+      no_log: true
+  rescue:
+    - name: Inspect the reserved credentials file after a failure
+      ansible.builtin.stat:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        follow: false
+      check_mode: false
+      register: agent_context_tunnel_rescue_file
+      when: agent_context_tunnel_secret_needed | bool
+
+    - name: Remove the empty placeholder so no half-made output is left
+      ansible.builtin.file:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        state: absent
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - agent_context_tunnel_rescue_file.stat.exists
+        - agent_context_tunnel_rescue_file.stat.size == 0
+
+    - name: Fail with the original error
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg | default('tunnel or service token step failed') }}"
 
 - name: Rebuild the desired policies with the final service token id
   ansible.builtin.set_fact:

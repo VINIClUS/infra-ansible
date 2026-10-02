@@ -28,6 +28,7 @@ class FakeCloudflare:
         self.apps = []
         self.policies = {}
         self.service_tokens = []
+        self.identity_providers = [{"id": "idp-otp", "name": "One-time PIN", "type": "onetimepin"}]
         self.secret_counter = 0
         # (method, path suffix) pairs that answer HTTP 500.
         self.fail = []
@@ -114,6 +115,10 @@ class FakeCloudflare:
 
         return Handler
 
+    def bad_idps(self, body):
+        known = {p["id"] for p in self.identity_providers}
+        return not set(body.get("allowed_idps", [])) <= known
+
     @staticmethod
     def missing(body, *fields):
         return [f for f in fields if f not in body or body[f] in (None, "", [])]
@@ -172,12 +177,14 @@ class FakeCloudflare:
             record = next(r for r in self.dns if r["id"] == match.group(1))
             record.update(body)
             return 200, record, False
+        if path == f"{acct}/access/identity_providers" and method == "GET":
+            return 200, self.identity_providers, True
         if path == f"{acct}/access/apps":
             if method == "GET":
                 domain = query.get("domain")
                 return 200, [a for a in self.apps if domain in (None, a["domain"])], True
             if method == "POST":
-                if self.missing(body, "name", "domain", "type"):
+                if self.missing(body, "name", "domain", "type") or self.bad_idps(body):
                     return 400, None, False
                 app = {"id": str(uuid.uuid4()), **body}
                 self.apps.append(app)
@@ -185,7 +192,7 @@ class FakeCloudflare:
                 return 200, app, False
         match = re.fullmatch(rf"{acct}/access/apps/([^/]+)", path)
         if match and method == "PUT":
-            if self.missing(body, "name", "domain", "type") or {"id", "aud"} & set(body):
+            if self.missing(body, "name", "domain", "type") or {"id", "aud"} & set(body) or self.bad_idps(body):
                 return 400, None, False
             self.last_bodies["PUT apps"] = body
             app = next(a for a in self.apps if a["id"] == match.group(1))

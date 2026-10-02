@@ -28,8 +28,18 @@ def all_tasks() -> list[tuple[Path, dict]]:
     for path in role_files():
         if path.parent.name != "tasks":
             continue
-        tasks.extend((path, task) for task in yaml.safe_load(path.read_text(encoding="utf-8")))
+        tasks.extend((path, task) for task in flatten(yaml.safe_load(path.read_text(encoding="utf-8"))))
     return tasks
+
+
+def flatten(tasks):
+    """Yield leaf tasks, descending into block/rescue/always sections."""
+    for task in tasks:
+        if "block" in task:
+            for section in ("block", "rescue", "always"):
+                yield from flatten(task.get(section, []))
+        else:
+            yield task
 
 
 def test_disabled_by_default_and_asserted():
@@ -50,7 +60,10 @@ def test_no_delete_and_no_no_tls_verify_anywhere():
     for path in role_files() + [PLAYBOOK]:
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"\bDELETE\b", text)
-        assert not re.search(r"state:\s*absent", text)
+        # The only removal allowed is our own empty credentials placeholder after a failed run.
+        for hit in re.finditer(r"state:\s*absent", text):
+            assert "Remove the empty placeholder" in text[max(0, hit.start() - 300) : hit.start()]
+            assert text.count("state: absent") == 1
     assert "noTLSVerify: true" not in (ROLE / "defaults/main.yml").read_text(encoding="utf-8")
 
 
@@ -448,3 +461,83 @@ def test_deleted_tunnel_with_same_name_is_ignored_and_config_keys_survive(tmp_pa
         }
         assert run(fake, tmp_path / "unused.json").returncode == 0
         assert fake.last_bodies["PUT configurations"]["config"]["warp-routing"] == {"enabled": True}
+
+
+@needs_ansible
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_credentials_directory_fails_before_any_mutation(tmp_path):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        with FakeCloudflare() as fake:
+            result = run(fake, locked / "creds.json")
+            assert result.returncode != 0
+            assert fake.mutating() == []
+            assert not (locked / "creds.json").exists()
+    finally:
+        locked.chmod(0o700)
+
+
+@needs_ansible
+def test_failure_after_reservation_leaves_no_empty_placeholder(tmp_path):
+    output = tmp_path / "creds.json"
+    with FakeCloudflare() as fake:
+        fake.fail.append(("GET", "/token"))
+        result = run(fake, output)
+        assert result.returncode != 0
+        assert not output.exists()
+
+
+def seed_app(fake, policies):
+    app = {"id": "app-1", "name": "Agent Context", "domain": HOSTNAME, "type": "self_hosted",
+           "session_duration": "30m"}
+    fake.apps.append(app)
+    fake.policies["app-1"] = policies
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"id": "p1", "name": "Open to all", "decision": "bypass", "include": [{"everyone": {}}]},
+        {"id": "p2", "name": "Anyone in", "decision": "allow", "include": [{"everyone": {}}]},
+        {"id": "p3", "name": "Reusable open", "decision": "bypass", "include": [{"everyone": {}}], "reusable": True},
+    ],
+)
+def test_unmanaged_permissive_policy_blocks_publishing(tmp_path, policy):
+    with FakeCloudflare() as fake:
+        seed_app(fake, [] if policy.get("reusable") else [policy])
+        if policy.get("reusable"):
+            fake.apps[0]["policies"] = [policy]
+        result = run(fake, tmp_path / "creds.json")
+        assert result.returncode != 0
+        assert policy["name"] in result.stdout + result.stderr
+        assert fake.mutating() == []
+        assert fake.dns == [] and fake.configs == {}
+
+
+@needs_ansible
+def test_email_access_needs_a_login_method(tmp_path):
+    emails = {"agent_context_tunnel_allowed_emails": ["operator@example.invalid"]}
+    with FakeCloudflare() as fake:
+        fake.identity_providers.clear()
+        result = run(fake, tmp_path / "creds.json", extra=emails)
+        assert result.returncode != 0
+        assert "needs a login method" in result.stdout + result.stderr
+        assert fake.mutating() == []
+    with FakeCloudflare() as fake:
+        fake.identity_providers[:] = [{"id": "idp-x", "name": "Corp", "type": "github"}]
+        extra = {**emails, "agent_context_tunnel_identity_provider_id": "idp-x"}
+        assert run(fake, tmp_path / "creds2.json", extra=extra).returncode == 0
+        assert fake.apps[0]["allowed_idps"] == ["idp-x"]
+
+
+@needs_ansible
+def test_configured_identity_provider_is_applied_to_an_existing_app(tmp_path):
+    with FakeCloudflare() as fake:
+        assert run(fake, tmp_path / "creds.json").returncode == 0
+        fake.identity_providers.append({"id": "idp-x", "name": "Corp", "type": "github"})
+        extra = {"agent_context_tunnel_identity_provider_id": "idp-x"}
+        assert run(fake, tmp_path / "unused.json", extra=extra).returncode == 0
+        assert fake.last_bodies["PUT apps"]["allowed_idps"] == ["idp-x"]

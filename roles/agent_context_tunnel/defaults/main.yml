@@ -25,6 +25,8 @@ agent_context_tunnel_service_policy_name: Allow Agent Context service token
 agent_context_tunnel_human_policy_name: Allow Agent Context operators
 # Optional human allow policy; empty means no human policy is managed.
 agent_context_tunnel_allowed_emails: []
+# Required for human access unless the account already has a One-Time PIN provider. Never created here.
+agent_context_tunnel_identity_provider_id: ""
 
 agent_context_tunnel_service_token_name: agent-context-clients
 agent_context_tunnel_service_token_duration: 8760h
@@ -53,6 +55,9 @@ agent_context_tunnel_desired_application:
   domain: "{{ agent_context_tunnel_hostname }}"
   type: self_hosted
   session_duration: "{{ agent_context_tunnel_session_duration }}"
+  allowed_idps: >-
+    {{ [agent_context_tunnel_identity_provider_id] if agent_context_tunnel_identity_provider_id | length > 0
+    else omit }}
 # Response-only fields never sent back when an existing object is updated, plus
 # the multi-domain fields that could disagree with a drifted `domain`.
 agent_context_tunnel_readonly_fields:
