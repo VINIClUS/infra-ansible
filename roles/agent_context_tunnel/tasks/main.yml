@@ -358,43 +358,43 @@
   no_log: true
 
 # ---- Mutations, in dependency order ----
-# Reserve the credentials file for real before the first mutation, so an unwritable destination fails
-# while nothing has been created yet.
-- name: Reserve the credentials file exclusively, mode 0600
-  ansible.builtin.copy:
-    dest: "{{ agent_context_tunnel_credentials_output }}"
-    content: ""
-    mode: "0600"
-    force: false
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-
-- name: Confirm the reservation is our own empty regular file
-  ansible.builtin.stat:
-    path: "{{ agent_context_tunnel_credentials_output }}"
-    follow: false
-  check_mode: false
-  register: agent_context_tunnel_reservation
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-
-- name: Require the reservation to be a fresh private regular file
-  ansible.builtin.assert:
-    that:
-      - agent_context_tunnel_reservation.stat.exists
-      - agent_context_tunnel_reservation.stat.isreg
-      - agent_context_tunnel_reservation.stat.size == 0
-      - agent_context_tunnel_reservation.stat.mode == '0600'
-      - agent_context_tunnel_reservation.stat.uid == (lookup('ansible.builtin.pipe', 'id -u') | int)
-    fail_msg: The credentials file could not be reserved exclusively; refusing to continue.
-  when:
-    - agent_context_tunnel_secret_needed | bool
-    - not ansible_check_mode
-
 - name: Create the tunnel and service token and persist their secrets
   block:
+    # Reserve the credentials file for real before the first mutation, so an unwritable destination fails
+    # while nothing has been created yet.
+    - name: Reserve the credentials file exclusively, mode 0600
+      ansible.builtin.copy:
+        dest: "{{ agent_context_tunnel_credentials_output }}"
+        content: ""
+        mode: "0600"
+        force: false
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Confirm the reservation is our own empty regular file
+      ansible.builtin.stat:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        follow: false
+      check_mode: false
+      register: agent_context_tunnel_reservation
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Require the reservation to be a fresh private regular file
+      ansible.builtin.assert:
+        that:
+          - agent_context_tunnel_reservation.stat.exists
+          - agent_context_tunnel_reservation.stat.isreg
+          - agent_context_tunnel_reservation.stat.size == 0
+          - agent_context_tunnel_reservation.stat.mode == '0600'
+          - agent_context_tunnel_reservation.stat.uid == (lookup('ansible.builtin.pipe', 'id -u') | int)
+        fail_msg: The credentials file could not be reserved exclusively; refusing to continue.
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
     - name: Create the missing remotely managed tunnel
       ansible.builtin.include_tasks: api.yml
       vars:
@@ -526,7 +526,8 @@
     agent_context_tunnel_api_method: POST
     agent_context_tunnel_api_purpose: create Access application
     agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/apps"
-    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_application }}"
+    agent_context_tunnel_api_body: >-
+      {{ agent_context_tunnel_desired_application | combine(agent_context_tunnel_app_idp_overlay) }}
   when:
     - agent_context_tunnel_app_action == 'create'
     - not ansible_check_mode
@@ -549,7 +550,8 @@
     agent_context_tunnel_api_body: >-
       {{ agent_context_tunnel_app | dict2items
       | rejectattr('key', 'in', agent_context_tunnel_readonly_fields) | list | items2dict
-      | combine(agent_context_tunnel_desired_application) }}
+      | combine(agent_context_tunnel_desired_application)
+      | combine(agent_context_tunnel_app_idp_overlay) }}
   when:
     - agent_context_tunnel_app_action == 'update'
     - not ansible_check_mode

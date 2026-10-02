@@ -138,7 +138,7 @@ def test_playbook_is_not_deployable_by_push():
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook missing")
 
 
-def run(fake, output: Path | None, *args, extra=None, check=False, verbosity="-v") -> subprocess.CompletedProcess:
+def run(fake, output: Path | None, *args, extra=None, check=False, verbosity="-v", env_extra=None) -> subprocess.CompletedProcess:
     variables = {
         "agent_context_tunnel_enabled": True,
         "agent_context_tunnel_api_base_url": fake.base_url,
@@ -153,6 +153,7 @@ def run(fake, output: Path | None, *args, extra=None, check=False, verbosity="-v
     for proxy in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         env.pop(proxy, None)
     env.update({"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", "ANSIBLE_NOCOLOR": "1"})
+    env.update(env_extra or {})
     # Extra vars go through a private file: high verbosity echoes -e '{json}' on the command line.
     varfile = Path(tempfile.mkdtemp(prefix="tunnel-vars-")) / "vars.json"
     varfile.touch(mode=0o600)
@@ -541,3 +542,31 @@ def test_configured_identity_provider_is_applied_to_an_existing_app(tmp_path):
         extra = {"agent_context_tunnel_identity_provider_id": "idp-x"}
         assert run(fake, tmp_path / "unused.json", extra=extra).returncode == 0
         assert fake.last_bodies["PUT apps"]["allowed_idps"] == ["idp-x"]
+
+
+@needs_ansible
+def test_reservation_validation_failure_removes_placeholder_and_allows_retry(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    liar = bindir / "id"
+    liar.write_text("#!/bin/sh\necho 4242424\n")
+    liar.chmod(0o755)
+    output = tmp_path / "creds.json"
+    with FakeCloudflare() as fake:
+        failed = run(fake, output, env_extra={"PATH": f"{bindir}:{os.environ['PATH']}"})
+        assert failed.returncode != 0
+        assert fake.mutating() == []
+        assert not output.exists()
+        assert run(fake, output).returncode == 0
+        assert output.exists()
+
+
+@needs_ansible
+def test_hand_set_allowed_idps_survive_an_app_update(tmp_path):
+    with FakeCloudflare() as fake:
+        assert run(fake, tmp_path / "creds.json").returncode == 0
+        fake.apps[0]["name"] = "Renamed by hand"
+        fake.apps[0]["allowed_idps"] = ["idp-otp"]
+        assert run(fake, tmp_path / "unused.json").returncode == 0
+        assert fake.last_bodies["PUT apps"]["allowed_idps"] == ["idp-otp"]
+        assert fake.apps[0]["name"] != "Renamed by hand"
