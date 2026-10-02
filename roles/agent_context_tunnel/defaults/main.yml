@@ -3,8 +3,8 @@
 # runs playbooks/agent-context-tunnel.yml by hand (first with --check).
 agent_context_tunnel_enabled: false
 
-# Overridable only for the local fake API used by the tests; https or a
-# loopback http URL is accepted, anything else is refused.
+# Exactly this URL, or (tests only) http://127.0.0.1:<port>/client/v4 or
+# http://localhost:<port>/client/v4; anything else is refused before any call.
 agent_context_tunnel_api_base_url: https://api.cloudflare.com/client/v4
 agent_context_tunnel_api_token: "{{ cloudflare_api_token | default('') }}"
 agent_context_tunnel_account_id: "{{ cloudflare_account_id | default('', true) }}"
@@ -53,3 +53,17 @@ agent_context_tunnel_desired_application:
   domain: "{{ agent_context_tunnel_hostname }}"
   type: self_hosted
   session_duration: "{{ agent_context_tunnel_session_duration }}"
+# Response-only fields never sent back when an existing object is updated, plus
+# the multi-domain fields that could disagree with a drifted `domain`.
+agent_context_tunnel_readonly_fields:
+  - id
+  - uid
+  - aud
+  - created_at
+  - updated_at
+  - policies
+  - destinations
+  - self_hosted_domains
+  - version
+  - app_count
+  - reusable

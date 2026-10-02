@@ -38,10 +38,18 @@
       - agent_context_tunnel_hostname is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
     fail_msg: agent_context_tunnel_hostname must be set to a lowercase hostname without scheme or path.
 
+- name: Refuse any API base URL other than Cloudflare or a loopback test server
+  ansible.builtin.assert:
+    that: >-
+      agent_context_tunnel_api_base_url == 'https://api.cloudflare.com/client/v4'
+      or agent_context_tunnel_api_base_url is match('^http://(127[.]0[.]0[.]1|localhost):[0-9]+/client/v4$')
+    fail_msg: >-
+      The API base URL must be exactly https://api.cloudflare.com/client/v4 (or a loopback test URL);
+      refusing to send the bearer token anywhere else.
+
 - name: Validate the remaining tunnel inputs
   ansible.builtin.assert:
     that:
-      - agent_context_tunnel_api_base_url is match('^(https://[^/]+|http://127\.0\.0\.1:[0-9]+)[^ ]*$')
       - agent_context_tunnel_name | length > 0
       - agent_context_tunnel_service_token_name | length > 0
       - agent_context_tunnel_origin_service is match('^https?://[^/ ]+$')
@@ -54,8 +62,8 @@
       - agent_context_tunnel_rotate_service_token is boolean
       - agent_context_tunnel_session_duration is match('^[0-9]+[mh]$')
     fail_msg: >-
-      Invalid tunnel inputs: the API base URL must be https (or loopback http), the origin service an
-      http(s) URL, noTLSVerify is refused, emails must look like emails, and rotate must be a boolean.
+      Invalid tunnel inputs: the origin service must be an http(s) URL, noTLSVerify is refused, emails must
+      look like emails, rotate must be a boolean and the session duration like 30m or 8h.
 
 # ---- Discovery: GET only ----
 - name: Find the tunnel by name
@@ -99,6 +107,13 @@
       /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
   when: agent_context_tunnel_id | length > 0
 
+- name: Remember the current tunnel configuration so unmanaged settings survive the update
+  ansible.builtin.set_fact:
+    agent_context_tunnel_current_config: >-
+      {{ (agent_context_tunnel_response.json.result.config | default({}, true))
+      if agent_context_tunnel_id | length > 0 else {} }}
+  no_log: true
+
 - name: Compare the tunnel ingress with the desired ingress
   ansible.builtin.set_fact:
     agent_context_tunnel_config_differs: >-
@@ -130,6 +145,7 @@
       {{ agent_context_tunnel_response.json.result | selectattr('name', 'equalto', agent_context_tunnel_hostname)
       | list }}
     agent_context_tunnel_dns_content: "{{ agent_context_tunnel_effective_id }}.cfargotunnel.com"
+  no_log: true
 
 - name: Refuse an existing DNS record that is not a CNAME to this tunnel
   ansible.builtin.assert:
@@ -165,6 +181,7 @@
     agent_context_tunnel_app_matches: >-
       {{ agent_context_tunnel_response.json.result | selectattr('domain', 'equalto', agent_context_tunnel_hostname)
       | list }}
+  no_log: true
 
 - name: Require at most one self-hosted application for the hostname
   ansible.builtin.assert:
@@ -203,6 +220,7 @@
   ansible.builtin.set_fact:
     agent_context_tunnel_existing_policies: >-
       {{ agent_context_tunnel_response.json.result if agent_context_tunnel_app_id | length > 0 else [] }}
+  no_log: true
 
 - name: Find the service token by exact name
   ansible.builtin.include_tasks: api.yml
@@ -219,6 +237,7 @@
     agent_context_tunnel_token_matches: >-
       {{ agent_context_tunnel_response.json.result
       | selectattr('name', 'equalto', agent_context_tunnel_service_token_name) | list }}
+  no_log: true
 
 - name: Require at most one service token with the exact name
   ansible.builtin.assert:
@@ -312,6 +331,7 @@
   when:
     - agent_context_tunnel_id | length == 0
     - not ansible_check_mode
+  no_log: true
 
 # The tunnel token is re-fetchable, so it is read BEFORE the one-time service token secret exists; the
 # credentials file is then written right after the secret, with no API call in between.
@@ -411,6 +431,7 @@
   when:
     - agent_context_tunnel_app_action == 'create'
     - not ansible_check_mode
+  no_log: true
 
 - name: Update the drifted Access application
   ansible.builtin.include_tasks: api.yml
@@ -419,7 +440,10 @@
     agent_context_tunnel_api_purpose: update Access application
     agent_context_tunnel_api_path: >-
       /accounts/{{ agent_context_tunnel_account_id }}/access/apps/{{ agent_context_tunnel_app_id }}
-    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_application }}"
+    agent_context_tunnel_api_body: >-
+      {{ agent_context_tunnel_app | dict2items
+      | rejectattr('key', 'in', agent_context_tunnel_readonly_fields) | list | items2dict
+      | combine(agent_context_tunnel_desired_application) }}
   when:
     - agent_context_tunnel_app_action == 'update'
     - not ansible_check_mode
@@ -445,8 +469,8 @@
     agent_context_tunnel_api_path: >-
       /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
     agent_context_tunnel_api_body:
-      config:
-        ingress: "{{ agent_context_tunnel_desired_ingress }}"
+      config: "{{ agent_context_tunnel_current_config | combine({'ingress': agent_context_tunnel_desired_ingress}) }}"
+  no_log: true
   when:
     - agent_context_tunnel_config_differs | bool
     - not ansible_check_mode

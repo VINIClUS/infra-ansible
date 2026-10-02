@@ -58,6 +58,7 @@
       {%- set ns.out = ns.out + [{'code': error.code | default(''), 'message': error.message | default('')}] -%}
       {%- endfor -%}
       {{ ns.out | to_json }}
+  no_log: true
 
 - name: Fail with only the Cloudflare error codes and messages
   ansible.builtin.assert:

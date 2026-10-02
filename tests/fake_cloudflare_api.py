@@ -31,6 +31,7 @@ class FakeCloudflare:
         self.secret_counter = 0
         # (method, path suffix) pairs that answer HTTP 500.
         self.fail = []
+        self.last_bodies = {}
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -113,7 +114,15 @@ class FakeCloudflare:
 
         return Handler
 
+    @staticmethod
+    def missing(body, *fields):
+        return [f for f in fields if f not in body or body[f] in (None, "", [])]
+
     def route(self, method, path, query, body):
+        handled = self._route(method, path, query, body)
+        return handled
+
+    def _route(self, method, path, query, body):
         path = path.removeprefix("/client/v4")
         if any(method == m and path.endswith(suffix) for m, suffix in self.fail):
             return 500, None, False
@@ -121,8 +130,13 @@ class FakeCloudflare:
         if path == f"{acct}/cfd_tunnel":
             if method == "GET":
                 name = query.get("name")
-                return 200, [t for t in self.tunnels if name in (None, t["name"])], True
+                found = [t for t in self.tunnels if name in (None, t["name"])]
+                if query.get("is_deleted") == "false":
+                    found = [t for t in found if not t.get("deleted_at")]
+                return 200, found, True
             if method == "POST":
+                if self.missing(body, "name") or body.get("config_src") != "cloudflare":
+                    return 400, None, False
                 tunnel = {"id": str(uuid.uuid4()), "name": body["name"], "config_src": body["config_src"]}
                 self.tunnels.append(tunnel)
                 return 200, tunnel, False
@@ -132,8 +146,15 @@ class FakeCloudflare:
             if leaf == "token" and method == "GET":
                 return 200, TUNNEL_TOKEN, False
             if leaf == "configurations" and method == "GET":
-                return 200, {"tunnel_id": tunnel_id, "config": self.configs.get(tunnel_id)}, False
+                config = self.configs.get(tunnel_id)
+                if config is not None:
+                    config = {"warp-routing": {"enabled": False}, **config}
+                return 200, {"tunnel_id": tunnel_id, "source": "cloudflare", "version": 1, "config": config}, False
             if leaf == "configurations" and method == "PUT":
+                ingress = body.get("config", {}).get("ingress") or []
+                if not ingress or set(ingress[-1]) != {"service"} or any("service" not in r for r in ingress):
+                    return 400, None, False
+                self.last_bodies["PUT configurations"] = body
                 self.configs[tunnel_id] = body["config"]
                 return 200, {"tunnel_id": tunnel_id, "config": body["config"]}, False
         if path == f"/zones/{ZONE}/dns_records":
@@ -141,6 +162,8 @@ class FakeCloudflare:
                 name = query.get("name")
                 return 200, [r for r in self.dns if name in (None, r["name"])], True
             if method == "POST":
+                if self.missing(body, "type", "name", "content") or body.get("proxied") is not True:
+                    return 400, None, False
                 record = {"id": str(uuid.uuid4()), **body}
                 self.dns.append(record)
                 return 200, record, False
@@ -154,12 +177,17 @@ class FakeCloudflare:
                 domain = query.get("domain")
                 return 200, [a for a in self.apps if domain in (None, a["domain"])], True
             if method == "POST":
+                if self.missing(body, "name", "domain", "type"):
+                    return 400, None, False
                 app = {"id": str(uuid.uuid4()), **body}
                 self.apps.append(app)
                 self.policies[app["id"]] = []
                 return 200, app, False
         match = re.fullmatch(rf"{acct}/access/apps/([^/]+)", path)
         if match and method == "PUT":
+            if self.missing(body, "name", "domain", "type") or {"id", "aud"} & set(body):
+                return 400, None, False
+            self.last_bodies["PUT apps"] = body
             app = next(a for a in self.apps if a["id"] == match.group(1))
             app.update(body)
             return 200, app, False
@@ -169,11 +197,17 @@ class FakeCloudflare:
             policies = self.policies.setdefault(app_id, [])
             if policy_id is None and method == "GET":
                 return 200, policies, True
+            if method in ("POST", "PUT") and (
+                self.missing(body, "name", "decision", "include")
+                or body["decision"] not in ("allow", "deny", "non_identity", "bypass")
+            ):
+                return 400, None, False
             if policy_id is None and method == "POST":
                 policy = {"id": str(uuid.uuid4()), **body}
                 policies.append(policy)
                 return 200, policy, False
             if policy_id and method == "PUT":
+                self.last_bodies["PUT policies"] = body
                 policy = next(p for p in policies if p["id"] == policy_id)
                 policy.update(body)
                 return 200, policy, False
@@ -187,6 +221,8 @@ class FakeCloudflare:
                 ]
                 return 200, listed, True
             if method == "POST":
+                if self.missing(body, "name"):
+                    return 400, None, False
                 token = self._new_token(body["name"])
                 self.service_tokens.append(token)
                 return 200, token, False

@@ -55,5 +55,6 @@ POST/PUT/PATCH and writes no file, and reports the changes a real run would make
 ## Safety
 
 Every task that carries the Authorization header or a secret is `no_log: true`.
+Supply the real API token from the vault or the environment (`cloudflare_api_token`) and never with `-e` on the command line: high verbosity echoes extra vars.
 Failures surface only the Cloudflare error codes and messages. The API base URL
-must be https (loopback http is allowed for the local fake API used by the tests).
+must be exactly `https://api.cloudflare.com/client/v4` (a loopback URL is accepted only for the local fake API used by the tests).

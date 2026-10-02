@@ -58,8 +58,10 @@ def test_every_task_touching_the_token_or_secrets_is_no_log():
     secretive = (
         r"agent_context_tunnel_api_token\b",
         "agent_context_tunnel_secret_token",
-        "agent_context_tunnel_read",
-        "agent_context_tunnel_write",
+        r"agent_context_tunnel_response\b",
+        r"agent_context_tunnel_read\b",
+        r"agent_context_tunnel_current_config\b",
+        r"agent_context_tunnel_write\b",
     )
     seen = 0
     for path, task in all_tasks():
@@ -67,6 +69,9 @@ def test_every_task_touching_the_token_or_secrets_is_no_log():
             "agent_context_tunnel_api_token (or", ""
         )
         uses_uri = "ansible.builtin.uri" in task
+        # The api.yml asserts only print the extracted error codes and messages.
+        if "ansible.builtin.assert" in task:
+            continue
         if uses_uri or any(re.search(name, text) for name in secretive):
             seen += 1
             assert task.get("no_log") is True, f"{path.name}: {task['name']}"
@@ -120,7 +125,7 @@ def test_playbook_is_not_deployable_by_push():
 needs_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook missing")
 
 
-def run(fake, output: Path | None, *args, extra=None, check=False) -> subprocess.CompletedProcess:
+def run(fake, output: Path | None, *args, extra=None, check=False, verbosity="-v") -> subprocess.CompletedProcess:
     variables = {
         "agent_context_tunnel_enabled": True,
         "agent_context_tunnel_api_base_url": fake.base_url,
@@ -135,19 +140,26 @@ def run(fake, output: Path | None, *args, extra=None, check=False) -> subprocess
     for proxy in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         env.pop(proxy, None)
     env.update({"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", "ANSIBLE_NOCOLOR": "1"})
-    command = ["ansible-playbook", "-i", "localhost,", str(PLAYBOOK), "-e", json.dumps(variables), "-v", *args]
+    # Extra vars go through a private file: high verbosity echoes -e '{json}' on the command line.
+    varfile = Path(tempfile.mkdtemp(prefix="tunnel-vars-")) / "vars.json"
+    varfile.touch(mode=0o600)
+    varfile.write_text(json.dumps(variables), encoding="utf-8")
+    command = ["ansible-playbook", "-i", "localhost,", str(PLAYBOOK), "-e", f"@{varfile}", verbosity, *args]
     if check:
         command.append("--check")
-    return subprocess.run(
-        command,
-        cwd=ROOT,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    finally:
+        shutil.rmtree(varfile.parent, ignore_errors=True)
 
 
 def assert_no_secrets(result: subprocess.CompletedProcess, *extra: str):
@@ -368,3 +380,71 @@ def test_new_tunnel_with_existing_service_token_refuses_an_empty_secret(tmp_path
         assert "agent_context_tunnel_rotate_service_token=true" in result.stdout + result.stderr
         assert fake.mutating() == []
         assert not output.exists()
+
+
+@needs_ansible
+def test_very_verbose_run_never_prints_secrets(tmp_path):
+    with FakeCloudflare() as fake:
+        output = tmp_path / "creds.json"
+        result = run(fake, output, verbosity="-vvv")
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr
+        assert output.exists() and fake.mutating(), "the run must really create and persist secrets"
+        written = output.read_text()
+        assert TUNNEL_TOKEN in written and CLIENT_SECRET in written
+        assert_no_secrets(result)
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.cloudflare.com.evil.invalid/client/v4",
+        "https://example.invalid/client/v4",
+        "http://api.cloudflare.com/client/v4",
+        "http://127.0.0.1.evil.invalid:80/client/v4",
+        "http://localhost:8080@evil.invalid/client/v4",
+    ],
+)
+def test_untrusted_api_base_url_is_refused_before_any_call(tmp_path, url):
+    with FakeCloudflare() as fake:
+        result = run(fake, tmp_path / "creds.json", extra={"agent_context_tunnel_api_base_url": url})
+        assert result.returncode != 0
+        assert "refusing to send the bearer token anywhere else" in result.stdout + result.stderr
+        assert fake.requests == []
+        assert_no_secrets(result)
+
+
+@needs_ansible
+def test_app_and_policy_updates_keep_hand_set_fields(tmp_path):
+    with FakeCloudflare() as fake:
+        assert run(fake, tmp_path / "creds.json").returncode == 0
+        app = fake.apps[0]
+        app["custom_hand_set_field"] = "keep"
+        app["aud"] = "read-only-aud"
+        app["session_duration"] = "24h"
+        policy = fake.policies[app["id"]][0]
+        policy["custom_policy_field"] = "keep"
+        policy["precedence"] = 9
+        again = run(fake, tmp_path / "unused.json")
+        assert again.returncode == 0, again.stdout[-2000:]
+        assert app["session_duration"] == "30m" and app["custom_hand_set_field"] == "keep"
+        assert policy["precedence"] == 1 and policy["custom_policy_field"] == "keep"
+        assert fake.last_bodies["PUT apps"].keys().isdisjoint(
+            {"id", "aud", "created_at", "updated_at", "destinations", "self_hosted_domains"}
+        )
+        assert fake.last_bodies["PUT policies"].keys().isdisjoint({"id", "created_at", "updated_at"})
+
+
+@needs_ansible
+def test_deleted_tunnel_with_same_name_is_ignored_and_config_keys_survive(tmp_path):
+    with FakeCloudflare() as fake:
+        fake.tunnels.append({"id": "gone", "name": "agent-context", "deleted_at": "2020-01-01T00:00:00Z"})
+        assert run(fake, tmp_path / "creds.json").returncode == 0
+        live = [t for t in fake.tunnels if not t.get("deleted_at")]
+        assert len(live) == 1 and live[0]["id"] != "gone"
+        fake.configs[live[0]["id"]] = {
+            "ingress": [{"service": "http_status:404"}],
+            "warp-routing": {"enabled": True},
+        }
+        assert run(fake, tmp_path / "unused.json").returncode == 0
+        assert fake.last_bodies["PUT configurations"]["config"]["warp-routing"] == {"enabled": True}

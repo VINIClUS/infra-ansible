@@ -51,7 +51,10 @@
     agent_context_tunnel_api_path: >-
       /accounts/{{ agent_context_tunnel_account_id }}/access/apps/{{ agent_context_tunnel_app_id }}/policies/{{
       agent_context_tunnel_policy_current[0].id }}
-    agent_context_tunnel_api_body: "{{ agent_context_tunnel_policy }}"
+    agent_context_tunnel_api_body: >-
+      {{ agent_context_tunnel_policy_current[0] | dict2items
+      | rejectattr('key', 'in', agent_context_tunnel_readonly_fields) | list | items2dict
+      | combine(agent_context_tunnel_policy) }}
   when:
     - agent_context_tunnel_policy_action == 'update'
     - not ansible_check_mode
