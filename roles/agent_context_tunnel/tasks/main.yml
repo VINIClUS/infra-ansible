@@ -1,0 +1,641 @@
+---
+# Guards first, then every read-only discovery and refusal, then the mutations
+# in dependency order. Nothing is ever deleted and other tunnels, DNS records
+# and applications are never touched.
+- name: Validate the tunnel role enable flag
+  ansible.builtin.assert:
+    that: agent_context_tunnel_enabled is boolean
+    fail_msg: agent_context_tunnel_enabled must be a boolean.
+
+- name: Stop only the tunnel role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not agent_context_tunnel_enabled | bool
+
+- name: Record whether the Cloudflare API token is set
+  ansible.builtin.set_fact:
+    agent_context_tunnel_api_token_present: "{{ agent_context_tunnel_api_token | length > 0 }}"
+  no_log: true
+
+- name: Require the Cloudflare API token
+  ansible.builtin.assert:
+    that: agent_context_tunnel_api_token_present | bool
+    fail_msg: agent_context_tunnel_api_token (or cloudflare_api_token) must be set and non-empty.
+
+- name: Require the Cloudflare account id
+  ansible.builtin.assert:
+    that: agent_context_tunnel_account_id | length > 0
+    fail_msg: agent_context_tunnel_account_id (or cloudflare_account_id) must be set and non-empty.
+
+- name: Require the Cloudflare zone id
+  ansible.builtin.assert:
+    that: agent_context_tunnel_zone_id | length > 0
+    fail_msg: agent_context_tunnel_zone_id (or cloudflare_zone_id) must be set and non-empty.
+
+- name: Require a bare public hostname
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_hostname | length > 0
+      - agent_context_tunnel_hostname is match('^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$')
+    fail_msg: agent_context_tunnel_hostname must be set to a lowercase hostname without scheme or path.
+
+- name: Refuse any API base URL other than Cloudflare or a loopback test server
+  ansible.builtin.assert:
+    that: >-
+      agent_context_tunnel_api_base_url == 'https://api.cloudflare.com/client/v4'
+      or agent_context_tunnel_api_base_url is match('^http://(127[.]0[.]0[.]1|localhost):[0-9]+/client/v4$')
+    fail_msg: >-
+      The API base URL must be exactly https://api.cloudflare.com/client/v4 (or a loopback test URL);
+      refusing to send the bearer token anywhere else.
+
+- name: Validate the remaining tunnel inputs
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_name | length > 0
+      - agent_context_tunnel_service_token_name | length > 0
+      - agent_context_tunnel_origin_service is match('^https?://[^/ ]+$')
+      - agent_context_tunnel_origin_request is mapping
+      - not (agent_context_tunnel_origin_request.noTLSVerify | default(false) | bool)
+      - agent_context_tunnel_allowed_emails is sequence
+      - agent_context_tunnel_allowed_emails is not string
+      - agent_context_tunnel_allowed_emails | select('match', '^[^@ ]+@[^@ ]+$') | list | length ==
+        agent_context_tunnel_allowed_emails | length
+      - agent_context_tunnel_rotate_service_token is boolean
+      - agent_context_tunnel_session_duration is match('^[0-9]+[mh]$')
+    fail_msg: >-
+      Invalid tunnel inputs: the origin service must be an http(s) URL, noTLSVerify is refused, emails must
+      look like emails, rotate must be a boolean and the session duration like 30m or 8h.
+
+# ---- Discovery: GET only ----
+- name: Find the tunnel by name
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list tunnels
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel?name={{
+      agent_context_tunnel_name | urlencode }}&is_deleted=false&per_page=100
+
+- name: Select the exact tunnel
+  ansible.builtin.set_fact:
+    agent_context_tunnel_matches: >-
+      {{ agent_context_tunnel_response.json.result | selectattr('name', 'equalto', agent_context_tunnel_name)
+      | list }}
+  no_log: true
+
+- name: Require at most one tunnel with the exact name, managed remotely
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_matches | length <= 1
+      - agent_context_tunnel_matches | map(attribute='config_src', default='cloudflare') | unique | list
+        in [[], ['cloudflare']]
+    fail_msg: >-
+      More than one tunnel has the exact name, or the tunnel is locally managed; refusing to touch it.
+
+- name: Record the tunnel id
+  ansible.builtin.set_fact:
+    agent_context_tunnel_id: "{{ agent_context_tunnel_matches | map(attribute='id') | first | default('') }}"
+    agent_context_tunnel_effective_id: >-
+      {{ agent_context_tunnel_matches | map(attribute='id') | first | default('tunnel-id-pending') }}
+
+- name: Read the tunnel configuration
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: read tunnel configuration
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
+  when: agent_context_tunnel_id | length > 0
+
+- name: Remember the current tunnel configuration so unmanaged settings survive the update
+  ansible.builtin.set_fact:
+    agent_context_tunnel_current_config: >-
+      {{ (agent_context_tunnel_response.json.result.config | default({}, true))
+      if agent_context_tunnel_id | length > 0 else {} }}
+  no_log: true
+
+- name: Compare the tunnel ingress with the desired ingress
+  ansible.builtin.set_fact:
+    agent_context_tunnel_config_differs: >-
+      {%- set ns = namespace(cur=[], want=[]) -%}
+      {%- set current = ((agent_context_tunnel_response.json.result.config | default({}, true)).ingress
+        | default([])) if agent_context_tunnel_id | length > 0 else [] -%}
+      {%- for rule in current -%}
+      {%- set ns.cur = ns.cur + [{'originRequest': {}} | combine(rule)] -%}
+      {%- endfor -%}
+      {%- for rule in agent_context_tunnel_desired_ingress -%}
+      {%- set ns.want = ns.want + [{'originRequest': {}} | combine(rule)] -%}
+      {%- endfor -%}
+      {{ (ns.cur | to_json(sort_keys=True)) != (ns.want | to_json(sort_keys=True)) }}
+  no_log: true
+
+- name: Find DNS records for the hostname
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list DNS records
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /zones/{{ agent_context_tunnel_zone_id }}/dns_records?name={{
+      agent_context_tunnel_hostname | urlencode }}&per_page=100
+
+- name: Decide the DNS reconciliation and refuse foreign records
+  ansible.builtin.set_fact:
+    agent_context_tunnel_dns_records: >-
+      {{ agent_context_tunnel_response.json.result | selectattr('name', 'equalto', agent_context_tunnel_hostname)
+      | list }}
+    agent_context_tunnel_dns_content: "{{ agent_context_tunnel_effective_id }}.cfargotunnel.com"
+  no_log: true
+
+- name: Refuse an existing DNS record that is not a CNAME to this tunnel
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_dns_records | length <= 1
+      - agent_context_tunnel_id | length > 0 or agent_context_tunnel_dns_records | length == 0
+      - agent_context_tunnel_dns_records | selectattr('type', 'equalto', 'CNAME')
+        | selectattr('content', 'equalto', agent_context_tunnel_dns_content) | list | length ==
+        agent_context_tunnel_dns_records | length
+    fail_msg: >-
+      A DNS record already exists for {{ agent_context_tunnel_hostname }} that is not a single CNAME to this
+      tunnel; refusing to overwrite a foreign record.
+
+- name: Record the DNS action
+  ansible.builtin.set_fact:
+    agent_context_tunnel_dns_action: >-
+      {{ 'create' if agent_context_tunnel_dns_records | length == 0 else
+      ('update' if (agent_context_tunnel_dns_records[0].proxied | default(false) | bool) is false
+      or agent_context_tunnel_dns_records[0].ttl | default(0) | int != 1 else 'none') }}
+
+- name: Find the Access application by exact domain
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list Access applications
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/apps?domain={{
+      agent_context_tunnel_hostname | urlencode }}&exact=true&per_page=100
+
+- name: Select the exact Access application
+  ansible.builtin.set_fact:
+    agent_context_tunnel_app_matches: >-
+      {{ agent_context_tunnel_response.json.result | selectattr('domain', 'equalto', agent_context_tunnel_hostname)
+      | list }}
+  no_log: true
+
+- name: Require at most one self-hosted application for the hostname
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_app_matches | length <= 1
+      - agent_context_tunnel_app_matches | map(attribute='type') | unique | list in [[], ['self_hosted']]
+    fail_msg: >-
+      More than one Access application has the exact hostname, or it is not self_hosted; refusing an
+      ambiguous update.
+
+- name: Record the Access application
+  ansible.builtin.set_fact:
+    agent_context_tunnel_app: "{{ agent_context_tunnel_app_matches | first | default({}) }}"
+    agent_context_tunnel_app_id: "{{ agent_context_tunnel_app_matches | map(attribute='id') | first | default('') }}"
+
+- name: Decide the Access application action
+  ansible.builtin.set_fact:
+    agent_context_tunnel_app_action: >-
+      {{ 'create' if agent_context_tunnel_app_id | length == 0 else
+      ('update' if agent_context_tunnel_app.name | default('') != agent_context_tunnel_application_name
+      or agent_context_tunnel_app.session_duration | default('') != agent_context_tunnel_session_duration
+      or (agent_context_tunnel_identity_provider_id | length > 0
+      and agent_context_tunnel_app.allowed_idps | default([]) != [agent_context_tunnel_identity_provider_id])
+      else 'none') }}
+
+- name: List the application policies
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list Access policies
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/apps/{{
+      agent_context_tunnel_app_id }}/policies?per_page=100
+  when: agent_context_tunnel_app_id | length > 0
+
+- name: Record the existing policies
+  ansible.builtin.set_fact:
+    agent_context_tunnel_existing_policies: >-
+      {{ (agent_context_tunnel_response.json.result | default([])
+      + agent_context_tunnel_app.policies | default([]) | selectattr('name', 'defined') | list)
+      | unique(attribute='id') | list if agent_context_tunnel_app_id | length > 0 else [] }}
+  no_log: true
+
+- name: Find the service token by exact name
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list service tokens
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens?name={{
+      agent_context_tunnel_service_token_name | urlencode }}&per_page=100
+
+- name: Select the exact service token
+  ansible.builtin.set_fact:
+    agent_context_tunnel_token_matches: >-
+      {{ agent_context_tunnel_response.json.result
+      | selectattr('name', 'equalto', agent_context_tunnel_service_token_name) | list }}
+  no_log: true
+
+- name: Require at most one service token with the exact name
+  ansible.builtin.assert:
+    that: agent_context_tunnel_token_matches | length <= 1
+    fail_msg: More than one service token has the exact name; refusing an ambiguous choice.
+
+- name: Record the service token and whether secrets will be produced
+  ansible.builtin.set_fact:
+    agent_context_tunnel_token_id: >-
+      {{ agent_context_tunnel_token_matches | map(attribute='id') | first | default('') }}
+    agent_context_tunnel_token_client_id: >-
+      {{ agent_context_tunnel_token_matches | map(attribute='client_id') | first | default('') }}
+    agent_context_tunnel_secret_needed: >-
+      {{ agent_context_tunnel_id | length == 0 or agent_context_tunnel_token_matches | length == 0
+      or agent_context_tunnel_rotate_service_token | bool }}
+
+- name: Refuse to write credentials without a retrievable service token secret
+  ansible.builtin.assert:
+    that: >-
+      not agent_context_tunnel_secret_needed | bool or agent_context_tunnel_token_matches | length == 0
+      or agent_context_tunnel_rotate_service_token | bool
+    fail_msg: >-
+      A new tunnel needs credentials, but the service token exists and its secret is not retrievable; set
+      agent_context_tunnel_rotate_service_token=true or supply existing credentials.
+
+- name: Refuse to produce secrets without a credentials output path
+  ansible.builtin.assert:
+    that: not agent_context_tunnel_secret_needed | bool or agent_context_tunnel_credentials_output | length > 0
+    fail_msg: >-
+      A tunnel token or service token secret would be produced; set agent_context_tunnel_credentials_output
+      to an absolute path outside any git work tree before running.
+
+- name: Check the credentials output path before creating anything
+  ansible.builtin.include_tasks: output_guards.yml
+  when: agent_context_tunnel_secret_needed | bool
+
+- name: Find the account identity providers
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: GET
+    agent_context_tunnel_api_purpose: list identity providers
+    agent_context_tunnel_api_list: true
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/identity_providers?per_page=100
+  when: agent_context_tunnel_allowed_emails | length > 0
+
+- name: Require a login method for email access
+  ansible.builtin.assert:
+    that: >-
+      agent_context_tunnel_allowed_emails | length == 0
+      or agent_context_tunnel_identity_provider_id | length > 0
+      or agent_context_tunnel_response.json.result | selectattr('type', 'equalto', 'onetimepin') | list | length > 0
+    fail_msg: >-
+      agent_context_tunnel_allowed_emails needs a login method: set agent_context_tunnel_identity_provider_id
+      or enable the One-Time PIN identity provider in the account first. This role never creates identity
+      providers.
+
+- name: Collect unmanaged permissive policies on the application
+  ansible.builtin.set_fact:
+    agent_context_tunnel_permissive_policies: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- set managed = [agent_context_tunnel_service_policy_name]
+      + ([agent_context_tunnel_human_policy_name] if agent_context_tunnel_allowed_emails | length > 0 else []) -%}
+      {%- for policy in agent_context_tunnel_existing_policies -%}
+      {%- if policy.name not in managed -%}
+      {%- set everyone = policy.include | default([]) | selectattr('everyone', 'defined') | list | length > 0 -%}
+      {%- if policy.decision | default('') == 'bypass' or (policy.decision | default('') == 'allow' and everyone) -%}
+      {%- set ns.out = ns.out + [policy.name] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  no_log: true
+
+- name: Refuse an application with an unmanaged permissive policy
+  ansible.builtin.assert:
+    that: agent_context_tunnel_permissive_policies | length == 0
+    fail_msg: >-
+      Refusing to publish: the Access application has policies this role does not manage that bypass or
+      allow everyone: {{ agent_context_tunnel_permissive_policies | join(', ') }}. Fix them by hand first.
+
+- name: Record the service token id to use in policies
+  ansible.builtin.set_fact:
+    agent_context_tunnel_service_token_effective_id: >-
+      {{ agent_context_tunnel_token_id | default('', true) or 'service-token-id-pending' }}
+    agent_context_tunnel_secret_token: {}
+    agent_context_tunnel_secret_tunnel_token: ''
+  no_log: true
+
+- name: Build the human policy include list
+  ansible.builtin.set_fact:
+    agent_context_tunnel_human_include: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for email in agent_context_tunnel_allowed_emails -%}
+      {%- set ns.out = ns.out + [{'email': {'email': email}}] -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  no_log: true
+
+- name: Build the desired policies
+  ansible.builtin.set_fact:
+    agent_context_tunnel_policies: >-
+      {{ [{'name': agent_context_tunnel_service_policy_name,
+           'decision': 'non_identity',
+           'include': [{'service_token': {'token_id': agent_context_tunnel_service_token_effective_id}}],
+           'exclude': [],
+           'require': [],
+           'precedence': 1}]
+         + ([{'name': agent_context_tunnel_human_policy_name,
+              'decision': 'allow',
+              'include': agent_context_tunnel_human_include,
+              'exclude': [],
+              'require': [],
+              'precedence': 2}] if agent_context_tunnel_allowed_emails | length > 0 else []) }}
+  no_log: true
+
+# ---- Mutations, in dependency order ----
+- name: Create the tunnel and service token and persist their secrets
+  block:
+    # Reserve the credentials file for real before the first mutation, so an unwritable destination fails
+    # while nothing has been created yet.
+    - name: Reserve the credentials file exclusively, mode 0600
+      ansible.builtin.copy:
+        dest: "{{ agent_context_tunnel_credentials_output }}"
+        content: ""
+        mode: "0600"
+        force: false
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Confirm the reservation is our own empty regular file
+      ansible.builtin.stat:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        follow: false
+      check_mode: false
+      register: agent_context_tunnel_reservation
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Require the reservation to be a fresh private regular file
+      ansible.builtin.assert:
+        that:
+          - agent_context_tunnel_reservation.stat.exists
+          - agent_context_tunnel_reservation.stat.isreg
+          - agent_context_tunnel_reservation.stat.size == 0
+          - agent_context_tunnel_reservation.stat.mode == '0600'
+          - agent_context_tunnel_reservation.stat.uid == (lookup('ansible.builtin.pipe', 'id -u') | int)
+        fail_msg: The credentials file could not be reserved exclusively; refusing to continue.
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Create the missing remotely managed tunnel
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: create tunnel
+        agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel"
+        agent_context_tunnel_api_body:
+          name: "{{ agent_context_tunnel_name }}"
+          config_src: cloudflare
+      when:
+        - agent_context_tunnel_id | length == 0
+        - not ansible_check_mode
+
+    - name: Record the created tunnel id
+      ansible.builtin.set_fact:
+        agent_context_tunnel_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_dns_content: "{{ agent_context_tunnel_response.json.result.id }}.cfargotunnel.com"
+      when:
+        - agent_context_tunnel_id | length == 0
+        - not ansible_check_mode
+      no_log: true
+
+    # The tunnel token is re-fetchable, so it is read BEFORE the one-time service token secret exists; the
+    # credentials file is then written right after the secret, with no API call in between.
+    - name: Fetch the tunnel token
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: GET
+        agent_context_tunnel_api_purpose: fetch tunnel token
+        agent_context_tunnel_api_path: >-
+          /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/token
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+
+    - name: Keep the tunnel token in memory only
+      ansible.builtin.set_fact:
+        agent_context_tunnel_secret_tunnel_token: "{{ agent_context_tunnel_response.json.result }}"
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+      no_log: true
+
+    - name: Create the missing service token
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: create service token
+        agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens"
+        agent_context_tunnel_api_body:
+          name: "{{ agent_context_tunnel_service_token_name }}"
+          duration: "{{ agent_context_tunnel_service_token_duration }}"
+      when:
+        - agent_context_tunnel_token_id | length == 0
+        - not ansible_check_mode
+
+    - name: Rotate the existing service token only when requested
+      ansible.builtin.include_tasks: api.yml
+      vars:
+        agent_context_tunnel_api_method: POST
+        agent_context_tunnel_api_purpose: rotate service token
+        agent_context_tunnel_api_path: >-
+          /accounts/{{ agent_context_tunnel_account_id }}/access/service_tokens/{{
+          agent_context_tunnel_token_id }}/rotate
+      when:
+        - agent_context_tunnel_token_id | length > 0
+        - agent_context_tunnel_rotate_service_token | bool
+        - not ansible_check_mode
+
+    - name: Keep the service token secrets in memory only
+      ansible.builtin.set_fact:
+        agent_context_tunnel_secret_token: "{{ agent_context_tunnel_response.json.result }}"
+        agent_context_tunnel_token_id: "{{ agent_context_tunnel_response.json.result.id }}"
+        agent_context_tunnel_service_token_effective_id: "{{ agent_context_tunnel_response.json.result.id }}"
+      when:
+        - agent_context_tunnel_token_matches | length == 0 or agent_context_tunnel_rotate_service_token | bool
+        - not ansible_check_mode
+      no_log: true
+
+    - name: Write the credentials into the reserved file, mode 0600
+      ansible.builtin.copy:
+        dest: "{{ agent_context_tunnel_credentials_output }}"
+        content: >-
+          {{ {'tunnel_id': agent_context_tunnel_id,
+              'tunnel_token': agent_context_tunnel_secret_tunnel_token,
+              'service_token_id': agent_context_tunnel_token_id,
+              'service_token_client_id': agent_context_tunnel_secret_token.client_id
+                                         | default(agent_context_tunnel_token_client_id),
+              'service_token_client_secret': agent_context_tunnel_secret_token.client_secret} | to_nice_json }}
+        mode: "0600"
+        force: true
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - not ansible_check_mode
+      no_log: true
+  rescue:
+    - name: Inspect the reserved credentials file after a failure
+      ansible.builtin.stat:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        follow: false
+      check_mode: false
+      register: agent_context_tunnel_rescue_file
+      when: agent_context_tunnel_secret_needed | bool
+
+    - name: Remove the empty placeholder so no half-made output is left
+      ansible.builtin.file:
+        path: "{{ agent_context_tunnel_credentials_output }}"
+        state: absent
+      when:
+        - agent_context_tunnel_secret_needed | bool
+        - agent_context_tunnel_rescue_file.stat.exists
+        - agent_context_tunnel_rescue_file.stat.size == 0
+
+    - name: Fail with the original error
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_result.msg | default('tunnel or service token step failed') }}"
+
+- name: Rebuild the desired policies with the final service token id
+  ansible.builtin.set_fact:
+    agent_context_tunnel_policies: >-
+      {{ [agent_context_tunnel_policies[0] | combine({'include': [{'service_token':
+         {'token_id': agent_context_tunnel_service_token_effective_id}}]})] + agent_context_tunnel_policies[1:] }}
+  no_log: true
+
+- name: Create the missing Access application
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: POST
+    agent_context_tunnel_api_purpose: create Access application
+    agent_context_tunnel_api_path: "/accounts/{{ agent_context_tunnel_account_id }}/access/apps"
+    agent_context_tunnel_api_body: >-
+      {{ agent_context_tunnel_desired_application | combine(agent_context_tunnel_app_idp_overlay) }}
+  when:
+    - agent_context_tunnel_app_action == 'create'
+    - not ansible_check_mode
+
+- name: Record the created application id
+  ansible.builtin.set_fact:
+    agent_context_tunnel_app_id: "{{ agent_context_tunnel_response.json.result.id }}"
+  when:
+    - agent_context_tunnel_app_action == 'create'
+    - not ansible_check_mode
+  no_log: true
+
+- name: Update the drifted Access application
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: PUT
+    agent_context_tunnel_api_purpose: update Access application
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/access/apps/{{ agent_context_tunnel_app_id }}
+    agent_context_tunnel_api_body: >-
+      {{ agent_context_tunnel_app | dict2items
+      | rejectattr('key', 'in', agent_context_tunnel_readonly_fields) | list | items2dict
+      | combine(agent_context_tunnel_desired_application)
+      | combine(agent_context_tunnel_app_idp_overlay) }}
+  when:
+    - agent_context_tunnel_app_action == 'update'
+    - not ansible_check_mode
+
+- name: Initialize the pending policy list
+  ansible.builtin.set_fact:
+    agent_context_tunnel_policy_pending: []
+
+- name: Reconcile each managed Access policy by exact name
+  ansible.builtin.include_tasks: policy.yml
+  loop: "{{ agent_context_tunnel_policies }}"
+  loop_control:
+    loop_var: agent_context_tunnel_policy
+    label: "{{ agent_context_tunnel_policy.name }}"
+
+# Access (application and policies) is reconciled before anything is published: the tunnel ingress and
+# the DNS record come last, so the hostname is never reachable without Access.
+- name: Reconcile the tunnel ingress configuration
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: PUT
+    agent_context_tunnel_api_purpose: update tunnel configuration
+    agent_context_tunnel_api_path: >-
+      /accounts/{{ agent_context_tunnel_account_id }}/cfd_tunnel/{{ agent_context_tunnel_id }}/configurations
+    agent_context_tunnel_api_body:
+      config: "{{ agent_context_tunnel_current_config | combine({'ingress': agent_context_tunnel_desired_ingress}) }}"
+  no_log: true
+  when:
+    - agent_context_tunnel_config_differs | bool
+    - not ansible_check_mode
+
+- name: Create the missing proxied CNAME
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: POST
+    agent_context_tunnel_api_purpose: create DNS record
+    agent_context_tunnel_api_path: "/zones/{{ agent_context_tunnel_zone_id }}/dns_records"
+    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
+  when:
+    - agent_context_tunnel_dns_action == 'create'
+    - not ansible_check_mode
+
+- name: Update the drifted CNAME to this tunnel
+  ansible.builtin.include_tasks: api.yml
+  vars:
+    agent_context_tunnel_api_method: PATCH
+    agent_context_tunnel_api_purpose: update DNS record
+    agent_context_tunnel_api_path: >-
+      /zones/{{ agent_context_tunnel_zone_id }}/dns_records/{{ agent_context_tunnel_dns_records[0].id }}
+    agent_context_tunnel_api_body: "{{ agent_context_tunnel_desired_dns_record }}"
+  when:
+    - agent_context_tunnel_dns_action == 'update'
+    - not ansible_check_mode
+
+- name: Warn about a left-over human policy
+  ansible.builtin.debug:
+    msg: >-
+      A human policy exists but agent_context_tunnel_allowed_emails is empty; it was left untouched
+      because this role never deletes anything.
+  when:
+    - agent_context_tunnel_allowed_emails | length == 0
+    - agent_context_tunnel_existing_policies | selectattr('name', 'equalto', agent_context_tunnel_human_policy_name)
+      | list | length > 0
+
+- name: Compute the changes a real run would make
+  ansible.builtin.set_fact:
+    agent_context_tunnel_plan: >-
+      {{ (['create tunnel ' ~ agent_context_tunnel_name] if agent_context_tunnel_id | length == 0 else [])
+      + (['update tunnel ingress configuration'] if agent_context_tunnel_config_differs | bool else [])
+      + ([agent_context_tunnel_dns_action ~ ' proxied CNAME ' ~ agent_context_tunnel_hostname]
+         if agent_context_tunnel_dns_action != 'none' else [])
+      + ([agent_context_tunnel_app_action ~ ' Access application ' ~ agent_context_tunnel_application_name]
+         if agent_context_tunnel_app_action != 'none' else [])
+      + (['create service token ' ~ agent_context_tunnel_service_token_name]
+         if agent_context_tunnel_token_matches | length == 0 else [])
+      + (['rotate service token ' ~ agent_context_tunnel_service_token_name]
+         if agent_context_tunnel_rotate_service_token | bool else [])
+      + agent_context_tunnel_policy_pending
+      + (['write credentials file'] if agent_context_tunnel_secret_needed | bool else []) }}
+  when: ansible_check_mode
+
+- name: Report the changes a real run would make
+  ansible.builtin.debug:
+    msg: "{{ agent_context_tunnel_plan }}"
+  changed_when: agent_context_tunnel_plan | length > 0
+  when: ansible_check_mode

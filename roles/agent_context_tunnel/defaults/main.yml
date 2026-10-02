@@ -1,0 +1,75 @@
+---
+# Disabled by default. Nothing here is part of the deploy boundary: an operator
+# runs playbooks/agent-context-tunnel.yml by hand (first with --check).
+agent_context_tunnel_enabled: false
+
+# Exactly this URL, or (tests only) http://127.0.0.1:<port>/client/v4 or
+# http://localhost:<port>/client/v4; anything else is refused before any call.
+agent_context_tunnel_api_base_url: https://api.cloudflare.com/client/v4
+agent_context_tunnel_api_token: "{{ cloudflare_api_token | default('') }}"
+agent_context_tunnel_account_id: "{{ cloudflare_account_id | default('', true) }}"
+agent_context_tunnel_zone_id: "{{ cloudflare_zone_id | default('', true) }}"
+
+# Required, no default: the public hostname, for example agent-context.example.com.
+agent_context_tunnel_hostname: ""
+
+agent_context_tunnel_name: agent-context
+# The stack's internal Nginx, reached over the stack's Docker network.
+agent_context_tunnel_origin_service: http://ingress:8080
+# Extra per-rule originRequest settings; noTLSVerify is refused.
+agent_context_tunnel_origin_request: {}
+
+agent_context_tunnel_application_name: Agent Context
+agent_context_tunnel_session_duration: 30m
+agent_context_tunnel_service_policy_name: Allow Agent Context service token
+agent_context_tunnel_human_policy_name: Allow Agent Context operators
+# Optional human allow policy; empty means no human policy is managed.
+agent_context_tunnel_allowed_emails: []
+# Required for human access unless the account already has a One-Time PIN provider. Never created here.
+agent_context_tunnel_identity_provider_id: ""
+
+agent_context_tunnel_service_token_name: agent-context-clients
+agent_context_tunnel_service_token_duration: 8760h
+# An existing token is only rotated when this is true.
+agent_context_tunnel_rotate_service_token: false
+
+# Absolute path on localhost, outside any git work tree, in an existing
+# directory, that does not exist yet. Receives the tunnel token and the
+# service token secret with mode 0600.
+agent_context_tunnel_credentials_output: ""
+
+# Derived request bodies; not operator settings.
+agent_context_tunnel_desired_ingress:
+  - hostname: "{{ agent_context_tunnel_hostname }}"
+    service: "{{ agent_context_tunnel_origin_service }}"
+    originRequest: "{{ agent_context_tunnel_origin_request }}"
+  - service: http_status:404
+agent_context_tunnel_desired_dns_record:
+  type: CNAME
+  name: "{{ agent_context_tunnel_hostname }}"
+  content: "{{ agent_context_tunnel_dns_content | default('') }}"
+  proxied: true
+  ttl: 1
+agent_context_tunnel_desired_application:
+  name: "{{ agent_context_tunnel_application_name }}"
+  domain: "{{ agent_context_tunnel_hostname }}"
+  type: self_hosted
+  session_duration: "{{ agent_context_tunnel_session_duration }}"
+# Only set when a provider is configured, so a hand-set allowed_idps on an adopted app survives updates.
+agent_context_tunnel_app_idp_overlay: >-
+  {{ {'allowed_idps': [agent_context_tunnel_identity_provider_id]}
+  if agent_context_tunnel_identity_provider_id | length > 0 else {} }}
+# Response-only fields never sent back when an existing object is updated, plus
+# the multi-domain fields that could disagree with a drifted `domain`.
+agent_context_tunnel_readonly_fields:
+  - id
+  - uid
+  - aud
+  - created_at
+  - updated_at
+  - policies
+  - destinations
+  - self_hosted_domains
+  - version
+  - app_count
+  - reusable

@@ -1,0 +1,58 @@
+---
+# Guards for the credentials file. Only read-only probes; nothing is created.
+- name: Require a normalized absolute credentials path
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_credentials_output is match('^/')
+      - agent_context_tunnel_credentials_output is not match('.*/$')
+      - agent_context_tunnel_credentials_output is not search('(^|/)\.{1,2}(/|$)')
+      - agent_context_tunnel_credentials_output is not search('//')
+    fail_msg: agent_context_tunnel_credentials_output must be a normalized absolute file path.
+
+- name: Inspect the credentials directory
+  ansible.builtin.stat:
+    path: "{{ agent_context_tunnel_credentials_output | dirname }}"
+  check_mode: false
+  register: agent_context_tunnel_output_dir
+
+- name: Inspect the credentials file
+  ansible.builtin.stat:
+    path: "{{ agent_context_tunnel_credentials_output }}"
+    follow: false
+  check_mode: false
+  register: agent_context_tunnel_output_file
+
+- name: Require an existing directory and refuse to overwrite
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_output_dir.stat.exists
+      - agent_context_tunnel_output_dir.stat.isdir
+      - not agent_context_tunnel_output_file.stat.exists
+    fail_msg: >-
+      The credentials directory must already exist and the credentials file must not exist;
+      refusing to overwrite.
+
+- name: Probe whether the credentials directory is inside a git work tree
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ agent_context_tunnel_credentials_output | dirname | realpath }}"
+      - rev-parse
+      - --is-inside-work-tree
+  environment:
+    LC_ALL: C
+  check_mode: false
+  register: agent_context_tunnel_git_probe
+  changed_when: false
+  failed_when: false
+
+- name: Refuse a credentials path inside a git work tree
+  ansible.builtin.assert:
+    that:
+      - agent_context_tunnel_git_probe.rc is defined
+      - agent_context_tunnel_git_probe.rc != 0
+      - "'not a git repository' in agent_context_tunnel_git_probe.stderr | default('')"
+    fail_msg: >-
+      The credentials path is inside a git work tree (or git could not verify it);
+      choose a directory outside every repository.
