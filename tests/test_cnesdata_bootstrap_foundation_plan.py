@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from types import MappingProxyType
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -67,6 +68,8 @@ def _bloquear_fronteiras(patch, eventos):
 
 
 class _RelogioBloqueado(datetime.datetime):
+    eventos: ClassVar[list[str]]
+
     @classmethod
     def now(cls, tz=None):
         return _negar_efeito(cls.eventos, "datetime.now")
@@ -122,13 +125,13 @@ def _operacoes(plano):
 def _provar_imutabilidade(value):
     if isinstance(value, Mapping):
         with pytest.raises((TypeError, AttributeError)):
-            value["mutation_probe"] = "alterado"
+            cast(dict[str, Any], value)["mutation_probe"] = "alterado"
         for child in value.values():
             _provar_imutabilidade(child)
         return
     if isinstance(value, (tuple, list)):
         with pytest.raises((TypeError, AttributeError)):
-            value.append("alterado")
+            cast(list[Any], value).append("alterado")
         for child in value:
             _provar_imutabilidade(child)
         return

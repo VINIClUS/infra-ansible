@@ -5,6 +5,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
+from typing import Any, cast
 
 
 DATA = Path(__file__).with_name("cnesdata_bootstrap_foundation_plan")
@@ -76,7 +77,7 @@ def _ensure_materialized(value):
 
 def load_case(name):
     """Retorna o input e os companions expandidos, preservando o oráculo literal."""
-    descriptor = _load("bundle.json")["cases"][name]
+    descriptor = cast(dict[str, Any], _load("bundle.json"))["cases"][name]
     case = {key: _load(descriptor[key]) for key in (
         "input", "expected", "before_manifest", "after_manifest",
     )}
