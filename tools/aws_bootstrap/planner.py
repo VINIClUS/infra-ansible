@@ -166,15 +166,12 @@ def _valid_ledger(value: Mapping[str, Any]) -> bool:
         Fraction(str(value["aggregate_forecast_gross"])))
 
 
-def _configured_id(run: Mapping[str, Any], address: str) -> str:
-    return configured_identifier(run, "foundation", address)
-
 
 def _target(run: Mapping[str, Any], address: str) -> dict[str, Any]:
     configured = run["roots"]["foundation"]["resources"][address]
     name = configured["configured_name"]
     exact_id = None if configured["identity_kind"] == "provider_assigned" else (
-        _configured_id(run, address)
+        configured_identifier(run, "foundation", address)
     )
     return {"configured_name": name, "identity_kind": configured["identity_kind"],
             "exact_id": exact_id}
