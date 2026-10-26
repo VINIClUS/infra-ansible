@@ -39,7 +39,18 @@ def _require(condition: bool, reason: str) -> None:
 
 def _instant(value: str) -> datetime:
     _require(value.endswith("Z"), "invalid_timestamp")
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("invalid_timestamp") from None
+
+
+def _valid_expiry(value: str) -> str | None:
+    try:
+        _instant(value)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value
 
 
 def _genesis(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> None:
@@ -225,7 +236,7 @@ def plan_bootstrap(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> Boo
         "spec_sha256": digest(spec), "readback_sha256": digest(facts),
         "checkpoint_sha256": None if checkpoint is None else digest(checkpoint),
         "authorization_sha256": digest(facts.authorizations["stage"]),
-        "stage": spec.step["stage"], "expires_at": spec.step["expires_at"],
+        "stage": spec.step["stage"], "expires_at": _valid_expiry(spec.step["expires_at"]),
         "status": "blocked" if reason else "ready", "operations": operations,
         "proposals": (), "blocked_reasons": () if reason is None else (reason,),
         "required_evidence": REQUIRED_EVIDENCE,
