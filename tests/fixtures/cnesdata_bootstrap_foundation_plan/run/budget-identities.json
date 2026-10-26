@@ -1,0 +1,27 @@
+{
+  "backend": {
+    "bucket": "syn-budget-state-123456789012",
+    "key": "bootstrap/budget-identities.tfstate"
+  },
+  "logging": {
+    "bucket": "syn-budget-logs-123456789012",
+    "prefix": "access/syn-budget-state-123456789012/"
+  },
+  "owner": "personal-infra-live:cnesdata",
+  "resources": {
+    "aws_iam_policy.freeze": {
+      "configured_name": "cnesdata-freeze",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.budget_action": {
+      "configured_name": "cnesdata-budget-action",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.budget_action": {
+      "configured_name": "cnesdata-budget-action",
+      "identity_kind": "configured"
+    }
+  },
+  "root_path": "personal-infra-live/bootstrap-identities",
+  "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

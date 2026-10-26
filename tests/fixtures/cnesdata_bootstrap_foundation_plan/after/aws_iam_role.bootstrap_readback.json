@@ -1,0 +1,20 @@
+{
+  "action": "create",
+  "attributes": {
+    "max_session_duration": 3600,
+    "name": "cnesdata-bootstrap-readback",
+    "path": "/cnesdata/",
+    "tags": {
+      "Environment": "synthetic",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "Owner": "infra-ansible:cnesdata",
+      "Project": "CnesData",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_iam_role.bootstrap_readback.json"
+    }
+  ]
+}

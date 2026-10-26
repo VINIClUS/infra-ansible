@@ -1,0 +1,34 @@
+{
+  "authorization_sha256": "7d41973658c79f3a5e89245ac34038ddb58493d5b9e10422b6e16bd8ddd1e262",
+  "blocked_reasons": [
+    "resource_observation_inconclusive:foundation:aws_kms_key.foundation"
+  ],
+  "checkpoint_sha256": null,
+  "contract_version": 1,
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "expires_at": "2026-10-26T18:00:00Z",
+  "operations": [],
+  "proposals": [],
+  "readback_sha256": "d3699fe0d0fe2a2bb06ab45099c2b27e531aeb6ac0260d3d20eafadca207b647",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ],
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "spec_sha256": "fc30530f3b53d13a9f1115790851f667b75ce739ccdacab2fb3357c0f57f7254",
+  "stage": "foundation",
+  "status": "blocked",
+  "step_sha256": "152509462243550c1429456b51c20eeb57c4a023856ea1f9617da4e75d684aea"
+}

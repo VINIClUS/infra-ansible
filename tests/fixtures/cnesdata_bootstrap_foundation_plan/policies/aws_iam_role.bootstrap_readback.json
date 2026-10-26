@@ -1,0 +1,19 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "sts:AssumeRole"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:user/cnesdata/bootstrap-operator"
+      }
+    }
+  ],
+  "Version": "2012-10-17"
+}

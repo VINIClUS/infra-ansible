@@ -1,0 +1,25 @@
+{
+  "caller_account": "123456789012",
+  "caller_arn": "arn:aws:iam::123456789012:root",
+  "cmk": null,
+  "evaluated_at": "2026-10-26T12:00:00Z",
+  "financial": {
+    "$include": "financial.json"
+  },
+  "identity_activation": {
+    "credential_source_verified": false,
+    "login_active": false,
+    "mfa_device_active": false,
+    "policy_sha256": null,
+    "session_policy_sha256": null,
+    "trust_sha256": null
+  },
+  "known_checkpoint_head": null,
+  "mfa_verified": true,
+  "migration": null,
+  "observed_at": "2026-10-26T11:59:30Z",
+  "orphan_candidates": [],
+  "root_states": {},
+  "session_expiration": "2026-10-26T18:00:00Z",
+  "session_kind": "root"
+}

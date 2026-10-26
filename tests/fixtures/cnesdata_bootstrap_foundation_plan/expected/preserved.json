@@ -1,0 +1,20 @@
+{
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "proposals": [],
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ]
+}

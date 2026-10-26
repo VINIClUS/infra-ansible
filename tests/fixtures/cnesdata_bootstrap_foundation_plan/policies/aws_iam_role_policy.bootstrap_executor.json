@@ -1,0 +1,56 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::syn-cnesdata-state-123456789012/bootstrap/foundation.tfstate",
+        "arn:aws:s3:::syn-budget-state-123456789012/bootstrap/backend.tfstate",
+        "arn:aws:s3:::syn-cnesdata-state-123456789012/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-budget-state-123456789012/bootstrap/backend.tfstate.tflock"
+      ]
+    },
+    {
+      "Action": [
+        "s3:DeleteObject"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::syn-cnesdata-state-123456789012/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-budget-state-123456789012/bootstrap/backend.tfstate.tflock"
+      ]
+    },
+    {
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:s3:::syn-cnesdata-state-123456789012",
+        "arn:aws:s3:::syn-budget-state-123456789012"
+      ]
+    },
+    {
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Effect": "Allow",
+      "Resource": [
+        {
+          "address": "aws_kms_key.foundation",
+          "attribute": "arn",
+          "root_id": "foundation"
+        }
+      ]
+    }
+  ],
+  "Version": "2012-10-17"
+}

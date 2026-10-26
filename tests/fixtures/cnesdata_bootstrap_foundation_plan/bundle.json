@@ -1,0 +1,49 @@
+{
+  "canonical_json": {
+    "allow_nan": false,
+    "ensure_ascii": false,
+    "separators": [
+      ",",
+      ":"
+    ],
+    "sort_keys": true
+  },
+  "cases": {
+    "disabled": {
+      "after_manifest": "after.json",
+      "before_manifest": "cases/disabled-before.json",
+      "binary_artifact": "synthetic-foundation.bin",
+      "expected": "expected/disabled.json",
+      "input": "cases/disabled-input.json"
+    },
+    "enabled": {
+      "after_manifest": "after.json",
+      "before_manifest": "cases/enabled-before.json",
+      "binary_artifact": "synthetic-foundation.bin",
+      "expected": "expected/enabled.json",
+      "input": "cases/enabled-input.json"
+    },
+    "inconclusive": {
+      "after_manifest": "after.json",
+      "before_manifest": "cases/inconclusive-before.json",
+      "binary_artifact": "synthetic-foundation.bin",
+      "expected": "expected/inconclusive.json",
+      "input": "cases/inconclusive-input.json"
+    },
+    "no-binary": {
+      "after_manifest": "after-no-binary.json",
+      "before_manifest": "cases/no-binary-before.json",
+      "binary_artifact": null,
+      "expected": "expected/no-binary.json",
+      "input": "cases/no-binary-input.json"
+    }
+  },
+  "contract_amendment_required": true,
+  "include_paths_relative_to": "this_bundle_directory",
+  "managed_login_policy_snapshot": "synthetic representative; not a fetched AWS-managed policy version",
+  "operational_gate": "GATE_NOT_RELEASED",
+  "oracle_origin": "literal table from contract section 6, not observations or SUT",
+  "raw_scanner_status": "FAIL",
+  "source_commit_ids": "synthetic markers only; no claim that future source exists",
+  "synthetic": true
+}

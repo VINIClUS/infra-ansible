@@ -1,0 +1,103 @@
+{
+  "backend": {
+    "bucket": "syn-cnesdata-state-123456789012",
+    "key": "bootstrap/foundation.tfstate"
+  },
+  "logging": {
+    "bucket": "syn-cnesdata-logs-123456789012",
+    "prefix": "access/syn-cnesdata-state-123456789012/"
+  },
+  "owner": "infra-ansible:cnesdata",
+  "resources": {
+    "aws_iam_policy.executor_boundary": {
+      "configured_name": "cnesdata-bootstrap-executor-boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.bootstrap_executor": {
+      "configured_name": "cnesdata-bootstrap-executor",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.bootstrap_readback": {
+      "configured_name": "cnesdata-bootstrap-readback",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.bootstrap_executor": {
+      "configured_name": "bootstrap-executor",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.bootstrap_readback": {
+      "configured_name": "bootstrap-readback",
+      "identity_kind": "configured"
+    },
+    "aws_iam_user.bootstrap_operator": {
+      "configured_name": "bootstrap-operator",
+      "identity_kind": "configured"
+    },
+    "aws_iam_user_policy.local_assume": {
+      "configured_name": "local-assume",
+      "identity_kind": "configured"
+    },
+    "aws_iam_user_policy_attachment.local_login": {
+      "configured_name": null,
+      "identity_kind": "provider_assigned"
+    },
+    "aws_kms_key.foundation": {
+      "configured_name": null,
+      "identity_kind": "provider_assigned"
+    },
+    "aws_s3_bucket.logging": {
+      "configured_name": "syn-cnesdata-logs-123456789012",
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket.state": {
+      "configured_name": "syn-cnesdata-state-123456789012",
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_lifecycle_configuration.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_logging.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_ownership_controls.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_ownership_controls.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_policy.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_policy.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_public_access_block.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_public_access_block.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_versioning.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    }
+  },
+  "root_path": "opentofu/cnesdata-bootstrap/foundation",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

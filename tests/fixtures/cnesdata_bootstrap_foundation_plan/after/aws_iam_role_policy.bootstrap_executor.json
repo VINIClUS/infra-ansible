@@ -1,0 +1,16 @@
+{
+  "action": "create",
+  "attributes": {
+    "name": "bootstrap-executor",
+    "role": {
+      "address": "aws_iam_role.bootstrap_executor",
+      "attribute": "name",
+      "root_id": "foundation"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_iam_role_policy.bootstrap_executor.json"
+    }
+  ]
+}
