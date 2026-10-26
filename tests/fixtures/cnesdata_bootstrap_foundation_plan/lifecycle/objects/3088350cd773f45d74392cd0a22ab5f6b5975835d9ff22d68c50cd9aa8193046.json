@@ -1,0 +1,257 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "foundation",
+  "observed_at": "2026-10-26T12:10:00Z",
+  "resources": {
+    "aws_iam_user.bootstrap_operator": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "fbc8a891c922ee19eef84481430cb5ee6ec50c9fcbf7e9b60771607f1b0fdaad"
+    },
+    "aws_iam_user_policy_attachment.local_login": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "4c732c128dd2d23393875504b914e8f9dc5e8f4e290b7e0d567eb3ed86479ddb"
+    },
+    "aws_iam_user_policy.local_assume": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "a18091d5b2eb28b478e6111ce75c68378567c923bf14c3defb7742728848ddaf"
+    },
+    "aws_iam_policy.executor_boundary": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "b158fd9c1f3a8de4f5868a0f671b78ca8362478095444036de06c1a7ed86f8a7"
+    },
+    "aws_iam_role.bootstrap_readback": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "3ac98bb3ade74f9438b710b58b650fe8e290dac95bee531793bdcfc8524763d4"
+    },
+    "aws_iam_role.bootstrap_executor": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "9bf51a2e2c960050f7e4557c46f4a8a06288f0d377baf60cedb71347f6e66717"
+    },
+    "aws_iam_role_policy.bootstrap_readback": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "ca695a40715852f6da2fe551bf185ad80c1d764b26d4a766ffdc38c48de0bb6d"
+    },
+    "aws_iam_role_policy.bootstrap_executor": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "7ad81ffb017658a27e87d84652b1e71a2673189e5201a33a1f4ae6a781284b63"
+    },
+    "aws_kms_key.foundation": {
+      "exact_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "owner": "infra-ansible:cnesdata",
+      "tags": {
+        "Environment": "synthetic",
+        "Project": "CnesData",
+        "Owner": "infra-ansible:cnesdata",
+        "InitialRunId": "synthetic-foundation-fix1-20261026",
+        "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+      },
+      "attributes": {
+        "arn": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+        "account_id": "123456789012",
+        "region": "us-east-2",
+        "key_manager": "CUSTOMER",
+        "key_state": "Enabled",
+        "key_spec": "SYMMETRIC_DEFAULT",
+        "key_usage": "ENCRYPT_DECRYPT",
+        "rotation_enabled": true
+      },
+      "policy_documents": [
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "EnableIAMUserPermissions",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": "arn:aws:iam::123456789012:root"
+              },
+              "Action": "kms:*",
+              "Resource": "*"
+            }
+          ]
+        }
+      ],
+      "observation_status": "present",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "c284b0d8192f75bf563e1e72253619f130ed0e22f7bb8e0a4aad1204bfdae967"
+    },
+    "aws_s3_bucket.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "b9eb792169e4ffecf9b4f009cf334216d273956505ad41af4066087348fde1bb"
+    },
+    "aws_s3_bucket_versioning.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "7ccd128303b66fbf608d362d788e403ceb721221b0f7cf10b18e13c35240fb3d"
+    },
+    "aws_s3_bucket_public_access_block.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "1731c48705ad8a4b8d89216e7fb133a004b6c1ba99821fbba18838acb9ef0f90"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "a9393f349e409691b06121a5cdf77d1dcb35f479541ef5bf08b6a6828a987532"
+    },
+    "aws_s3_bucket_ownership_controls.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "e72b1289575c100000cc8978094cf388d02d738bf3bdc62fde18091d07539ecc"
+    },
+    "aws_s3_bucket_policy.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "443ddf938f8ed2cd1fe5394ccc39968c999a42fb89787f34f0dfe80745921a7d"
+    },
+    "aws_s3_bucket.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "5dd88228d449497d2fa69c850182ca3b3dee48e3b3d20b2790f5a80863d2efdf"
+    },
+    "aws_s3_bucket_ownership_controls.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "a9fd0b7e595677370a400723f4f8f1bdac34a2a943f31a8d8440da20b9b7eeb4"
+    },
+    "aws_s3_bucket_public_access_block.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "d14d1dc7f37846b4321866822ffa845427f7e5cf06a0556c82d094c787c0bbe9"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "0c5502e2e6c3215deb1c148eb04b324bcf14f5c9ee498ad8db13f2e842737825"
+    },
+    "aws_s3_bucket_policy.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "5e9c7590830fcd1f0436c4b6dfc6b136f469aa2b4dd8d368faacf3f723c50d1f"
+    },
+    "aws_s3_bucket_lifecycle_configuration.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "64544be65cefb7ea3e38ccc7dd84b599b8bfa2590a606cc8a3dc319f63d70591"
+    },
+    "aws_s3_bucket_logging.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T12:10:00Z",
+      "source_evidence_sha256": "ed31cdffb09fa1e84d7eb1036e4853b07be937c1eb8b4d3220fc61547e4636d0"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "authorization_id": "grant-c2-migrate-budget",
+  "authority_sha256": "89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "8884825f9960216fea248e9a75ffb0efc823b7080cdb49622fe41fe96143ffb1",
+  "parent_checkpoint_sha256": "fbcbe58518cc775c3678bb81eee34f3e1d061243e3ca51916202e76109e32010",
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "8ff7fbf1061ec6310b0d322a7811b22ba838ca3c93c4e9f24f5b628f277aa5d9",
+  "before_manifest_sha256": "00f4179a01240a12c3c7b8e51f4c6f181771fbafbb5d6b16965a07739c9a9702",
+  "after_manifest_sha256": "92265ffafa793c93bae025367b59195b8a88456b2e3b05827e024a4a4ef1fab4",
+  "not_before": "2026-10-26T13:30:00Z",
+  "expires_at": "2026-10-26T14:30:00Z"
+}

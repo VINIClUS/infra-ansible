@@ -1,0 +1,24 @@
+{
+  "kind": "resource_observation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "budget-backend",
+  "address": "aws_s3_bucket_server_side_encryption_configuration.logging",
+  "observed_at": "2026-10-26T13:23:00Z",
+  "observation": {
+    "status": "present",
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012",
+      "sse_algorithm": "AES256"
+    },
+    "policy_documents": []
+  }
+}

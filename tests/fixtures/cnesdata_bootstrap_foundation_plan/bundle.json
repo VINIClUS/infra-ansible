@@ -36,6 +36,222 @@
       "binary_artifact": null,
       "expected": "expected/no-binary.json",
       "input": "cases/no-binary-input.json"
+    },
+    "c2-partial": {
+      "$include": "lifecycle/cases/c2-partial.json"
+    },
+    "c2-migrate-foundation": {
+      "$include": "lifecycle/cases/c2-migrate-foundation.json"
+    },
+    "c2-budget": {
+      "$include": "lifecycle/cases/c2-budget.json"
+    },
+    "c2-migrate-budget": {
+      "$include": "lifecycle/cases/c2-migrate-budget.json"
+    },
+    "c2-mark": {
+      "$include": "lifecycle/cases/c2-mark.json"
+    },
+    "c2-adopt": {
+      "$include": "lifecycle/cases/c2-adopt.json"
+    },
+    "c2-restore": {
+      "$include": "lifecycle/cases/c2-restore.json"
+    },
+    "c2-history-receipt-removed": {
+      "$include": "lifecycle/cases/c2-history-receipt-removed.json"
+    },
+    "c2-history-record-removed": {
+      "$include": "lifecycle/cases/c2-history-record-removed.json"
+    },
+    "c2-history-generation": {
+      "$include": "lifecycle/cases/c2-history-generation.json"
+    },
+    "c2-history-projection": {
+      "$include": "lifecycle/cases/c2-history-projection.json"
+    },
+    "c2-history-history-removed": {
+      "$include": "lifecycle/cases/c2-history-history-removed.json"
+    },
+    "c2-history-state-owner": {
+      "$include": "lifecycle/cases/c2-history-state-owner.json"
+    },
+    "c2-history-state-lineage": {
+      "$include": "lifecycle/cases/c2-history-state-lineage.json"
+    },
+    "c2-history-state-serial": {
+      "$include": "lifecycle/cases/c2-history-state-serial.json"
+    },
+    "c2-history-state-id": {
+      "$include": "lifecycle/cases/c2-history-state-id.json"
+    },
+    "c2-history-parent": {
+      "$include": "lifecycle/cases/c2-history-parent.json"
+    },
+    "c2-history-receipt-run": {
+      "$include": "lifecycle/cases/c2-history-receipt-run.json"
+    },
+    "c2-history-receipt-origin": {
+      "$include": "lifecycle/cases/c2-history-receipt-origin.json"
+    },
+    "c2-history-receipt-grant": {
+      "$include": "lifecycle/cases/c2-history-receipt-grant.json"
+    },
+    "c2-history-receipt-spec": {
+      "$include": "lifecycle/cases/c2-history-receipt-spec.json"
+    },
+    "c2-history-receipt-time": {
+      "$include": "lifecycle/cases/c2-history-receipt-time.json"
+    },
+    "c2-history-receipt-before-intent": {
+      "$include": "lifecycle/cases/c2-history-receipt-before-intent.json"
+    },
+    "c2-head-missing": {
+      "$include": "lifecycle/cases/c2-head-missing.json"
+    },
+    "c2-head-foreign": {
+      "$include": "lifecycle/cases/c2-head-foreign.json"
+    },
+    "c2-head-older": {
+      "$include": "lifecycle/cases/c2-head-older.json"
+    },
+    "c2-migration-missing-freeze": {
+      "$include": "lifecycle/cases/c2-migration-missing-freeze.json"
+    },
+    "c2-migration-missing-independent_backup": {
+      "$include": "lifecycle/cases/c2-migration-missing-independent_backup.json"
+    },
+    "c2-migration-missing-remote_lock": {
+      "$include": "lifecycle/cases/c2-migration-missing-remote_lock.json"
+    },
+    "c2-migration-missing-quarantine_restore": {
+      "$include": "lifecycle/cases/c2-migration-missing-quarantine_restore.json"
+    },
+    "c2-migration-foreign-root": {
+      "$include": "lifecycle/cases/c2-migration-foreign-root.json"
+    },
+    "c2-migration-foreign-step": {
+      "$include": "lifecycle/cases/c2-migration-foreign-step.json"
+    },
+    "c2-migration-freeze-head": {
+      "$include": "lifecycle/cases/c2-migration-freeze-head.json"
+    },
+    "c2-migration-backup-bytes": {
+      "$include": "lifecycle/cases/c2-migration-backup-bytes.json"
+    },
+    "c2-migration-lock-holder": {
+      "$include": "lifecycle/cases/c2-migration-lock-holder.json"
+    },
+    "c2-migration-restore-bytes": {
+      "$include": "lifecycle/cases/c2-migration-restore-bytes.json"
+    },
+    "c2-migration-time": {
+      "$include": "lifecycle/cases/c2-migration-time.json"
+    },
+    "c2-migration-destination": {
+      "$include": "lifecycle/cases/c2-migration-destination.json"
+    },
+    "c2-migration-owner": {
+      "$include": "lifecycle/cases/c2-migration-owner.json"
+    },
+    "c2-migration-lineage": {
+      "$include": "lifecycle/cases/c2-migration-lineage.json"
+    },
+    "c2-migration-ids": {
+      "$include": "lifecycle/cases/c2-migration-ids.json"
+    },
+    "c2-migration-serial": {
+      "$include": "lifecycle/cases/c2-migration-serial.json"
+    },
+    "c2-migration-same-serial-bytes": {
+      "$include": "lifecycle/cases/c2-migration-same-serial-bytes.json"
+    },
+    "c2-migration-config": {
+      "$include": "lifecycle/cases/c2-migration-config.json"
+    },
+    "c2-cmk-arn": {
+      "$include": "lifecycle/cases/c2-cmk-arn.json"
+    },
+    "c2-cmk-account_id": {
+      "$include": "lifecycle/cases/c2-cmk-account_id.json"
+    },
+    "c2-cmk-region": {
+      "$include": "lifecycle/cases/c2-cmk-region.json"
+    },
+    "c2-cmk-owner": {
+      "$include": "lifecycle/cases/c2-cmk-owner.json"
+    },
+    "c2-cmk-tags": {
+      "$include": "lifecycle/cases/c2-cmk-tags.json"
+    },
+    "c2-cmk-key_manager": {
+      "$include": "lifecycle/cases/c2-cmk-key_manager.json"
+    },
+    "c2-cmk-key_state": {
+      "$include": "lifecycle/cases/c2-cmk-key_state.json"
+    },
+    "c2-cmk-key_spec": {
+      "$include": "lifecycle/cases/c2-cmk-key_spec.json"
+    },
+    "c2-cmk-key_usage": {
+      "$include": "lifecycle/cases/c2-cmk-key_usage.json"
+    },
+    "c2-cmk-rotation_enabled": {
+      "$include": "lifecycle/cases/c2-cmk-rotation_enabled.json"
+    },
+    "c2-cmk-policy_document": {
+      "$include": "lifecycle/cases/c2-cmk-policy_document.json"
+    },
+    "c2-cmk-origin-receipt": {
+      "$include": "lifecycle/cases/c2-cmk-origin-receipt.json"
+    },
+    "c2-current-expired": {
+      "$include": "lifecycle/cases/c2-current-expired.json"
+    },
+    "c2-partial-no-noop": {
+      "$include": "lifecycle/cases/c2-partial-no-noop.json"
+    },
+    "c2-budget-no-create": {
+      "$include": "lifecycle/cases/c2-budget-no-create.json"
+    },
+    "c2-orphan-zero": {
+      "$include": "lifecycle/cases/c2-orphan-zero.json"
+    },
+    "c2-orphan-multiple": {
+      "$include": "lifecycle/cases/c2-orphan-multiple.json"
+    },
+    "c2-orphan-owner": {
+      "$include": "lifecycle/cases/c2-orphan-owner.json"
+    },
+    "c2-orphan-other-type": {
+      "$include": "lifecycle/cases/c2-orphan-other-type.json"
+    },
+    "c2-restore-active-key": {
+      "$include": "lifecycle/cases/c2-restore-active-key.json"
+    },
+    "c2-restore-owner": {
+      "$include": "lifecycle/cases/c2-restore-owner.json"
+    },
+    "c2-restore-source": {
+      "$include": "lifecycle/cases/c2-restore-source.json"
+    },
+    "c2-restore-freeze": {
+      "$include": "lifecycle/cases/c2-restore-freeze.json"
+    },
+    "c2-index": {
+      "$include": "lifecycle/cases/c2-index.json"
+    },
+    "c2-history-record-spec-binding": {
+      "$include": "lifecycle/cases/c2-history-record-spec-binding.json"
+    },
+    "c2-history-intent-prior-frame": {
+      "$include": "lifecycle/cases/c2-history-intent-prior-frame.json"
+    },
+    "c2-history-intent-same-frame": {
+      "$include": "lifecycle/cases/c2-history-intent-same-frame.json"
+    },
+    "c2-migration-destination-owner": {
+      "$include": "lifecycle/cases/c2-migration-destination-owner.json"
     }
   },
   "contract_amendment_required": true,

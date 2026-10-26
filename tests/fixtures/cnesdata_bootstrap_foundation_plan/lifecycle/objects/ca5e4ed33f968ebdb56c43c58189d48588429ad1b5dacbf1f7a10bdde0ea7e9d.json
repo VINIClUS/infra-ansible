@@ -1,0 +1,62 @@
+{
+  "exact_id": "syn-cnesdata-logs-123456789012",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "bucket": "syn-cnesdata-logs-123456789012"
+  },
+  "policy_documents": [
+    {
+      "Statement": [
+        {
+          "Action": [
+            "s3:*"
+          ],
+          "Condition": {
+            "Bool": {
+              "aws:SecureTransport": "false"
+            }
+          },
+          "Effect": "Deny",
+          "Principal": "*",
+          "Resource": [
+            "arn:aws:s3:::syn-cnesdata-logs-123456789012",
+            "arn:aws:s3:::syn-cnesdata-logs-123456789012/*"
+          ]
+        },
+        {
+          "Action": [
+            "s3:PutObject"
+          ],
+          "Condition": {
+            "ArnLike": {
+              "aws:SourceArn": "arn:aws:s3:::syn-cnesdata-state-123456789012"
+            },
+            "StringEquals": {
+              "aws:SourceAccount": "123456789012"
+            }
+          },
+          "Effect": "Allow",
+          "Principal": {
+            "Service": [
+              "logging.s3.amazonaws.com"
+            ]
+          },
+          "Resource": [
+            "arn:aws:s3:::syn-cnesdata-logs-123456789012/access/syn-cnesdata-state-123456789012/*"
+          ]
+        }
+      ],
+      "Version": "2012-10-17"
+    }
+  ],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:00:00Z",
+  "source_evidence_sha256": "a7f7490952588b39cae0561f82a944502dbf7dd5d08d3d3739adaac1a636b13b"
+}

@@ -1,0 +1,14 @@
+{
+  "step_id": "c2-migrate-foundation",
+  "stage": "migrate_bootstrap",
+  "root_id": "foundation",
+  "execution_mode": "initial_local",
+  "execution_surface": "local",
+  "enabled": true,
+  "expected_principal_arn": "arn:aws:iam::123456789012:root",
+  "not_before": "2026-10-26T13:10:00Z",
+  "expires_at": "2026-10-26T14:00:00Z",
+  "input_bindings": [],
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "4d8fdeab7842a3a34df091641314c7054031897a4b1b7db3bb951e9fc78da5ad"
+}

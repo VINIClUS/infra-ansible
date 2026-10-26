@@ -1,0 +1,8 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "foundation",
+  "observed_at": "2026-10-26T13:00:00Z",
+  "resources": {
+    "$include": "lifecycle/objects/796ec336ec3db253c61815bacf5bce8a9f8c4750b00189a8ec6ab99a0c065ae0.json"
+  }
+}

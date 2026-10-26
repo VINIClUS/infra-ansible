@@ -1,6 +1,7 @@
 """Schemas fechados dos records foundation/genesis do kernel puro."""
 
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from math import isfinite
 import re
 from typing import Any
@@ -28,6 +29,37 @@ def _boolean(value: Any) -> bool:
 
 def _integer(value: Any) -> bool:
     return type(value) is int
+
+
+def _nonempty(value: Any) -> bool:
+    return _text(value) and bool(value)
+
+
+def _natural(value: Any) -> bool:
+    return _integer(value) and value >= 0
+
+
+def _union(*validators: Validator) -> Validator:
+    return lambda value: any(validator(value) for validator in validators)
+
+
+def instant(value: str) -> datetime:
+    """Raises: ValueError com código fixo para timestamp inválido."""
+    if not value.endswith("Z"):
+        raise ValueError("invalid_timestamp")
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("invalid_timestamp") from None
+
+
+def valid_expiry(value: str) -> str | None:
+    """Returns: timestamp recebido quando válido, ou null."""
+    try:
+        instant(value)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return value
 
 
 def _null(value: Any) -> bool:
@@ -102,7 +134,8 @@ STEP = _record({
     "step_id": _text, "stage": STAGES, "root_id": _nullable(ROOT),
     "execution_mode": _enum("initial_local", "subsequent"),
     "execution_surface": _enum("local", "ci"), "enabled": _boolean,
-    "expected_principal_arn": _text, **WINDOW, "input_bindings": _empty,
+    "expected_principal_arn": _text, **WINDOW, "input_bindings": _sequence(_record({
+        "input": _enum("kms_key_arn"), "value": _nonempty, "origin_receipt_sha256": DIGEST})),
     "binary_plan_sha256": _nullable(DIGEST), "migration_config_sha256": _nullable(DIGEST),
 })
 RUN = _record({
@@ -156,6 +189,106 @@ ACTIVATION = _record({
     "credential_source_verified": _boolean, "trust_sha256": _nullable(DIGEST),
     "policy_sha256": _nullable(DIGEST), "session_policy_sha256": _nullable(DIGEST),
 })
+LOCAL = _record({"kind": _enum("local"), "machine_id": _nonempty, "path": _nonempty})
+REMOTE = _record({name: _nonempty for name in ("account", "region", "bucket", "key", "owner")})
+ROOT_STATE = _record({
+    "owner": _nonempty, "backend_location": _union(LOCAL, REMOTE), "lineage": _nonempty,
+    "serial": _natural, "state_sha256": DIGEST, "resource_ids": _mapping(ADDRESS, _nonempty),
+    "version_id": _nullable(_nonempty),
+})
+ROOT_STATES = _mapping(ROOT, ROOT_STATE)
+TARGET = _record({
+    "configured_name": _nullable(_text), "identity_kind": IDENTITY_KIND,
+    "exact_id": _nullable(_text),
+})
+STATE_TARGET_FIELDS = {
+    "kind": _enum("root_state"), "action": _enum("migrate"), "source": ROOT_STATE,
+    "destination": REMOTE,
+}
+RESOURCE_RECEIPT_TARGET = _record({
+    "kind": _enum("resource"), "address": ADDRESS, "action": _enum("create", "configure", "noop"),
+    "configured_name": _nullable(_nonempty), "identity_kind": IDENTITY_KIND,
+})
+RECEIPT = _record({
+    "run_sha256": DIGEST, "origin_step_id": _nonempty, "origin_spec_sha256": DIGEST,
+    "origin_authorization_sha256": DIGEST, "intent_sha256": DIGEST, "root_id": ROOT,
+    "target": _union(RESOURCE_RECEIPT_TARGET, _record(STATE_TARGET_FIELDS)),
+    "exact_id": _nullable(_nonempty), "observed_after_sha256": DIGEST, "state_sha256": DIGEST,
+    "lineage": _nonempty, "serial": _natural, "checkpoint_generation": _natural,
+    "observed_at": _text,
+})
+RECORD = _record({
+    "step": STEP, "spec_sha256": DIGEST, "authority": INITIAL, "authority_sha256": DIGEST,
+    "stage_authorization": STAGE, "receipt_sha256": _sequence(DIGEST),
+    "parent_checkpoint_sha256": _nullable(DIGEST),
+})
+INTENT = _record({
+    "run_sha256": DIGEST, "step_id": _nonempty, "spec_sha256": DIGEST, "root_id": ROOT,
+    "target": _union(_record(STATE_TARGET_FIELDS), _record({
+        "kind": _enum("resource_set"), "resources": _mapping(ADDRESS, _record({
+            "action": _enum("create", "configure", "noop"), "target": TARGET}))})),
+    "authorization_sha256": DIGEST, "binary_plan_sha256": _nullable(DIGEST),
+    "migration_config_sha256": _nullable(DIGEST), "before_manifest_sha256": DIGEST,
+    "after_manifest_sha256": DIGEST, "parent_checkpoint_sha256": _nullable(DIGEST),
+    **WINDOW, "principal_arn": _nonempty,
+})
+RESOURCE_MANIFEST = _record({
+    "run_sha256": DIGEST, "root_id": ROOT, "observed_at": _text,
+    "resources": _mapping(ADDRESS, OBSERVATION),
+})
+MIGRATION_FIELDS = {
+    "root_id": ROOT, "source": ROOT_STATE, "destination": REMOTE,
+    "destination_empty": _boolean, "destination_state": _nullable(ROOT_STATE),
+}
+STATE_BEFORE = _record({
+    "run_sha256": DIGEST, "observed_at": _text, **MIGRATION_FIELDS,
+})
+OBSERVED_STATE = _record({
+    "run_sha256": DIGEST, "root_id": ROOT, "observed_at": _text, "state": ROOT_STATE,
+})
+MIGRATION = _record({**MIGRATION_FIELDS, "evidence_sha256": _sequence(DIGEST)})
+RESULT_FIELDS = {"run_sha256": DIGEST, "step_sha256": DIGEST}
+MIGRATION_RESULTS = {
+    "freeze": {"checkpoint_sha256": DIGEST, "executor_principal_arn": _nonempty,
+               "held_intent_sha256": _nullable(DIGEST), "freeze_id": _nonempty},
+    "independent_backup": {"media_id": _nonempty, "copy_id": _nonempty,
+                           "ciphertext_sha256": DIGEST, "plaintext_state_sha256": DIGEST},
+    "remote_lock": {"checkpoint_sha256": DIGEST, "holder_principal_arn": _nonempty,
+                    "lock_location": REMOTE, "lock_id": _nonempty, "lock_version_id": _nonempty},
+    "quarantine_restore": {"backup_evidence_sha256": DIGEST, "restored_state": ROOT_STATE},
+}
+MIGRATION_EVIDENCE = _union(*(_record({
+    "kind": _enum(kind), "root_id": ROOT, "source": ROOT_STATE, "destination": REMOTE,
+    "observed_at": _text, "result": _record({**RESULT_FIELDS, **fields}),
+}) for kind, fields in MIGRATION_RESULTS.items()))
+CMK = _record({
+    **{name: _nonempty for name in ("arn", "account_id", "region", "key_manager", "key_state",
+                                   "key_spec", "key_usage", "owner")},
+    "rotation_enabled": _boolean, "tags": TAGS, "policy_document": JSON_OBJECT,
+})
+ORPHAN = _record({
+    "intent_sha256": DIGEST, "initial_run_id": _nonempty, "root_id": ROOT, "address": ADDRESS,
+    "observation": OBSERVATION,
+})
+HISTORICAL = _union(RESOURCE_MANIFEST, STATE_BEFORE, OBSERVED_STATE, EVIDENCE,
+                    MIGRATION_EVIDENCE)
+FRAME_FIELDS = {
+    "contract_version": _integer, "initial_run_id": _nonempty, "run_sha256": DIGEST,
+    "generation": _natural, "previous_sha256": _nullable(DIGEST), "current_step_id": _nonempty,
+    "initial_complete": _boolean, "handoff_status": _nonempty,
+    "stage": _enum("foundation_pending", "foundation_partial", "foundation_verified",
+                   "migration_pending", "bootstrap_state_migrated", "budget_backend_pending",
+                   "budget_backend_partial", "budget_backend_verified", "budget_state_migrated",
+                   "backends_ready_initial_open"),
+    "status": _enum("pending", "partial", "complete"), "stage_records": _sequence(RECORD),
+    "root_states": ROOT_STATES, "receipts": _sequence(RECEIPT), "intent": _nullable(INTENT),
+    "updated_at": _text,
+}
+CHECKPOINT = _record({
+    **FRAME_FIELDS, "history": _sequence(_record({
+        "snapshot": _record(FRAME_FIELDS), "evidence": _mapping(DIGEST, HISTORICAL)})),
+})
+
 READBACK = _record({
     "evaluated_at": _text, "observed_at": _text, "caller_account": ACCOUNT, "caller_arn": _text,
     "session_kind": _enum("root", "user", "assumed_role"), "session_expiration": _text,
@@ -164,30 +297,42 @@ READBACK = _record({
         "initial": _nullable(INITIAL), "stage": _nullable(STAGE), "subsequent": _null}),
     "verified_authorization_sha256": _sequence(DIGEST),
     "resources": _mapping(ROOT, _mapping(ADDRESS, OBSERVATION)),
-    "root_states": _record({}), "known_checkpoint_head": _nullable(HEAD), "cmk": _null,
-    "financial": FINANCIAL, "migration": _null, "orphan_candidates": _empty,
-    "identity_activation": ACTIVATION, "evidence": _mapping(DIGEST, EVIDENCE),
+    "root_states": ROOT_STATES, "known_checkpoint_head": _nullable(HEAD), "cmk": _nullable(CMK),
+    "financial": FINANCIAL, "migration": _nullable(MIGRATION),
+    "orphan_candidates": _sequence(ORPHAN),
+    "identity_activation": ACTIVATION, "evidence": _mapping(
+        DIGEST, _union(EVIDENCE, MIGRATION_EVIDENCE)),
 })
-TARGET = _record({
-    "configured_name": _nullable(_text), "identity_kind": IDENTITY_KIND,
-    "exact_id": _nullable(_text),
-})
-OPERATION = _record({
+RESOURCE_OPERATION = _record({
     "kind": _enum("resource"), "root_id": ROOT, "address": ADDRESS,
     "action": _enum("create", "configure", "noop"), "target": TARGET,
     "before_manifest_sha256": DIGEST, "after_manifest_sha256": DIGEST,
 })
+OPERATION = _union(RESOURCE_OPERATION, _record({
+    **STATE_TARGET_FIELDS, "root_id": ROOT, "before_manifest_sha256": DIGEST,
+    "after_manifest_sha256": DIGEST,
+}))
+PROPOSAL_FIELDS = {"root_id": ROOT, "evidence_sha256": _sequence(DIGEST),
+                   "required_evidence": _sequence(_nonempty)}
+PROPOSAL = _union(_record({
+    **PROPOSAL_FIELDS, "kind": _enum("adoption_review"), "target": _record({
+        "address": ADDRESS, "configured_name": _nullable(_nonempty),
+        "identity_kind": IDENTITY_KIND, "exact_id": _nonempty, "intent_sha256": DIGEST}),
+}), _record({
+    **PROPOSAL_FIELDS, "kind": _enum("restore_quarantine"), "source": ROOT_STATE,
+    "destination": REMOTE,
+}))
 PLAN = _record({
     "contract_version": _integer, "run_sha256": DIGEST, "step_sha256": DIGEST,
     "spec_sha256": DIGEST, "readback_sha256": DIGEST, "checkpoint_sha256": _nullable(DIGEST),
     "authorization_sha256": DIGEST, "stage": STAGES, "expires_at": _nullable(_text),
     "status": _enum("ready", "blocked", "review_required"), "operations": _sequence(OPERATION),
-    "proposals": _empty, "blocked_reasons": _sequence(_text),
+    "proposals": _sequence(PROPOSAL), "blocked_reasons": _sequence(_text),
     "required_evidence": _sequence(_text), "estimated_cost": _record(COST_FIELDS),
 })
 SCHEMAS = {
     "BootstrapSpec": _record({"contract_version": _integer, "run": RUN, "step": STEP}),
-    "Readback": READBACK, "BootstrapPlan": PLAN,
+    "Readback": READBACK, "BootstrapPlan": PLAN, "Checkpoint": CHECKPOINT,
 }
 
 

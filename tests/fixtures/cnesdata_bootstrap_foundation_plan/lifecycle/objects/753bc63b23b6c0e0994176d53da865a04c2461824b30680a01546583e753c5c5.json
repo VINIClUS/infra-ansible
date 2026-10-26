@@ -1,0 +1,68 @@
+{
+  "aws_iam_user.bootstrap_operator": {
+    "$include": "lifecycle/objects/b0924689e97b8c75719ab055187e97647dce377558abb36814240aca0efaf472.json"
+  },
+  "aws_iam_user_policy_attachment.local_login": {
+    "$include": "lifecycle/objects/d84ecb960da5c19ecfd6451c65c6254bc7b0e2651fedfe46dbf1b09a8a8e6929.json"
+  },
+  "aws_iam_user_policy.local_assume": {
+    "$include": "lifecycle/objects/25d6684ec5ec7efc11d495648c5031227f4f232e09635f182ac307ea2a5d6fb3.json"
+  },
+  "aws_iam_policy.executor_boundary": {
+    "$include": "lifecycle/objects/d122accd686b65f04bd12f525e00a1f8229a353949f09eb670c8c58aff02f6f3.json"
+  },
+  "aws_iam_role.bootstrap_readback": {
+    "$include": "lifecycle/objects/7e37a14bedeec87fe070e2ad7abf593dbb890f6e36279124c50177bbc02c1b11.json"
+  },
+  "aws_iam_role.bootstrap_executor": {
+    "$include": "lifecycle/objects/a60195c68dd5baec696a21083631d017b6245f5aedb97f685743b07258260db3.json"
+  },
+  "aws_iam_role_policy.bootstrap_readback": {
+    "$include": "lifecycle/objects/a2db50b32a6cc4cc09ded8196174e381fb724623b7b5c68333129ccd69a62ae2.json"
+  },
+  "aws_iam_role_policy.bootstrap_executor": {
+    "$include": "lifecycle/objects/2bb28ae941eaeef8cc4348397ed08e49fdec2959e06072b4a25326d83c6be6fb.json"
+  },
+  "aws_kms_key.foundation": {
+    "$include": "lifecycle/objects/b1ae8da3cef12c9ed97473e12661e516dacef7599e6729f0e54aa7539d0041f2.json"
+  },
+  "aws_s3_bucket.state": {
+    "$include": "lifecycle/objects/6c99fc355a64f949f390f9dcef14d0bfd2e9fba3ae1077979df5787910f2be7f.json"
+  },
+  "aws_s3_bucket_versioning.state": {
+    "$include": "lifecycle/objects/1e6049dab39a798aadc397940177ebd72f4f6ab21d3af56c0421aa8587ab2aa8.json"
+  },
+  "aws_s3_bucket_public_access_block.state": {
+    "$include": "lifecycle/objects/bce74e95de83796948258cf5336204f8d70cdb6345616dc0ecfdb6bdce345a80.json"
+  },
+  "aws_s3_bucket_server_side_encryption_configuration.state": {
+    "$include": "lifecycle/objects/ea386742216e61302dd85f22dd401881fc4c4d6a8f46065ddb31a4777de11a7a.json"
+  },
+  "aws_s3_bucket_ownership_controls.state": {
+    "$include": "lifecycle/objects/b9d9e0e573994be0bc45199f31fb3c2139129facb0f6a182cf2bd65faea49cb7.json"
+  },
+  "aws_s3_bucket_policy.state": {
+    "$include": "lifecycle/objects/292188c777a26ee2df51073da4656908ab533799ff64123493fd8d69117cffb7.json"
+  },
+  "aws_s3_bucket.logging": {
+    "$include": "lifecycle/objects/2b8222711b1bc7a60944ba3f03214525d413cfabc84a4dfff079a9261f31573f.json"
+  },
+  "aws_s3_bucket_ownership_controls.logging": {
+    "$include": "lifecycle/objects/e09713e73735096070d0248b79cd2fe5ccf8a0e8039df5d4c277488b26cbba49.json"
+  },
+  "aws_s3_bucket_public_access_block.logging": {
+    "$include": "lifecycle/objects/3e1ea4554bb48c8a84a6306f07173141db7335ca079c97ce18891fc63575809d.json"
+  },
+  "aws_s3_bucket_server_side_encryption_configuration.logging": {
+    "$include": "lifecycle/objects/1b5d9fdbb7aa890dc166a5f262319707509698e782f737e584bb217e5d68dd58.json"
+  },
+  "aws_s3_bucket_policy.logging": {
+    "$include": "lifecycle/objects/dd57f4458a2907b06d56be7e0712c97f7bf14ca952bf1f5b0df39d04a9acbe1d.json"
+  },
+  "aws_s3_bucket_lifecycle_configuration.logging": {
+    "$include": "lifecycle/objects/f5fc0f2ffb0dfbf3cc14521dacf4a383c2f7855728d156856fbacc2cce346b7e.json"
+  },
+  "aws_s3_bucket_logging.state": {
+    "$include": "lifecycle/objects/eec3edbb1633d1051a6804460abd8d687a9028305ff89ff9ee67c2bba16f56d4.json"
+  }
+}

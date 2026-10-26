@@ -1,0 +1,14 @@
+{
+  "step_id": "c2-migrate-budget",
+  "stage": "migrate_budget",
+  "root_id": "budget-backend",
+  "execution_mode": "initial_local",
+  "execution_surface": "local",
+  "enabled": true,
+  "expected_principal_arn": "arn:aws:iam::123456789012:root",
+  "not_before": "2026-10-26T13:30:00Z",
+  "expires_at": "2026-10-26T14:30:00Z",
+  "input_bindings": [],
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "8ff7fbf1061ec6310b0d322a7811b22ba838ca3c93c4e9f24f5b628f277aa5d9"
+}

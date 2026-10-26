@@ -1,0 +1,8 @@
+{
+  "status": "blocked",
+  "operations": [],
+  "proposals": [],
+  "blocked_reasons": [
+    "orphan_observation_required"
+  ]
+}

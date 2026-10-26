@@ -1,0 +1,7 @@
+{
+  "status": "TESTS_ONLY_SYNTHETIC_NOT_OPERATIONAL",
+  "history_generations": 10,
+  "source": "literal timeline and rows authored before SUT C2",
+  "after_native": "external companion digest only; no native parser or operational proof",
+  "semantics_expected": "authored separately in expected rows/status/proposals"
+}

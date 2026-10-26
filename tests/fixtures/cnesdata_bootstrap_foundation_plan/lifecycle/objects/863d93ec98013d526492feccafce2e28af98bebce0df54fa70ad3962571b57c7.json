@@ -1,0 +1,251 @@
+{
+  "contract_version": 1,
+  "initial_run_id": "synthetic-foundation-fix1-20261026",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "generation": 2,
+  "previous_sha256": "7e65089154724873399a6795585281743870ee97e680d5ec787377f19ad2dbda",
+  "current_step_id": "c2-foundation-original",
+  "initial_complete": false,
+  "handoff_status": "pending",
+  "stage": "foundation_partial",
+  "status": "partial",
+  "stage_records": [],
+  "root_states": {
+    "foundation": {
+      "owner": "infra-ansible:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/foundation/terraform.tfstate"
+      },
+      "lineage": "synthetic-foundation-lineage",
+      "serial": 1,
+      "state_sha256": "2b8c89dac1c562a0fce42742122a49b92be4b54d71091f6c2f22135331cf68a9",
+      "resource_ids": {
+        "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555"
+      },
+      "version_id": null
+    }
+  },
+  "receipts": [
+    {
+      "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+      "origin_step_id": "c2-foundation-original",
+      "origin_spec_sha256": "af917aff4c372cbe12c69a77ec07deecf209b2770e9326f34b05e9840ed772d6",
+      "origin_authorization_sha256": "19f79b547acf2bfc9b193621e83a7f3b6ef81cbc3a1a79cc4c012c1e4aa6a7ac",
+      "intent_sha256": "02e1cdf302c5f933818aea38c0f236ba924381be4994f551c7412444e4b68aed",
+      "root_id": "foundation",
+      "target": {
+        "kind": "resource",
+        "address": "aws_kms_key.foundation",
+        "action": "create",
+        "configured_name": null,
+        "identity_kind": "provider_assigned"
+      },
+      "exact_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "observed_after_sha256": "3088350cd773f45d74392cd0a22ab5f6b5975835d9ff22d68c50cd9aa8193046",
+      "state_sha256": "2b8c89dac1c562a0fce42742122a49b92be4b54d71091f6c2f22135331cf68a9",
+      "lineage": "synthetic-foundation-lineage",
+      "serial": 1,
+      "checkpoint_generation": 2,
+      "observed_at": "2026-10-26T12:10:00Z"
+    }
+  ],
+  "intent": {
+    "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+    "step_id": "c2-foundation-original",
+    "spec_sha256": "af917aff4c372cbe12c69a77ec07deecf209b2770e9326f34b05e9840ed772d6",
+    "root_id": "foundation",
+    "target": {
+      "kind": "resource_set",
+      "resources": {
+        "aws_iam_user.bootstrap_operator": {
+          "action": "create",
+          "target": {
+            "configured_name": "bootstrap-operator",
+            "identity_kind": "configured",
+            "exact_id": "bootstrap-operator"
+          }
+        },
+        "aws_iam_user_policy_attachment.local_login": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "provider_assigned",
+            "exact_id": null
+          }
+        },
+        "aws_iam_user_policy.local_assume": {
+          "action": "create",
+          "target": {
+            "configured_name": "local-assume",
+            "identity_kind": "configured",
+            "exact_id": "bootstrap-operator:local-assume"
+          }
+        },
+        "aws_iam_policy.executor_boundary": {
+          "action": "create",
+          "target": {
+            "configured_name": "cnesdata-bootstrap-executor-boundary",
+            "identity_kind": "configured",
+            "exact_id": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary"
+          }
+        },
+        "aws_iam_role.bootstrap_readback": {
+          "action": "create",
+          "target": {
+            "configured_name": "cnesdata-bootstrap-readback",
+            "identity_kind": "configured",
+            "exact_id": "cnesdata-bootstrap-readback"
+          }
+        },
+        "aws_iam_role.bootstrap_executor": {
+          "action": "create",
+          "target": {
+            "configured_name": "cnesdata-bootstrap-executor",
+            "identity_kind": "configured",
+            "exact_id": "cnesdata-bootstrap-executor"
+          }
+        },
+        "aws_iam_role_policy.bootstrap_readback": {
+          "action": "create",
+          "target": {
+            "configured_name": "bootstrap-readback",
+            "identity_kind": "configured",
+            "exact_id": "cnesdata-bootstrap-readback:bootstrap-readback"
+          }
+        },
+        "aws_iam_role_policy.bootstrap_executor": {
+          "action": "create",
+          "target": {
+            "configured_name": "bootstrap-executor",
+            "identity_kind": "configured",
+            "exact_id": "cnesdata-bootstrap-executor:bootstrap-executor"
+          }
+        },
+        "aws_kms_key.foundation": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "provider_assigned",
+            "exact_id": null
+          }
+        },
+        "aws_s3_bucket.state": {
+          "action": "create",
+          "target": {
+            "configured_name": "syn-cnesdata-state-123456789012",
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket_versioning.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket_public_access_block.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket_server_side_encryption_configuration.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket_ownership_controls.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket_policy.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        },
+        "aws_s3_bucket.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": "syn-cnesdata-logs-123456789012",
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_ownership_controls.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_public_access_block.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_server_side_encryption_configuration.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_policy.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_lifecycle_configuration.logging": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-logs-123456789012"
+          }
+        },
+        "aws_s3_bucket_logging.state": {
+          "action": "create",
+          "target": {
+            "configured_name": null,
+            "identity_kind": "configured",
+            "exact_id": "syn-cnesdata-state-123456789012"
+          }
+        }
+      }
+    },
+    "authorization_sha256": "19f79b547acf2bfc9b193621e83a7f3b6ef81cbc3a1a79cc4c012c1e4aa6a7ac",
+    "binary_plan_sha256": "1cb41e721190ccece0b209de6dcaf690905e25317371c0acf07ebb9c1e6bfdff",
+    "migration_config_sha256": null,
+    "before_manifest_sha256": "d45d4d104744a98dc6a5770da0fb7fdb9b8764fba405936f6c25a98d27d7d328",
+    "after_manifest_sha256": "1b976d9c91793a105a1df89b57623dc67410ccb9708cc4716bfb5b681673aab5",
+    "parent_checkpoint_sha256": null,
+    "not_before": "2026-10-26T12:00:00Z",
+    "expires_at": "2026-10-26T12:20:00Z",
+    "principal_arn": "arn:aws:iam::123456789012:root"
+  },
+  "updated_at": "2026-10-26T12:10:01Z"
+}

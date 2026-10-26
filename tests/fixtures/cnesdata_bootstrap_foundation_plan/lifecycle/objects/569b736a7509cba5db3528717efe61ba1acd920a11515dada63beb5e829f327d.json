@@ -1,0 +1,40 @@
+{
+  "exact_id": "bootstrap-operator:local-assume",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "name": "local-assume",
+    "user": "bootstrap-operator"
+  },
+  "policy_documents": [
+    {
+      "Statement": [
+        {
+          "Action": [
+            "sts:AssumeRole"
+          ],
+          "Condition": {
+            "Bool": {
+              "aws:MultiFactorAuthPresent": "true"
+            }
+          },
+          "Effect": "Allow",
+          "Resource": [
+            "arn:aws:iam::123456789012:role/cnesdata/cnesdata-bootstrap-readback",
+            "arn:aws:iam::123456789012:role/cnesdata/cnesdata-bootstrap-executor"
+          ]
+        }
+      ],
+      "Version": "2012-10-17"
+    }
+  ],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:30:01Z",
+  "source_evidence_sha256": "efab0478ef7d0fc674c0076d814f306b8b06871cd67ea4be4356e319691d889d"
+}

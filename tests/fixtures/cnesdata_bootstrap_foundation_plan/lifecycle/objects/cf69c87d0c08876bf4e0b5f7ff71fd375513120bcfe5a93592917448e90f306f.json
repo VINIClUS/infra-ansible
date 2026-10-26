@@ -1,0 +1,8 @@
+{
+  "status": "blocked",
+  "operations": [],
+  "proposals": [],
+  "blocked_reasons": [
+    "create_not_authorized"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "foundation": {
+    "$include": "lifecycle/objects/21fd9563f78cedc931c0db990fc8bbfd9bc76ccf1febae9b1cb0b77265d957ef.json"
+  },
+  "budget-backend": {
+    "$include": "lifecycle/objects/37d190a38ed4cd89aef8889aad72a612d8b03e67140dd87b7df5b023d26f9e16.json"
+  }
+}

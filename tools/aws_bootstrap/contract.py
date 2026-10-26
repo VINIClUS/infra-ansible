@@ -80,3 +80,8 @@ class Readback(_FrozenRecord):
 @dataclass(frozen=True)
 class BootstrapPlan(_FrozenRecord):
     """Preserva o resultado inerte profundamente imutável do planejamento."""
+
+
+@dataclass(frozen=True)
+class Checkpoint(_FrozenRecord):
+    """Preserva estrutura e história recebidas sem validar sua semântica."""

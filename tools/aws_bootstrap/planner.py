@@ -1,13 +1,15 @@
 """Planejamento puro do primeiro passo foundation, sem qualquer execução."""
 
 from collections.abc import Mapping
-from datetime import datetime
 from fractions import Fraction
 from typing import Any
 
 from tools.aws_bootstrap.catalog import FOUNDATION, valid_scope
-from tools.aws_bootstrap.contract import BootstrapPlan, BootstrapSpec, Readback, digest
-from tools.aws_bootstrap.validation import FINANCIAL_LINES
+from tools.aws_bootstrap.contract import BootstrapPlan, BootstrapSpec, Checkpoint, Readback, digest
+from tools.aws_bootstrap.lifecycle import C2Evaluation, evaluate_c2
+from tools.aws_bootstrap.validation import (
+    FINANCIAL_LINES, instant as _instant, valid_expiry as _valid_expiry,
+)
 
 
 REQUIRED_EVIDENCE = (
@@ -24,22 +26,6 @@ SNAPSHOT_FIELDS = ("exact_id", "owner", "tags", "attributes", "policy_documents"
 def _require(condition: bool, reason: str) -> None:
     if not condition:
         raise ValueError(reason)
-
-
-def _instant(value: str) -> datetime:
-    _require(value.endswith("Z"), "invalid_timestamp")
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError("invalid_timestamp") from None
-
-
-def _valid_expiry(value: str) -> str | None:
-    try:
-        _instant(value)
-    except (ValueError, TypeError, AttributeError):
-        return None
-    return value
 
 
 def _genesis(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> None:
@@ -237,19 +223,48 @@ def _reason(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> str | None
     return None
 
 
+def _checkpoint_digest(checkpoint: Any) -> str | None:
+    try:
+        return None if checkpoint is None else digest(checkpoint)
+    except (ValueError, TypeError, RecursionError, OverflowError):
+        return None
+
+
+def _evaluate(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> C2Evaluation:
+    if checkpoint is None:
+        reason = _reason(spec, facts, checkpoint)
+        operations = () if reason else tuple(_operation(spec, facts, address)
+                                             for address in sorted(FOUNDATION))
+        return C2Evaluation(reason, operations)
+    if not spec.step["enabled"]:
+        return C2Evaluation("step_disabled")
+    try:
+        value = (checkpoint if isinstance(checkpoint, Checkpoint)
+                 else Checkpoint.from_mapping(checkpoint))
+        _require(valid_scope(spec.run, facts.authorizations["initial"]), "run_scope_invalid")
+        _financial(spec, facts)
+    except ValueError as error:
+        return C2Evaluation(str(error))
+    except (KeyError, TypeError, AttributeError):
+        return C2Evaluation("invalid_bootstrap_input")
+    return evaluate_c2(spec, facts, value.as_mapping())
+
+
 def plan_bootstrap(spec: BootstrapSpec, facts: Readback, checkpoint: Any) -> BootstrapPlan:
-    """Retorna o plano puro e inerte para foundation/genesis, ou bloqueia sem operações."""
-    reason = _reason(spec, facts, checkpoint)
-    operations = () if reason else tuple(_operation(spec, facts, address)
-                                         for address in sorted(FOUNDATION))
+    """Retorna operações/propostas inertes ou bloqueio com código fixo."""
+    evaluation = _evaluate(spec, facts, checkpoint)
+    reason, proposals = evaluation.blocked_reason, evaluation.proposals
+    required = REQUIRED_EVIDENCE + tuple(item for proposal in proposals
+                                         for item in proposal["required_evidence"])
     return BootstrapPlan.from_mapping({
         "contract_version": 1, "run_sha256": digest(spec.run), "step_sha256": digest(spec.step),
         "spec_sha256": digest(spec), "readback_sha256": digest(facts),
-        "checkpoint_sha256": None if checkpoint is None else digest(checkpoint),
+        "checkpoint_sha256": _checkpoint_digest(checkpoint),
         "authorization_sha256": digest(facts.authorizations["stage"]),
         "stage": spec.step["stage"], "expires_at": _valid_expiry(spec.step["expires_at"]),
-        "status": "blocked" if reason else "ready", "operations": operations,
-        "proposals": (), "blocked_reasons": () if reason is None else (reason,),
-        "required_evidence": REQUIRED_EVIDENCE,
+        "status": "blocked" if reason else ("review_required" if proposals else "ready"),
+        "operations": evaluation.operations, "proposals": proposals,
+        "blocked_reasons": () if reason is None else (reason,),
+        "required_evidence": required,
         "estimated_cost": {name: facts.financial[name] for name in COST_FIELDS},
     })
