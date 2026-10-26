@@ -49,21 +49,14 @@ variable "roots" {
     })
   })
   nullable = false
-}
 
-variable "backend" {
-  type = object({
-    owner = string
-    backend = object({
-      bucket = string
-      key    = string
-    })
-    logging = object({
-      bucket = string
-      prefix = string
-    })
-  })
-  nullable = false
+  validation {
+    condition = alltrue([
+      for root in values(var.roots) : root.backend.bucket != root.logging.bucket &&
+      root.logging.prefix == "access/${root.backend.bucket}/"
+    ])
+    error_message = "source and sink buckets must differ; prefix must be access/<source-bucket>/."
+  }
 }
 
 variable "identities" {
@@ -86,17 +79,4 @@ variable "identities" {
     })
   })
   nullable = false
-}
-
-variable "kms_key_arn" {
-  type     = string
-  nullable = false
-
-  validation {
-    condition = can(regex(join("", [
-      "^arn:aws:kms:us-east-2:836651842853:key/",
-      "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$",
-    ]), var.kms_key_arn))
-    error_message = "kms_key_arn deve ser ARN de chave KMS da conta 836651842853 em us-east-2."
-  }
 }
