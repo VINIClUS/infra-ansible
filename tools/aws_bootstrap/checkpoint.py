@@ -5,7 +5,7 @@ from typing import Any
 
 from tools.aws_bootstrap.catalog import CATALOG, valid_scope
 from tools.aws_bootstrap.contract import BootstrapSpec, Checkpoint, digest, plain
-from tools.aws_bootstrap.validation import instant
+from tools.aws_bootstrap.validation import configured_identifier, instant
 
 
 STAGE_ORDER = ("foundation", "migrate_bootstrap", "budget_backend", "migrate_budget",
@@ -70,25 +70,9 @@ def resource_target(run: Mapping[str, Any], root: str, address: str) -> dict:
     """Returns: identidade declarada para recurso ainda ausente."""
     value = run["roots"][root]["resources"][address]
     exact_id = None if value["identity_kind"] == "provider_assigned" else (
-        _configured_identifier(run, root, address))
+        configured_identifier(run, root, address))
     return {**value, "exact_id": exact_id}
 
-
-def _configured_identifier(run: Mapping, root: str, address: str) -> str:
-    name = run["roots"][root]["resources"][address]["configured_name"]
-    kind, label = address.split(".")
-    if kind.startswith("aws_s3_"):
-        slot = "backend" if label == "state" else "logging"
-        return run["roots"][root][slot]["bucket"]
-    if kind == "aws_iam_policy":
-        path = run["identities"]["boundary"]["path"]
-        return "arn:aws:iam::" + run["account_id"] + ":policy" + path + name
-    if kind == "aws_iam_user_policy":
-        return run["identities"]["operator"]["name"] + ":" + name
-    if kind == "aws_iam_role_policy":
-        role = run["roots"][root]["resources"]["aws_iam_role." + label]["configured_name"]
-        return role + ":" + name
-    return name
 
 
 def _manifest(payload: Mapping[str, Any], run: Mapping[str, Any], pool: Mapping) -> set[str]:

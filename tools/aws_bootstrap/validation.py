@@ -62,12 +62,27 @@ def valid_expiry(value: str) -> str | None:
     return value
 
 
+def configured_identifier(run: Mapping[str, Any], root: str, address: str) -> str:
+    """Returns: ID configurado pelo catálogo, sem antecipar IDs de provider."""
+    name = run["roots"][root]["resources"][address]["configured_name"]
+    kind, label = address.split(".")
+    if kind.startswith("aws_s3_"):
+        slot = "backend" if label == "state" else "logging"
+        return run["roots"][root][slot]["bucket"]
+    if kind == "aws_iam_policy":
+        path = run["identities"]["boundary"]["path"]
+        return "arn:aws:iam::" + run["account_id"] + ":policy" + path + name
+    if kind == "aws_iam_user_policy":
+        return run["identities"]["operator"]["name"] + ":" + name
+    if kind == "aws_iam_role_policy":
+        role = run["roots"][root]["resources"]["aws_iam_role." + label]["configured_name"]
+        return role + ":" + name
+    return name
+
+
 def _null(value: Any) -> bool:
     return value is None
 
-
-def _empty(value: Any) -> bool:
-    return isinstance(value, (list, tuple)) and not value
 
 
 def _pattern(expression: str) -> Validator:

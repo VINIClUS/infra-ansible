@@ -8,7 +8,7 @@ from tools.aws_bootstrap.catalog import FOUNDATION, valid_scope
 from tools.aws_bootstrap.contract import BootstrapPlan, BootstrapSpec, Checkpoint, Readback, digest
 from tools.aws_bootstrap.lifecycle import C2Evaluation, evaluate_c2
 from tools.aws_bootstrap.validation import (
-    FINANCIAL_LINES, instant as _instant, valid_expiry as _valid_expiry,
+    FINANCIAL_LINES, configured_identifier, instant as _instant, valid_expiry as _valid_expiry,
 )
 
 
@@ -167,21 +167,7 @@ def _valid_ledger(value: Mapping[str, Any]) -> bool:
 
 
 def _configured_id(run: Mapping[str, Any], address: str) -> str:
-    root = run["roots"]["foundation"]
-    name = root["resources"][address]["configured_name"]
-    kind, label = address.split(".")
-    if kind.startswith("aws_s3_"):
-        bucket = "backend" if label == "state" else "logging"
-        return root[bucket]["bucket"]
-    if kind == "aws_iam_policy":
-        path = run["identities"]["boundary"]["path"]
-        return "arn:aws:iam::" + run["account_id"] + ":policy" + path + name
-    if kind == "aws_iam_user_policy":
-        return run["identities"]["operator"]["name"] + ":" + name
-    if kind == "aws_iam_role_policy":
-        role = root["resources"]["aws_iam_role." + label]["configured_name"]
-        return role + ":" + name
-    return name
+    return configured_identifier(run, "foundation", address)
 
 
 def _target(run: Mapping[str, Any], address: str) -> dict[str, Any]:
