@@ -2,25 +2,14 @@
 
 from collections.abc import Mapping
 from datetime import datetime
+from fractions import Fraction
 from typing import Any
 
+from tools.aws_bootstrap.catalog import FOUNDATION, valid_scope
 from tools.aws_bootstrap.contract import BootstrapPlan, BootstrapSpec, Readback, digest
+from tools.aws_bootstrap.validation import FINANCIAL_LINES
 
 
-FOUNDATION = frozenset((
-    "aws_iam_user.bootstrap_operator", "aws_iam_user_policy_attachment.local_login",
-    "aws_iam_user_policy.local_assume", "aws_iam_policy.executor_boundary",
-    "aws_iam_role.bootstrap_readback", "aws_iam_role.bootstrap_executor",
-    "aws_iam_role_policy.bootstrap_readback", "aws_iam_role_policy.bootstrap_executor",
-    "aws_kms_key.foundation", "aws_s3_bucket.state", "aws_s3_bucket_versioning.state",
-    "aws_s3_bucket_public_access_block.state",
-    "aws_s3_bucket_server_side_encryption_configuration.state",
-    "aws_s3_bucket_ownership_controls.state", "aws_s3_bucket_policy.state",
-    "aws_s3_bucket.logging", "aws_s3_bucket_ownership_controls.logging",
-    "aws_s3_bucket_public_access_block.logging",
-    "aws_s3_bucket_server_side_encryption_configuration.logging", "aws_s3_bucket_policy.logging",
-    "aws_s3_bucket_lifecycle_configuration.logging", "aws_s3_bucket_logging.state",
-))
 REQUIRED_EVIDENCE = (
     "adapter_authorization_provenance", "native_binary_and_after_review", "private_runtime_lock",
     "fresh_readback_before_effect", "scanner_gate_b2", "operational_financial_readback",
@@ -115,6 +104,7 @@ def _caller(spec: BootstrapSpec, facts: Readback) -> None:
 
 
 def _catalog(spec: BootstrapSpec, facts: Readback) -> None:
+    _require(valid_scope(spec.run, facts.authorizations["initial"]), "run_scope_invalid")
     resources = spec.run["roots"]["foundation"]["resources"]
     _require(set(resources) == FOUNDATION, "foundation_catalog_mismatch")
     _require(set(facts.resources) == {"foundation"}, "observation_root_mismatch")
@@ -167,6 +157,27 @@ def _financial(spec: BootstrapSpec, facts: Readback) -> None:
              "project_cost_limit_exceeded")
     _require(0 <= value["aggregate_forecast_gross"] <= value["aggregate_limit"] <= 15,
              "aggregate_cost_limit_exceeded")
+    _require(_valid_ledger(value), "financial_manifest_invalid")
+
+
+def _valid_ledger(value: Mapping[str, Any]) -> bool:
+    lines = value["lines"]
+    if value["currency"] != "USD" or set(lines) != set(FINANCIAL_LINES):
+        return False
+    if not all(line["quantity"] >= 0 and 0 <= line["min"] <= line["base"] <= line["max"]
+               for line in lines.values()):
+        return False
+    if any(lines[name]["quantity"] != quantity for name, quantity in (
+            ("cmk", 1), ("backends", 2), ("logging_sinks", 2))):
+        return False
+    if lines["independent_recovery_media"]["quantity"] < 1:
+        return False
+    reserve = sum(Fraction(str(line["quantity"])) * Fraction(str(line["max"]))
+                  for line in lines.values())
+    reserve += 2 * Fraction(str(lines["cmk"]["quantity"])) * Fraction(str(lines["cmk"]["max"]))
+    return reserve <= Fraction(str(value["rotation_max"])) <= min(
+        Fraction(str(value["project_forecast_gross"])),
+        Fraction(str(value["aggregate_forecast_gross"])))
 
 
 def _configured_id(run: Mapping[str, Any], address: str) -> str:

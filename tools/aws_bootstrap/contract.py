@@ -7,6 +7,8 @@ import json
 from types import MappingProxyType
 from typing import Any, Self
 
+from tools.aws_bootstrap.validation import validate_record
+
 
 def freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
@@ -44,7 +46,14 @@ class _FrozenRecord:
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> Self:
         """Retorna uma cópia imutável do mapping recebido."""
-        canonical(value)
+        invalid = False
+        try:
+            validate_record(cls.__name__, value)
+            canonical(value)
+        except (ValueError, TypeError, RecursionError, OverflowError):
+            invalid = True
+        if invalid:
+            raise ValueError("invalid_bootstrap_input")
         return cls(freeze(value))
 
     def as_mapping(self) -> Mapping[str, Any]:
