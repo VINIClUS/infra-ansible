@@ -9,6 +9,9 @@
     "sort_keys": true
   },
   "cases": {
+    "c3a-readback-transport": {
+      "$include": "handoff/c3a/readback/index.json"
+    },
     "disabled": {
       "after_manifest": "after.json",
       "before_manifest": "cases/disabled-before.json",

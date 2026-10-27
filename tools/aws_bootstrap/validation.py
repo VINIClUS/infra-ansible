@@ -199,11 +199,12 @@ FINANCIAL = _record({
 HEAD = _record({
     "generation": _integer, "checkpoint_sha256": DIGEST, "receipt_sha256": _sequence(DIGEST),
 })
-ACTIVATION = _record({
+ACTIVATION_FIELDS = {
     "login_active": _boolean, "mfa_device_active": _boolean,
     "credential_source_verified": _boolean, "trust_sha256": _nullable(DIGEST),
     "policy_sha256": _nullable(DIGEST), "session_policy_sha256": _nullable(DIGEST),
-})
+}
+ACTIVATION = _record(ACTIVATION_FIELDS)
 LOCAL = _record({"kind": _enum("local"), "machine_id": _nonempty, "path": _nonempty})
 REMOTE = _record({name: _nonempty for name in ("account", "region", "bucket", "key", "owner")})
 ROOT_STATE = _record({
@@ -304,12 +305,14 @@ CHECKPOINT = _record({
         "snapshot": _record(FRAME_FIELDS), "evidence": _mapping(DIGEST, HISTORICAL)})),
 })
 
-READBACK = _record({
+AUTHORIZATION_FIELDS = {
+    "initial": _nullable(INITIAL), "stage": _nullable(STAGE), "subsequent": _null,
+}
+READBACK_FIELDS = {
     "evaluated_at": _text, "observed_at": _text, "caller_account": ACCOUNT, "caller_arn": _text,
     "session_kind": _enum("root", "user", "assumed_role"), "session_expiration": _text,
     "mfa_verified": _boolean,
-    "authorizations": _record({
-        "initial": _nullable(INITIAL), "stage": _nullable(STAGE), "subsequent": _null}),
+    "authorizations": _record(AUTHORIZATION_FIELDS),
     "verified_authorization_sha256": _sequence(DIGEST),
     "resources": _mapping(ROOT, _mapping(ADDRESS, OBSERVATION)),
     "root_states": ROOT_STATES, "known_checkpoint_head": _nullable(HEAD), "cmk": _nullable(CMK),
@@ -317,7 +320,24 @@ READBACK = _record({
     "orphan_candidates": _sequence(ORPHAN),
     "identity_activation": ACTIVATION, "evidence": _mapping(
         DIGEST, _union(EVIDENCE, MIGRATION_EVIDENCE)),
+}
+READBACK = _record(READBACK_FIELDS)
+READBACK_V2 = _record({
+    **READBACK_FIELDS, "contract_version": lambda value: _integer(value) and value == 2,
+    "successor_coverage": _null,
+    "authorizations": _record({**AUTHORIZATION_FIELDS, "verification": _null}),
+    "identity_activation": _record({
+        **ACTIVATION_FIELDS, "role_proofs": _record({}), "budget_service_proof": _null,
+    }),
 })
+
+
+def _readback(value: Any) -> bool:
+    if isinstance(value, Mapping) and "contract_version" in value:
+        return READBACK_V2(value)
+    return READBACK(value)
+
+
 RESOURCE_OPERATION = _record({
     "kind": _enum("resource"), "root_id": ROOT, "address": ADDRESS,
     "action": _enum("create", "configure", "noop"), "target": TARGET,
@@ -347,7 +367,7 @@ PLAN = _record({
 })
 SCHEMAS = {
     "BootstrapSpec": _record({"contract_version": _integer, "run": RUN, "step": STEP}),
-    "Readback": READBACK, "BootstrapPlan": PLAN, "Checkpoint": CHECKPOINT,
+    "Readback": _readback, "BootstrapPlan": PLAN, "Checkpoint": CHECKPOINT,
 }
 
 
