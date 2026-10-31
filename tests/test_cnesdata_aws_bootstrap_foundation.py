@@ -267,7 +267,7 @@ REJECTIONS = {
 def test_oraculo_rejeita_sobreviventes_e_preserva_controles_nativos(native, mutation):
     baseline = native.plan("a", "foundation", "witness")
     assert_foundation(baseline["plan"], baseline["case"])
-    altered = native.plan("a", "foundation", "witness", mutation)
+    altered = native.mutated_witness_plan(mutation, root="foundation")
     with pytest.raises(AssertionError, match=REJECTIONS[mutation]):
         assert_foundation(altered["plan"], altered["case"])
 
@@ -292,7 +292,7 @@ EXTRA_REJECTIONS = {
 def test_oraculo_rejeita_defeitos_independentes_nativos(native, mutation):
     baseline = native.plan("a", "foundation", "witness")
     assert_foundation(baseline["plan"], baseline["case"])
-    altered = native.plan("a", "foundation", "witness", mutation)
+    altered = native.mutated_witness_plan(mutation, root="foundation")
     with pytest.raises(AssertionError, match=EXTRA_REJECTIONS[mutation]):
         assert_foundation(altered["plan"], altered["case"])
 

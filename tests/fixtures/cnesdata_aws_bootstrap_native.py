@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-
+from typing import cast
 import pytest
 from fixtures.cnesdata_aws_bootstrap_mutations import mutate
 from fixtures.cnesdata_aws_bootstrap_witness import (
@@ -375,13 +375,13 @@ class NativeHarness:
         self.commands.append({"cwd": str(folder), "args": args})
         result = subprocess.run(
             [
-                shutil.which("rtk"),
+                cast(str, shutil.which("rtk")),
                 "proxy",
-                shutil.which("unshare"),
+                cast(str, shutil.which("unshare")),
                 "--user",
                 "--map-root-user",
                 "--net",
-                shutil.which("tofu"),
+                cast(str, shutil.which("tofu")),
                 *args,
             ],
             cwd=folder,
@@ -397,11 +397,13 @@ class NativeHarness:
         (folder / (args[0] + "-stderr.txt")).write_text(result.stderr)
         (folder / (args[0] + "-stdout.txt")).write_text(result.stdout)
         return result
-    def plan(self, case_id="a", root="foundation", source="target", *options):
-        mutation = options[0] if options else None
-        requested_root = root
-        root, exact = _root_mode(root)
-        key = (case_id, requested_root, source, mutation)
+    def plan(self, case_id="a", root="foundation", source="target"):
+        return self._plan((case_id, root, source, None))
+    def mutated_witness_plan(self, mutation, root="foundation", case_id="a"):
+        return self._plan((case_id, root, "witness", mutation))
+    def _plan(self, key):
+        case_id, requested_root, source, mutation = key
+        root, exact = _root_mode(requested_root)
         if key in self.failures:
             raise AssertionError(self.failures[key])
         if key in self.cache:
@@ -420,7 +422,7 @@ class NativeHarness:
         self._copy_provider(work)
         (work / "inputs.tfvars.json").write_text(json.dumps(inputs))
         context = (case, root, source)
-        self.mock_file(work, context)
+        _write_mock_file(work, case, root, source)
         result = self._read_plan(work, context, key)
         result["inputs"] = inputs
         self.cache[key] = result
@@ -473,9 +475,6 @@ class NativeHarness:
             "work": work,
             "source": source,
         }
-    def mock_file(self, work, context):
-        case, root, source = context
-        _write_mock_file(work, case, root, source)
     def prove_prevent_destroy(self, native, address):
         result = _destroy_plan(self, native, address)
         assert result.returncode != 0, f"prevent_destroy_absent: {address}"

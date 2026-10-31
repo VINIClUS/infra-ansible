@@ -303,7 +303,7 @@ def test_backend_budget_atual_exige_prevent_destroy_nativo(native, address):
 def test_backend_budget_rejeita_mutantes_nativos(native, mutation, rejection):
     baseline = native.plan("a", "budget-backend", "witness")
     assert_budget(baseline["plan"], baseline["case"])
-    altered = native.plan("a", "budget-backend", "witness", mutation)
+    altered = native.mutated_witness_plan(mutation, root="budget-backend")
     with pytest.raises(AssertionError, match=rejection):
         assert_budget(altered["plan"], altered["case"])
 

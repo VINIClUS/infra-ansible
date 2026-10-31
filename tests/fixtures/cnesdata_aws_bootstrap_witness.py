@@ -74,7 +74,9 @@ def _add_encryption(resources, name, key):
     default = {"sse_algorithm": "aws:kms", "kms_master_key_id": key}
     if name == "logging":
         default = {"sse_algorithm": "AES256"}
-    rule = {"apply_server_side_encryption_by_default": [default]}
+    rule: dict[str, list[dict[str, str]] | bool] = {
+        "apply_server_side_encryption_by_default": [default]
+    }
     if name == "state":
         rule["bucket_key_enabled"] = True
     _add(
@@ -292,17 +294,22 @@ def _variables(exact=False):
     return {name: {"type": "any"} for name in names}
 
 
+def _resource_addresses(path):
+    if path.suffix == ".json":
+        data = json.loads(path.read_text()).get("resource", {})
+        return (f"{kind}.{label}" for kind, items in data.items() for label in items)
+    if path.suffix == ".tf":
+        return (
+            f"{kind}.{label}"
+            for kind, label in re.findall(r'resource\s+"([^"]+)"\s+"([^"]+)"', path.read_text())
+        )
+    return ()
+
+
 def _declared_addresses(work):
     declared = set()
     for path in work.glob("*.tf*"):
-        if path.suffix == ".json":
-            data = json.loads(path.read_text()).get("resource", {})
-            declared.update(f"{kind}.{label}" for kind, items in data.items() for label in items)
-        elif path.suffix == ".tf":
-            declared.update(
-                f"{kind}.{label}"
-                for kind, label in re.findall(r'resource\s+"([^"]+)"\s+"([^"]+)"', path.read_text())
-            )
+        declared.update(_resource_addresses(path))
     return declared
 
 def _mock_blocks(case, root, declared, source):

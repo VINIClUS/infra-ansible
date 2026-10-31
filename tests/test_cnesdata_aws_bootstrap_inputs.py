@@ -23,7 +23,7 @@ def test_foundation_atual_exige_exatamente_cinco_inputs_e_mostra_red(native):
     witness = native.plan("a", "foundation-inputs-only", "witness")
     _assert_exact_interface(witness["plan"], witness["inputs"])
     for mutation in ("foundation_backend_kms_defaults", "foundation_extra_variable"):
-        mutant = native.plan("a", "foundation-inputs-only", "witness", mutation)
+        mutant = native.mutated_witness_plan(mutation, root="foundation-inputs-only")
         with pytest.raises(AssertionError, match="declared_input_interface"):
             _assert_exact_interface(mutant["plan"], mutant["inputs"])
 
