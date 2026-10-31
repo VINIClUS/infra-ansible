@@ -1,0 +1,73 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "identity-handoff",
+    "address": "aws_iam_role.budget_operator", "attribute": "arn"},
+  "source_ids": ["budget_operator"],
+  "trust_template_sha256": "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+  "policy_template_sha256": "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c",
+  "boundary_template_sha256": "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c",
+  "session_template_sha256": "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c",
+  "template_documents_sha256": [
+    "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+    "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c",
+    "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c",
+    "0d6a1b66288b3c4e3140405d5890912510b5bc9d899bcb0ddc2a611b235c774c"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "budgets:ViewBudget",
+        "Resource": {"kind": "external", "source_id": "external-budget",
+          "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+          "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+      }]
+    },
+    "boundary": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "budgets:ViewBudget",
+        "Resource": {"kind": "external", "source_id": "external-budget",
+          "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+          "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+      }]
+    },
+    "session": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "budgets:ViewBudget",
+        "Resource": {"kind": "external", "source_id": "external-budget",
+          "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+          "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+      }]
+    }
+  },
+  "capabilities": {
+    "view-budget": {"action": "budgets:ViewBudget", "resources": [
+      {"kind": "external", "source_id": "external-budget",
+        "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+        "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+    ], "context": [], "exception_source_id": null}
+  },
+  "probes": {
+    "budget-allow": {
+      "probe_id": "budget-allow", "subject_id": "budget_operator", "kind": "simulation",
+      "action": "budgets:ViewBudget",
+      "resource": {"kind": "external", "source_id": "external-budget",
+        "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+        "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"},
+      "context": [], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "budget-deny": {
+      "probe_id": "budget-deny", "subject_id": "budget_operator", "kind": "simulation",
+      "action": "budgets:ModifyBudget",
+      "resource": {"kind": "external", "source_id": "external-budget",
+        "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+        "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"},
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}

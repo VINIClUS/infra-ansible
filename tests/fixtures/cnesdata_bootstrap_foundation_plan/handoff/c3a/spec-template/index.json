@@ -1,0 +1,7 @@
+{
+  "input": "handoff/c3a/spec-template/input.json",
+  "expected": "handoff/c3a/spec-template/expected.json",
+  "before_manifest": "handoff/c3a/spec-template/null.json",
+  "after_manifest": "handoff/c3a/spec-template/null.json",
+  "binary_artifact": null
+}

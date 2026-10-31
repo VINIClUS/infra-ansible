@@ -255,11 +255,15 @@
     },
     "c2-migration-destination-owner": {
       "$include": "lifecycle/cases/c2-migration-destination-owner.json"
+    },
+    "c3a-spec-template-transport": {
+      "$include": "handoff/c3a/spec-template/index.json"
     }
   },
   "contract_amendment_required": true,
   "include_paths_relative_to": "this_bundle_directory",
-  "managed_login_policy_snapshot": "synthetic representative; not a fetched AWS-managed policy version",
+  "managed_login_policy_snapshot":
+    "synthetic representative; not a fetched AWS-managed policy version",
   "operational_gate": "GATE_NOT_RELEASED",
   "oracle_origin": "literal table from contract section 6, not observations or SUT",
   "raw_scanner_status": "FAIL",

@@ -1,0 +1,72 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "foundation",
+    "address": "aws_iam_role.bootstrap_readback", "attribute": "arn"},
+  "source_ids": ["bootstrap_readback"],
+  "trust_template_sha256": "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+  "policy_template_sha256": "59cba420d8a6dee37629ccf034c19cf85a41dd613c348dda6f96417125346b2a",
+  "boundary_template_sha256": null,
+  "session_template_sha256": "85a0d488c02b78155ade694ef8c3b0724306257f82ba15681e7cf693228ca736",
+  "template_documents_sha256": [
+    "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+    "59cba420d8a6dee37629ccf034c19cf85a41dd613c348dda6f96417125346b2a",
+    "85a0d488c02b78155ade694ef8c3b0724306257f82ba15681e7cf693228ca736"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Sid": "SyntheticKeyRead", "Effect": "Allow", "Action": "kms:DescribeKey",
+        "Resource": {"kind": "provider_slot", "root_id": "foundation",
+          "address": "aws_kms_key.foundation", "attribute": "arn"}
+      }, {
+        "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+        "Resource": [
+          "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+          "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+          "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+          "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+          "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate",
+          "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+          "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+          "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+        ]
+      }]
+    },
+    "boundary": null,
+    "session": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "kms:DescribeKey",
+        "Resource": {"kind": "provider_slot", "root_id": "foundation",
+          "address": "aws_kms_key.foundation", "attribute": "arn"}
+      }]
+    }
+  },
+  "capabilities": {
+    "describe-key": {"action": "kms:DescribeKey", "resources": [
+      {"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"}
+    ], "context": [], "exception_source_id": null}
+  },
+  "probes": {
+    "readback-allow": {
+      "probe_id": "readback-allow", "subject_id": "bootstrap_readback", "kind": "simulation",
+      "action": "kms:DescribeKey",
+      "resource": {"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"},
+      "context": [], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "readback-deny": {
+      "probe_id": "readback-deny", "subject_id": "bootstrap_readback", "kind": "simulation",
+      "action": "kms:ScheduleKeyDeletion",
+      "resource": {"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"},
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}
