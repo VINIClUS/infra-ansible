@@ -6,6 +6,8 @@ from math import isfinite
 import re
 from typing import Any
 
+from tools.aws_bootstrap.spec_validation import bootstrap_spec_v2
+
 
 Validator = Callable[[Any], bool]
 ROOT_IDS = ("foundation", "budget-backend", "identity-handoff", "budget-identities")
@@ -145,22 +147,24 @@ STAGES = _enum(
     "foundation", "migrate_bootstrap", "budget_backend", "migrate_budget", "mark_backends_ready",
     "verify_restricted_identity", "complete_initial", "review_adoption", "review_restore",
 )
-STEP = _record({
+STEP_FIELDS = {
     "step_id": _text, "stage": STAGES, "root_id": _nullable(ROOT),
     "execution_mode": _enum("initial_local", "subsequent"),
     "execution_surface": _enum("local", "ci"), "enabled": _boolean,
     "expected_principal_arn": _text, **WINDOW, "input_bindings": _sequence(_record({
         "input": _enum("kms_key_arn"), "value": _nonempty, "origin_receipt_sha256": DIGEST})),
     "binary_plan_sha256": _nullable(DIGEST), "migration_config_sha256": _nullable(DIGEST),
-})
-RUN = _record({
+}
+STEP = _record(STEP_FIELDS)
+RUN_FIELDS = {
     "initial_run_id": _text, "account_id": ACCOUNT, "region": _text,
     "source_sha": SOURCE, "inventory_sha": DIGEST, "roots": ROOTS,
     "identities": _record({name: _record({"name": _text, "path": _text})
                            for name in ("operator", "readback", "executor", "boundary")}),
     "tags": TAGS, "policy_template_digests": _mapping(ROOT, _mapping(ADDRESS, DIGEST)),
     "backend_template_sha256": DIGEST, "cost_manifest_sha256": DIGEST,
-})
+}
+RUN = _record(RUN_FIELDS)
 INITIAL = _record({
     "authorization_id": _text, "initial_run_id": _text, "run_sha256": DIGEST,
     "account_id": ACCOUNT, "region": _text, "roots": ROOTS,
@@ -365,8 +369,27 @@ PLAN = _record({
     "proposals": _sequence(PROPOSAL), "blocked_reasons": _sequence(_text),
     "required_evidence": _sequence(_text), "estimated_cost": _record(COST_FIELDS),
 })
+SPEC_V1 = _record(
+    {
+        "contract_version": lambda value: _integer(value) and value == 1,
+        "run": RUN,
+        "step": STEP,
+    }
+)
+SPEC_V2 = bootstrap_spec_v2(RUN_FIELDS, STEP_FIELDS)
+
+
+def _spec(value: Any) -> bool:
+    if not isinstance(value, Mapping) or type(value.get("contract_version")) is not int:
+        return False
+    version = value["contract_version"]
+    if version == 1:
+        return SPEC_V1(value)
+    return version == 2 and SPEC_V2(value)
+
+
 SCHEMAS = {
-    "BootstrapSpec": _record({"contract_version": _integer, "run": RUN, "step": STEP}),
+    "BootstrapSpec": _spec,
     "Readback": _readback, "BootstrapPlan": PLAN, "Checkpoint": CHECKPOINT,
 }
 
