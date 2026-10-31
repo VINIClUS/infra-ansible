@@ -1,0 +1,17 @@
+{
+  "step": {
+    "$include": "lifecycle/objects/cafbbb7d3434ec09cf6ea3f6a7bf435edab14539e165fad84ae1cb02f3d1d19a.json"
+  },
+  "spec_sha256": "d2160c6b01cd9f34f1640366025b42b804ae15a44ee30cc06fc2fc0c3b7ad6dc",
+  "authority": {
+    "$include": "lifecycle/objects/89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8.json"
+  },
+  "authority_sha256": "89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8",
+  "stage_authorization": {
+    "$include": "lifecycle/objects/fa91afa6ce6e1dbd7ad4d212dadae18f5925fedaee66eded9cb22bd088888965.json"
+  },
+  "receipt_sha256": {
+    "$include": "lifecycle/objects/379143db504e9b710a3a527e20db755465e0c6faafd7ca8ea549bafb5840a371.json"
+  },
+  "parent_checkpoint_sha256": "b1c53c227ec70d4bc08e9d6584951b64efe73102bed479802fb3c62c8adf05cc"
+}

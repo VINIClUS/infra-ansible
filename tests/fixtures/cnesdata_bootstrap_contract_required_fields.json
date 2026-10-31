@@ -1,0 +1,193 @@
+{
+  "spec": [
+    "contract_version",
+    "run",
+    "step"
+  ],
+  "run": [
+    "initial_run_id",
+    "account_id",
+    "region",
+    "source_sha",
+    "inventory_sha",
+    "roots",
+    "identities",
+    "tags",
+    "policy_template_digests",
+    "backend_template_sha256",
+    "cost_manifest_sha256"
+  ],
+  "step": [
+    "step_id",
+    "stage",
+    "root_id",
+    "execution_mode",
+    "execution_surface",
+    "enabled",
+    "expected_principal_arn",
+    "not_before",
+    "expires_at",
+    "input_bindings",
+    "binary_plan_sha256",
+    "migration_config_sha256"
+  ],
+  "root": [
+    "root_path",
+    "source_sha",
+    "owner",
+    "backend",
+    "logging",
+    "resources"
+  ],
+  "backend": [
+    "bucket",
+    "key"
+  ],
+  "logging": [
+    "bucket",
+    "prefix"
+  ],
+  "resource": [
+    "configured_name",
+    "identity_kind"
+  ],
+  "identity": [
+    "name",
+    "path"
+  ],
+  "facts": [
+    "evaluated_at",
+    "observed_at",
+    "caller_account",
+    "caller_arn",
+    "session_kind",
+    "session_expiration",
+    "mfa_verified",
+    "authorizations",
+    "verified_authorization_sha256",
+    "resources",
+    "root_states",
+    "known_checkpoint_head",
+    "cmk",
+    "financial",
+    "migration",
+    "orphan_candidates",
+    "identity_activation",
+    "evidence"
+  ],
+  "authorizations": [
+    "initial",
+    "stage",
+    "subsequent"
+  ],
+  "initial": [
+    "authorization_id",
+    "initial_run_id",
+    "run_sha256",
+    "account_id",
+    "region",
+    "roots",
+    "allowed_resource_actions",
+    "allowed_state_actions",
+    "not_before",
+    "expires_at"
+  ],
+  "stage": [
+    "authorization_id",
+    "authority_sha256",
+    "run_sha256",
+    "step_sha256",
+    "parent_checkpoint_sha256",
+    "binary_plan_sha256",
+    "migration_config_sha256",
+    "before_manifest_sha256",
+    "after_manifest_sha256",
+    "not_before",
+    "expires_at"
+  ],
+  "financial": [
+    "currency",
+    "basis",
+    "observed_at",
+    "lines",
+    "rotation_max",
+    "project_forecast_gross",
+    "aggregate_forecast_gross",
+    "project_limit",
+    "aggregate_limit",
+    "net_actual",
+    "net_forecast"
+  ],
+  "financial_line": [
+    "quantity",
+    "min",
+    "base",
+    "max"
+  ],
+  "observation": [
+    "exact_id",
+    "owner",
+    "tags",
+    "attributes",
+    "policy_documents",
+    "observed_at",
+    "observation_status",
+    "source_evidence_sha256"
+  ],
+  "evidence_observation": [
+    "kind",
+    "root_id",
+    "address",
+    "run_sha256",
+    "observed_at",
+    "observation"
+  ],
+  "snapshot": [
+    "status",
+    "exact_id",
+    "owner",
+    "tags",
+    "attributes",
+    "policy_documents"
+  ],
+  "plan": [
+    "contract_version",
+    "run_sha256",
+    "step_sha256",
+    "spec_sha256",
+    "readback_sha256",
+    "checkpoint_sha256",
+    "authorization_sha256",
+    "stage",
+    "expires_at",
+    "status",
+    "operations",
+    "proposals",
+    "blocked_reasons",
+    "required_evidence",
+    "estimated_cost"
+  ],
+  "operation_resource": [
+    "kind",
+    "root_id",
+    "address",
+    "action",
+    "target",
+    "before_manifest_sha256",
+    "after_manifest_sha256"
+  ],
+  "target": [
+    "configured_name",
+    "identity_kind",
+    "exact_id"
+  ],
+  "estimated_cost": [
+    "currency",
+    "basis",
+    "project_forecast_gross",
+    "aggregate_forecast_gross",
+    "project_limit",
+    "aggregate_limit",
+    "rotation_max"
+  ]
+}

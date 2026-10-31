@@ -1,0 +1,233 @@
+{
+  "budget-backend": {
+    "aws_s3_bucket.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket.state": [
+      "noop"
+    ],
+    "aws_s3_bucket_lifecycle_configuration.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_logging.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_ownership_controls.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_policy.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_policy.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_public_access_block.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_public_access_block.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_server_side_encryption_configuration.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_server_side_encryption_configuration.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_versioning.state": [
+      "create",
+      "noop"
+    ]
+  },
+  "budget-identities": {
+    "aws_iam_policy.freeze": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.budget_action": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.budget_action": [
+      "create",
+      "noop"
+    ]
+  },
+  "foundation": {
+    "aws_iam_policy.executor_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.bootstrap_executor": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.bootstrap_readback": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.bootstrap_executor": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.bootstrap_readback": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_user.bootstrap_operator": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_user_policy.local_assume": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_user_policy_attachment.local_login": [
+      "create",
+      "noop"
+    ],
+    "aws_kms_key.foundation": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_lifecycle_configuration.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_logging.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_ownership_controls.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_ownership_controls.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_policy.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_policy.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_public_access_block.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_public_access_block.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_server_side_encryption_configuration.logging": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_server_side_encryption_configuration.state": [
+      "create",
+      "noop"
+    ],
+    "aws_s3_bucket_versioning.state": [
+      "create",
+      "noop"
+    ]
+  },
+  "identity-handoff": {
+    "aws_iam_policy.budget_operator_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_policy.github_host_deploy_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_policy.github_infrastructure_deploy_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_policy.github_infrastructure_plan_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_policy.roles_anywhere_api_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_policy.shared_identity_manager_boundary": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.budget_operator": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.github_host_deploy": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.github_infrastructure_deploy": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.github_infrastructure_plan": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.roles_anywhere_api": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role.shared_identity_manager": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.budget_operator": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.github_host_deploy": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.github_infrastructure_deploy": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.github_infrastructure_plan": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.roles_anywhere_api": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_role_policy.shared_identity_manager": [
+      "create",
+      "noop"
+    ],
+    "aws_iam_user_policy.successor_assume": [
+      "create",
+      "noop"
+    ]
+  }
+}

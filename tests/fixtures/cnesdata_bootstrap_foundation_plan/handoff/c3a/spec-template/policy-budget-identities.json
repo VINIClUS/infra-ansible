@@ -1,0 +1,28 @@
+{
+  "aws_iam_role.budget_action": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"Service": "budgets.amazonaws.com"},
+      "Condition": {
+        "StringEquals": {"aws:SourceAccount": "123456789012"},
+        "ArnEquals": {"aws:SourceArn": "arn:aws:budgets::123456789012:budget/syn-v2-budget"}
+      }
+    }]
+  }],
+  "aws_iam_role_policy.budget_action": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": ["iam:AttachRolePolicy", "iam:DetachRolePolicy"],
+      "Resource": {"kind": "configured", "root_id": "identity-handoff",
+        "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+      "Condition": {"ArnEquals": {
+        "iam:PolicyARN": "arn:aws:iam::123456789012:policy/syn/budget/syn-v2-freeze"
+      }}
+    }]
+  }],
+  "aws_iam_policy.freeze": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Sid": "SyntheticFreezeOnly", "Effect": "Deny", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate"
+    }]
+  }]
+}

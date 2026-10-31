@@ -1,0 +1,332 @@
+{
+  "aws_s3_bucket.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012",
+      "force_destroy": false,
+      "prevent_destroy": true,
+      "tags": {
+        "Environment": "synthetic",
+        "InitialRunId": "synthetic-foundation-fix1-20261026",
+        "Owner": "personal-infra-live:cnesdata",
+        "Project": "CnesData",
+        "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+      }
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "c21e618e338f3da984139edc4f9e65c5e63968f163c118918fddf27b26fb3b18"
+  },
+  "aws_s3_bucket_versioning.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012",
+      "versioning_configuration": {
+        "status": "Enabled"
+      }
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "2d7f3bae3b5f0b2c3c179b0bf99dbe5d5138c0eba7118bd9c8dd5092a623451a"
+  },
+  "aws_s3_bucket_public_access_block.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "block_public_acls": true,
+      "block_public_policy": true,
+      "bucket": "syn-budget-state-123456789012",
+      "ignore_public_acls": true,
+      "restrict_public_buckets": true
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "f34d593322c29cdbd75133d200ebe05633a6316da319fc35b8753ffca1970773"
+  },
+  "aws_s3_bucket_server_side_encryption_configuration.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012",
+      "bucket_key_enabled": true,
+      "kms_master_key_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "sse_algorithm": "aws:kms"
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "855dc0c5ffb75f3edaff8f0798a3167ed4ec39be0beea31d556138f05035f610"
+  },
+  "aws_s3_bucket_policy.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012"
+    },
+    "policy_documents": [
+      {
+        "Statement": [
+          {
+            "Action": [
+              "s3:*"
+            ],
+            "Condition": {
+              "Bool": {
+                "aws:SecureTransport": "false"
+              }
+            },
+            "Effect": "Deny",
+            "Principal": "*",
+            "Resource": [
+              "arn:aws:s3:::syn-budget-state-123456789012",
+              "arn:aws:s3:::syn-budget-state-123456789012/*"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    ],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "0e7d8afb64034a5606598ca63db342ef209627078c5b30ae8b62a8455f52d2a9"
+  },
+  "aws_s3_bucket.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012",
+      "force_destroy": false,
+      "prevent_destroy": true,
+      "tags": {
+        "Environment": "synthetic",
+        "InitialRunId": "synthetic-foundation-fix1-20261026",
+        "Owner": "personal-infra-live:cnesdata",
+        "Project": "CnesData",
+        "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+      }
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "8878e5a895c59df8689d3010e8147121d3f17c22059ab4e00cf32ae5f17743a8"
+  },
+  "aws_s3_bucket_ownership_controls.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012",
+      "object_ownership": "BucketOwnerEnforced"
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "9a5e6c72cd3dd0844c524fb872435a6d4e7e811dd1142d3a78b043af860280a1"
+  },
+  "aws_s3_bucket_public_access_block.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "block_public_acls": true,
+      "block_public_policy": true,
+      "bucket": "syn-budget-logs-123456789012",
+      "ignore_public_acls": true,
+      "restrict_public_buckets": true
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "c55380731358686afa32ffce1380614ed6722898c68f0dea4704d91ecdd1919e"
+  },
+  "aws_s3_bucket_server_side_encryption_configuration.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012",
+      "sse_algorithm": "AES256"
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "89241cdf3e24a2871f80bbf714a67d0acbb977511ab7512c733edc4f01a7a91b"
+  },
+  "aws_s3_bucket_policy.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012"
+    },
+    "policy_documents": [
+      {
+        "Statement": [
+          {
+            "Action": [
+              "s3:*"
+            ],
+            "Condition": {
+              "Bool": {
+                "aws:SecureTransport": "false"
+              }
+            },
+            "Effect": "Deny",
+            "Principal": "*",
+            "Resource": [
+              "arn:aws:s3:::syn-budget-logs-123456789012",
+              "arn:aws:s3:::syn-budget-logs-123456789012/*"
+            ]
+          },
+          {
+            "Action": [
+              "s3:PutObject"
+            ],
+            "Condition": {
+              "ArnLike": {
+                "aws:SourceArn": "arn:aws:s3:::syn-budget-state-123456789012"
+              },
+              "StringEquals": {
+                "aws:SourceAccount": "123456789012"
+              }
+            },
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [
+                "logging.s3.amazonaws.com"
+              ]
+            },
+            "Resource": [
+              "arn:aws:s3:::syn-budget-logs-123456789012/access/syn-budget-state-123456789012/*"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    ],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "de9d10e0cf7cf5ad03bbf0e2c2426a745077524279f1efb3eeee3074d7efaba7"
+  },
+  "aws_s3_bucket_lifecycle_configuration.logging": {
+    "exact_id": "syn-budget-logs-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-logs-123456789012",
+      "rules": [
+        {
+          "expiration": {
+            "days": 30
+          },
+          "filter": {
+            "prefix": "access/syn-budget-state-123456789012/"
+          },
+          "id": "expire-access-logs",
+          "status": "Enabled"
+        }
+      ]
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "d6aad28cf65fbd942da58f74d489f5c43fa01ece19d43f1004cd2e9b8c040c32"
+  },
+  "aws_s3_bucket_logging.state": {
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012",
+      "target_bucket": "syn-budget-logs-123456789012",
+      "target_prefix": "access/syn-budget-state-123456789012/"
+    },
+    "policy_documents": [],
+    "observation_status": "present",
+    "observed_at": "2026-10-26T13:50:01Z",
+    "source_evidence_sha256": "67de23dbdc3b1ce38f8a08aef6f2b97fb7b8d3a2c5a63c1f81314c06b2f5f8d9"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "identity-handoff",
+    "address": "aws_iam_role.github_infrastructure_plan", "attribute": "arn"},
+  "source_ids": ["github_infrastructure_plan"],
+  "trust_template_sha256": "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+  "policy_template_sha256": "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681",
+  "boundary_template_sha256": "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681",
+  "session_template_sha256": "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681",
+  "template_documents_sha256": [
+    "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+    "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681",
+    "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681",
+    "c51d21cfdf69dd26a595defdd70bb5b7beb406d5606cb1218f9ef3ac1541d681"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+      }]
+    },
+    "boundary": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+      }]
+    },
+    "session": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+      }]
+    }
+  },
+  "capabilities": {
+    "read-state": {"action": "s3:GetObject", "resources": [
+      "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+    ], "context": [], "exception_source_id": null}
+  },
+  "probes": {
+    "plan-allow": {
+      "probe_id": "plan-allow", "subject_id": "github_infrastructure_plan",
+      "kind": "simulation", "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+      "context": [], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "plan-deny": {
+      "probe_id": "plan-deny", "subject_id": "github_infrastructure_plan",
+      "kind": "simulation", "action": "s3:DeleteObject",
+      "resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}

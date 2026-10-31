@@ -1,0 +1,7 @@
+{
+  "input": "lifecycle/objects/9bb854337ef983ec0b09b08b831462c6ebe8fe8d825b0c72e8b3fff6a6e7ea2f.json",
+  "expected": "lifecycle/objects/9e185503facc4073e042ede2c37a2f51fa312d3ff68b587440ba2f722c04aaab.json",
+  "before_manifest": "lifecycle/objects/74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b.json",
+  "after_manifest": "lifecycle/objects/d079e41c66fee0915dc5962903302349c1e3de50829434bb53cb231001f34876.json",
+  "binary_artifact": null
+}

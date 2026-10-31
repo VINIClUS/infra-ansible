@@ -1,0 +1,21 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "s3:*"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      },
+      "Effect": "Deny",
+      "Principal": "*",
+      "Resource": [
+        "arn:aws:s3:::syn-cnesdata-state-123456789012",
+        "arn:aws:s3:::syn-cnesdata-state-123456789012/*"
+      ]
+    }
+  ],
+  "Version": "2012-10-17"
+}

@@ -1,0 +1,319 @@
+{
+  "authorization_sha256": "a650cd1e81107afa1ed631619f936d46e340f807d8716fcaf1063862a01d919b",
+  "blocked_reasons": [],
+  "checkpoint_sha256": null,
+  "contract_version": 1,
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "expires_at": "2026-10-26T18:00:00Z",
+  "operations": [
+    {
+      "action": "create",
+      "address": "aws_iam_user.bootstrap_operator",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "bootstrap-operator",
+        "exact_id": "bootstrap-operator",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_user_policy_attachment.local_login",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": null,
+        "identity_kind": "provider_assigned"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_user_policy.local_assume",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "local-assume",
+        "exact_id": "bootstrap-operator:local-assume",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_policy.executor_boundary",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "cnesdata-bootstrap-executor-boundary",
+        "exact_id": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_role.bootstrap_readback",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "cnesdata-bootstrap-readback",
+        "exact_id": "cnesdata-bootstrap-readback",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_role.bootstrap_executor",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "cnesdata-bootstrap-executor",
+        "exact_id": "cnesdata-bootstrap-executor",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_role_policy.bootstrap_readback",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "bootstrap-readback",
+        "exact_id": "cnesdata-bootstrap-readback:bootstrap-readback",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_iam_role_policy.bootstrap_executor",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "bootstrap-executor",
+        "exact_id": "cnesdata-bootstrap-executor:bootstrap-executor",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_kms_key.foundation",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": null,
+        "identity_kind": "provider_assigned"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "syn-cnesdata-state-123456789012",
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_versioning.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_public_access_block.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_server_side_encryption_configuration.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_ownership_controls.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_policy.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": "syn-cnesdata-logs-123456789012",
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_ownership_controls.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_public_access_block.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_server_side_encryption_configuration.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_policy.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_lifecycle_configuration.logging",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      }
+    },
+    {
+      "action": "create",
+      "address": "aws_s3_bucket_logging.state",
+      "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+      "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+      "kind": "resource",
+      "root_id": "foundation",
+      "target": {
+        "configured_name": null,
+        "exact_id": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      }
+    }
+  ],
+  "proposals": [],
+  "readback_sha256": "a51d2958cadd414ca917932e46af98702be108ef309a0b67d608c44a2dae4b40",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ],
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "spec_sha256": "1df25a1cdcc7a2d5d553ac04599302aa2e598b96e3eb22159dd22722bfe2ab8b",
+  "stage": "foundation",
+  "status": "ready",
+  "step_sha256": "dfae197257385933388399258ecc69e5071ea676953a08d36ec7f1160b1b3830"
+}

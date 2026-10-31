@@ -1,0 +1,15 @@
+{
+  "action": "create",
+  "attributes": {
+    "bucket": {
+      "address": "aws_s3_bucket.logging",
+      "attribute": "id",
+      "root_id": "foundation"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_s3_bucket_policy.logging.json"
+    }
+  ]
+}

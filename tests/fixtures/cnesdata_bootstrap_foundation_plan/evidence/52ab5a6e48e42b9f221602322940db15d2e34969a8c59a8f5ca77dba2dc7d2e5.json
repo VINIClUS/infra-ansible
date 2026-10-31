@@ -1,0 +1,15 @@
+{
+  "address": "aws_s3_bucket_policy.state",
+  "kind": "resource_observation",
+  "observation": {
+    "attributes": {},
+    "exact_id": null,
+    "owner": null,
+    "policy_documents": [],
+    "status": "absent",
+    "tags": {}
+  },
+  "observed_at": "2026-10-26T11:59:30Z",
+  "root_id": "foundation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+}

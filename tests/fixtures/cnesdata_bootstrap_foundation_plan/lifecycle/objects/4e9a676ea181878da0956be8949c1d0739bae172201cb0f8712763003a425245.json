@@ -1,0 +1,14 @@
+[
+  {
+    "$include": "lifecycle/objects/6eda68a833dc57c3d0d36d9a148134ecedd0d8decddac682461f4643f13570bc.json"
+  },
+  {
+    "$include": "lifecycle/objects/4b872700f099c984dbc351dcb01289935bd732afa4d8069cd339d315446e7471.json"
+  },
+  {
+    "$include": "lifecycle/objects/67a12532f871fa1ad16daea697f6fb03d57221356b2e54918fdd139a5a456cc1.json"
+  },
+  {
+    "$include": "lifecycle/objects/1c635e4a35e93a58731d3bca4b07a3f4602fd41cb3c4dbc40f97e31ec81febed.json"
+  }
+]

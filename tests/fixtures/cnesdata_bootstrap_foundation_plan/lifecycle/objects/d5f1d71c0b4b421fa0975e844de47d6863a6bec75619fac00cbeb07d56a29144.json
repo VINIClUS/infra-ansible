@@ -1,0 +1,20 @@
+{
+  "step_id": "c2-budget-create",
+  "stage": "budget_backend",
+  "root_id": "budget-backend",
+  "execution_mode": "initial_local",
+  "execution_surface": "local",
+  "enabled": true,
+  "expected_principal_arn": "arn:aws:iam::123456789012:root",
+  "not_before": "2026-10-26T13:20:00Z",
+  "expires_at": "2026-10-26T14:00:00Z",
+  "input_bindings": [
+    {
+      "input": "kms_key_arn",
+      "value": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "origin_receipt_sha256": "f8513f3bf0db81229db9a837d9ea58d4472b79061ba8f53c4675381d1a1a1ac3"
+    }
+  ],
+  "binary_plan_sha256": "c9a1b4d4ffb4865688e283a6f391b0c6a1fe255fc76b08cdd7c5d701fef0a95a",
+  "migration_config_sha256": null
+}

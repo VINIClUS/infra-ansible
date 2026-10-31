@@ -1,0 +1,20 @@
+[
+  {
+    "$include": "lifecycle/objects/f45f1f97d7ceb08d51623a631b758d231a517dd04baac6021ba3a6bb5a2f0ed3.json"
+  },
+  {
+    "$include": "lifecycle/objects/e1a73f5b59f512a1f0f2c157503703defdcf47e44ac1caef4294763c50d0e3d2.json"
+  },
+  {
+    "$include": "lifecycle/objects/7b2f107271e8f8827ef25a5261f87b6d15cfcf4e1ad2a53f2193403e98b75c6e.json"
+  },
+  {
+    "$include": "lifecycle/objects/fd90342c8515b89840fe3c006848e94ec80a28caab902e8f10edef73a94bce4e.json"
+  },
+  {
+    "$include": "lifecycle/objects/539cfc75a65a271d5ac78f792afc4e19fc915696fd0b57d8072fc1e086728851.json"
+  },
+  {
+    "$include": "lifecycle/objects/1143798ba4379a772ca73c3e8b740cdeb6bb08e5eed3646ab4b7155b4d77d119.json"
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "exact_id": "syn-cnesdata-logs-123456789012",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "bucket": "syn-cnesdata-logs-123456789012",
+    "sse_algorithm": "AES256"
+  },
+  "policy_documents": [],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:30:01Z",
+  "source_evidence_sha256": "0333892429b49de1cceebf16fcd8281eb533a8f6e50e5cd709436545a1b2fac9"
+}

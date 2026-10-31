@@ -1,0 +1,91 @@
+{
+  "backend": {
+    "bucket": "syn-cnesdata-state-123456789012",
+    "key": "bootstrap/identity-handoff.tfstate"
+  },
+  "logging": {
+    "bucket": "syn-cnesdata-logs-123456789012",
+    "prefix": "access/syn-cnesdata-state-123456789012/"
+  },
+  "owner": "infra-ansible:cnesdata",
+  "resources": {
+    "aws_iam_policy.budget_operator_boundary": {
+      "configured_name": "budget_operator_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_policy.github_host_deploy_boundary": {
+      "configured_name": "github_host_deploy_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_policy.github_infrastructure_deploy_boundary": {
+      "configured_name": "github_infrastructure_deploy_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_policy.github_infrastructure_plan_boundary": {
+      "configured_name": "github_infrastructure_plan_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_policy.roles_anywhere_api_boundary": {
+      "configured_name": "roles_anywhere_api_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_policy.shared_identity_manager_boundary": {
+      "configured_name": "shared_identity_manager_boundary",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.budget_operator": {
+      "configured_name": "budget_operator",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.github_host_deploy": {
+      "configured_name": "github_host_deploy",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.github_infrastructure_deploy": {
+      "configured_name": "github_infrastructure_deploy",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.github_infrastructure_plan": {
+      "configured_name": "github_infrastructure_plan",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.roles_anywhere_api": {
+      "configured_name": "roles_anywhere_api",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role.shared_identity_manager": {
+      "configured_name": "shared_identity_manager",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.budget_operator": {
+      "configured_name": "budget_operator",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.github_host_deploy": {
+      "configured_name": "github_host_deploy",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.github_infrastructure_deploy": {
+      "configured_name": "github_infrastructure_deploy",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.github_infrastructure_plan": {
+      "configured_name": "github_infrastructure_plan",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.roles_anywhere_api": {
+      "configured_name": "roles_anywhere_api",
+      "identity_kind": "configured"
+    },
+    "aws_iam_role_policy.shared_identity_manager": {
+      "configured_name": "shared_identity_manager",
+      "identity_kind": "configured"
+    },
+    "aws_iam_user_policy.successor_assume": {
+      "configured_name": "successor-assume",
+      "identity_kind": "configured"
+    }
+  },
+  "root_path": "opentofu/cnesdata-bootstrap/identity-handoff",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

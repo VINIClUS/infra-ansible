@@ -1,0 +1,15 @@
+{
+  "action": "create",
+  "attributes": {
+    "block_public_acls": true,
+    "block_public_policy": true,
+    "bucket": {
+      "address": "aws_s3_bucket.state",
+      "attribute": "id",
+      "root_id": "foundation"
+    },
+    "ignore_public_acls": true,
+    "restrict_public_buckets": true
+  },
+  "policy_documents": []
+}

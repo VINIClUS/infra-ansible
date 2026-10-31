@@ -1,0 +1,13 @@
+{
+  "authorization_id": "grant-c2-migrate-foundation",
+  "authority_sha256": "89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "7332f441f5a835899238c29b0fd0bd94787b95b614d1d96a2251d3916b261d1d",
+  "parent_checkpoint_sha256": "0cd2388b81b3503ced8b0eb091448b4f5332652ea8e3a757bdd031d0b96dd402",
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "4d8fdeab7842a3a34df091641314c7054031897a4b1b7db3bb951e9fc78da5ad",
+  "before_manifest_sha256": "f0340e4e4c3695622b9fcc6b2299430ac5dfee575337c87b71875efdae9b1814",
+  "after_manifest_sha256": "68a2d19c9d9409b474f6c17b46e6c1b8918301d3123427a00a124660133fb22c",
+  "not_before": "2026-10-26T13:10:00Z",
+  "expires_at": "2026-10-26T14:00:00Z"
+}

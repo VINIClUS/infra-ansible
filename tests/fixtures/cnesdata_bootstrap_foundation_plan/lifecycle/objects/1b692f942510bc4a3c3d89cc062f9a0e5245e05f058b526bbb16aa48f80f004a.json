@@ -1,0 +1,17 @@
+{
+  "foundation": {
+    "owner": "infra-ansible:cnesdata",
+    "backend_location": {
+      "kind": "local",
+      "machine_id": "synthetic-c2-laptop",
+      "path": "/synthetic/private/foundation/terraform.tfstate"
+    },
+    "lineage": "synthetic-foundation-lineage",
+    "serial": 1,
+    "state_sha256": "2b8c89dac1c562a0fce42742122a49b92be4b54d71091f6c2f22135331cf68a9",
+    "resource_ids": {
+      "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555"
+    },
+    "version_id": null
+  }
+}

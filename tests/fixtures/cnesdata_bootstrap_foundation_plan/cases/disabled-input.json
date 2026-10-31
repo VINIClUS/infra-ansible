@@ -1,0 +1,15 @@
+{
+  "checkpoint": null,
+  "facts": {
+    "$include": "cases/disabled-facts.json"
+  },
+  "spec": {
+    "contract_version": 1,
+    "run": {
+      "$include": "run.json"
+    },
+    "step": {
+      "$include": "cases/disabled-step.json"
+    }
+  }
+}

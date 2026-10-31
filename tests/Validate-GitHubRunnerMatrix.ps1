@@ -6,6 +6,7 @@ $FixtureRoot = Join-Path $PSScriptRoot "fixtures/github-runner"
 $RunId = [Guid]::NewGuid().ToString("N").Substring(0, 10)
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) "github-runner-matrix-$RunId"
 $ArchivePath = Join-Path $TempRoot "fake-runner.tar.gz"
+$ArchiveSourcePath = Join-Path $TempRoot "fake-runner"
 $PlaybookPath = Join-Path $TempRoot "playbook.yml"
 $Containers = [System.Collections.Generic.List[string]]::new()
 
@@ -50,7 +51,17 @@ function Wait-Systemd {
 New-Item -ItemType Directory -Path $TempRoot | Out-Null
 
 try {
-    & tar -C (Join-Path $FixtureRoot "fake-runner") -czf $ArchivePath .
+    New-Item -ItemType Directory -Path $ArchiveSourcePath | Out-Null
+    Copy-Item -Path (Join-Path $FixtureRoot "fake-runner/*") `
+        -Destination $ArchiveSourcePath -Recurse -Force
+    if (-not (Get-Command chmod -ErrorAction SilentlyContinue)) {
+        throw "chmod is required to normalize the archive root on Linux"
+    }
+    & chmod 0755 $ArchiveSourcePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to normalize fake runner archive root mode"
+    }
+    & tar -C $ArchiveSourcePath -czf $ArchivePath .
     if ($LASTEXITCODE -ne 0) {
         throw "failed to package the offline fake runner"
     }

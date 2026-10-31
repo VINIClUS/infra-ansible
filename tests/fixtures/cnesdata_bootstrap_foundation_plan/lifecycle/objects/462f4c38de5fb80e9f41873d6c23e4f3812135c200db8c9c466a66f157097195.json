@@ -1,0 +1,11 @@
+[
+  {
+    "$include": "lifecycle/objects/41f7bc7f76f37d1820c6fc1a3cec258403e238d96d416abb5d037fc10a7b352f.json"
+  },
+  {
+    "$include": "lifecycle/objects/5549ef898da1b7105e33342a4090747a10b4c9e5a1fc48c40c390c7e43f0f470.json"
+  },
+  {
+    "$include": "lifecycle/objects/ba9a86eaa12b525d923fdc0c155cb7c9be2d591668c86bae96f5e1fd64069471.json"
+  }
+]

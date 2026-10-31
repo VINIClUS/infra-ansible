@@ -1,0 +1,18 @@
+{
+  "action": "create",
+  "attributes": {
+    "bucket": {
+      "address": "aws_s3_bucket.state",
+      "attribute": "id",
+      "root_id": "foundation"
+    },
+    "bucket_key_enabled": true,
+    "kms_master_key_id": {
+      "address": "aws_kms_key.foundation",
+      "attribute": "arn",
+      "root_id": "foundation"
+    },
+    "sse_algorithm": "aws:kms"
+  },
+  "policy_documents": []
+}

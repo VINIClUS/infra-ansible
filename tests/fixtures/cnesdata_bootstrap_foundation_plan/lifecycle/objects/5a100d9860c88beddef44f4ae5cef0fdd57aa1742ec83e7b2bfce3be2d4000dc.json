@@ -1,0 +1,15 @@
+{
+  "kind": "resource_observation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "foundation",
+  "address": "aws_s3_bucket_logging.state",
+  "observed_at": "2026-10-26T12:00:01Z",
+  "observation": {
+    "status": "absent",
+    "exact_id": null,
+    "owner": null,
+    "tags": {},
+    "attributes": {},
+    "policy_documents": []
+  }
+}

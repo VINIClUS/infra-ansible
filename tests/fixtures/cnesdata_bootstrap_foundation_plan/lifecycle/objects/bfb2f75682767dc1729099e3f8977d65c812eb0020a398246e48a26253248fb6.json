@@ -1,0 +1,8 @@
+{
+  "snapshot": {
+    "$include": "lifecycle/objects/71e33354bd797f2b451ea8e3fc8e141987a91328365ce29417d09dcc4d44bf9f.json"
+  },
+  "evidence": {
+    "$include": "lifecycle/objects/6e68a0b645dd360fa19d616a4703aece58feedc8d4aa26680ba07525298dde19.json"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "authorization_id": "grant-c2-foundation-original",
+  "authority_sha256": "904eed78512e0f32699402428d273446ce03704ed54d30f96048ddd0656830e3",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "bcac7663d802d197abb737cee866d1735a0fb7f4e26b006c856f7d3184d589b1",
+  "parent_checkpoint_sha256": null,
+  "binary_plan_sha256": "1cb41e721190ccece0b209de6dcaf690905e25317371c0acf07ebb9c1e6bfdff",
+  "migration_config_sha256": null,
+  "before_manifest_sha256": "d45d4d104744a98dc6a5770da0fb7fdb9b8764fba405936f6c25a98d27d7d328",
+  "after_manifest_sha256": "1b976d9c91793a105a1df89b57623dc67410ccb9708cc4716bfb5b681673aab5",
+  "not_before": "2026-10-26T12:00:00Z",
+  "expires_at": "2026-10-26T12:20:00Z"
+}

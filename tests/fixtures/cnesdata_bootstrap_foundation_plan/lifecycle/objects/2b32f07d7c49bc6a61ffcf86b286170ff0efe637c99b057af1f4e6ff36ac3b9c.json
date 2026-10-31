@@ -1,0 +1,26 @@
+{
+  "exact_id": "bootstrap-operator",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "name": "bootstrap-operator",
+    "path": "/cnesdata/",
+    "tags": {
+      "Environment": "synthetic",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "Owner": "infra-ansible:cnesdata",
+      "Project": "CnesData",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    }
+  },
+  "policy_documents": [],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:00:00Z",
+  "source_evidence_sha256": "a4c42c5357b894b2445bab51f51cc1367ee94fa99f1c717ff53c1ca6e85fd3f4"
+}

@@ -1,0 +1,16 @@
+{
+  "action": "create",
+  "attributes": {
+    "name": "local-assume",
+    "user": {
+      "address": "aws_iam_user.bootstrap_operator",
+      "attribute": "name",
+      "root_id": "foundation"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_iam_user_policy.local_assume.json"
+    }
+  ]
+}

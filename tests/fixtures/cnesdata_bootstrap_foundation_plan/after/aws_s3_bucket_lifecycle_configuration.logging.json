@@ -1,0 +1,23 @@
+{
+  "action": "create",
+  "attributes": {
+    "bucket": {
+      "address": "aws_s3_bucket.logging",
+      "attribute": "id",
+      "root_id": "foundation"
+    },
+    "rules": [
+      {
+        "expiration": {
+          "days": 30
+        },
+        "filter": {
+          "prefix": "access/syn-cnesdata-state-123456789012/"
+        },
+        "id": "expire-access-logs",
+        "status": "Enabled"
+      }
+    ]
+  },
+  "policy_documents": []
+}
