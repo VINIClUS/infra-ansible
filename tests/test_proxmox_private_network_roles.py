@@ -260,6 +260,8 @@ def test_guest_move_is_one_guest_on_its_own_node_and_refuses_unexpected_state():
     assert "proxmox_guest_network_pending | length == 0" in tasks
     assert "proxmox_guest_network_ha[0].state == 'started'" in tasks
     assert "failed_when: proxmox_guest_network_busy.rc not in [1]" in tasks
+    assert "- list-jobs" in tasks
+    assert "proxmox_guest_network_jobs.stdout | trim | length == 0" in tasks
     assert "ip -4 neigh flush to" in tasks and "is search('lladdr')" in tasks
     assert "force: false" in read("roles/proxmox_guest_network/tasks/change.yml")
 

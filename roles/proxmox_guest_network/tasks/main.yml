@@ -270,6 +270,34 @@
     - proxmox_guest_network_action in ['migrate', 'rollback']
     - proxmox_guest_network_spec.busy_pattern | default('') | length > 0
 
+# A start job that never finishes blocks the guest's shutdown for good (seen
+# with networking.service waiting on a DHCPv6 client since boot): the HA stop
+# never forces the guest down and leaves the resource in the error state.
+- name: Read the guest's queued systemd jobs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ proxmox_guest_network_id }}"
+      - "--"
+      - systemctl
+      - list-jobs
+      - --no-legend
+  register: proxmox_guest_network_jobs
+  changed_when: false
+  check_mode: false
+  when: proxmox_guest_network_action in ['migrate', 'rollback']
+
+- name: Refuse to stop a guest with queued systemd jobs
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_network_jobs.stdout | trim | length == 0
+    fail_msg: >-
+      CT {{ proxmox_guest_network_id }} has queued systemd jobs, so its
+      shutdown would hang; finish or clear them first (systemctl list-jobs)
+    quiet: true
+  when: proxmox_guest_network_action in ['migrate', 'rollback']
+
 - name: Find other guests that declare the target address
   ansible.builtin.command:
     argv:

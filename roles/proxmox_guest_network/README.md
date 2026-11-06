@@ -24,7 +24,10 @@ and `-e proxmox_guest_network_vmid=<id>` of a guest declared in
   for HA guests, so HA does not undo it), snapshotted (`netiso-<timestamp>`,
   drop it once the move is accepted), set, and started once with the final
   settings; PVE rewrites its network files and `resolv.conf` on that boot. A
-  busy guest (`busy_pattern` matches) is never restarted.
+  busy guest (`busy_pattern` matches) is never restarted, nor is one with
+  queued systemd jobs: a start job that never ends (seen with
+  `networking.service` waiting on a DHCPv6 client since boot) blocks the
+  shutdown, and the HA stop then leaves the resource in the `error` state.
 - PVE sets `mtu=` only on the host side of the veth and ifupdown2 in the guest
   resets an `eth0` without `mtu` to 1500, which silently drops full-size frames
   inside a VNet. `files/guest-mtu.sh` writes `mtu <value>` into the guest's
