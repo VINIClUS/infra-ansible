@@ -52,8 +52,9 @@ table inet filter {
 
 	chain forward {
 		type filter hook forward priority filter; policy drop;
-		# VNets run at MTU {{ network_router_mtu }}: clamp TCP MSS both ways.
-		tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu
+		# Every forwarded flow has one end in a VNet (MTU {{ network_router_mtu }}). Lower the
+		# MSS of both SYNs to fit it: a guest's Docker bridge still announces 1460.
+		tcp flags & (syn | rst) == syn tcp option maxseg size > {{ network_router_mtu | int - 40 }} tcp option maxseg size set {{ network_router_mtu | int - 40 }}
 		ct state invalid drop
 		ct state established,related accept
 		meta nfproto ipv6 drop

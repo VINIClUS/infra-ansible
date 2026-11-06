@@ -118,3 +118,14 @@ create-only and never replaces an existing VMID. `network_router` validates
 every ruleset with `nft --check` and loads it under its own dead-man timer,
 confirmed only by a fresh SSH connection; dnsmasq never listens on the uplink.
 `proxmox_node_routes` never reloads the node network.
+
+## Proxmox guest network moves
+
+`proxmox_guest_network` changes one declared LXC guest per run, limited to the
+node that hosts it. It refuses a guest that does not match its declaration or
+the live state it expects, a busy guest, and a target address that another
+guest declares or that answers ARP on the zone router. The original net0 is
+recorded once before the first move; the change is cold (HA guests through
+`ha-manager set --state`), snapshotted, read back with the same MAC and
+verified from inside the guest and from the node, and any failure after the
+stop restores and re-verifies the previous settings before the play fails.

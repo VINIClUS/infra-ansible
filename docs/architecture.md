@@ -117,3 +117,13 @@ tag, applied in this order after the firewall guard is active:
 
 Zone data (VNet ids and tags, router addresses, forward allowances, routes)
 lives only in `infra-ansible-inventory`.
+
+Guests move into the VNets one at a time with `proxmox_guest_network`: a cold
+change (stop, snapshot, set, single start) that keeps the guest MAC, writes the
+VNet MTU into the guest itself (ifupdown2 would reset it to 1500), verifies the
+guest from inside and from its node, and puts the previous settings back on
+any failure. A LAN host reaches the VNets dependably only through its own
+route to the zone router; through the LAN gateway's static route the path is
+asymmetric and bulk traffic into the VNets stalls. `proxmox_guest_routes`
+installs that route in a LAN guest (an ifupdown2 `if-up.d` hook written
+through `pct exec`), as `proxmox_node_routes` does on the nodes.

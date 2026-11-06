@@ -1,0 +1,10 @@
+#!/bin/sh
+# Managed by infra-ansible (proxmox_guest_routes role). Do not edit.
+# Static routes for the cluster network isolation plan. Runs from ifupdown2
+# for every interface; acts only when {{ proxmox_guest_routes_spec.interface }} comes up and never fails ifup.
+[ "$IFACE" = "{{ proxmox_guest_routes_spec.interface }}" ] || exit 0
+[ "$MODE" = "start" ] || exit 0
+{% for route in proxmox_guest_routes_spec.routes %}
+ip route replace {{ route.cidr }} via {{ route.via }} dev {{ proxmox_guest_routes_spec.interface }} || true
+{% endfor %}
+exit 0

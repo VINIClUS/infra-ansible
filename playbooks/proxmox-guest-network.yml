@@ -1,0 +1,10 @@
+---
+- name: Move one LXC guest between the LAN and a private VNet
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: proxmox_guest_network
+      tags:
+        - proxmox_guest_network

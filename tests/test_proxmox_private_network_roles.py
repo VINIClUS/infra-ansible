@@ -61,7 +61,8 @@ ROUTER = {
 }
 
 
-@pytest.mark.parametrize("role", ["proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes"])
+@pytest.mark.parametrize("role", ["proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes",
+                                  "proxmox_guest_network", "proxmox_guest_routes"])
 def test_new_infrastructure_roles_are_disabled_by_default(role):
     assert defaults(role)[f"{role}_enabled"] is False
 
@@ -73,6 +74,8 @@ def test_new_infrastructure_roles_are_disabled_by_default(role):
         ("proxmox_router_vm", "proxmox_router_vm"),
         ("network_router", "network_router"),
         ("proxmox_node_routes", "proxmox_node_routes"),
+        ("proxmox_guest_network", "proxmox_guest_network"),
+        ("proxmox_guest_routes", "proxmox_guest_routes"),
     ],
 )
 def test_every_role_requires_its_narrow_tag_and_an_explicit_limit(role, tag):
@@ -154,7 +157,9 @@ def test_router_vm_is_create_only_with_firewall_off_and_vnet_mtu():
 def test_router_policy_drops_lan_dns_clamps_mss_and_skips_nat_to_nodes():
     rules = render("network_router", "nftables.conf.j2", **ROUTER)
     assert 'iifname "eth0" udp dport { 53, 67 } drop' in rules
-    assert "tcp option maxseg size set rt mtu" in rules
+    assert ("tcp flags & (syn | rst) == syn tcp option maxseg size > 1410 "
+            "tcp option maxseg size set 1410") in rules
+    assert "set rt mtu" not in rules
     assert "policy drop;" in rules
     assert 'iifname "eth2" accept comment "ops reaches every zone and the LAN"' in rules
     assert 'iifname "eth1" oifname "eth0" ip daddr != @non_internet accept' in rules
@@ -237,3 +242,107 @@ def test_docs_describe_the_private_network_roles():
     assert "nft --check" in safety
     assert "ifquery --check -a" in safety
     assert "network_routers:" in read("inventories/example/hosts.yml")
+
+
+GUEST_TASKS = ROLES / "proxmox_guest_network" / "tasks"
+GUEST_FILES = ROLES / "proxmox_guest_network" / "files"
+
+
+def guest_tasks(name: str) -> list:
+    return yaml.safe_load((GUEST_TASKS / name).read_text(encoding="utf-8"))
+
+
+def test_guest_move_is_one_guest_on_its_own_node_and_refuses_unexpected_state():
+    tasks = read("roles/proxmox_guest_network/tasks/main.yml")
+    assert "(ansible_limit | split(',') | map('trim') | list) == [inventory_hostname]" in tasks
+    assert "proxmox_guest_network_spec.node == inventory_hostname" in tasks
+    assert "select('match', '^net[1-9][0-9]*$') | list | length == 0" in tasks
+    assert "proxmox_guest_network_pending | length == 0" in tasks
+    assert "proxmox_guest_network_ha[0].state == 'started'" in tasks
+    assert "failed_when: proxmox_guest_network_busy.rc not in [1]" in tasks
+    assert "ip -4 neigh flush to" in tasks and "is search('lladdr')" in tasks
+    assert "force: false" in read("roles/proxmox_guest_network/tasks/change.yml")
+
+
+def test_guest_move_keeps_the_mac_and_changes_only_the_network_keys():
+    tasks = read("roles/proxmox_guest_network/tasks/main.yml")
+    assert "proxmox_guest_network_net0 | combine({'bridge': spec.to.bridge, 'ip': spec.to.ip," in tasks
+    assert "'gw': spec.to.gw, 'mtu': proxmox_guest_network_mtu | string})" in tasks
+    check = read("roles/proxmox_guest_network/tasks/set.yml")
+    assert "got_net0 == want_net0" in check
+    assert "got_net0.hwaddr == proxmox_guest_network_net0.hwaddr" in check
+
+
+def test_guest_move_is_cold_snapshotted_and_restores_on_failure():
+    block = guest_tasks("change.yml")[0]
+    names = [task["name"] for task in block["block"]]
+    order = ["Write the target MTU into the guest eth0 stanza before the stop", "Stop the guest",
+             "Snapshot the stopped guest", "Apply the new network settings", "Start the guest",
+             "Keep the guest MTU in step with its new net0", "Verify the guest at its new place"]
+    assert [n for n in names if n in order] == order
+    restore = block["rescue"][1]
+    assert restore["when"] == "proxmox_guest_network_touched | default(false) | bool"
+    assert [t["name"] for t in restore["block"]] == [
+        "Stop the guest before putting the settings back", "Put back the settings read before this run",
+        "Start the guest with its previous settings", "Keep the guest MTU in step with its previous net0",
+        "Verify the guest at its previous place"]
+    assert "ansible.builtin.fail" in block["rescue"][-1]
+
+
+def test_guest_power_goes_through_ha_for_ha_guests():
+    power = read("roles/proxmox_guest_network/tasks/power.yml")
+    assert "- ha-manager" in power and "--state" in power
+    assert "proxmox_guest_network_ha | length == 0" in power
+
+
+def run_mtu(tmp_path, content: str, *args: str) -> tuple:
+    path = tmp_path / "interfaces"
+    path.write_text(content, encoding="utf-8")
+    env = dict(os.environ, NETISO_INTERFACES_FILE=str(path))
+    result = subprocess.run(["sh", str(GUEST_FILES / "guest-mtu.sh"), *args], env=env,
+                            capture_output=True, text=True)
+    return result, path.read_text(encoding="utf-8")
+
+
+def test_guest_mtu_script_survives_pve_rewrites_and_is_idempotent(tmp_path):
+    dhcp = "auto eth0\niface eth0 inet dhcp\n\n"
+    result, text = run_mtu(tmp_path, dhcp, "pre", "1450")
+    assert result.returncode == 0 and result.stdout == "file=changed\n"
+    assert "iface eth0 inet dhcp\n\tmtu 1450\n" in text
+    pve_static = "auto eth0\niface eth0 inet static\n\taddress 10.0.0.5/24\n\tgateway 10.0.0.1\n\tmtu 1450\n\n"
+    result, text = run_mtu(tmp_path, pve_static, "post", "1450")
+    assert result.returncode == 0 and "file=changed" not in result.stdout and text == pve_static
+    result, text = run_mtu(tmp_path, pve_static, "post", "1500")
+    assert "\tmtu 1500\n" in text and "mtu 1450" not in text
+    result, text = run_mtu(tmp_path, "auto eth0\niface eth0 inet dhcp\n\tmtu 1450\n\n", "post", "1500")
+    assert "mtu" not in text
+    result, _ = run_mtu(tmp_path, "auto lo\n", "post", "1500")
+    assert result.returncode == 3
+
+
+def test_guest_probe_never_prints_addresses():
+    probe = (GUEST_FILES / "guest-probe.sh").read_text(encoding="utf-8")
+    echoes = [line for line in probe.splitlines() if "echo" in line]
+    assert all("$cidr" not in line and "$gw" not in line and "$v4" not in line for line in echoes)
+    assert "result=ok" in probe and "full_size_frame" in probe and "mac_unchanged" in probe
+
+
+def test_docs_describe_guest_network_moves():
+    assert "proxmox_guest_network" in read("docs/architecture.md")
+    assert "ha-manager set --state" in read("docs/safety.md")
+
+
+def test_guest_route_hook_acts_only_for_its_interface_and_never_reloads(tmp_path):
+    hook = render("proxmox_guest_routes", "netiso-routes.sh.j2", proxmox_guest_routes_spec={
+        "interface": "eth0", "routes": [{"cidr": "10.10.0.0/16", "via": "192.0.2.249"}]})
+    assert "ip route replace 10.10.0.0/16 via 192.0.2.249 dev eth0 || true" in hook
+    script = tmp_path / "hook.sh"
+    script.write_text(hook.replace("ip route replace", "echo ip route replace"), encoding="utf-8")
+    other = subprocess.run(["sh", str(script)], env=dict(os.environ, IFACE="eth1", MODE="start"),
+                           capture_output=True, text=True)
+    assert other.returncode == 0 and other.stdout == ""
+    stop = subprocess.run(["sh", str(script)], env=dict(os.environ, IFACE="eth0", MODE="stop"),
+                          capture_output=True, text=True)
+    assert stop.returncode == 0 and stop.stdout == ""
+    tasks = read("roles/proxmox_guest_routes/tasks/main.yml")
+    assert "ifreload" not in tasks and "pct reboot" not in tasks and "addon_scripts_support" in tasks

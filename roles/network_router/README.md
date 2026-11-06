@@ -15,7 +15,8 @@ only. The role is disabled by default and needs an exact `--limit` and
   VNet MTU (`network_router_mtu`).
 - Policy (`templates/nftables.conf.j2`, `table inet filter` plus `table ip
   nat`): input and forward default drop; established/related accepted; TCP MSS
-  clamped to the route MTU in both directions; zones with `full_access` reach
+  of both SYNs lowered to `network_router_mtu - 40` (every forwarded flow has
+  one end in a VNet, and a guest's Docker bridge still announces 1460); zones with `full_access` reach
   everything; the trusted LAN (`network_router_lan_cidr`) may open connections
   into the VNets; zones with `internet` reach only non-RFC1918 destinations
   through the uplink; `network_router_forward_rules` adds explicit allowances.

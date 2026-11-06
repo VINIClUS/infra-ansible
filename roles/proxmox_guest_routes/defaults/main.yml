@@ -1,0 +1,16 @@
+---
+proxmox_guest_routes_enabled: false
+# Exactly one guest per run: -e proxmox_guest_routes_vmid=<id>.
+proxmox_guest_routes_vmid: ""
+# LAN guests that need their own route to the private range: the LAN gateway's
+# static route is not a dependable path into the VNets. Keyed by VMID (string):
+#   "100":
+#     hostname: vpn-router
+#     node: pve-01
+#     interface: eth0
+#     routes: [{cidr: 10.10.0.0/16, via: 192.0.2.249}]
+proxmox_guest_routes_guests: {}
+# ifupdown2 inside the guest runs /etc/network/if-up.d/* when the interface
+# comes up, so the route survives guest restarts without touching the
+# /etc/network/interfaces that PVE rewrites on every start.
+proxmox_guest_routes_hook_path: /etc/network/if-up.d/zz-netiso-routes

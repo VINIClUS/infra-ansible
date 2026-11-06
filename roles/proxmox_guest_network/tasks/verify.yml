@@ -1,0 +1,47 @@
+---
+# Verifies the guest against proxmox_guest_network_expect ({cidr, gw, mtu,
+# nameserver or "-"}) from inside the guest and from the node.
+- name: Probe the guest network from inside the guest
+  ansible.builtin.command:
+    argv: >-
+      {{ ['pct', 'exec', proxmox_guest_network_id, '--', 'sh', '-s', '--',
+          proxmox_guest_network_expect.cidr, proxmox_guest_network_expect.gw,
+          proxmox_guest_network_expect.mtu | string, proxmox_guest_network_expect.nameserver,
+          proxmox_guest_network_net0.hwaddr | lower, proxmox_guest_network_dns_probe,
+          proxmox_guest_network_spec.https_probe]
+         + (proxmox_guest_network_spec.services | default([])) }}
+    stdin: "{{ lookup('ansible.builtin.file', 'guest-probe.sh') }}"
+  register: proxmox_guest_network_probe
+  changed_when: false
+  check_mode: false
+  retries: "{{ proxmox_guest_network_verify_retries }}"
+  delay: "{{ proxmox_guest_network_verify_delay }}"
+  until: proxmox_guest_network_probe.rc == 0 and 'result=ok' in proxmox_guest_network_probe.stdout_lines
+  ignore_errors: true
+
+- name: Show the guest probe checks
+  ansible.builtin.debug:
+    var: proxmox_guest_network_probe.stdout_lines
+
+- name: Require every guest probe check to pass
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_network_probe.rc == 0
+      - "'result=ok' in proxmox_guest_network_probe.stdout_lines"
+    fail_msg: "CT {{ proxmox_guest_network_id }} failed the in-guest network probe."
+
+- name: Reach the guest SSH port from the node
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "5"
+      - bash
+      - -c
+      - 'exec 3<>"/dev/tcp/$0/22"'
+      - "{{ proxmox_guest_network_expect.cidr.split('/')[0] }}"
+  register: proxmox_guest_network_tcp
+  changed_when: false
+  check_mode: false
+  retries: 6
+  delay: 5
+  until: proxmox_guest_network_tcp.rc == 0

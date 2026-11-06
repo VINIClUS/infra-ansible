@@ -1,0 +1,10 @@
+---
+- name: Route the private VNets from one LAN guest through the zone router
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: proxmox_guest_routes
+      tags:
+        - proxmox_guest_routes
