@@ -95,6 +95,10 @@ $requiredPaths = @(
     "roles\proxmox_guest_routes\tasks\main.yml",
     "roles\proxmox_guest_routes\README.md",
     "playbooks\proxmox-guest-routes.yml",
+    "roles\proxmox_guest_nic\defaults\main.yml",
+    "roles\proxmox_guest_nic\tasks\main.yml",
+    "roles\proxmox_guest_nic\README.md",
+    "playbooks\proxmox-guest-nic.yml",
     "roles\proxmox_lxc_guest\defaults\main.yml",
     "roles\proxmox_lxc_guest\tasks\main.yml",
     "roles\proxmox_lxc_guest\README.md",
@@ -139,7 +143,7 @@ Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_backu
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_firewall"
 Assert-FileContains -RelativePath "roles\proxmox_firewall\defaults\main.yml" -Pattern "proxmox_firewall_enabled:\s+false"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "dead-man"
-foreach ($disabledRole in @("proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes", "proxmox_guest_network", "proxmox_guest_routes")) {
+foreach ($disabledRole in @("proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes", "proxmox_guest_network", "proxmox_guest_routes", "proxmox_guest_nic")) {
     Assert-FileContains -RelativePath "roles\$disabledRole\defaults\main.yml" -Pattern "$($disabledRole)_enabled:\s+false"
 }
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_change_guard"

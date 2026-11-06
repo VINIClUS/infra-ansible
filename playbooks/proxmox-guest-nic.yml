@@ -1,0 +1,10 @@
+---
+- name: Hot-plug a secondary private NIC into one LXC guest
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: proxmox_guest_nic
+      tags:
+        - proxmox_guest_nic

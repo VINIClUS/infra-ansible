@@ -62,7 +62,7 @@ ROUTER = {
 
 
 @pytest.mark.parametrize("role", ["proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes",
-                                  "proxmox_guest_network", "proxmox_guest_routes"])
+                                  "proxmox_guest_network", "proxmox_guest_routes", "proxmox_guest_nic"])
 def test_new_infrastructure_roles_are_disabled_by_default(role):
     assert defaults(role)[f"{role}_enabled"] is False
 
@@ -76,6 +76,7 @@ def test_new_infrastructure_roles_are_disabled_by_default(role):
         ("proxmox_node_routes", "proxmox_node_routes"),
         ("proxmox_guest_network", "proxmox_guest_network"),
         ("proxmox_guest_routes", "proxmox_guest_routes"),
+        ("proxmox_guest_nic", "proxmox_guest_nic"),
     ],
 )
 def test_every_role_requires_its_narrow_tag_and_an_explicit_limit(role, tag):
@@ -322,6 +323,21 @@ def test_guest_mtu_script_survives_pve_rewrites_and_is_idempotent(tmp_path):
     assert result.returncode == 3
 
 
+def test_guest_mtu_script_targets_only_the_named_interface(tmp_path):
+    two = ("auto eth0\niface eth0 inet dhcp\n\n"
+           "auto eth1\niface eth1 inet static\n\taddress 10.0.0.5/24\n\n")
+    result, text = run_mtu(tmp_path, two, "post", "1450", "eth1")
+    assert result.returncode == 0 and result.stdout == "file=changed\n"
+    assert text == ("auto eth0\niface eth0 inet dhcp\n\n"
+                    "auto eth1\niface eth1 inet static\n\tmtu 1450\n\taddress 10.0.0.5/24\n\n")
+    result, again = run_mtu(tmp_path, text, "post", "1450", "eth1")
+    assert result.stdout == "" and again == text
+    result, _ = run_mtu(tmp_path, two, "post", "1450", "eth1; reboot")
+    assert result.returncode == 2
+    result, _ = run_mtu(tmp_path, "auto eth0\niface eth0 inet dhcp\n\n", "post", "1450", "eth1")
+    assert result.returncode == 3
+
+
 def test_guest_probe_never_prints_addresses():
     probe = (GUEST_FILES / "guest-probe.sh").read_text(encoding="utf-8")
     echoes = [line for line in probe.splitlines() if "echo" in line]
@@ -348,3 +364,43 @@ def test_guest_route_hook_acts_only_for_its_interface_and_never_reloads(tmp_path
     assert stop.returncode == 0 and stop.stdout == ""
     tasks = read("roles/proxmox_guest_routes/tasks/main.yml")
     assert "ifreload" not in tasks and "pct reboot" not in tasks and "addon_scripts_support" in tasks
+
+
+NIC_FILES = ROOT / "roles" / "proxmox_guest_nic" / "files"
+
+
+def test_guest_nic_is_hot_secondary_and_never_takes_the_default_route():
+    tasks = read("roles/proxmox_guest_nic/tasks/main.yml")
+    assert "proxmox_guest_nic_spec.gw is not defined" in tasks
+    assert "proxmox_guest_nic_spec.nic is match('^net[1-9]$')" in tasks
+    assert "'firewall': '1'" in tasks
+    assert "pct stop" not in tasks and "pct reboot" not in tasks and "ha-manager" not in tasks
+    assert "proxmox_guest_nic_action != 'unknown'" in tasks
+    assert tasks.count("guest-nic-forget.sh") == 2
+    verify = read("roles/proxmox_guest_nic/tasks/verify.yml")
+    assert "/../proxmox_guest_network/files/guest-mtu.sh" in verify
+    assert "result=ok" in verify
+
+
+def test_guest_nic_probe_never_prints_addresses():
+    probe = (NIC_FILES / "guest-nic-probe.sh").read_text(encoding="utf-8")
+    echoes = [line for line in probe.splitlines() if "echo" in line]
+    assert all("$cidr" not in line and "$v4" not in line and "$probe" not in line for line in echoes)
+    assert "default_route_elsewhere" in probe and "full_size_frame" in probe
+
+
+def test_guest_nic_forget_drops_only_the_named_stanza(tmp_path):
+    path = tmp_path / "interfaces"
+    path.write_text("auto eth0\niface eth0 inet dhcp\n\nauto eth1\niface eth1 inet static\n"
+                    "\taddress 10.0.0.5/24\n\tmtu 1450\n\nsource /etc/network/interfaces.d/*\n",
+                    encoding="utf-8")
+    env = dict(os.environ, NETISO_INTERFACES_FILE=str(path))
+    script = str(NIC_FILES / "guest-nic-forget.sh")
+    first = subprocess.run(["sh", script, "eth1"], env=env, capture_output=True, text=True)
+    text = path.read_text(encoding="utf-8")
+    assert first.returncode == 0 and first.stdout == "file=changed\n"
+    assert "eth1" not in text and "iface eth0 inet dhcp" in text and "source " in text
+    again = subprocess.run(["sh", script, "eth1"], env=env, capture_output=True, text=True)
+    assert again.returncode == 0 and again.stdout == ""
+    refused = subprocess.run(["sh", script, "eth0"], env=env, capture_output=True, text=True)
+    assert refused.returncode == 2

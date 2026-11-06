@@ -127,3 +127,6 @@ route to the zone router; through the LAN gateway's static route the path is
 asymmetric and bulk traffic into the VNets stalls. `proxmox_guest_routes`
 installs that route in a LAN guest (an ifupdown2 `if-up.d` hook written
 through `pct exec`), as `proxmox_node_routes` does on the nodes.
+`proxmox_guest_nic` hot-plugs a secondary NIC without a gateway into a
+running guest (the edge proxy's leg on the services VNet) and keeps its VNet
+MTU in the guest across reboots.

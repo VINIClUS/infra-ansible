@@ -1,0 +1,26 @@
+---
+- name: Read the guest configuration back
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ inventory_hostname }}/lxc/{{ proxmox_guest_nic_id }}/config"
+      - --output-format
+      - json
+  register: proxmox_guest_nic_readback_raw
+  changed_when: false
+
+- name: Confirm the NIC reads back as declared
+  vars:
+    config: "{{ proxmox_guest_nic_readback_raw.stdout | from_json }}"
+    got: >-
+      {{ dict((config[proxmox_guest_nic_spec.nic] | default('')) | split(',')
+         | select('search', '=') | map('split', '=')) }}
+  ansible.builtin.assert:
+    that: >-
+      {{ [(got | dict2items | rejectattr('key', 'equalto', 'hwaddr') | items2dict) == proxmox_guest_nic_desired,
+          got.hwaddr | default('') is match('^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$')]
+         if proxmox_guest_nic_expect_present else [got | length == 0] }}
+    fail_msg: >-
+      CT {{ proxmox_guest_nic_id }} {{ proxmox_guest_nic_spec.nic }} does not read back
+      {{ 'as declared' if proxmox_guest_nic_expect_present else 'as removed' }}.

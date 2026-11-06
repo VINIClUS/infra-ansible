@@ -1,0 +1,59 @@
+---
+# PVE gives the hot-plugged veth the bridge MTU but writes no "mtu" into the
+# guest stanza, so ifupdown2 would reset the interface to 1500 on the next
+# boot; the shared guest-mtu.sh keeps "mtu" in the (static) stanza.
+- name: Keep the NIC MTU in the guest stanza
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ proxmox_guest_nic_id }}"
+      - "--"
+      - sh
+      - -s
+      - "--"
+      - post
+      - "{{ proxmox_guest_nic_mtu }}"
+      - "{{ proxmox_guest_nic_spec.name }}"
+    stdin: "{{ lookup('ansible.builtin.file', role_path ~ '/../proxmox_guest_network/files/guest-mtu.sh') }}"
+  register: proxmox_guest_nic_mtu_fix
+  changed_when: proxmox_guest_nic_mtu_fix.stdout | trim | length > 0
+
+- name: Probe the NIC from inside the guest
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ proxmox_guest_nic_id }}"
+      - "--"
+      - sh
+      - -s
+      - "--"
+      - "{{ proxmox_guest_nic_spec.name }}"
+      - "{{ proxmox_guest_nic_spec.ip }}"
+      - "{{ proxmox_guest_nic_mtu }}"
+      - "{{ proxmox_guest_nic_spec.probe }}"
+    stdin: "{{ lookup('ansible.builtin.file', 'guest-nic-probe.sh') }}"
+  register: proxmox_guest_nic_probe
+  changed_when: false
+  failed_when: false
+  retries: "{{ proxmox_guest_nic_verify_retries }}"
+  delay: "{{ proxmox_guest_nic_verify_delay }}"
+  until: proxmox_guest_nic_probe.stdout is search('(?m)^result=ok$')
+
+- name: Show the probe checks
+  ansible.builtin.debug:
+    msg: "{{ proxmox_guest_nic_probe.stdout_lines }}"
+
+- name: Read the host side of the NIC
+  ansible.builtin.command:
+    argv: [cat, "/sys/class/net/veth{{ proxmox_guest_nic_id }}i{{ proxmox_guest_nic_spec.nic[3:] }}/mtu"]
+  register: proxmox_guest_nic_host_mtu
+  changed_when: false
+
+- name: Confirm the NIC works with the declared MTU
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_nic_probe.stdout is search('(?m)^result=ok$')
+      - proxmox_guest_nic_host_mtu.stdout | trim == proxmox_guest_nic_mtu | string
+    fail_msg: "CT {{ proxmox_guest_nic_id }} {{ proxmox_guest_nic_spec.name }} failed verification."

@@ -129,3 +129,9 @@ recorded once before the first move; the change is cold (HA guests through
 `ha-manager set --state`), snapshotted, read back with the same MAC and
 verified from inside the guest and from the node, and any failure after the
 stop restores and re-verifies the previous settings before the play fails.
+
+`proxmox_guest_nic` hot-plugs one declared secondary NIC per run into a running
+guest, limited to its node. It never stops the guest, refuses a gateway on the
+new NIC, a NIC it did not declare and an address in use, verifies from inside
+the guest that the default route stays elsewhere, and removes the NIC and its
+guest stanza again if the add fails.
