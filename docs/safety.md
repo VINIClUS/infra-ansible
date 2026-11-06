@@ -102,3 +102,19 @@ firewall change. The timer is disarmed only after `pve-firewall compile` is
 clean, new SSH and 8006 connections from the controller succeed, and quorum is
 intact. Network-affecting steps use SSH to a node, never the public Proxmox
 hostname, because that path depends on the tunnel guest being reconfigured.
+
+## Proxmox SDN and router changes
+
+`proxmox_sdn` refuses to apply unless the host firewall is `enabled/running`
+on every node with the IPset-restricted VXLAN guard rule, every node passes
+`ifquery --check -a` without a pending `/etc/network/interfaces.new`, and the
+only pending SDN changes are objects the inventory owns. The apply runs under
+the shared `proxmox_change_guard`: HA resources are set to `ignored` until no
+LRM holds a watchdog, and a dead-man timer on every node restores the previous
+`/etc/network/interfaces.d/sdn` and runs `ifreload -a` unless the run confirms
+each node's VNets, MTU, VXLAN port, address and default route, new SSH and 8006
+connections from the controller, and quorum. `proxmox_router_vm` is
+create-only and never replaces an existing VMID. `network_router` validates
+every ruleset with `nft --check` and loads it under its own dead-man timer,
+confirmed only by a fresh SSH connection; dnsmasq never listens on the uplink.
+`proxmox_node_routes` never reloads the node network.

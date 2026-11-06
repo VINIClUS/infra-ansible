@@ -1,0 +1,10 @@
+#!/bin/sh
+# {{ ansible_managed }}
+# Static routes for the cluster network isolation plan. Runs from ifupdown2
+# for every interface; acts only when {{ proxmox_node_routes_interface }} comes up and never fails ifup.
+[ "$IFACE" = "{{ proxmox_node_routes_interface }}" ] || exit 0
+[ "$MODE" = "start" ] || exit 0
+{% for route in proxmox_node_routes_list %}
+ip route replace {{ route.cidr }} via {{ route.via }} dev {{ proxmox_node_routes_interface }} || true
+{% endfor %}
+exit 0

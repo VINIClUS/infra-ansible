@@ -1,0 +1,461 @@
+---
+- name: Validate Proxmox SDN enable flags
+  ansible.builtin.assert:
+    that:
+      - proxmox_sdn_enabled is boolean
+      - proxmox_sdn_apply is boolean
+    fail_msg: "proxmox_sdn_enabled and proxmox_sdn_apply must be booleans."
+
+- name: Stop only the Proxmox SDN role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_sdn_enabled | bool
+
+- name: Validate Proxmox SDN contract
+  vars:
+    proxmox_sdn_tags: "{{ proxmox_sdn_vnets.values() | map(attribute='tag', default=0) | map('int') | list }}"
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - ansible_run_tags | list | sort == ['proxmox_sdn']
+      - proxmox_sdn_nodes is mapping
+      - proxmox_sdn_nodes | length >= 1
+      - ansible_facts['hostname'] in proxmox_sdn_nodes
+      - proxmox_sdn_zones is mapping
+      - proxmox_sdn_zones | length >= 1
+      - proxmox_sdn_vnets is mapping
+      - proxmox_sdn_vnets | length >= 1
+      - proxmox_sdn_zones.keys() | reject('match', '^[a-z][a-z0-9]{1,7}$') | list | length == 0
+      - proxmox_sdn_vnets.keys() | reject('match', '^[a-z][a-z0-9]{1,7}$') | list | length == 0
+      - proxmox_sdn_tags | unique | length == proxmox_sdn_tags | length
+      - proxmox_sdn_vxlan_port | int >= 1
+      - proxmox_sdn_vxlan_port | int <= 65535
+      - proxmox_sdn_deadman_minutes | int >= 3
+      - proxmox_sdn_deadman_minutes | int <= 30
+    fail_msg: >-
+      SDN contract is incomplete or unsafe. Use the private inventory, an exact
+      one-node --limit, --tags proxmox_sdn, a node map that includes this host,
+      zone and VNet ids of 2-8 lowercase characters and unique VXLAN tags.
+
+- name: Validate every declared zone
+  ansible.builtin.assert:
+    that:
+      - item.value is mapping
+      - item.value.type | default('vxlan') == 'vxlan'
+      - item.value.mtu is defined
+      - item.value.mtu | int >= 1280
+      - item.value.mtu | int <= 1450
+    fail_msg: "Zone {{ item.key }} must be a VXLAN zone with an explicit mtu between 1280 and 1450."
+    quiet: true
+  loop: "{{ proxmox_sdn_zones | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate every declared VNet
+  ansible.builtin.assert:
+    that:
+      - item.value is mapping
+      - item.value.zone | default('') in proxmox_sdn_zones
+      - item.value.tag | default(0) | int >= 1
+      - item.value.tag | default(0) | int <= 16777215
+      - item.key not in proxmox_sdn_zones
+      - item.value.alias | default('') is match('^[A-Za-z0-9 ._()-]{0,64}$')
+    fail_msg: "VNet {{ item.key }} needs a declared zone, a VXLAN tag 1-16777215 and a plain alias."
+    quiet: true
+  loop: "{{ proxmox_sdn_vnets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Read live cluster status
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/status, --output-format, json]
+  register: proxmox_sdn_cluster_status
+  changed_when: false
+  check_mode: false
+
+- name: Derive live cluster facts and the VNet check specs
+  vars:
+    proxmox_sdn_status_items: "{{ proxmox_sdn_cluster_status.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    proxmox_sdn_quorate: >-
+      {{ (proxmox_sdn_status_items | selectattr('type', 'equalto', 'cluster') | first).quorate
+         | default(0) | int == 1 }}
+    proxmox_sdn_live_nodes: >-
+      {{ proxmox_sdn_status_items | selectattr('type', 'equalto', 'node')
+         | items2dict(key_name='name', value_name='ip') }}
+    proxmox_sdn_offline_nodes: >-
+      {{ proxmox_sdn_status_items | selectattr('type', 'equalto', 'node')
+         | rejectattr('online', 'equalto', 1) | map(attribute='name') | list }}
+    proxmox_sdn_peers: "{{ proxmox_sdn_nodes.values() | list | sort }}"
+    proxmox_sdn_vnet_specs: >-
+      {%- set out = [] -%}
+      {%- for name, vnet in proxmox_sdn_vnets.items() -%}
+      {%- set _ = out.append(name ~ ':' ~ (vnet.tag | int) ~ ':' ~ (proxmox_sdn_zones[vnet.zone].mtu | int)) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Confirm the declared node map matches the live quorate cluster
+  ansible.builtin.assert:
+    that:
+      - proxmox_sdn_quorate | bool
+      - proxmox_sdn_offline_nodes | length == 0
+      - proxmox_sdn_live_nodes == proxmox_sdn_nodes
+    fail_msg: >-
+      Cluster is not quorate, a node is offline, or proxmox_sdn_nodes differs
+      from the live cluster ({{ proxmox_sdn_live_nodes }}). Nothing was changed.
+
+- name: Check every node before any SDN change (network file layout, drift, VXLAN guard)
+  ansible.builtin.command:
+    argv: >-
+      {{ (['sh', '-s', '--'] if proxmox_sdn_item.key == ansible_facts['hostname']
+          else (proxmox_sdn_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_sdn_item.key,
+                '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_sdn_item.key ~ '/ssh_known_hosts',
+                'root@' ~ proxmox_sdn_item.value, 'sh', '-s', '--']))
+         + ['pre', proxmox_sdn_item.value, proxmox_sdn_vxlan_port | string] }}
+    stdin: "{{ lookup('ansible.builtin.file', 'sdn-node-check.sh') }}"
+  loop: "{{ proxmox_sdn_nodes | dict2items }}"
+  loop_control:
+    loop_var: proxmox_sdn_item
+    label: "{{ proxmox_sdn_item.key }}"
+  register: proxmox_sdn_precheck
+  changed_when: false
+  check_mode: false
+  failed_when: proxmox_sdn_precheck.rc != 0
+
+- name: Record each node's default route before the change
+  ansible.builtin.set_fact:
+    proxmox_sdn_default_routes: >-
+      {%- set out = {} -%}
+      {%- for result in proxmox_sdn_precheck.results -%}
+      {%- set _ = out.update({result.proxmox_sdn_item.key:
+                              result.stdout_lines | select('match', '^default_route=') | first}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Read the configured SDN zones and VNets
+  ansible.builtin.command:
+    argv: [pvesh, get, "/cluster/sdn/{{ item }}", --output-format, json]
+  loop: [zones, vnets]
+  register: proxmox_sdn_config
+  changed_when: false
+  check_mode: false
+
+- name: Index the configured SDN objects
+  ansible.builtin.set_fact:
+    proxmox_sdn_live_zone_cfg: "{{ proxmox_sdn_config.results[0].stdout | from_json }}"
+    proxmox_sdn_live_vnet_cfg: "{{ proxmox_sdn_config.results[1].stdout | from_json }}"
+
+- name: Refuse to change the type, zone or tag of an existing SDN object
+  vars:
+    proxmox_sdn_zone_live: >-
+      {{ proxmox_sdn_live_zone_cfg | selectattr('zone', 'equalto', item.key) | first | default({}) }}
+    proxmox_sdn_vnet_live: >-
+      {{ proxmox_sdn_live_vnet_cfg | selectattr('vnet', 'equalto', item.key) | first | default({}) }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.key in proxmox_sdn_zones and (proxmox_sdn_zone_live == {} or proxmox_sdn_zone_live.type == 'vxlan'))
+        or (item.key in proxmox_sdn_vnets and (proxmox_sdn_vnet_live == {}
+            or (proxmox_sdn_vnet_live.zone == item.value.zone
+                and proxmox_sdn_vnet_live.tag | int == item.value.tag | int)))
+    fail_msg: >-
+      {{ item.key }} already exists with a different type, zone or tag. Moving
+      a VNet or re-tagging it disconnects its guests; change it manually.
+    quiet: true
+  loop: "{{ (proxmox_sdn_zones | dict2items) + (proxmox_sdn_vnets | dict2items) }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Reconcile declared VXLAN zones in the pending SDN configuration
+  vars:
+    proxmox_sdn_zone_live: >-
+      {{ proxmox_sdn_live_zone_cfg | selectattr('zone', 'equalto', item.key) | first | default({}) }}
+    proxmox_sdn_zone_args:
+      - --peers
+      - "{{ proxmox_sdn_peers | join(',') }}"
+      - --mtu
+      - "{{ item.value.mtu | int | string }}"
+      - --vxlan-port
+      - "{{ proxmox_sdn_vxlan_port | int | string }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ (['pvesh', 'create', '/cluster/sdn/zones', '--zone', item.key, '--type', 'vxlan']
+          if proxmox_sdn_zone_live == {}
+          else ['pvesh', 'set', '/cluster/sdn/zones/' ~ item.key]) + proxmox_sdn_zone_args }}
+  loop: "{{ proxmox_sdn_zones | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: proxmox_sdn_zone_edits
+  changed_when: true
+  when: >-
+    proxmox_sdn_zone_live == {}
+    or (proxmox_sdn_zone_live.peers | default('')).split(',') | map('trim') | sort != proxmox_sdn_peers
+    or proxmox_sdn_zone_live.mtu | default(0) | int != item.value.mtu | int
+    or proxmox_sdn_zone_live['vxlan-port'] | default(0) | int != proxmox_sdn_vxlan_port | int
+
+- name: Reconcile declared VNets in the pending SDN configuration
+  vars:
+    proxmox_sdn_vnet_live: >-
+      {{ proxmox_sdn_live_vnet_cfg | selectattr('vnet', 'equalto', item.key) | first | default({}) }}
+    proxmox_sdn_alias: "{{ item.value.alias | default('') }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ (['pvesh', 'create', '/cluster/sdn/vnets', '--vnet', item.key,
+           '--zone', item.value.zone, '--tag', item.value.tag | int | string]
+          if proxmox_sdn_vnet_live == {}
+          else ['pvesh', 'set', '/cluster/sdn/vnets/' ~ item.key])
+         + (['--alias', proxmox_sdn_alias] if proxmox_sdn_alias | length > 0 else []) }}
+  loop: "{{ proxmox_sdn_vnets | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: proxmox_sdn_vnet_edits
+  changed_when: true
+  when: >-
+    proxmox_sdn_vnet_live == {}
+    or proxmox_sdn_vnet_live.alias | default('') != proxmox_sdn_alias
+
+- name: Read pending SDN changes
+  ansible.builtin.command:
+    argv: [pvesh, get, "/cluster/sdn/{{ item }}", --pending, "1", --output-format, json]
+  loop: [zones, vnets, controllers]
+  register: proxmox_sdn_pending_raw
+  changed_when: false
+  check_mode: false
+
+- name: Summarise pending SDN changes
+  ansible.builtin.set_fact:
+    proxmox_sdn_pending: >-
+      {%- set out = [] -%}
+      {%- for result in proxmox_sdn_pending_raw.results -%}
+      {%- for obj in result.stdout | from_json -%}
+      {%- if obj.state is defined or (obj.pending | default({}) | length > 0) -%}
+      {%- set obj_id = obj.zone | default(obj.vnet | default(obj.controller | default('?'))) -%}
+      {%- set _ = out.append({'kind': result.item, 'id': obj_id, 'state': obj.state | default('changed')}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Report pending SDN changes
+  vars:
+    proxmox_sdn_edits: >-
+      {{ (proxmox_sdn_zone_edits.results + proxmox_sdn_vnet_edits.results)
+         | rejectattr('false_condition', 'defined') | map(attribute='item.key') | list }}
+  ansible.builtin.debug:
+    msg: >-
+      {% if ansible_check_mode and proxmox_sdn_edits | length > 0 %}Check mode: would create or
+      update {{ proxmox_sdn_edits }} in the pending configuration (not simulated).
+      {% elif proxmox_sdn_pending | length > 0 %}{{ proxmox_sdn_pending }}
+      {% else %}No pending SDN change: running configuration matches the declared one.{% endif %}
+
+- name: Refuse to apply pending changes the inventory does not own
+  vars:
+    proxmox_sdn_owned: "{{ (proxmox_sdn_zones.keys() | list) + (proxmox_sdn_vnets.keys() | list) }}"
+  ansible.builtin.assert:
+    that:
+      - proxmox_sdn_pending | rejectattr('id', 'in', proxmox_sdn_owned) | list | length == 0
+      - proxmox_sdn_pending | selectattr('kind', 'equalto', 'controllers') | list | length == 0
+    fail_msg: >-
+      Pending SDN changes outside this inventory exist
+      ({{ proxmox_sdn_pending | rejectattr('id', 'in', proxmox_sdn_owned) | list }}).
+      Applying would push them to every node; resolve them manually first.
+
+- name: Decide whether the SDN configuration is applied in this run
+  ansible.builtin.set_fact:
+    proxmox_sdn_live_apply: >-
+      {{ proxmox_sdn_apply | bool and proxmox_sdn_pending | length > 0 and not ansible_check_mode }}
+
+- name: Back up SDN and node network configuration before applying
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - >-
+        umask 077; mkdir -p "$1" &&
+        tar --create --gzip --file "$1/sdn-config-$2.tar.gz" --directory=/
+        etc/pve/sdn etc/network/interfaces etc/network/interfaces.d
+      - backup
+      - "{{ proxmox_sdn_backup_root }}"
+      - "{{ ansible_facts['date_time']['iso8601_basic_short'] }}"
+  changed_when: true
+  when: proxmox_sdn_live_apply | bool
+
+- name: Release HA watchdogs before applying SDN
+  when: proxmox_sdn_live_apply | bool and proxmox_sdn_ha_guard | bool
+  block:
+    - name: Disarm HA and wait for every LRM watchdog to be released
+      ansible.builtin.include_role:
+        name: proxmox_change_guard
+        tasks_from: ha.yml
+      vars:
+        proxmox_change_guard_action: disarm
+        proxmox_change_guard_state_file: "{{ proxmox_sdn_backup_root }}/ha-states-sdn.json"
+        proxmox_change_guard_ha_wait_seconds: "{{ proxmox_sdn_ha_wait_seconds }}"
+  rescue:
+    # Nothing has been applied yet: restore HA exactly as it was.
+    - name: Restore HA after a failed or timed-out disarm
+      ansible.builtin.include_role:
+        name: proxmox_change_guard
+        tasks_from: ha.yml
+      vars:
+        proxmox_change_guard_action: rearm
+
+    - name: Stop after restoring HA
+      ansible.builtin.fail:
+        msg: >-
+          HA watchdogs were not released in time
+          ({{ proxmox_sdn_ha_wait_seconds }} s); HA states were restored and the
+          SDN configuration was not applied.
+
+- name: Arm the SDN dead-man timer on every node
+  ansible.builtin.include_role:
+    name: proxmox_change_guard
+    tasks_from: deadman.yml
+  vars:
+    proxmox_change_guard_action: arm
+    proxmox_change_guard_nodes: "{{ proxmox_sdn_nodes }}"
+    proxmox_change_guard_deadman_unit: pve-sdn-deadman
+    proxmox_change_guard_deadman_minutes: "{{ proxmox_sdn_deadman_minutes }}"
+    proxmox_change_guard_deadman_description: Revert the SDN network file unless confirmed
+    proxmox_change_guard_prepare_command: "{{ proxmox_sdn_snapshot_command }}"
+    proxmox_change_guard_revert_command: "{{ proxmox_sdn_revert_command }}"
+  when: proxmox_sdn_live_apply | bool
+
+- name: Apply and verify the SDN configuration
+  when: proxmox_sdn_live_apply | bool
+  block:
+    - name: Apply the SDN configuration (asynchronous reload on every node)
+      ansible.builtin.command:
+        argv: [pvesh, set, /cluster/sdn]
+      register: proxmox_sdn_reload
+      changed_when: true
+
+    - name: Wait until every node runs the declared VNets
+      ansible.builtin.command:
+        argv: >-
+          {{ (['sh', '-s', '--'] if proxmox_sdn_item.key == ansible_facts['hostname']
+              else (proxmox_sdn_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_sdn_item.key,
+                    '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_sdn_item.key ~ '/ssh_known_hosts',
+                    'root@' ~ proxmox_sdn_item.value, 'sh', '-s', '--']))
+             + ['post', proxmox_sdn_item.value, proxmox_sdn_vxlan_port | string] + proxmox_sdn_vnet_specs }}
+        stdin: "{{ lookup('ansible.builtin.file', 'sdn-node-check.sh') }}"
+      loop: "{{ proxmox_sdn_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_sdn_item
+        label: "{{ proxmox_sdn_item.key }}"
+      register: proxmox_sdn_postcheck
+      changed_when: false
+      until: proxmox_sdn_postcheck.rc == 0
+      retries: "{{ proxmox_sdn_verify_retries | int }}"
+      delay: 10
+
+    - name: Confirm no node lost its address or default route
+      ansible.builtin.assert:
+        that:
+          - >-
+            (item.stdout_lines | select('match', '^default_route=') | first)
+            == proxmox_sdn_default_routes[item.proxmox_sdn_item.key]
+        fail_msg: "{{ item.proxmox_sdn_item.key }}: default route changed ({{ item.stdout_lines }})."
+        quiet: true
+      loop: "{{ proxmox_sdn_postcheck.results }}"
+      loop_control:
+        label: "{{ item.proxmox_sdn_item.key }}"
+
+    - name: Drop the persistent SSH connection so the next task opens a new one
+      ansible.builtin.meta: reset_connection
+
+    - name: Prove new management connections from the controller still work
+      # Lookups run on the controller without delegation, so no inventory
+      # host (and no vault-encrypted group) is loaded for this check.
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('ansible.builtin.pipe',
+                   'ssh-keyscan -T 10 -t ed25519 ' ~ proxmox_sdn_item.value ~ ' 2>/dev/null')
+            is search('ssh-ed25519')
+          - >-
+            lookup('ansible.builtin.url', 'https://' ~ proxmox_sdn_item.value ~ ':8006/',
+                   validate_certs=false, timeout=10, split_lines=false)
+            is search('(?i)proxmox')
+        fail_msg: "{{ proxmox_sdn_item.key }}: SSH or 8006 unreachable from the controller."
+        quiet: true
+      loop: "{{ proxmox_sdn_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_sdn_item
+        label: "{{ proxmox_sdn_item.key }}"
+
+    - name: Re-read cluster quorum after the reload
+      ansible.builtin.command:
+        argv: [pvesh, get, /cluster/status, --output-format, json]
+      register: proxmox_sdn_cluster_status_after
+      changed_when: false
+
+    - name: Confirm quorum and all nodes survived the change
+      vars:
+        proxmox_sdn_after: "{{ proxmox_sdn_cluster_status_after.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - (proxmox_sdn_after | selectattr('type', 'equalto', 'cluster') | first).quorate | int == 1
+          - >-
+            proxmox_sdn_after | selectattr('type', 'equalto', 'node')
+            | rejectattr('online', 'equalto', 1) | list | length == 0
+        fail_msg: "Quorum or node membership degraded after the SDN reload."
+
+  rescue:
+    - name: Revert the SDN network file on every reachable node
+      ansible.builtin.command:
+        argv: >-
+          {{ ['sh', '-c', proxmox_sdn_revert_command]
+             if proxmox_sdn_item.key == ansible_facts['hostname']
+             else (proxmox_sdn_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_sdn_item.key,
+                   '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_sdn_item.key ~ '/ssh_known_hosts',
+                   'root@' ~ proxmox_sdn_item.value, proxmox_sdn_revert_command]) }}
+      loop: "{{ proxmox_sdn_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_sdn_item
+        label: "{{ proxmox_sdn_item.key }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Fail with the restore path
+      ansible.builtin.fail:
+        msg: >-
+          [{{ ansible_failed_task.name | default('unknown task') }}:
+          {{ (ansible_failed_result.msg | default(''))[:600] }}
+          {{ (ansible_failed_result.stdout | default(''))[:600] }}]
+          SDN verification failed. The previous /etc/network/interfaces.d/sdn
+          was restored and ifreload -a was run on every reachable node; the
+          dead-man timer stays armed for unreachable ones. The cluster-wide SDN
+          running configuration still contains the declared objects: remove
+          them (or fix them) and apply again once the network is healthy.
+          HA is left disarmed on purpose (previous states in
+          {{ proxmox_sdn_backup_root }}/ha-states-sdn.json); re-arm it manually.
+
+- name: Disarm the SDN dead-man timer after successful verification
+  ansible.builtin.include_role:
+    name: proxmox_change_guard
+    tasks_from: deadman.yml
+  vars:
+    proxmox_change_guard_action: disarm
+    proxmox_change_guard_nodes: "{{ proxmox_sdn_nodes }}"
+    proxmox_change_guard_deadman_unit: pve-sdn-deadman
+  when: proxmox_sdn_live_apply | bool
+
+- name: Restore HA after successful verification
+  ansible.builtin.include_role:
+    name: proxmox_change_guard
+    tasks_from: ha.yml
+  vars:
+    proxmox_change_guard_action: rearm
+  when: proxmox_sdn_live_apply | bool and proxmox_sdn_ha_guard | bool
+
+- name: Report the SDN outcome
+  ansible.builtin.debug:
+    msg: >-
+      {% if proxmox_sdn_live_apply | bool %}SDN applied and verified on
+      {{ proxmox_sdn_nodes | length }} nodes: {{ proxmox_sdn_vnet_specs | join(', ') }}.
+      {% elif proxmox_sdn_pending | length > 0 %}Pending SDN configuration is staged but not
+      applied (set proxmox_sdn_apply: true in an approved run).
+      {% else %}SDN running configuration already matches the declared one.{% endif %}

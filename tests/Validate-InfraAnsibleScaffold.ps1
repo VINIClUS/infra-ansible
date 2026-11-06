@@ -64,6 +64,27 @@ $requiredPaths = @(
     "roles\proxmox_firewall\tasks\main.yml",
     "roles\proxmox_firewall\tasks\deadman.yml",
     "roles\proxmox_firewall\README.md",
+    "playbooks\proxmox-sdn.yml",
+    "playbooks\proxmox-router-vm.yml",
+    "playbooks\network-router.yml",
+    "playbooks\proxmox-node-routes.yml",
+    "roles\proxmox_change_guard\tasks\ha.yml",
+    "roles\proxmox_change_guard\tasks\deadman.yml",
+    "roles\proxmox_change_guard\README.md",
+    "roles\proxmox_sdn\defaults\main.yml",
+    "roles\proxmox_sdn\tasks\main.yml",
+    "roles\proxmox_sdn\files\sdn-node-check.sh",
+    "roles\proxmox_sdn\README.md",
+    "roles\proxmox_router_vm\defaults\main.yml",
+    "roles\proxmox_router_vm\tasks\main.yml",
+    "roles\proxmox_router_vm\README.md",
+    "roles\network_router\defaults\main.yml",
+    "roles\network_router\tasks\main.yml",
+    "roles\network_router\templates\nftables.conf.j2",
+    "roles\network_router\README.md",
+    "roles\proxmox_node_routes\defaults\main.yml",
+    "roles\proxmox_node_routes\tasks\main.yml",
+    "roles\proxmox_node_routes\README.md",
     "roles\proxmox_lxc_guest\defaults\main.yml",
     "roles\proxmox_lxc_guest\tasks\main.yml",
     "roles\proxmox_lxc_guest\README.md",
@@ -108,6 +129,11 @@ Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_backu
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_firewall"
 Assert-FileContains -RelativePath "roles\proxmox_firewall\defaults\main.yml" -Pattern "proxmox_firewall_enabled:\s+false"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "dead-man"
+foreach ($disabledRole in @("proxmox_sdn", "proxmox_router_vm", "network_router", "proxmox_node_routes")) {
+    Assert-FileContains -RelativePath "roles\$disabledRole\defaults\main.yml" -Pattern "$($disabledRole)_enabled:\s+false"
+}
+Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_change_guard"
+Assert-FileContains -RelativePath "docs\safety.md" -Pattern "nft --check"
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "keep-last=2"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "is_mountpoint"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "--limit"

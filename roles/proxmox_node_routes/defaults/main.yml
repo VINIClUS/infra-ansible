@@ -1,0 +1,9 @@
+---
+proxmox_node_routes_enabled: false
+proxmox_node_routes_interface: vmbr0
+# Example: [{cidr: 10.10.0.0/16, via: 192.0.2.240}]
+proxmox_node_routes_list: []
+# ifupdown2 runs /etc/network/if-up.d/* (addon_scripts_support=1) on every
+# ifup/ifreload of the interface, so the route survives reboots and network
+# reloads without editing /etc/network/interfaces or adding a second stanza.
+proxmox_node_routes_hook_path: /etc/network/if-up.d/zz-netiso-routes

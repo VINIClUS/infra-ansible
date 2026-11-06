@@ -1,0 +1,10 @@
+---
+- name: Route the private VNets through the zone router on every node
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_node_routes
+      tags:
+        - proxmox_node_routes

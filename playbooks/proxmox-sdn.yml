@@ -1,0 +1,10 @@
+---
+- name: Reconcile and apply the Proxmox SDN VXLAN zone and VNets
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_sdn
+      tags:
+        - proxmox_sdn

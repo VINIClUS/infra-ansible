@@ -1,0 +1,106 @@
+---
+- name: Validate the node routes enable flag
+  ansible.builtin.assert:
+    that:
+      - proxmox_node_routes_enabled is boolean
+    fail_msg: "proxmox_node_routes_enabled must be boolean."
+
+- name: Stop only the node routes role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_node_routes_enabled | bool
+
+- name: Validate the node routes contract
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - inventory_hostname in (ansible_limit | split(',') | map('trim') | list)
+      - ansible_run_tags | list | sort == ['proxmox_node_routes']
+      - proxmox_node_routes_interface is match('^[a-z][a-z0-9]{1,14}$')
+      - proxmox_node_routes_list | length >= 1
+      - proxmox_node_routes_hook_path is match('^/etc/network/if-up\.d/[a-z0-9-]+$')
+    fail_msg: >-
+      Node routes contract is incomplete. Name every node explicitly in --limit
+      (comma separated), use --tags proxmox_node_routes and declare at least one route.
+
+- name: Validate every declared route
+  ansible.builtin.assert:
+    that:
+      - item.cidr | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - item.via | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+      - item.cidr is not match('^0\.0\.0\.0/')
+    fail_msg: "Route {{ item }} needs a non-default IPv4 cidr and a next-hop address."
+    quiet: true
+  loop: "{{ proxmox_node_routes_list }}"
+
+- name: Confirm ifupdown2 runs if-up.d hooks
+  ansible.builtin.command:
+    argv: [grep, -qxE, 'addon_scripts_support\s*=\s*1', /etc/network/ifupdown2/ifupdown2.conf]
+  changed_when: false
+  check_mode: false
+
+- name: Confirm every next hop is directly connected through the route interface
+  ansible.builtin.command:
+    argv: [ip, -4, -o, route, get, "{{ item.via }}"]
+  loop: "{{ proxmox_node_routes_list }}"
+  register: proxmox_node_routes_nexthop
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    proxmox_node_routes_nexthop.rc != 0
+    or proxmox_node_routes_nexthop.stdout is not search(' dev ' ~ proxmox_node_routes_interface ~ ' ')
+    or proxmox_node_routes_nexthop.stdout is search(' via ')
+
+- name: Install the if-up.d route hook
+  ansible.builtin.template:
+    src: netiso-routes.sh.j2
+    dest: "{{ proxmox_node_routes_hook_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Read the live routes
+  ansible.builtin.command:
+    argv: [ip, -4, -o, route, show, "{{ item.cidr }}"]
+  loop: "{{ proxmox_node_routes_list }}"
+  register: proxmox_node_routes_live
+  changed_when: false
+  check_mode: false
+
+- name: Decide which declared routes are missing or different
+  ansible.builtin.set_fact:
+    proxmox_node_routes_missing: >-
+      {%- set out = [] -%}
+      {%- for result in proxmox_node_routes_live.results -%}
+      {%- if result.stdout is not search(' via ' ~ (result.item.via | regex_escape) ~ ' dev '
+                                         ~ proxmox_node_routes_interface ~ '( |$)') -%}
+      {%- set _ = out.append(result.item.cidr) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Apply the routes by running the hook as ifupdown2 would (no network reload)
+  ansible.builtin.command:
+    argv: ["{{ proxmox_node_routes_hook_path }}"]
+  environment:
+    IFACE: "{{ proxmox_node_routes_interface }}"
+    MODE: start
+  changed_when: true
+  when: proxmox_node_routes_missing | length > 0
+
+- name: Confirm every route resolves through its next hop
+  ansible.builtin.command:
+    argv: [ip, -4, -o, route, get, "{{ item.cidr | regex_replace('/.*$', '') }}"]
+  loop: "{{ proxmox_node_routes_list }}"
+  register: proxmox_node_routes_check
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    proxmox_node_routes_check.stdout is not search(' via ' ~ (item.via | regex_escape)
+                                                   ~ ' dev ' ~ proxmox_node_routes_interface ~ ' ')
+  when: not ansible_check_mode
+
+- name: Confirm the network configuration still matches the running state
+  ansible.builtin.command:
+    argv: [ifquery, --check, -a]
+  changed_when: false
+  check_mode: false

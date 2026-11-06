@@ -1,0 +1,6 @@
+---
+- name: Refuse direct use of the change guard
+  ansible.builtin.fail:
+    msg: >-
+      proxmox_change_guard has no default entry point. Include it with
+      tasks_from ha.yml or deadman.yml from a role that owns the change.

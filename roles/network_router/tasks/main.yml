@@ -1,0 +1,345 @@
+---
+- name: Validate the network router enable flag
+  ansible.builtin.assert:
+    that:
+      - network_router_enabled is boolean
+    fail_msg: "network_router_enabled must be boolean."
+
+- name: Stop only the network router role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not network_router_enabled | bool
+
+- name: Validate the network router contract
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['network_router']
+      - network_router_wan_interface is match('^[a-z][a-z0-9]{1,14}$')
+      - network_router_lan_cidr is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - network_router_admin_sources is sequence and network_router_admin_sources is not string
+      - network_router_pve_nodes is sequence and network_router_pve_nodes is not string
+      - network_router_zones is mapping
+      - network_router_zones | length >= 1
+      - network_router_zones.keys() | reject('match', '^[a-z][a-z0-9]{1,15}$') | list | length == 0
+      - "'wan' not in network_router_zones"
+      - network_router_mtu | int >= 1280
+      - network_router_mtu | int <= 1500
+      - network_router_deadman_minutes | int >= 2
+      - network_router_deadman_minutes | int <= 30
+      - network_router_dns_forwarders | length >= 1
+    fail_msg: >-
+      Network router contract is incomplete or unsafe. Use the private
+      inventory, an exact --limit, --tags network_router, a LAN CIDR, at least
+      one zone and one DNS forwarder.
+
+- name: Validate every zone
+  ansible.builtin.assert:
+    that:
+      - item.value.interface | default('') is match('^[a-z][a-z0-9]{1,14}$')
+      - item.value.interface != network_router_wan_interface
+      - item.value.cidr | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - item.value.address | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - item.value.address | regex_replace('^.*/', '') == item.value.cidr | regex_replace('^.*/', '')
+      - item.value.dhcp is not defined or (item.value.dhcp.start is defined and item.value.dhcp.end is defined)
+    fail_msg: >-
+      Zone {{ item.key }} needs an interface other than the uplink, a cidr and
+      a gateway address with the same prefix.
+    quiet: true
+  loop: "{{ network_router_zones | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Validate every extra forward rule
+  ansible.builtin.assert:
+    that:
+      - item.from | default('') in (network_router_zones.keys() | list) + ['wan']
+      - item.to | default('') in (network_router_zones.keys() | list) + ['wan']
+      - item.from != item.to
+      - item.proto is not defined or (item.proto in ['tcp', 'udp'] and item.dport is defined)
+      - item.comment | default('') | length > 0
+      - '"\"" not in item.comment | default("")'
+    fail_msg: >-
+      Invalid forward rule {{ item }}: from/to must be zones or wan, tcp/udp
+      need a dport, and a comment is required.
+    quiet: true
+  loop: "{{ network_router_forward_rules }}"
+
+- name: Confirm the uplink and every zone interface carry the declared address and MTU
+  vars:
+    network_router_iface: "{{ ansible_facts[item.value.interface] | default({}) }}"
+  ansible.builtin.assert:
+    that:
+      - network_router_iface.ipv4 is defined
+      - >-
+        (network_router_iface.ipv4.address ~ '/' ~ network_router_iface.ipv4.prefix)
+        == item.value.address
+      - network_router_iface.mtu | int == network_router_mtu | int
+    fail_msg: >-
+      {{ item.value.interface }} does not carry {{ item.value.address }} with MTU
+      {{ network_router_mtu }} ({{ network_router_iface.ipv4 | default('no IPv4') }},
+      mtu {{ network_router_iface.mtu | default('?') }}). Fix the guest NICs first.
+    quiet: true
+  loop: "{{ network_router_zones | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Disable IPv6 and enable IPv4 forwarding
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-network-router.conf
+    content: |
+      # Managed by infra-ansible (network_router role). Do not edit.
+      # IPv4 router; IPv6 is off on every interface (no public SLAAC address).
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+      net.ipv4.ip_forward = 1
+      net.ipv4.conf.all.rp_filter = 1
+      net.ipv4.conf.default.rp_filter = 1
+      net.ipv4.conf.all.accept_redirects = 0
+      net.ipv4.conf.default.accept_redirects = 0
+      net.ipv4.conf.all.send_redirects = 0
+      net.ipv4.conf.default.send_redirects = 0
+      net.ipv4.conf.all.accept_source_route = 0
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Load the router sysctl settings
+
+- name: Find whether netplan manages the guest network
+  ansible.builtin.stat:
+    path: /etc/netplan
+  register: network_router_netplan_dir
+
+- name: Keep networkd from re-enabling IPv6 on any router interface
+  vars:
+    network_router_all_interfaces: >-
+      {{ [network_router_wan_interface] + (network_router_zones.values() | map(attribute='interface') | list) }}
+  ansible.builtin.copy:
+    dest: /etc/netplan/90-network-router.yaml
+    content: |
+      # Managed by infra-ansible (network_router role). Do not edit.
+      # Merged with the cloud-init definitions by interface id: no router
+      # advertisements and no link-local IPv6, so networkd never turns IPv6
+      # back on when a link is reconfigured.
+      network:
+        version: 2
+        ethernets:
+      {% for iface in network_router_all_interfaces %}
+          {{ iface }}:
+            accept-ra: false
+            link-local: []
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0600"
+  when: network_router_netplan_dir.stat.isdir | default(false)
+  notify: Regenerate the netplan network configuration
+
+- name: Load the sysctl settings and network overrides before anything else depends on them
+  ansible.builtin.meta: flush_handlers
+
+- name: Read uplink global IPv6 addresses
+  ansible.builtin.command:
+    argv: [ip, -6, -o, addr, show, dev, "{{ network_router_wan_interface }}", scope, global]
+  register: network_router_ipv6
+  changed_when: false
+  check_mode: false
+
+- name: Confirm the uplink has no global IPv6 address
+  ansible.builtin.assert:
+    that:
+      - network_router_ipv6.stdout | trim | length == 0 or ansible_check_mode
+    fail_msg: "{{ network_router_wan_interface }} still has global IPv6: {{ network_router_ipv6.stdout_lines }}"
+
+- name: Read installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Install router packages without starting dnsmasq on its default config
+  when: network_router_packages | difference(ansible_facts.packages.keys() | list) | length > 0
+  block:
+    - name: Block service starts during package installation
+      ansible.builtin.copy:
+        dest: /usr/sbin/policy-rc.d
+        content: "#!/bin/sh\n# Temporary: network_router package installation.\nexit 101\n"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install router packages
+      ansible.builtin.apt:
+        name: "{{ network_router_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+  always:
+    - name: Allow service starts again
+      ansible.builtin.file:
+        path: /usr/sbin/policy-rc.d
+        state: absent
+
+- name: Render the nftables candidate
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf.candidate
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Validate the nftables candidate
+  ansible.builtin.command:
+    argv: [nft, --check, --file, /etc/nftables.conf.candidate]
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Compare the candidate with the installed ruleset
+  ansible.builtin.command:
+    argv: [cmp, -s, /etc/nftables.conf.candidate, /etc/nftables.conf]
+  register: network_router_nft_cmp
+  changed_when: false
+  failed_when: network_router_nft_cmp.rc > 1
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: Apply the ruleset under the dead-man timer
+  when: not ansible_check_mode and network_router_nft_cmp.rc != 0
+  block:
+    - name: Arm the nftables dead-man timer
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            cp -p /etc/nftables.conf /etc/nftables.conf.prev 2>/dev/null;
+            systemctl stop network-router-deadman.timer 2>/dev/null;
+            systemctl reset-failed network-router-deadman.service 2>/dev/null;
+            systemd-run --unit=network-router-deadman --on-active={{ network_router_deadman_minutes | int }}min
+            --description='Restore the previous router ruleset unless confirmed'
+            /bin/sh -c "if [ -f /etc/nftables.conf.prev ]; then cp -p /etc/nftables.conf.prev /etc/nftables.conf;
+            nft -f /etc/nftables.conf; else nft flush ruleset; fi" &&
+            systemctl is-active --quiet network-router-deadman.timer
+      changed_when: true
+
+    - name: Install and load the new ruleset
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - cp /etc/nftables.conf.candidate /etc/nftables.conf && nft -f /etc/nftables.conf
+      changed_when: true
+
+    - name: Drop the persistent SSH connection so the next task opens a new one
+      ansible.builtin.meta: reset_connection
+
+    # If the new input chain locks the controller out this task is unreachable
+    # (not rescued) and the dead-man restores the previous ruleset.
+    - name: Prove a new SSH connection from the controller still works
+      ansible.builtin.ping:
+
+    - name: Read the loaded ruleset
+      ansible.builtin.command:
+        argv: [nft, list, tables]
+      register: network_router_tables
+      changed_when: false
+
+    - name: Confirm both router tables are loaded
+      ansible.builtin.assert:
+        that:
+          - "'table inet filter' in network_router_tables.stdout"
+          - "'table ip nat' in network_router_tables.stdout"
+        fail_msg: "Loaded ruleset is incomplete: {{ network_router_tables.stdout_lines }}"
+
+    - name: Disarm the nftables dead-man timer
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - systemctl stop network-router-deadman.timer && ! systemctl is-active --quiet network-router-deadman.timer
+      changed_when: true
+  rescue:
+    - name: Restore the previous ruleset after a failed verification
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            if [ -f /etc/nftables.conf.prev ]; then cp -p /etc/nftables.conf.prev /etc/nftables.conf;
+            nft -f /etc/nftables.conf; else nft flush ruleset; fi
+      changed_when: true
+
+    - name: Fail after restoring the previous ruleset
+      ansible.builtin.fail:
+        msg: >-
+          The new router ruleset did not verify
+          ({{ ansible_failed_task.name | default('unknown task') }}); the previous
+          ruleset was restored.
+
+# Package-dependent steps: a check run on a fresh guest stops validating here.
+- name: Load the ruleset at boot
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+  when: not ansible_check_mode
+
+- name: Keep dnsmasq out of the system resolver configuration
+  ansible.builtin.lineinfile:
+    path: /etc/default/dnsmasq
+    regexp: '^#?\s*DNSMASQ_EXCEPT='
+    line: 'DNSMASQ_EXCEPT="lo"'
+  notify: Restart dnsmasq
+  when: not ansible_check_mode
+
+- name: Render the dnsmasq configuration
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.d/network-router.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: dnsmasq --test --conf-file=%s
+  notify: Restart dnsmasq
+  when: not ansible_check_mode
+
+- name: Enable and start dnsmasq and the guest agent
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [dnsmasq, qemu-guest-agent]
+  when: not ansible_check_mode
+
+- name: Apply pending service restarts
+  ansible.builtin.meta: flush_handlers
+
+- name: Read DNS listeners
+  ansible.builtin.shell:
+    cmd: set -o pipefail; ss -H -lntu 'sport = :53' | awk '{print $5}'
+    executable: /bin/bash
+  register: network_router_dns_listeners
+  changed_when: false
+  check_mode: false
+
+- name: Confirm DNS is never served on the uplink or a wildcard address
+  vars:
+    network_router_wan_ip: "{{ ansible_facts[network_router_wan_interface].ipv4.address | default('') }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        network_router_dns_listeners.stdout_lines
+        | select('match', '^(0\.0\.0\.0|\*|\[::\]|' ~ (network_router_wan_ip | regex_escape) ~ '):53$')
+        | list | length == 0
+      - >-
+        network_router_zones.values() | map(attribute='address') | map('regex_replace', '/.*$', ':53')
+        | difference(network_router_dns_listeners.stdout_lines) | length == 0
+    fail_msg: "Unexpected DNS listeners: {{ network_router_dns_listeners.stdout_lines }}"
+  when: not ansible_check_mode
+
+- name: Report the router outcome
+  ansible.builtin.debug:
+    msg: >-
+      Router serves {{ network_router_zones | length }} zones
+      ({{ network_router_zones.keys() | join(', ') }}) with
+      {{ network_router_forward_rules | length }} extra forward rules; DNS on
+      {{ network_router_dns_listeners.stdout_lines | default([]) | join(', ') }}.

@@ -1,0 +1,43 @@
+---
+network_router_enabled: false
+
+# Uplink (LAN) interface and the trusted LAN behind it.
+network_router_wan_interface: eth0
+network_router_lan_cidr: ""
+# Sources allowed to SSH to the router through the uplink.
+network_router_admin_sources: []
+# Cluster nodes: traffic towards them is routed without NAT so their host
+# firewall sees the real private source (the nodes carry a static route back).
+network_router_pve_nodes: []
+
+# Private zones, keyed by name. Example:
+#   svc:
+#     interface: eth1
+#     cidr: 10.10.10.0/24
+#     address: 10.10.10.1/24
+#     internet: true          # may reach the internet (never other RFC1918)
+#     full_access: false      # may reach every zone and the LAN
+#     ssh_to_router: false    # may SSH to the router itself
+#     dhcp: {start: 10.10.10.200, end: 10.10.10.219, lease: 12h,
+#            reservations: [{mac: "bc:24:11:00:00:01", ip: 10.10.10.104, name: protocolos}]}
+network_router_zones: {}
+network_router_mtu: 1450
+# The trusted LAN may open connections into every private zone.
+network_router_lan_to_private: true
+
+# Extra forward allowances. from/to are zone names or "wan"; saddr/daddr are
+# an address, CIDR or list; proto tcp|udp with dport (number, range or list).
+#   - {from: ci, to: svc, saddr: 10.10.30.182, daddr: [10.10.10.180, 10.10.10.181],
+#      proto: tcp, dport: 22, comment: chamados deploy}
+network_router_forward_rules: []
+
+network_router_dns_forwarders: []
+network_router_dns_domain: ""
+
+# The nftables dead-man restores the previous ruleset unless the change is
+# confirmed by a fresh SSH connection from the controller.
+network_router_deadman_minutes: 5
+network_router_packages:
+  - nftables
+  - dnsmasq
+  - qemu-guest-agent

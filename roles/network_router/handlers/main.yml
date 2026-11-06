@@ -1,0 +1,16 @@
+---
+- name: Load the router sysctl settings
+  ansible.builtin.command:
+    argv: [sysctl, --load, /etc/sysctl.d/90-network-router.conf]
+  changed_when: true
+
+# networkctl reload applies changed .network files to their links in place.
+- name: Regenerate the netplan network configuration
+  ansible.builtin.command:
+    argv: [sh, -c, netplan generate && networkctl reload]
+  changed_when: true
+
+- name: Restart dnsmasq
+  ansible.builtin.systemd_service:
+    name: dnsmasq
+    state: restarted

@@ -94,3 +94,26 @@ separate roles with their own tags.
 
 `infra-ansible-inventory` owns every IPset, alias, security group and rule.
 `ProxmoxMCP` keeps using the API and never changes firewall or SDN state.
+
+## Proxmox private network (SDN VXLAN, zone router, node routes)
+
+The private network is built by four roles, each with its own playbook and
+tag, applied in this order after the firewall guard is active:
+
+1. `proxmox_sdn` reconciles one SDN VXLAN zone (peers equal to the node
+   addresses, explicit `vxlan-port`) and its VNets, then applies them under the
+   shared `proxmox_change_guard` (HA watchdogs released, dead-man timer that
+   restores each node's `/etc/network/interfaces.d/sdn`). VXLAN zones are layer
+   2: no subnet, gateway or IPAM is configured on the nodes.
+2. `proxmox_router_vm` full-clones the cloud-init template into the router VM
+   (uplink NIC plus one NIC per VNet, PVE firewall off on every router NIC),
+   adds storage replication and an HA resource pinned by a strict
+   node-affinity rule to the nodes that hold the replicated storage.
+3. `network_router` configures that guest: IPv6 off, IPv4 forwarding, an
+   nftables zone policy (forward default drop, MSS clamping, masquerade except
+   towards the cluster nodes) and dnsmasq bound to the VNet interfaces only.
+4. `proxmox_node_routes` routes the private range from every node through the
+   router with an ifupdown2 `if-up.d` hook, without reloading the network.
+
+Zone data (VNet ids and tags, router addresses, forward allowances, routes)
+lives only in `infra-ansible-inventory`.

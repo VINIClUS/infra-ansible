@@ -1,0 +1,10 @@
+---
+- name: Create the network isolation router VM with replication and HA
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_router_vm
+      tags:
+        - proxmox_router_vm
