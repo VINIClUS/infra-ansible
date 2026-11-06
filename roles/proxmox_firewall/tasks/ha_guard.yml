@@ -70,7 +70,11 @@
         and proxmox_firewall_ha_status.stdout_lines | select('match', '^lrm \S+ \(active') | list | length == 0)
   retries: "{{ (proxmox_firewall_ha_wait_seconds | int / 10) | round(0, 'ceil') | int }}"
   delay: 10
-  when: proxmox_firewall_ha_action == 'disarm' and proxmox_firewall_ha_saved | length > 0
+  # --check never disarms anything, so there is nothing to wait for.
+  when:
+    - proxmox_firewall_ha_action == 'disarm'
+    - proxmox_firewall_ha_saved | length > 0
+    - not ansible_check_mode
 
 - name: Re-arm HA cluster-wide
   ansible.builtin.command:

@@ -54,13 +54,18 @@ modified or removed.
   copies the staged candidates into a test directory (with `enable: 1` forced),
   reports every per-rule parse error (unknown IPset/alias, invalid port, bad
   rule type) and compiles the ruleset in PVE's `testdir` mode; the VXLAN guard
-  rule and `PVEFW-HOST-IN` must be present. `pve-firewall compile` alone is
+  rule and `PVEFW-HOST-IN` must be present. Declared containers on the node
+  that runs the check compile with their live config, so a guest that sets
+  `enable` must produce its per-NIC chains (`veth<vmid>i<n>-IN/OUT`).
+  `pve-firewall compile` alone is
   not a gate: it returns an empty ruleset while the datacenter is disabled, and
   invalid rule lines are dropped silently by the parser.
 - Rules cannot reference the automatic `local_network` alias or `management`
   IPset (they only exist at compile time); declare an explicit alias or IPset.
 - Staged files are then streamed into pmxcfs with `cat` and compared again;
   host and guest files are written before `cluster.fw`, which holds `enable`.
+- `--check` reads HA and stages and validates every file, but never disarms HA,
+  arms the dead-man timer or writes to pmxcfs, so it does not wait for the LRMs.
 - A failed or timed-out HA disarm restores the saved HA states and stops
   before any firewall file is written. The LRM releases its watchdog only after
   about ten minutes without a configured service (60 rounds of ~10 s), so a

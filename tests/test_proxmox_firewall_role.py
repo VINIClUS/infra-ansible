@@ -109,6 +109,8 @@ def test_ha_guard_disarms_cluster_wide_or_ignores_resources_and_restores():
     assert "--state, ignored]" in ha
     assert "ha-states.json" in ha
     assert "^lrm \\S+ \\(active" in ha
+    wait = ha.split("- name: Wait until no LRM holds an active watchdog", 1)[1].split("- name:", 1)[0]
+    assert "not ansible_check_mode" in wait
 
 
 def test_apply_block_compiles_verifies_and_rescues():
@@ -211,6 +213,8 @@ def test_pmxcfs_is_never_written_by_template_or_copy():
     stage = (ROLE / "tasks" / "stage_file.yml").read_text(encoding="utf-8")
     commit = (ROLE / "tasks" / "commit_file.yml").read_text(encoding="utf-8")
     assert "proxmox_firewall_staging_root" in stage
+    render = stage.split('- name: "Render', 1)[1]
+    assert "check_mode: false" in render
     assert 'cat "$1" > "$2"' in commit
 
 
@@ -220,6 +224,8 @@ def test_offline_validator_checks_rule_errors_compile_and_guards():
     assert "testdir => $dir" in script
     assert "--dport 4789" in script
     assert "PVEFW-HOST-IN" in script
+    assert "PVE::LXC::Config->load_config($vmid)" in script and "lxc => \\%lxc" in script
+    assert "compiled no NIC chain" in script
     gate = role_tasks()[task_index("Apply and verify the firewall configuration")]
     check = next(t for t in gate["block"] if t["name"] == "Validate staged candidates offline before any pmxcfs write")
     assert "enable: 1" in check["ansible.builtin.command"]["argv"][2]

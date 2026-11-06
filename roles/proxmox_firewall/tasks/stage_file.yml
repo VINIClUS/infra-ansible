@@ -22,6 +22,9 @@
     owner: root
     group: root
     mode: "0600"
+  # Local root-only staging, never pmxcfs: --check must validate the
+  # candidates, not the live files the seed copied in.
+  check_mode: false
   vars:
     proxmox_firewall_item_node: "{{ proxmox_firewall_write.node | default('') }}"
     proxmox_firewall_item_vmid: "{{ proxmox_firewall_write.vmid | default(0) }}"
