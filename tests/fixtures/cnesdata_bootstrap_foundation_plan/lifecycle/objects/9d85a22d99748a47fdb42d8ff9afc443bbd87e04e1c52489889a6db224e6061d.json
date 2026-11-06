@@ -1,0 +1,62 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_id": "c2-migrate-foundation",
+  "spec_sha256": "f839526541ed0e120f0725e59fd75c68fbd63619407d564f95f1fd46bb8fc91a",
+  "root_id": "foundation",
+  "target": {
+    "kind": "root_state",
+    "action": "migrate",
+    "source": {
+      "owner": "infra-ansible:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/foundation/terraform.tfstate"
+      },
+      "lineage": "synthetic-foundation-lineage",
+      "serial": 2,
+      "state_sha256": "c702d7fd47684b0ae19514293ef9a148173beadafae7a871766bf0b699b08a85",
+      "resource_ids": {
+        "aws_iam_user.bootstrap_operator": "bootstrap-operator",
+        "aws_iam_user_policy_attachment.local_login": "bootstrap-operator/arn:aws:iam::aws:policy/IAMUserChangePassword",
+        "aws_iam_user_policy.local_assume": "bootstrap-operator:local-assume",
+        "aws_iam_policy.executor_boundary": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary",
+        "aws_iam_role.bootstrap_readback": "cnesdata-bootstrap-readback",
+        "aws_iam_role.bootstrap_executor": "cnesdata-bootstrap-executor",
+        "aws_iam_role_policy.bootstrap_readback": "cnesdata-bootstrap-readback:bootstrap-readback",
+        "aws_iam_role_policy.bootstrap_executor": "cnesdata-bootstrap-executor:bootstrap-executor",
+        "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+        "aws_s3_bucket.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket_ownership_controls.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-cnesdata-state-123456789012",
+        "aws_s3_bucket.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-cnesdata-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-cnesdata-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-cnesdata-state-123456789012",
+      "key": "bootstrap/foundation.tfstate",
+      "owner": "infra-ansible:cnesdata"
+    }
+  },
+  "authorization_sha256": "b62d01d59034d6616327dd88db209c7ee7a86470fc967ba1a91eea24410ce459",
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "4d8fdeab7842a3a34df091641314c7054031897a4b1b7db3bb951e9fc78da5ad",
+  "before_manifest_sha256": "f0340e4e4c3695622b9fcc6b2299430ac5dfee575337c87b71875efdae9b1814",
+  "after_manifest_sha256": "68a2d19c9d9409b474f6c17b46e6c1b8918301d3123427a00a124660133fb22c",
+  "parent_checkpoint_sha256": "e6730561161a948dd2612490f74505ca864216582af7457537624d04eb4e3ebe",
+  "not_before": "2026-10-26T13:10:00Z",
+  "expires_at": "2026-10-26T14:00:00Z",
+  "principal_arn": "arn:aws:iam::123456789012:root"
+}

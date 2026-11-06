@@ -1,0 +1,52 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "origin_step_id": "c2-migrate-budget",
+  "origin_spec_sha256": "f84c8e429f9eb576c6fde2a507f2e523d5d21280b97c090d211ea12ce12f0e45",
+  "origin_authorization_sha256": "78536e71b72aa765aa381433eab6628d7508c2590d90c4f9d2653493f65ffb39",
+  "intent_sha256": "f9ecf32ec5edb722e614051c1e3d4980f788b5bfe96276ac649b7685bdfdf9c6",
+  "root_id": "budget-backend",
+  "target": {
+    "kind": "root_state",
+    "action": "migrate",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    }
+  },
+  "exact_id": null,
+  "observed_after_sha256": "35f96aa2016ea23185b3d4a9c79a8676660fcc61e0ab1061639fac341c783b7e",
+  "state_sha256": "cbd06c7bf514cc76576c49ba9319bea052265adb743e3479964753fcd6834796",
+  "lineage": "synthetic-budget-lineage",
+  "serial": 3,
+  "checkpoint_generation": 10,
+  "observed_at": "2026-10-26T13:40:00Z"
+}

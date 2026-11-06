@@ -1,0 +1,14 @@
+{
+  "step_id": "c2-foundation-replan",
+  "stage": "foundation",
+  "root_id": "foundation",
+  "execution_mode": "initial_local",
+  "execution_surface": "local",
+  "enabled": true,
+  "expected_principal_arn": "arn:aws:iam::123456789012:root",
+  "not_before": "2026-10-26T12:30:00Z",
+  "expires_at": "2026-10-26T13:10:00Z",
+  "input_bindings": [],
+  "binary_plan_sha256": "e735ebe18fedbdc819fdf2162ed2bf4b58c4a301a4b5d97e2a272220202ee0a1",
+  "migration_config_sha256": null
+}

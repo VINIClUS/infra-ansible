@@ -1,0 +1,9 @@
+{
+  "initial": {
+    "$include": "lifecycle/objects/89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8.json"
+  },
+  "stage": {
+    "$include": "lifecycle/objects/cc8354b4093c7b4f4f9333ceab20aaaa2c03a3d377915be2180d49f16a4682da.json"
+  },
+  "subsequent": null
+}

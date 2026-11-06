@@ -1,0 +1,32 @@
+[
+  {
+    "$include": "lifecycle/objects/2eab243b9168f51d6baca1bbf68cf2980e71d344665f207a75e9ce605bf228fe.json"
+  },
+  {
+    "$include": "lifecycle/objects/620b2416950091c0edd0396326d5024bbf98e21d6008daae5b1c99800fc918ee.json"
+  },
+  {
+    "$include": "lifecycle/objects/101b755d7e5a336c83ce27777d869ee87d948de58dad0f80ffd707c57de0d9b5.json"
+  },
+  {
+    "$include": "lifecycle/objects/85f56559dd2008353126ee0bf2e0790cb1134320ec379839dc84641e6747c340.json"
+  },
+  {
+    "$include": "lifecycle/objects/c154bb5937a619846ebc760350da072a4926861f553b662a1422c06c576d7d5a.json"
+  },
+  {
+    "$include": "lifecycle/objects/20398d28692a1581b8fa3500024b87a9dd4e755945fb369c325bd4edd8c4d54b.json"
+  },
+  {
+    "$include": "lifecycle/objects/d5e0c4e241e63e45ac2eac486be73690f3199f7578575929517680ab893abde9.json"
+  },
+  {
+    "$include": "lifecycle/objects/ee24e82d8ab01fadddd05173fe0f019cb2f0765c0e969cde23ac1241c5b32264.json"
+  },
+  {
+    "$include": "lifecycle/objects/fa75d494f8068b50c217f280e2f0737186593a8389170d7bf9d0c1200ff61975.json"
+  },
+  {
+    "$include": "lifecycle/objects/210f939860585b3b167ba2478ccef7aca776a8258ca8553de163bc8d75db86ca.json"
+  }
+]

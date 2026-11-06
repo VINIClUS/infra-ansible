@@ -1,0 +1,24 @@
+[
+  {
+    "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+    "origin_step_id": "foreign-step",
+    "origin_spec_sha256": "af917aff4c372cbe12c69a77ec07deecf209b2770e9326f34b05e9840ed772d6",
+    "origin_authorization_sha256": "19f79b547acf2bfc9b193621e83a7f3b6ef81cbc3a1a79cc4c012c1e4aa6a7ac",
+    "intent_sha256": "02e1cdf302c5f933818aea38c0f236ba924381be4994f551c7412444e4b68aed",
+    "root_id": "foundation",
+    "target": {
+      "kind": "resource",
+      "address": "aws_kms_key.foundation",
+      "action": "create",
+      "configured_name": null,
+      "identity_kind": "provider_assigned"
+    },
+    "exact_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+    "observed_after_sha256": "3088350cd773f45d74392cd0a22ab5f6b5975835d9ff22d68c50cd9aa8193046",
+    "state_sha256": "2b8c89dac1c562a0fce42742122a49b92be4b54d71091f6c2f22135331cf68a9",
+    "lineage": "synthetic-foundation-lineage",
+    "serial": 1,
+    "checkpoint_generation": 2,
+    "observed_at": "2026-10-26T12:10:00Z"
+  }
+]

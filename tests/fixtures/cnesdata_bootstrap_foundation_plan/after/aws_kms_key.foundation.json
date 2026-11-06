@@ -1,0 +1,25 @@
+{
+  "action": "create",
+  "attributes": {
+    "bypass_policy_lockout_safety_check": false,
+    "customer_master_key_spec": "SYMMETRIC_DEFAULT",
+    "deletion_window_in_days": 30,
+    "enable_key_rotation": true,
+    "is_enabled": true,
+    "key_usage": "ENCRYPT_DECRYPT",
+    "multi_region": false,
+    "prevent_destroy": true,
+    "tags": {
+      "Environment": "synthetic",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "Owner": "infra-ansible:cnesdata",
+      "Project": "CnesData",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_kms_key.foundation.json"
+    }
+  ]
+}

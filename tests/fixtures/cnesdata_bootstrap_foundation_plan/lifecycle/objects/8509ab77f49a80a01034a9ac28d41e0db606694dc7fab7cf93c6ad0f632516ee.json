@@ -1,0 +1,127 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "budget-backend",
+  "observed_at": "2026-10-26T13:20:01Z",
+  "resources": {
+    "aws_s3_bucket.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "88a6c289a26877f035f3e84c95074bd6072a16acefe403f6a88c11749e2fb819"
+    },
+    "aws_s3_bucket_versioning.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "cdbd448ecc64224c909ddc909b13e53283e0cf39b3f41fd031ef2e8796a6cb5e"
+    },
+    "aws_s3_bucket_public_access_block.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "c6c7e0f287f684e60f97c8556ce58dec8fc26567361a779772c94baaa63fac5d"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "8acaf33e6d58f8b5df8311d06f2e05edb265ba6b629f36e94e9160dff0d56770"
+    },
+    "aws_s3_bucket_policy.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "be137b0d66de0f3e4b422417eda7cf63c9c9a6f529de04c0baeec45f997a6b51"
+    },
+    "aws_s3_bucket.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "3f546fa54f02a100791c9bff182a3d01239c97270e4055288ea3ef1d0ca329b3"
+    },
+    "aws_s3_bucket_ownership_controls.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "5a2953dff26ec3aba3f4b0979e328877e3017c00cc67c47c0e06e96c805764e3"
+    },
+    "aws_s3_bucket_public_access_block.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "a778b15cee8fb955ca090ded5582af8558a9ec373317f9a6dc5f055e03a70a18"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "b8947a75382a4d483e36a161728f3d5473b87a3b7e6965b1bb116311f7464dd5"
+    },
+    "aws_s3_bucket_policy.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "9248f0e81edc89665f4bb5df4ab8bc1e987ea90e19ebf00dad453ef2bebd3e21"
+    },
+    "aws_s3_bucket_lifecycle_configuration.logging": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "6df8da3799126f79499a98669b304bfcdca6f851b88f1caf2b41a547ee1e20b8"
+    },
+    "aws_s3_bucket_logging.state": {
+      "exact_id": null,
+      "owner": null,
+      "tags": {},
+      "attributes": {},
+      "policy_documents": [],
+      "observation_status": "absent",
+      "observed_at": "2026-10-26T13:20:01Z",
+      "source_evidence_sha256": "e118f8fbc9535cc79608ed27980a6acc4f4573e2e28037f8cbf4a4ca16268b8e"
+    }
+  }
+}

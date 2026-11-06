@@ -1,0 +1,13 @@
+{
+  "authorization_id": "grant-c2-review-cmk",
+  "authority_sha256": "89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "34c08d5ca9d537becd102d317a9975cb9890088f4d1cabc5d933341d1c2a7e0a",
+  "parent_checkpoint_sha256": "549b336e836aff345b98beaec6871404a18dbd45e05f543348dfbd8949aee660",
+  "binary_plan_sha256": null,
+  "migration_config_sha256": null,
+  "before_manifest_sha256": null,
+  "after_manifest_sha256": null,
+  "not_before": "2026-10-26T12:30:00Z",
+  "expires_at": "2026-10-26T13:00:00Z"
+}

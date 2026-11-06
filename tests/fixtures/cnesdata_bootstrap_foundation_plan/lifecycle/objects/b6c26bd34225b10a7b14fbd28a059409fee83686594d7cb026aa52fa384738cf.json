@@ -1,0 +1,11 @@
+{
+  "spec": {
+    "$include": "lifecycle/objects/e90cc52e1d2eccf3733e1b06f8272292eb017a53d6d8f98f0ff19db2662837a7.json"
+  },
+  "facts": {
+    "$include": "lifecycle/objects/60df468b747d85dc643b2cfd857017faef35d5b0a19fcf19f26575d8d8458639.json"
+  },
+  "checkpoint": {
+    "$include": "lifecycle/objects/e6cad468a052993163dede12817ce944e448763d0d5e97383c4b3fd548ce91b9.json"
+  }
+}

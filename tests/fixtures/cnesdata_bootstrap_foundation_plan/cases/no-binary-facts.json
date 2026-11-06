@@ -1,0 +1,111 @@
+{
+  "authorizations": {
+    "initial": {
+      "$include": "initial.json"
+    },
+    "stage": {
+      "$include": "cases/no-binary-stage.json"
+    },
+    "subsequent": null
+  },
+  "caller_account": "123456789012",
+  "caller_arn": "arn:aws:iam::123456789012:root",
+  "cmk": null,
+  "evaluated_at": "2026-10-26T12:00:00Z",
+  "evidence": {
+    "18be0a95cadbba2398d4a666f4a423e2177417d07652a55f281640f32517ade7": {
+      "$include": "evidence/18be0a95cadbba2398d4a666f4a423e2177417d07652a55f281640f32517ade7.json"
+    },
+    "1d434f37f37bfc5805ec06c8dbd4df5ce14eb46d579c30e14efc1b343ccb35d7": {
+      "$include": "evidence/1d434f37f37bfc5805ec06c8dbd4df5ce14eb46d579c30e14efc1b343ccb35d7.json"
+    },
+    "1dd78d671c15b26d46b39d40a25deae9546b68c57187c055042d7298bb4f1d9f": {
+      "$include": "evidence/1dd78d671c15b26d46b39d40a25deae9546b68c57187c055042d7298bb4f1d9f.json"
+    },
+    "3323b98b73205198acb1ed7a5c3cdc542af313f6bd74364f9350c30df126711a": {
+      "$include": "evidence/3323b98b73205198acb1ed7a5c3cdc542af313f6bd74364f9350c30df126711a.json"
+    },
+    "3a968d574bb522ea8c1531c8d1df4dc4afbbc5d7c98b59baeacb9a29384bac7b": {
+      "$include": "evidence/3a968d574bb522ea8c1531c8d1df4dc4afbbc5d7c98b59baeacb9a29384bac7b.json"
+    },
+    "52ab5a6e48e42b9f221602322940db15d2e34969a8c59a8f5ca77dba2dc7d2e5": {
+      "$include": "evidence/52ab5a6e48e42b9f221602322940db15d2e34969a8c59a8f5ca77dba2dc7d2e5.json"
+    },
+    "5a8654d89e9e02594ac7658ad67e59d57ff2cfb5ca557320db8afa1c5418ba6c": {
+      "$include": "evidence/5a8654d89e9e02594ac7658ad67e59d57ff2cfb5ca557320db8afa1c5418ba6c.json"
+    },
+    "8090025a7276d657deb54636019a68692ea4e0aa26a761c837ca180ba733e00c": {
+      "$include": "evidence/8090025a7276d657deb54636019a68692ea4e0aa26a761c837ca180ba733e00c.json"
+    },
+    "8b2b2af594e43fff035824b6b8f3cac4127412f070e7388d83f8b46a6dcf75fc": {
+      "$include": "evidence/8b2b2af594e43fff035824b6b8f3cac4127412f070e7388d83f8b46a6dcf75fc.json"
+    },
+    "906c5b1374db05c21a9d45e5c011fa0e022a766ada400f16e13b8a52794cca1d": {
+      "$include": "evidence/906c5b1374db05c21a9d45e5c011fa0e022a766ada400f16e13b8a52794cca1d.json"
+    },
+    "9248e978e2987d3079d679a85f59596cc8bd37d843b63b26fafb701403ed4f07": {
+      "$include": "evidence/9248e978e2987d3079d679a85f59596cc8bd37d843b63b26fafb701403ed4f07.json"
+    },
+    "96b56bb357df7f7115030168b0fc53922a0e5bced7bc0b2332a60d21af4a18b3": {
+      "$include": "evidence/96b56bb357df7f7115030168b0fc53922a0e5bced7bc0b2332a60d21af4a18b3.json"
+    },
+    "9c42f0c43bacdca674db4e72a29a0d0d94ac9527ced7e9dddfdd0d69c59b7dc5": {
+      "$include": "evidence/9c42f0c43bacdca674db4e72a29a0d0d94ac9527ced7e9dddfdd0d69c59b7dc5.json"
+    },
+    "9d3980a2a660580dcb5b884adb717951d409257fb348e4dc7b269153aa5fff6e": {
+      "$include": "evidence/9d3980a2a660580dcb5b884adb717951d409257fb348e4dc7b269153aa5fff6e.json"
+    },
+    "abe1da09e05c516d7a0e130cac4d2a4e6739d4656fdca3d94c102da61df9bdf9": {
+      "$include": "evidence/abe1da09e05c516d7a0e130cac4d2a4e6739d4656fdca3d94c102da61df9bdf9.json"
+    },
+    "ac12a234bd8cdc3e1892b510bd2c1b6ba84311894d1cdaf265d9727bc2fb80c0": {
+      "$include": "evidence/ac12a234bd8cdc3e1892b510bd2c1b6ba84311894d1cdaf265d9727bc2fb80c0.json"
+    },
+    "c107e89d0b45b1955285fce3aad2c411ff2de348052018c4672c68763b949fc8": {
+      "$include": "evidence/c107e89d0b45b1955285fce3aad2c411ff2de348052018c4672c68763b949fc8.json"
+    },
+    "c2d9b8c6ece0db53f3c8c913d7fc5c72f23466a7e873a4fc1783ab67fe551b08": {
+      "$include": "evidence/c2d9b8c6ece0db53f3c8c913d7fc5c72f23466a7e873a4fc1783ab67fe551b08.json"
+    },
+    "d8bcfb1bbf3fd5bad9f743e98586af5143c29e0411354847cddc9e660a30a0f8": {
+      "$include": "evidence/d8bcfb1bbf3fd5bad9f743e98586af5143c29e0411354847cddc9e660a30a0f8.json"
+    },
+    "e84eab72dc3030edeb562047920974dbec2b490df2013ae5b81d3d861883f98b": {
+      "$include": "evidence/e84eab72dc3030edeb562047920974dbec2b490df2013ae5b81d3d861883f98b.json"
+    },
+    "ef45ede9f2a9e53f726de0932dce79a589bb34f803e3738d5c685d1136980256": {
+      "$include": "evidence/ef45ede9f2a9e53f726de0932dce79a589bb34f803e3738d5c685d1136980256.json"
+    },
+    "f04f87f5fbb272068c1c24f9e9a2af60aca04f8d8d505419efd57bafffa685aa": {
+      "$include": "evidence/f04f87f5fbb272068c1c24f9e9a2af60aca04f8d8d505419efd57bafffa685aa.json"
+    }
+  },
+  "financial": {
+    "$include": "financial.json"
+  },
+  "identity_activation": {
+    "credential_source_verified": false,
+    "login_active": false,
+    "mfa_device_active": false,
+    "policy_sha256": null,
+    "session_policy_sha256": null,
+    "trust_sha256": null
+  },
+  "known_checkpoint_head": null,
+  "mfa_verified": true,
+  "migration": null,
+  "observed_at": "2026-10-26T11:59:30Z",
+  "orphan_candidates": [],
+  "resources": {
+    "foundation": {
+      "$include": "observations-absent.json"
+    }
+  },
+  "root_states": {},
+  "session_expiration": "2026-10-26T18:00:00Z",
+  "session_kind": "root",
+  "verified_authorization_sha256": [
+    "7fb980a45e84fc52786dc46c650d54bed23d3dc60e4d7c9b818eb2fd45868dbf",
+    "4ec86f5968bb5366abfe4047c737ac7dfca69b8119c00518227a348a048a37fd"
+  ]
+}

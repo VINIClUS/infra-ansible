@@ -1,0 +1,285 @@
+{
+  "72263bd0c12b8011aa33b1c69e41b4d24a15f7e54ced9e7f2e11c9392f8c7e03": {
+    "kind": "freeze",
+    "root_id": "budget-backend",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "observed_at": "2026-10-26T13:30:01Z",
+    "result": {
+      "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+      "step_sha256": "8884825f9960216fea248e9a75ffb0efc823b7080cdb49622fe41fe96143ffb1",
+      "checkpoint_sha256": "fe06c7833a75f426be479401aa6aeae6e61d3805e60bb6b799d563d082082d6d",
+      "executor_principal_arn": "arn:aws:iam::123456789012:root",
+      "held_intent_sha256": null,
+      "freeze_id": "synthetic-freeze-c2-migrate-budget"
+    }
+  },
+  "ab7f298c0f1b1d58df50e080fc8e1f045a8fad8d2107925a3e3abeb3c98f1e37": {
+    "kind": "independent_backup",
+    "root_id": "budget-backend",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "observed_at": "2026-10-26T13:30:01Z",
+    "result": {
+      "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+      "step_sha256": "8884825f9960216fea248e9a75ffb0efc823b7080cdb49622fe41fe96143ffb1",
+      "media_id": "synthetic-independent-media",
+      "copy_id": "copy-c2-migrate-budget",
+      "ciphertext_sha256": "d24a88cd3887f4667cc1517d10320562e2239aba5da8358f05d5b6baaf964998",
+      "plaintext_state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34"
+    }
+  },
+  "74c92c44ebe78fd622cfb795007a51225ebae8bef7ca973cc95c7bc87c56c8e4": {
+    "kind": "remote_lock",
+    "root_id": "budget-backend",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "observed_at": "2026-10-26T13:30:01Z",
+    "result": {
+      "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+      "step_sha256": "8884825f9960216fea248e9a75ffb0efc823b7080cdb49622fe41fe96143ffb1",
+      "checkpoint_sha256": "fe06c7833a75f426be479401aa6aeae6e61d3805e60bb6b799d563d082082d6d",
+      "holder_principal_arn": "arn:aws:iam::123456789012:root",
+      "lock_location": {
+        "account": "123456789012",
+        "region": "us-east-2",
+        "bucket": "syn-budget-state-123456789012",
+        "key": "bootstrap/backend.tfstate.tflock",
+        "owner": "personal-infra-live:cnesdata"
+      },
+      "lock_id": "lock-c2-migrate-budget",
+      "lock_version_id": "lock-version1"
+    }
+  },
+  "8c37e05e37e9c99a16c0004073f6cc0dffc0b4dbdd77789f5f7c037f93bf862c": {
+    "kind": "quarantine_restore",
+    "root_id": "budget-backend",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "observed_at": "2026-10-26T13:30:01Z",
+    "result": {
+      "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+      "step_sha256": "8884825f9960216fea248e9a75ffb0efc823b7080cdb49622fe41fe96143ffb1",
+      "backup_evidence_sha256": "ab7f298c0f1b1d58df50e080fc8e1f045a8fad8d2107925a3e3abeb3c98f1e37",
+      "restored_state": {
+        "owner": "personal-infra-live:cnesdata",
+        "backend_location": {
+          "account": "123456789012",
+          "region": "us-east-2",
+          "bucket": "syn-budget-state-123456789012",
+          "key": "quarantine/3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb/budget-backend/eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34.tfstate",
+          "owner": "personal-infra-live:cnesdata"
+        },
+        "lineage": "synthetic-budget-lineage",
+        "serial": 1,
+        "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+        "resource_ids": {
+          "aws_s3_bucket.state": "syn-budget-state-123456789012",
+          "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+          "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+          "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+          "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+          "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+          "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+        },
+        "version_id": "quarantine-version1"
+      }
+    }
+  },
+  "00f4179a01240a12c3c7b8e51f4c6f181771fbafbb5d6b16965a07739c9a9702": {
+    "root_id": "budget-backend",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "destination_empty": false,
+    "destination_state": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "account": "123456789012",
+        "region": "us-east-2",
+        "bucket": "syn-budget-state-123456789012",
+        "key": "bootstrap/backend.tfstate",
+        "owner": "personal-infra-live:cnesdata"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 2,
+      "state_sha256": "55d5e9ebac295500d9a7a3da117ecf32993221a3ce51663cc02d437893d316ca",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": "b-version2"
+    },
+    "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+    "observed_at": "2026-10-26T13:30:01Z"
+  }
+}

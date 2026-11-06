@@ -1,0 +1,33 @@
+{
+  "exact_id": "bootstrap-operator/arn:aws:iam::aws:policy/IAMUserChangePassword",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "policy_arn": "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess",
+    "user": "bootstrap-operator"
+  },
+  "policy_documents": [
+    {
+      "Statement": [
+        {
+          "Action": [
+            "signin:AuthorizeOAuth2Access",
+            "signin:CreateOAuth2Token"
+          ],
+          "Effect": "Allow",
+          "Resource": "*"
+        }
+      ],
+      "Version": "2012-10-17"
+    }
+  ],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:20:01Z",
+  "source_evidence_sha256": "1dc8abe033b004296e074e6f824a79c58dbf1c67a1f7145d7d6be79c61618863"
+}

@@ -1,0 +1,25 @@
+{
+  "contract_version": 1,
+  "initial_run_id": "synthetic-foundation-fix1-20261026",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "generation": 3,
+  "previous_sha256": "6fd7dee1130b8a0555e5a3f421ea8b5376da8d6616056957d3de13af98f7b7e8",
+  "current_step_id": "c2-foundation-replan",
+  "initial_complete": false,
+  "handoff_status": "pending",
+  "stage": "foundation_partial",
+  "status": "partial",
+  "stage_records": {
+    "$include": "lifecycle/objects/5f2f6eec5f4f890abce4df2dbde166d9ee121190452905de53df0ed274e67056.json"
+  },
+  "root_states": {
+    "$include": "lifecycle/objects/1b692f942510bc4a3c3d89cc062f9a0e5245e05f058b526bbb16aa48f80f004a.json"
+  },
+  "receipts": {
+    "$include": "lifecycle/objects/e33e3b708f5e9de768832672142083d68e1db8ff1c6c3f6afd5bb64d618fdd99.json"
+  },
+  "intent": {
+    "$include": "lifecycle/objects/dde13c48e10be1a88bcc22483eccbbde04544aae3ee36c645c13d7470313afb8.json"
+  },
+  "updated_at": "2026-10-26T12:39:01Z"
+}

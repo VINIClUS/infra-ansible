@@ -1,0 +1,314 @@
+{
+  "positive": [
+    "c2-partial",
+    "c2-migrate-foundation",
+    "c2-budget",
+    "c2-migrate-budget",
+    "c2-mark",
+    "c2-adopt",
+    "c2-restore"
+  ],
+  "negative": {
+    "c2-history-receipt-removed": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-record-removed": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-generation": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-projection": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-history-removed": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-state-owner": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-state-lineage": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-state-serial": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-state-id": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-parent": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-run": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-origin": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-grant": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-spec": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-time": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-history-receipt-before-intent": {
+      "base": "c2-mark",
+      "reason": "checkpoint_history_invalid",
+      "coherent_rehash": true
+    },
+    "c2-head-missing": {
+      "base": "c2-mark",
+      "reason": "checkpoint_head_mismatch",
+      "coherent_rehash": false
+    },
+    "c2-head-foreign": {
+      "base": "c2-mark",
+      "reason": "checkpoint_head_mismatch",
+      "coherent_rehash": false
+    },
+    "c2-head-older": {
+      "base": "c2-mark",
+      "reason": "checkpoint_head_mismatch",
+      "coherent_rehash": false
+    },
+    "c2-migration-missing-freeze": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-missing-independent_backup": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-missing-remote_lock": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-missing-quarantine_restore": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-foreign-root": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-foreign-step": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-freeze-head": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-backup-bytes": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-lock-holder": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-restore-bytes": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-time": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-destination": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-owner": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-lineage": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-ids": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-serial": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-same-serial-bytes": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-migration-config": {
+      "base": "c2-migrate-foundation",
+      "reason": "migration_evidence_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-arn": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-account_id": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-region": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-owner": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-tags": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-key_manager": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-key_state": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-key_spec": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-key_usage": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-rotation_enabled": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-policy_document": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-cmk-origin-receipt": {
+      "base": "c2-budget",
+      "reason": "cmk_binding_invalid",
+      "coherent_rehash": false
+    },
+    "c2-current-expired": {
+      "base": "c2-partial",
+      "reason": "authorization_window_invalid",
+      "coherent_rehash": false
+    },
+    "c2-partial-no-noop": {
+      "base": "c2-partial",
+      "reason": "authorization_scope_mismatch",
+      "coherent_rehash": true
+    },
+    "c2-budget-no-create": {
+      "base": "c2-budget",
+      "reason": "create_not_authorized",
+      "coherent_rehash": true
+    },
+    "c2-orphan-zero": {
+      "base": "c2-adopt",
+      "reason": "orphan_observation_required",
+      "coherent_rehash": false
+    },
+    "c2-orphan-multiple": {
+      "base": "c2-adopt",
+      "reason": "orphan_candidates_ambiguous",
+      "coherent_rehash": false
+    },
+    "c2-orphan-owner": {
+      "base": "c2-adopt",
+      "reason": "orphan_candidates_ambiguous",
+      "coherent_rehash": false
+    },
+    "c2-orphan-other-type": {
+      "base": "c2-adopt",
+      "reason": "orphan_candidates_ambiguous",
+      "coherent_rehash": false
+    },
+    "c2-restore-active-key": {
+      "base": "c2-restore",
+      "reason": "restore_proposal_invalid",
+      "coherent_rehash": false
+    },
+    "c2-restore-owner": {
+      "base": "c2-restore",
+      "reason": "restore_proposal_invalid",
+      "coherent_rehash": false
+    },
+    "c2-restore-source": {
+      "base": "c2-restore",
+      "reason": "restore_proposal_invalid",
+      "coherent_rehash": false
+    },
+    "c2-restore-freeze": {
+      "base": "c2-restore",
+      "reason": "restore_proposal_invalid",
+      "coherent_rehash": false
+    }
+  },
+  "synthetic_only": true
+}

@@ -1,0 +1,25 @@
+{
+  "contract_version": 1,
+  "initial_run_id": "synthetic-foundation-fix1-20261026",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "generation": 9,
+  "previous_sha256": "9a04c65367e5f1b456c68122658f56301132453b2e05c446bcc9fc254200315e",
+  "current_step_id": "c2-migrate-budget",
+  "initial_complete": false,
+  "handoff_status": "pending",
+  "stage": "migration_pending",
+  "status": "pending",
+  "stage_records": {
+    "$include": "lifecycle/objects/2f41fcfd75c39fb78c434cf837c3432372e9f84997701c2f3df5d52f42930f0e.json"
+  },
+  "root_states": {
+    "$include": "lifecycle/objects/365b8dda66170de7e1045c1eaa5cad9f07167019eee08c90273606cf49523606.json"
+  },
+  "receipts": {
+    "$include": "lifecycle/objects/fcd3b9e42f39760d2c440154b82a07ff16bfd862ad9da2a00b473eff00b2636c.json"
+  },
+  "intent": {
+    "$include": "lifecycle/objects/729ed3a457a8e79019a540ff3ea076b3890c4e8dd013a1200c3f65ac191abe6f.json"
+  },
+  "updated_at": "2026-10-26T13:30:02Z"
+}

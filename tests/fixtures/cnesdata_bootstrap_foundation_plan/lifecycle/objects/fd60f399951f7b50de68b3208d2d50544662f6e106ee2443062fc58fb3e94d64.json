@@ -1,0 +1,13 @@
+{
+  "authorization_id": "grant-c2-foundation-replan",
+  "authority_sha256": "89b64b7755f0629b401971996ffb7bbedc51e3e7b15f51960e782a0e0ff2c3b8",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "28cd6c643985f81bb59ca0fbafbcd99fcbc315621bdc9ebd3860ba7dcfcdfabf",
+  "parent_checkpoint_sha256": "800b21e1f9071634acec4a343528ee1da6b9b2bedd52d3b1eb8b499b94e8d95c",
+  "binary_plan_sha256": "e735ebe18fedbdc819fdf2162ed2bf4b58c4a301a4b5d97e2a272220202ee0a1",
+  "migration_config_sha256": null,
+  "before_manifest_sha256": "07a7c70206e30fc03f2f64412e4776557b56aec73bc2831fa9a28968ee29f787",
+  "after_manifest_sha256": "bc010b6e85741ed905c72174095c91676a76c02c7bcd2e89556c13917d022b68",
+  "not_before": "2026-10-26T12:30:00Z",
+  "expires_at": "2026-10-26T13:10:00Z"
+}

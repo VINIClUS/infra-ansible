@@ -1,0 +1,73 @@
+{
+  "binary_plan_sha256": "e60d4a58f6d8570ebec840cf1b76662947a234e0efdaead390a2834a472ffe93",
+  "resources": {
+    "aws_iam_policy.executor_boundary": {
+      "$include": "after/aws_iam_policy.executor_boundary.json"
+    },
+    "aws_iam_role.bootstrap_executor": {
+      "$include": "after/aws_iam_role.bootstrap_executor.json"
+    },
+    "aws_iam_role.bootstrap_readback": {
+      "$include": "after/aws_iam_role.bootstrap_readback.json"
+    },
+    "aws_iam_role_policy.bootstrap_executor": {
+      "$include": "after/aws_iam_role_policy.bootstrap_executor.json"
+    },
+    "aws_iam_role_policy.bootstrap_readback": {
+      "$include": "after/aws_iam_role_policy.bootstrap_readback.json"
+    },
+    "aws_iam_user.bootstrap_operator": {
+      "$include": "after/aws_iam_user.bootstrap_operator.json"
+    },
+    "aws_iam_user_policy.local_assume": {
+      "$include": "after/aws_iam_user_policy.local_assume.json"
+    },
+    "aws_iam_user_policy_attachment.local_login": {
+      "$include": "after/aws_iam_user_policy_attachment.local_login.json"
+    },
+    "aws_kms_key.foundation": {
+      "$include": "after/aws_kms_key.foundation.json"
+    },
+    "aws_s3_bucket.logging": {
+      "$include": "after/aws_s3_bucket.logging.json"
+    },
+    "aws_s3_bucket.state": {
+      "$include": "after/aws_s3_bucket.state.json"
+    },
+    "aws_s3_bucket_lifecycle_configuration.logging": {
+      "$include": "after/aws_s3_bucket_lifecycle_configuration.logging.json"
+    },
+    "aws_s3_bucket_logging.state": {
+      "$include": "after/aws_s3_bucket_logging.state.json"
+    },
+    "aws_s3_bucket_ownership_controls.logging": {
+      "$include": "after/aws_s3_bucket_ownership_controls.logging.json"
+    },
+    "aws_s3_bucket_ownership_controls.state": {
+      "$include": "after/aws_s3_bucket_ownership_controls.state.json"
+    },
+    "aws_s3_bucket_policy.logging": {
+      "$include": "after/aws_s3_bucket_policy.logging.json"
+    },
+    "aws_s3_bucket_policy.state": {
+      "$include": "after/aws_s3_bucket_policy.state.json"
+    },
+    "aws_s3_bucket_public_access_block.logging": {
+      "$include": "after/aws_s3_bucket_public_access_block.logging.json"
+    },
+    "aws_s3_bucket_public_access_block.state": {
+      "$include": "after/aws_s3_bucket_public_access_block.state.json"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.logging": {
+      "$include": "after/aws_s3_bucket_server_side_encryption_configuration.logging.json"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.state": {
+      "$include": "after/aws_s3_bucket_server_side_encryption_configuration.state.json"
+    },
+    "aws_s3_bucket_versioning.state": {
+      "$include": "after/aws_s3_bucket_versioning.state.json"
+    }
+  },
+  "root_id": "foundation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+}

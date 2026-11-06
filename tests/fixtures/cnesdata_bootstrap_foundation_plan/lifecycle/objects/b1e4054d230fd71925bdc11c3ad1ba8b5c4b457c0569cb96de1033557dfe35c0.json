@@ -1,0 +1,26 @@
+{
+  "kind": "resource_observation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "budget-backend",
+  "address": "aws_s3_bucket_server_side_encryption_configuration.state",
+  "observed_at": "2026-10-26T13:23:00Z",
+  "observation": {
+    "status": "present",
+    "exact_id": "syn-budget-state-123456789012",
+    "owner": "personal-infra-live:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "personal-infra-live:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-budget-state-123456789012",
+      "bucket_key_enabled": true,
+      "kms_master_key_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "sse_algorithm": "aws:kms"
+    },
+    "policy_documents": []
+  }
+}

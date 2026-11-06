@@ -1,0 +1,94 @@
+{
+  "synthetic": true,
+  "operational_gate": "GATE_NOT_RELEASED",
+  "raw_scanner_status": "FAIL",
+  "downstream_boundaries": {
+    "source_byte_semantics": "UNREACHED",
+    "role_authority": "UNREACHED",
+    "provider_binding": "UNREACHED",
+    "external_binding": "UNREACHED",
+    "planned_manifests": "UNREACHED",
+    "receipts_history": "UNREACHED",
+    "seed_lifecycle": "UNREACHED",
+    "dag_materialization": "UNREACHED",
+    "B2": "UNREACHED",
+    "C3b": "UNREACHED",
+    "finances": "UNREACHED",
+    "effects": "UNREACHED"
+  },
+  "v1_sha256": "1df25a1cdcc7a2d5d553ac04599302aa2e598b96e3eb22159dd22722bfe2ab8b",
+  "v2_sha256": "c51aeb265ca18d09ddbe38172c07fe5a23d5d97d4f700a2752bef5d0484fcfad",
+  "v1_canonical_utf8_bytes": 12423,
+  "v2_canonical_utf8_bytes": 57539,
+  "root_sizes": {"foundation": 22, "budget-backend": 12,
+    "identity-handoff": 19, "budget-identities": 3},
+  "profiles": [
+    "bootstrap_readback", "bootstrap_executor", "budget_operator", "shared_identity_manager",
+    "github_infrastructure_plan", "github_infrastructure_deploy", "github_host_deploy",
+    "roles_anywhere_api", "budget_action"
+  ],
+  "case_ids": [
+    "P01-spec-template-v2", "L01-spec-v1",
+    "N01-version-missing", "N02-version-bool", "N03-version-float", "N04-version-string",
+    "N05-version-one-with-v2", "N06-version-unknown", "N07-catalog-missing",
+    "N08-catalog-unknown-field", "N09-session-missing", "N10-not-resource",
+    "N11-slot-attribute-missing", "N12-slot-receipt", "N13-observed-in-template",
+    "N14-slot-outside-domain", "N15-slot-in-action", "N16-old-rendered-digests",
+    "N17-configured-root-missing", "N18-v1-marked-v2",
+    "N19-version-unknown-with-v1"
+  ],
+  "fixture_sha256": {
+    "handoff/c3a/spec-template/index.json":
+      "cf1dbfc0d3a455b3362b033237bd0724e98d4d654317601256af9649cad0b2b2",
+    "handoff/c3a/spec-template/input.json":
+      "945ce8399f1a6181f45ca59d84913ff42e960a044d7a98f7fb1970e2f4c3c2b7",
+    "handoff/c3a/spec-template/null.json":
+      "38e0b9de817f645c4bec37c0d4a3e58baecccb040f5718dc069a72c7385a0bed",
+    "handoff/c3a/spec-template/policy-budget-backend.json":
+      "f8469a57b262aef1c42325bde51b97ff7b7d7602db38ec2d705776eaa2a46ae6",
+    "handoff/c3a/spec-template/policy-budget-identities.json":
+      "e682db40bd35621b16eb80e8a2d7a0853e1c0d8608ec8272b651c341530d8d4b",
+    "handoff/c3a/spec-template/policy-foundation.json":
+      "fc8678b6c631e05b38772cedf6930bf85ac8246ba13ed933e82d73ce0a3840cf",
+    "handoff/c3a/spec-template/policy-identity-handoff.json":
+      "b9353718f5a30f86dbd11dcaf46c392aa15e553a002206892c51a99e5eb60620",
+    "handoff/c3a/spec-template/profile-bootstrap-executor.json":
+      "7d661cfe55a459455386fd950372b92a00c541ed042ad701fb80ac2d12a2fa63",
+    "handoff/c3a/spec-template/profile-bootstrap-readback.json":
+      "4cca3ccfda9b70f10112db4b40c5e23d845a942d8d7c09f775258aac3cc8fea3",
+    "handoff/c3a/spec-template/profile-budget-action.json":
+      "fca4e920e2ed9b2683cf464cfaaf988b837e050ce6cb2f4ea3c45dc8965e3b2d",
+    "handoff/c3a/spec-template/profile-budget-operator.json":
+      "894bc222dd3cbc15422d82091cbdc5a3ae988eee11f651e4410acc51e8e9a07b",
+    "handoff/c3a/spec-template/profile-github-host-deploy.json":
+      "4bd14581e100f9cb34062c9964aac82fe91bd44b74ddd5922ada4cbf4986e518",
+    "handoff/c3a/spec-template/profile-github-infrastructure-deploy.json":
+      "6614ac05f8764a426081b314bf163e39e7be283ca84ef2197c0fbdc0f57a606d",
+    "handoff/c3a/spec-template/profile-github-infrastructure-plan.json":
+      "37c65cd3a615322ec9bb75b24eb2d1c0e1b12bac6e952c3b5139a2b854e06280",
+    "handoff/c3a/spec-template/profile-roles-anywhere-api.json":
+      "be8db19cc8e68d1af8859319d5d91042e27b6f190550c76e3de9261ac3caec29",
+    "handoff/c3a/spec-template/profile-shared-identity-manager.json":
+      "661a8f558f3cc68d4357deefd77429695459126242549e093dada309e3c735ba",
+    "handoff/c3a/spec-template/roots.json":
+      "c0a19e9217cdad3282292c77ed352e7d0ed5b89d92462b4e50139d93a59019d3",
+    "handoff/c3a/spec-template/sources.json":
+      "928437081a5dc2744a530f886c4e4070f1d90c3142e1a519f23afc34590d983c",
+    "bundle.json":
+      "3225ae562d5bf458f9de6e15f7d8d0946d9c18cecd4823545ab3e34dd3ba7377",
+    "cases/enabled-input.json":
+      "2f898b806ad278e9e494d707bd8408aa64904b0d2a383c57d80e5b517dd0407a",
+    "cases/enabled-step.json":
+      "3e5f57f0ef9306844769a6f40404e22b5c625d077244a6050a6abe2c93dffe8b",
+    "run.json":
+      "1bf4d9ed4b6390dd9e7d26e7a099e05638684567fead82f1b498027bf0a23e1a",
+    "run/foundation.json":
+      "78a23db991093c957e0730575634b6df888089fb71cf2afd1341b11e9210af97",
+    "run/budget-backend.json":
+      "2a4cbaa16be09c6f2f53f00d572f3d2a6c7923a0bdd2d4ad65c13d4d2ce1cad5",
+    "run/identity-handoff.json":
+      "38816fd02f55633b0ef6924ef3ea9c853bd0a1e31b849f365f8a9a9257a8dbdf",
+    "run/budget-identities.json":
+      "4e991f48c4c5bdb3ca239bba4a85fdc8e58a89bc8091df46c85ff8059aaaae36"
+  }
+}

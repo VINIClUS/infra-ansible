@@ -1,0 +1,18 @@
+{
+  "account_id": "123456789012",
+  "allowed_resource_actions": {
+    "$include": "lifecycle/objects/84528bdf26e8d0d76d128a14bd4155467d410e08f85cd09242cb0c2d6d70e396.json"
+  },
+  "allowed_state_actions": {
+    "$include": "lifecycle/objects/9baf607d1d304185995eb1ab93b534b484c4135299d457195aa03f3126585613.json"
+  },
+  "authorization_id": "synthetic-c2-initial",
+  "expires_at": "2026-10-26T18:00:00Z",
+  "initial_run_id": "synthetic-foundation-fix1-20261026",
+  "not_before": "2026-10-26T11:00:00Z",
+  "region": "us-east-2",
+  "roots": {
+    "$include": "lifecycle/objects/c0e67254223d08b5cfa3f829f0d717b6228a35ed28549ef9dbe56a5d41da768a.json"
+  },
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+}

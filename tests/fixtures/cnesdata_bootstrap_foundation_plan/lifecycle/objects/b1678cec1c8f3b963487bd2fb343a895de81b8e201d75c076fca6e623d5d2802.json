@@ -1,0 +1,55 @@
+{
+  "contract_version": 1,
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "34c08d5ca9d537becd102d317a9975cb9890088f4d1cabc5d933341d1c2a7e0a",
+  "spec_sha256": "5b8327508b878c003baa466abcc8e644474370dc947550f62bcd28444e25f632",
+  "readback_sha256": "0c52fb7b8608fe1bc294127ec0548dff708f596604465028d7515f7b198107d4",
+  "checkpoint_sha256": "549b336e836aff345b98beaec6871404a18dbd45e05f543348dfbd8949aee660",
+  "authorization_sha256": "f21559f48544acf93380610599c9bb0d883d68b63c0c7bca10b93409ab6dde72",
+  "stage": "review_adoption",
+  "expires_at": "2026-10-26T13:00:00Z",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback",
+    "independent_orphan_observation",
+    "materialized_policy_review",
+    "adoption_stage_authorization"
+  ],
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "status": "review_required",
+  "operations": [],
+  "blocked_reasons": [],
+  "proposals": [
+    {
+      "kind": "adoption_review",
+      "root_id": "foundation",
+      "target": {
+        "address": "aws_kms_key.foundation",
+        "configured_name": null,
+        "identity_kind": "provider_assigned",
+        "exact_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+        "intent_sha256": "02e1cdf302c5f933818aea38c0f236ba924381be4994f551c7412444e4b68aed"
+      },
+      "evidence_sha256": [
+        "3c6232174ca0a960e31c1e8344ef0bfdc72609353c323295af35aea2b698c100"
+      ],
+      "required_evidence": [
+        "independent_orphan_observation",
+        "materialized_policy_review",
+        "adoption_stage_authorization"
+      ]
+    }
+  ]
+}

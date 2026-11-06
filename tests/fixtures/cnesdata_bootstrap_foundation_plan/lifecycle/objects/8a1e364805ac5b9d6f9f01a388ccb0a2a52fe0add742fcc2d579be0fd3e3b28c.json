@@ -1,0 +1,56 @@
+{
+  "aggregate_forecast_gross": 3.8,
+  "aggregate_limit": 15,
+  "basis": "synthetic-gross-monthly-reservation",
+  "currency": "USD",
+  "lines": {
+    "backends": {
+      "base": 0.0077,
+      "max": 0.1,
+      "min": 0.00077,
+      "quantity": 2
+    },
+    "cmk": {
+      "base": 1,
+      "max": 1,
+      "min": 1,
+      "quantity": 1
+    },
+    "iam": {
+      "base": 0,
+      "max": 0,
+      "min": 0,
+      "quantity": 30
+    },
+    "independent_recovery_media": {
+      "base": 0.01,
+      "max": 0.05,
+      "min": 0.002,
+      "quantity": 1
+    },
+    "kms_requests": {
+      "base": 0.003,
+      "max": 0.03,
+      "min": 0.0003,
+      "quantity": 1
+    },
+    "logging_sinks": {
+      "base": 0.0284,
+      "max": 0.25,
+      "min": 0.00284,
+      "quantity": 2
+    },
+    "restore_egress": {
+      "base": 0.005,
+      "max": 0.02,
+      "min": 0.001,
+      "quantity": 1
+    }
+  },
+  "net_actual": 0,
+  "net_forecast": 0,
+  "observed_at": "2026-10-26T11:59:30Z",
+  "project_forecast_gross": 3.8,
+  "project_limit": 8,
+  "rotation_max": 3.8
+}

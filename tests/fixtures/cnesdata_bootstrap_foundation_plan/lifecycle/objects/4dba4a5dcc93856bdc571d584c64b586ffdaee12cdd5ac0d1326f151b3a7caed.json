@@ -1,0 +1,8 @@
+{
+  "credential_source_verified": false,
+  "login_active": false,
+  "mfa_device_active": false,
+  "policy_sha256": null,
+  "session_policy_sha256": null,
+  "trust_sha256": null
+}

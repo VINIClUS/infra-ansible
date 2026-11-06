@@ -1,0 +1,53 @@
+{
+  "root_id": "foundation",
+  "source": {
+    "owner": "infra-ansible:cnesdata",
+    "backend_location": {
+      "kind": "local",
+      "machine_id": "synthetic-c2-laptop",
+      "path": "/synthetic/private/foundation/terraform.tfstate"
+    },
+    "lineage": "synthetic-foundation-lineage",
+    "serial": 2,
+    "state_sha256": "c702d7fd47684b0ae19514293ef9a148173beadafae7a871766bf0b699b08a85",
+    "resource_ids": {
+      "aws_iam_user.bootstrap_operator": "bootstrap-operator",
+      "aws_iam_user_policy_attachment.local_login": "bootstrap-operator/arn:aws:iam::aws:policy/IAMUserChangePassword",
+      "aws_iam_user_policy.local_assume": "bootstrap-operator:local-assume",
+      "aws_iam_policy.executor_boundary": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary",
+      "aws_iam_role.bootstrap_readback": "cnesdata-bootstrap-readback",
+      "aws_iam_role.bootstrap_executor": "cnesdata-bootstrap-executor",
+      "aws_iam_role_policy.bootstrap_readback": "cnesdata-bootstrap-readback:bootstrap-readback",
+      "aws_iam_role_policy.bootstrap_executor": "cnesdata-bootstrap-executor:bootstrap-executor",
+      "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "aws_s3_bucket.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_versioning.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_public_access_block.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_ownership_controls.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_policy.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_ownership_controls.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_public_access_block.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_policy.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_lifecycle_configuration.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_logging.state": "syn-cnesdata-state-123456789012"
+    },
+    "version_id": null
+  },
+  "destination": {
+    "account": "123456789012",
+    "region": "us-east-2",
+    "bucket": "syn-cnesdata-state-123456789012",
+    "key": "bootstrap/foundation.tfstate",
+    "owner": "infra-ansible:cnesdata"
+  },
+  "destination_empty": true,
+  "destination_state": null,
+  "evidence_sha256": [
+    "f4ab596adcf6b51de9cbd868841768673c43877b444a577ae004962a46c1ab0a",
+    "8fcd1e00b648a6b8c075bf65947fc53002e0ec8fe3855028f3d81a8de46f1fb3",
+    "3a053c3a96458ae92ee8b909ac8785e19f5098ff5919682a34a6087433c57a90"
+  ]
+}

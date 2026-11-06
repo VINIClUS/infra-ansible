@@ -1,0 +1,32 @@
+{
+  "contract_version": 1,
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "06ea6a05b51fe3818286d71da5dbe917559413abd1853af2d81514bb36117caa",
+  "spec_sha256": "e90cc52e1d2eccf3733e1b06f8272292eb017a53d6d8f98f0ff19db2662837a7",
+  "readback_sha256": "24a4780113aa047263f70a1557b8106c8167acc2ca06150f43301db70e21029d",
+  "checkpoint_sha256": "8b82ca43589d9361b39e91990eec9d03bf7430549cd649810d3821cce77ea0f2",
+  "authorization_sha256": "9a7abccaba9d5bb92ddd2869bfdcfce3b3861c2461c213f17838caefa8b5403a",
+  "stage": "mark_backends_ready",
+  "expires_at": "2026-10-26T14:30:00Z",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ],
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "status": "ready",
+  "operations": [],
+  "proposals": [],
+  "blocked_reasons": []
+}

@@ -1,0 +1,25 @@
+{
+  "kind": "resource_observation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "foundation",
+  "address": "aws_s3_bucket_logging.state",
+  "observed_at": "2026-10-26T13:00:00Z",
+  "observation": {
+    "status": "present",
+    "exact_id": "syn-cnesdata-state-123456789012",
+    "owner": "infra-ansible:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "infra-ansible:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "bucket": "syn-cnesdata-state-123456789012",
+      "target_bucket": "syn-cnesdata-logs-123456789012",
+      "target_prefix": "access/syn-cnesdata-state-123456789012/"
+    },
+    "policy_documents": []
+  }
+}

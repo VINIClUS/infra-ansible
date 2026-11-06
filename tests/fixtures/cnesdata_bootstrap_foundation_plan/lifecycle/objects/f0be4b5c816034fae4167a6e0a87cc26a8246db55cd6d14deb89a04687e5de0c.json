@@ -1,0 +1,47 @@
+{
+  "exact_id": "cnesdata-bootstrap-readback",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "max_session_duration": 3600,
+    "name": "cnesdata-bootstrap-readback",
+    "path": "/cnesdata/",
+    "tags": {
+      "Environment": "synthetic",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "Owner": "infra-ansible:cnesdata",
+      "Project": "CnesData",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    }
+  },
+  "policy_documents": [
+    {
+      "Statement": [
+        {
+          "Action": [
+            "sts:AssumeRole"
+          ],
+          "Condition": {
+            "Bool": {
+              "aws:MultiFactorAuthPresent": "true"
+            }
+          },
+          "Effect": "Allow",
+          "Principal": {
+            "AWS": "arn:aws:iam::123456789012:user/cnesdata/bootstrap-operator"
+          }
+        }
+      ],
+      "Version": "2012-10-17"
+    }
+  ],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:00:00Z",
+  "source_evidence_sha256": "43716bb04be5a60fa38a821becb38d6b8abc865dc58912dcd74379a0653d7a61"
+}

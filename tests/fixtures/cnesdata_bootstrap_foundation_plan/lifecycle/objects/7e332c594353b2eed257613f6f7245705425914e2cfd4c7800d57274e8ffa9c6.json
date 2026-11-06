@@ -1,0 +1,22 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "origin_step_id": "c2-foundation-replan",
+  "origin_spec_sha256": "0684cc35bfa8f7de0478dc5f4157ad07f54c319cc9cebde7733ce998a8e2eca0",
+  "origin_authorization_sha256": "9c2f99274db1effa2eaa0ce001ef5324924ffedb79b772443d520896a50e6b64",
+  "intent_sha256": "7972560f9fa656cf03a2dc46ed2344f0a075efa938dcd1c0480ae0c61105b792",
+  "root_id": "foundation",
+  "target": {
+    "kind": "resource",
+    "address": "aws_s3_bucket_public_access_block.logging",
+    "action": "create",
+    "configured_name": null,
+    "identity_kind": "configured"
+  },
+  "exact_id": "syn-cnesdata-logs-123456789012",
+  "observed_after_sha256": "b22de104d8c70192e68b0a3b6691e24a1e65b84bb5bf704337255ff3f642836a",
+  "state_sha256": "c702d7fd47684b0ae19514293ef9a148173beadafae7a871766bf0b699b08a85",
+  "lineage": "synthetic-foundation-lineage",
+  "serial": 2,
+  "checkpoint_generation": 4,
+  "observed_at": "2026-10-26T13:00:00Z"
+}

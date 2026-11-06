@@ -1,0 +1,189 @@
+{
+  "contract_version": 1,
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "cafbbb7d3434ec09cf6ea3f6a7bf435edab14539e165fad84ae1cb02f3d1d19a",
+  "spec_sha256": "d2160c6b01cd9f34f1640366025b42b804ae15a44ee30cc06fc2fc0c3b7ad6dc",
+  "readback_sha256": "59a4a4bd4f8896d0d7866846c6fc43fa67502ec51a2b67a4f3112704b3d6f857",
+  "checkpoint_sha256": "27782fb6639b6daa6c3d302e204c543d1df15f6883b47cbd315c7484847146f1",
+  "authorization_sha256": "d4ff8a2e454cdd294a51b9601450e6d5743e65e52b9aaf777650dfb1a896ff9c",
+  "stage": "budget_backend",
+  "expires_at": "2026-10-26T14:00:00Z",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ],
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "status": "ready",
+  "operations": [
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket.state",
+      "action": "create",
+      "target": {
+        "configured_name": "syn-budget-state-123456789012",
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_versioning.state",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_public_access_block.state",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_server_side_encryption_configuration.state",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_policy.state",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket.logging",
+      "action": "create",
+      "target": {
+        "configured_name": "syn-budget-logs-123456789012",
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_ownership_controls.logging",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_public_access_block.logging",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_server_side_encryption_configuration.logging",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_policy.logging",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_lifecycle_configuration.logging",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-logs-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    },
+    {
+      "kind": "resource",
+      "root_id": "budget-backend",
+      "address": "aws_s3_bucket_logging.state",
+      "action": "create",
+      "target": {
+        "configured_name": null,
+        "identity_kind": "configured",
+        "exact_id": "syn-budget-state-123456789012"
+      },
+      "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+      "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b"
+    }
+  ],
+  "proposals": [],
+  "blocked_reasons": []
+}

@@ -1,0 +1,42 @@
+{
+  "authorizations": {
+    "$include": "lifecycle/objects/3fdc869dbcf03a6b613246201ab29a298aecacdd9f36fe1cc0ceb1e6ad711a4b.json"
+  },
+  "caller_account": "123456789012",
+  "caller_arn": "arn:aws:iam::123456789012:root",
+  "cmk": {
+    "$include": "lifecycle/objects/6f112a0e7c043aef6f4a9db08a61735c039eafefd53bb94c4b8ff7242b56cb4a.json"
+  },
+  "evaluated_at": "2026-10-26T13:10:01Z",
+  "evidence": {
+    "$include": "lifecycle/objects/32f0da3151d27bddc146811bf1cfd5d1eb64be1967df5931d7f6769e772c402e.json"
+  },
+  "financial": {
+    "$include": "lifecycle/objects/8a1e364805ac5b9d6f9f01a388ccb0a2a52fe0add742fcc2d579be0fd3e3b28c.json"
+  },
+  "identity_activation": {
+    "$include": "lifecycle/objects/4dba4a5dcc93856bdc571d584c64b586ffdaee12cdd5ac0d1326f151b3a7caed.json"
+  },
+  "known_checkpoint_head": {
+    "$include": "lifecycle/objects/f1d125ac3e7ee40a29ba21f920e96d2c149562062a0aa6a9728259c9bf86d746.json"
+  },
+  "mfa_verified": true,
+  "migration": {
+    "$include": "lifecycle/objects/62eb39aa6c00882175b119731fe482bc197a128e7a33a79b8b54a73da9469eef.json"
+  },
+  "observed_at": "2026-10-26T13:10:01Z",
+  "orphan_candidates": {
+    "$include": "lifecycle/objects/4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945.json"
+  },
+  "resources": {
+    "$include": "lifecycle/objects/f9438c013d506beedbd313c27cc04893778aec27ffdda94ada9b2ebd8c55b86b.json"
+  },
+  "root_states": {
+    "$include": "lifecycle/objects/f6e4c049ffe4f02428e12e058c96d688e97d485118f71b238173779b056bee87.json"
+  },
+  "session_expiration": "2026-10-26T18:00:00Z",
+  "session_kind": "root",
+  "verified_authorization_sha256": {
+    "$include": "lifecycle/objects/8d33d7a40c13428351476ce947525a2ad8024e713f8daa6b2ecec3ed0d0db2f9.json"
+  }
+}

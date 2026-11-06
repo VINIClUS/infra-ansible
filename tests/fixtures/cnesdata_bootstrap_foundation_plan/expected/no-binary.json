@@ -1,0 +1,34 @@
+{
+  "authorization_sha256": "4ec86f5968bb5366abfe4047c737ac7dfca69b8119c00518227a348a048a37fd",
+  "blocked_reasons": [
+    "binary_plan_required_for_resource_apply"
+  ],
+  "checkpoint_sha256": null,
+  "contract_version": 1,
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "expires_at": "2026-10-26T18:00:00Z",
+  "operations": [],
+  "proposals": [],
+  "readback_sha256": "04e7969cc91760e1fa62ed2dffde74034583a121075a22c13d23ebe3de02e745",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback"
+  ],
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "spec_sha256": "95ba9a285b6e748baa334bb617d7339062ecf7340d3141a7a397eea0f1fb4bbd",
+  "stage": "foundation",
+  "status": "blocked",
+  "step_sha256": "904b1a045c3c809e5ac5a2d0fb79f1df17a8ac06b9e2897f79861e1cab399d2a"
+}

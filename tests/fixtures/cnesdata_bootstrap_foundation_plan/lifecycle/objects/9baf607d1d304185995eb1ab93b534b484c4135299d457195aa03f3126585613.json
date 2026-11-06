@@ -1,0 +1,14 @@
+{
+  "budget-backend": [
+    "migrate"
+  ],
+  "budget-identities": [
+    "migrate"
+  ],
+  "foundation": [
+    "migrate"
+  ],
+  "identity-handoff": [
+    "migrate"
+  ]
+}

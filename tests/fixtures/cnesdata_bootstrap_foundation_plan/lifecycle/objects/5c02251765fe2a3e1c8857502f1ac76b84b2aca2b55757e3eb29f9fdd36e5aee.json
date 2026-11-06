@@ -1,0 +1,22 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "origin_step_id": "c2-budget-create",
+  "origin_spec_sha256": "d2160c6b01cd9f34f1640366025b42b804ae15a44ee30cc06fc2fc0c3b7ad6dc",
+  "origin_authorization_sha256": "d4ff8a2e454cdd294a51b9601450e6d5743e65e52b9aaf777650dfb1a896ff9c",
+  "intent_sha256": "fc0701b5d56342f9da9353d18f4981a76f82451480cdced000ac6ea84180dc4a",
+  "root_id": "budget-backend",
+  "target": {
+    "kind": "resource",
+    "address": "aws_s3_bucket_logging.state",
+    "action": "create",
+    "configured_name": null,
+    "identity_kind": "configured"
+  },
+  "exact_id": "syn-budget-state-123456789012",
+  "observed_after_sha256": "9d3fe782eb565f2f52294e62e0f7d13b1a14586db3383cb54a9db2d8c0ba89ad",
+  "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+  "lineage": "synthetic-budget-lineage",
+  "serial": 1,
+  "checkpoint_generation": 8,
+  "observed_at": "2026-10-26T13:23:00Z"
+}

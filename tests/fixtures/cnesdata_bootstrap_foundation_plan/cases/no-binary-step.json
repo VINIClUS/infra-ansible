@@ -1,0 +1,14 @@
+{
+  "binary_plan_sha256": null,
+  "enabled": true,
+  "execution_mode": "initial_local",
+  "execution_surface": "local",
+  "expected_principal_arn": "arn:aws:iam::123456789012:root",
+  "expires_at": "2026-10-26T18:00:00Z",
+  "input_bindings": [],
+  "migration_config_sha256": null,
+  "not_before": "2026-10-26T11:00:00Z",
+  "root_id": "foundation",
+  "stage": "foundation",
+  "step_id": "synthetic-foundation-fix1-no-binary"
+}

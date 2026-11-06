@@ -1,0 +1,52 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_id": "c2-migrate-budget",
+  "spec_sha256": "f84c8e429f9eb576c6fde2a507f2e523d5d21280b97c090d211ea12ce12f0e45",
+  "root_id": "budget-backend",
+  "target": {
+    "kind": "root_state",
+    "action": "migrate",
+    "source": {
+      "owner": "personal-infra-live:cnesdata",
+      "backend_location": {
+        "kind": "local",
+        "machine_id": "synthetic-c2-laptop",
+        "path": "/synthetic/private/budget/terraform.tfstate"
+      },
+      "lineage": "synthetic-budget-lineage",
+      "serial": 1,
+      "state_sha256": "eda43bb0035acd4593129794280e8d303dbe12e0ad71aa7cc6391bca61786d34",
+      "resource_ids": {
+        "aws_s3_bucket.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+        "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+        "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+      },
+      "version_id": null
+    },
+    "destination": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    }
+  },
+  "authorization_sha256": "e4400110fc725c1b11d0d5a9aafd13f4948a5d41aa6f7cf53bffef564f00f5a6",
+  "binary_plan_sha256": null,
+  "migration_config_sha256": "8ff7fbf1061ec6310b0d322a7811b22ba838ca3c93c4e9f24f5b628f277aa5d9",
+  "before_manifest_sha256": "00f4179a01240a12c3c7b8e51f4c6f181771fbafbb5d6b16965a07739c9a9702",
+  "after_manifest_sha256": "92265ffafa793c93bae025367b59195b8a88456b2e3b05827e024a4a4ef1fab4",
+  "parent_checkpoint_sha256": "3891988ea757bac156f2a36eae6d03c2dddcca3c4425763e2641d8879ca683c3",
+  "not_before": "2026-10-26T13:30:00Z",
+  "expires_at": "2026-10-26T14:30:00Z",
+  "principal_arn": "arn:aws:iam::123456789012:root"
+}

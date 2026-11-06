@@ -1,0 +1,68 @@
+{
+  "foundation": {
+    "owner": "foreign-owner",
+    "backend_location": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-cnesdata-state-123456789012",
+      "key": "bootstrap/foundation.tfstate",
+      "owner": "infra-ansible:cnesdata"
+    },
+    "lineage": "synthetic-foundation-lineage",
+    "serial": 3,
+    "state_sha256": "2a929ad08c2b049e3e839ccbd3d67d3693deb1915dcbf4fcac4a6a1ec1dc238f",
+    "resource_ids": {
+      "aws_iam_user.bootstrap_operator": "bootstrap-operator",
+      "aws_iam_user_policy_attachment.local_login": "bootstrap-operator/arn:aws:iam::aws:policy/IAMUserChangePassword",
+      "aws_iam_user_policy.local_assume": "bootstrap-operator:local-assume",
+      "aws_iam_policy.executor_boundary": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary",
+      "aws_iam_role.bootstrap_readback": "cnesdata-bootstrap-readback",
+      "aws_iam_role.bootstrap_executor": "cnesdata-bootstrap-executor",
+      "aws_iam_role_policy.bootstrap_readback": "cnesdata-bootstrap-readback:bootstrap-readback",
+      "aws_iam_role_policy.bootstrap_executor": "cnesdata-bootstrap-executor:bootstrap-executor",
+      "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+      "aws_s3_bucket.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_versioning.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_public_access_block.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_ownership_controls.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket_policy.state": "syn-cnesdata-state-123456789012",
+      "aws_s3_bucket.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_ownership_controls.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_public_access_block.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_policy.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_lifecycle_configuration.logging": "syn-cnesdata-logs-123456789012",
+      "aws_s3_bucket_logging.state": "syn-cnesdata-state-123456789012"
+    },
+    "version_id": "f-version3"
+  },
+  "budget-backend": {
+    "owner": "personal-infra-live:cnesdata",
+    "backend_location": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate",
+      "owner": "personal-infra-live:cnesdata"
+    },
+    "lineage": "synthetic-budget-lineage",
+    "serial": 3,
+    "state_sha256": "cbd06c7bf514cc76576c49ba9319bea052265adb743e3479964753fcd6834796",
+    "resource_ids": {
+      "aws_s3_bucket.state": "syn-budget-state-123456789012",
+      "aws_s3_bucket_versioning.state": "syn-budget-state-123456789012",
+      "aws_s3_bucket_public_access_block.state": "syn-budget-state-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.state": "syn-budget-state-123456789012",
+      "aws_s3_bucket_policy.state": "syn-budget-state-123456789012",
+      "aws_s3_bucket.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_ownership_controls.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_public_access_block.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_policy.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_lifecycle_configuration.logging": "syn-budget-logs-123456789012",
+      "aws_s3_bucket_logging.state": "syn-budget-state-123456789012"
+    },
+    "version_id": "b-version3"
+  }
+}

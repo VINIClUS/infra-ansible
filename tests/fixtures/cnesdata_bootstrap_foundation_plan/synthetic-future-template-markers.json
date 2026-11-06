@@ -1,0 +1,80 @@
+{
+  "budget-backend": {
+    "aws_s3_bucket_policy.logging": {
+      "synthetic_future_template": "budget-backend/aws_s3_bucket_policy.logging"
+    },
+    "aws_s3_bucket_policy.state": {
+      "synthetic_future_template": "budget-backend/aws_s3_bucket_policy.state"
+    }
+  },
+  "budget-identities": {
+    "aws_iam_policy.freeze": {
+      "synthetic_future_template": "budget-identities/aws_iam_policy.freeze"
+    },
+    "aws_iam_role.budget_action": {
+      "synthetic_future_template": "budget-identities/aws_iam_role.budget_action"
+    },
+    "aws_iam_role_policy.budget_action": {
+      "synthetic_future_template": "budget-identities/aws_iam_role_policy.budget_action"
+    }
+  },
+  "identity-handoff": {
+    "aws_iam_policy.budget_operator_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.budget_operator_boundary"
+    },
+    "aws_iam_policy.github_host_deploy_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.github_host_deploy_boundary"
+    },
+    "aws_iam_policy.github_infrastructure_deploy_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.github_infrastructure_deploy_boundary"
+    },
+    "aws_iam_policy.github_infrastructure_plan_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.github_infrastructure_plan_boundary"
+    },
+    "aws_iam_policy.roles_anywhere_api_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.roles_anywhere_api_boundary"
+    },
+    "aws_iam_policy.shared_identity_manager_boundary": {
+      "synthetic_future_template": "identity-handoff/aws_iam_policy.shared_identity_manager_boundary"
+    },
+    "aws_iam_role.budget_operator": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.budget_operator"
+    },
+    "aws_iam_role.github_host_deploy": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.github_host_deploy"
+    },
+    "aws_iam_role.github_infrastructure_deploy": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.github_infrastructure_deploy"
+    },
+    "aws_iam_role.github_infrastructure_plan": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.github_infrastructure_plan"
+    },
+    "aws_iam_role.roles_anywhere_api": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.roles_anywhere_api"
+    },
+    "aws_iam_role.shared_identity_manager": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role.shared_identity_manager"
+    },
+    "aws_iam_role_policy.budget_operator": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.budget_operator"
+    },
+    "aws_iam_role_policy.github_host_deploy": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.github_host_deploy"
+    },
+    "aws_iam_role_policy.github_infrastructure_deploy": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.github_infrastructure_deploy"
+    },
+    "aws_iam_role_policy.github_infrastructure_plan": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.github_infrastructure_plan"
+    },
+    "aws_iam_role_policy.roles_anywhere_api": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.roles_anywhere_api"
+    },
+    "aws_iam_role_policy.shared_identity_manager": {
+      "synthetic_future_template": "identity-handoff/aws_iam_role_policy.shared_identity_manager"
+    },
+    "aws_iam_user_policy.successor_assume": {
+      "synthetic_future_template": "identity-handoff/aws_iam_user_policy.successor_assume"
+    }
+  }
+}

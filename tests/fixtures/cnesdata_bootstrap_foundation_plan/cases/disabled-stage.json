@@ -1,0 +1,13 @@
+{
+  "after_manifest_sha256": "3a3fe9c9c3f4f9705c9c0f5c5e01176d3185147cb6259c98566339f72a4e2ee9",
+  "authority_sha256": "7fb980a45e84fc52786dc46c650d54bed23d3dc60e4d7c9b818eb2fd45868dbf",
+  "authorization_id": "synthetic-stage-fix1-disabled",
+  "before_manifest_sha256": "cd99be0298ff28eebf0d30eb896415ca6862ee36564d3835fde5033ca7921610",
+  "binary_plan_sha256": "e60d4a58f6d8570ebec840cf1b76662947a234e0efdaead390a2834a472ffe93",
+  "expires_at": "2026-10-26T18:00:00Z",
+  "migration_config_sha256": null,
+  "not_before": "2026-10-26T11:00:00Z",
+  "parent_checkpoint_sha256": null,
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "3dc6d6ec488074b63d4cac9b9fc64a94aab98b3a9c616cdf78e220207947096f"
+}

@@ -1,0 +1,16 @@
+{
+  "action": "create",
+  "attributes": {
+    "policy_arn": "arn:aws:iam::aws:policy/SignInLocalDevelopmentAccess",
+    "user": {
+      "address": "aws_iam_user.bootstrap_operator",
+      "attribute": "name",
+      "root_id": "foundation"
+    }
+  },
+  "policy_documents": [
+    {
+      "$include": "policies/aws_iam_user_policy_attachment.local_login.json"
+    }
+  ]
+}

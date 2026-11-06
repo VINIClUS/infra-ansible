@@ -1,0 +1,62 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "budget-identities",
+    "address": "aws_iam_role.budget_action", "attribute": "arn"},
+  "source_ids": ["budget_action"],
+  "trust_template_sha256": "7ffd4ff89cf12957964188a2443abf8c8f950500593fda832894e505103be3bc",
+  "policy_template_sha256": "4948913114ec67b3e479ea9d1ce5fb0e5b186c869b590837b8615d6738a62bb1",
+  "boundary_template_sha256": null,
+  "session_template_sha256": null,
+  "template_documents_sha256": [
+    "7ffd4ff89cf12957964188a2443abf8c8f950500593fda832894e505103be3bc",
+    "4948913114ec67b3e479ea9d1ce5fb0e5b186c869b590837b8615d6738a62bb1"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"Service": "budgets.amazonaws.com"},
+        "Condition": {
+          "StringEquals": {"aws:SourceAccount": "123456789012"},
+          "ArnEquals": {"aws:SourceArn": "arn:aws:budgets::123456789012:budget/syn-v2-budget"}
+        }
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": ["iam:AttachRolePolicy", "iam:DetachRolePolicy"],
+        "Resource": {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+        "Condition": {"ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::123456789012:policy/syn/budget/syn-v2-freeze"
+        }}
+      }]
+    },
+    "boundary": null, "session": null
+  },
+  "capabilities": {
+    "attach-freeze": {"action": "iam:AttachRolePolicy", "resources": [
+      {"kind": "configured", "root_id": "identity-handoff",
+        "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"}
+    ], "context": [{"key": "iam:PolicyARN", "type": "arn", "values": [
+      "arn:aws:iam::123456789012:policy/syn/budget/syn-v2-freeze"
+    ]}], "exception_source_id": null}
+  },
+  "probes": {
+    "action-allow": {
+      "probe_id": "action-allow", "subject_id": "budget_action", "kind": "simulation",
+      "action": "iam:AttachRolePolicy",
+      "resource": {"kind": "configured", "root_id": "identity-handoff",
+        "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+      "context": [{"key": "iam:PolicyARN", "type": "arn", "values": [
+        "arn:aws:iam::123456789012:policy/syn/budget/syn-v2-freeze"
+      ]}], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "action-deny": {
+      "probe_id": "action-deny", "subject_id": "budget_action", "kind": "simulation",
+      "action": "iam:DeleteRole",
+      "resource": {"kind": "configured", "root_id": "identity-handoff",
+        "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "catalog": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "1111111111111111111111111111111111111111", "path": "catalog.txt",
+    "content_utf8": "Demonstração sintética: ação, permissão e café.\n",
+    "content_sha256": "be621645bb27350e3e3f8f63e5ddda3bcda07919c91cda9cfdc920b39270f5ce",
+    "input_schema_sha256": null, "parent_source_ids": []
+  },
+  "external-budget": {
+    "origin": "synthetic", "repository": "synthetic://external-observation",
+    "source_sha": "5555555555555555555555555555555555555555", "path": "budget.txt",
+    "content_utf8": "Synthetic ARN: arn:aws:budgets::123456789012:budget/syn-v2-budget\n",
+    "content_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57",
+    "input_schema_sha256": null, "parent_source_ids": []
+  },
+  "bootstrap_readback": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "1111111111111111111111111111111111111111", "path": "readback.txt",
+    "content_utf8": "Synthetic key description and exact four-state read demonstration.\n",
+    "content_sha256": "b6fc31ab5b16647faabfb18c92053cf4c085b4d21c2db2fcd8d99a619354f4f5",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "bootstrap_executor": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "1111111111111111111111111111111111111111", "path": "executor.txt",
+    "content_utf8": "Synthetic key use and exact four-state/lock write demonstration.\n",
+    "content_sha256": "af4613a7bec00180f68c7fea4f9c699a7c5fe44ab894c81dc8142d3bb01f68f1",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "budget_operator": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "budget.txt",
+    "content_utf8": "Synthetic external Budget read demonstration; no live observation.\n",
+    "content_sha256": "57a4f3efba77796c4004307f5c67b9a2348fb9e8a07f069a9e01618e74728753",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog", "external-budget"]
+  },
+  "shared_identity_manager": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "shared.txt",
+    "content_utf8": "Synthetic configured-role inspection demonstration.\n",
+    "content_sha256": "0dc8def0148aafe58b016ca2999ebb945a374cf365022c733fe9148f8417e7fe",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "github_infrastructure_plan": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "plan.txt",
+    "content_utf8": "Synthetic final profile: exact foundation-state read.\n",
+    "content_sha256": "879aa395cbac92fcf7780c3339415bc401f3c73f0f03790b87dd844dbfd670f4",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "github_infrastructure_deploy": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "deploy.txt",
+    "content_utf8": "Synthetic final profile: exact identity-state write.\n",
+    "content_sha256": "7dbab8e089e015fcfa13b63e869d37e11512e7731ab5499f6d90cc38634967b3",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "github_host_deploy": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "host.txt",
+    "content_utf8": "Synthetic final profile: exact identity-state read; SSH unreached.\n",
+    "content_sha256": "d79377638990109ca2e5a4e9f62f6324688cafe45eb4141341b8a2783bb57fda",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "roles_anywhere_api": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "3333333333333333333333333333333333333333", "path": "api.txt",
+    "content_utf8": "Synthetic final profile: exact Budget identity-state read.\n",
+    "content_sha256": "75f714cf8b8456f427cf1342ea0dcda91fd45a2215cb20e4efc6dc94244eca5a",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog"]
+  },
+  "budget_action": {
+    "origin": "synthetic", "repository": "synthetic://transport-demo",
+    "source_sha": "4444444444444444444444444444444444444444", "path": "action.txt",
+    "content_utf8": "Synthetic service freeze on one exact role and one exact policy.\n",
+    "content_sha256": "e08c453ca46f522411b0fa6f9c55f71d41e3ab2148c0cf88c68a6805889b357e",
+    "input_schema_sha256": null, "parent_source_ids": ["catalog", "external-budget"]
+  }
+}

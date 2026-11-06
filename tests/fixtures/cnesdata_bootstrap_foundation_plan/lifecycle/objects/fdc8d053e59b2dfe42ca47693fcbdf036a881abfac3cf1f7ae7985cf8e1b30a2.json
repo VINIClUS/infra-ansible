@@ -1,0 +1,93 @@
+{
+  "kind": "resource_observation",
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "root_id": "foundation",
+  "address": "aws_iam_role_policy.bootstrap_readback",
+  "observed_at": "2026-10-26T13:20:01Z",
+  "observation": {
+    "status": "present",
+    "exact_id": "cnesdata-bootstrap-readback:bootstrap-readback",
+    "owner": "infra-ansible:cnesdata",
+    "tags": {
+      "Environment": "synthetic",
+      "Project": "CnesData",
+      "Owner": "infra-ansible:cnesdata",
+      "InitialRunId": "synthetic-foundation-fix1-20261026",
+      "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+    },
+    "attributes": {
+      "name": "bootstrap-readback",
+      "role": "cnesdata-bootstrap-readback"
+    },
+    "policy_documents": [
+      {
+        "Statement": [
+          {
+            "Action": [
+              "s3:GetBucketLocation",
+              "s3:GetBucketVersioning",
+              "s3:GetBucketLogging",
+              "s3:GetEncryptionConfiguration",
+              "s3:GetBucketPolicy",
+              "s3:GetBucketOwnershipControls",
+              "s3:GetBucketPublicAccessBlock",
+              "s3:GetBucketTagging"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::syn-cnesdata-state-123456789012",
+              "arn:aws:s3:::syn-budget-state-123456789012",
+              "arn:aws:s3:::syn-cnesdata-logs-123456789012",
+              "arn:aws:s3:::syn-budget-logs-123456789012"
+            ]
+          },
+          {
+            "Action": [
+              "s3:ListBucket"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::syn-cnesdata-state-123456789012",
+              "arn:aws:s3:::syn-budget-state-123456789012"
+            ]
+          },
+          {
+            "Action": [
+              "s3:GetObject",
+              "s3:GetObjectVersion"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::syn-cnesdata-state-123456789012/bootstrap/foundation.tfstate",
+              "arn:aws:s3:::syn-budget-state-123456789012/bootstrap/backend.tfstate",
+              "arn:aws:s3:::syn-cnesdata-state-123456789012/bootstrap/foundation.tfstate.tflock",
+              "arn:aws:s3:::syn-budget-state-123456789012/bootstrap/backend.tfstate.tflock"
+            ]
+          },
+          {
+            "Action": [
+              "kms:Decrypt"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555"
+            ]
+          },
+          {
+            "Action": [
+              "kms:DescribeKey",
+              "kms:GetKeyPolicy",
+              "kms:GetKeyRotationStatus",
+              "kms:ListResourceTags"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    ]
+  }
+}

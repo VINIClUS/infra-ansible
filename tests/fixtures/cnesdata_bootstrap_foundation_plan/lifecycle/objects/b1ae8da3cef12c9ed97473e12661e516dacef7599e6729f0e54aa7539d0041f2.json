@@ -1,0 +1,40 @@
+{
+  "exact_id": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+  "owner": "infra-ansible:cnesdata",
+  "tags": {
+    "Environment": "synthetic",
+    "Project": "CnesData",
+    "Owner": "infra-ansible:cnesdata",
+    "InitialRunId": "synthetic-foundation-fix1-20261026",
+    "RunSpecSha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb"
+  },
+  "attributes": {
+    "arn": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+    "account_id": "123456789012",
+    "region": "us-east-2",
+    "key_manager": "CUSTOMER",
+    "key_state": "Enabled",
+    "key_spec": "SYMMETRIC_DEFAULT",
+    "key_usage": "ENCRYPT_DECRYPT",
+    "rotation_enabled": true
+  },
+  "policy_documents": [
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "EnableIAMUserPermissions",
+          "Effect": "Allow",
+          "Principal": {
+            "AWS": "arn:aws:iam::123456789012:root"
+          },
+          "Action": "kms:*",
+          "Resource": "*"
+        }
+      ]
+    }
+  ],
+  "observation_status": "present",
+  "observed_at": "2026-10-26T13:10:01Z",
+  "source_evidence_sha256": "379431f59ed2e0ef7cbd88db10e632e557777d3f3cefb6a008046aa23bbd9b19"
+}

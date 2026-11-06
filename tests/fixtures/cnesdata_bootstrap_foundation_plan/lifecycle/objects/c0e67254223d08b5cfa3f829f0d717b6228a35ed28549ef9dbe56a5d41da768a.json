@@ -1,0 +1,286 @@
+{
+  "budget-backend": {
+    "backend": {
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/backend.tfstate"
+    },
+    "logging": {
+      "bucket": "syn-budget-logs-123456789012",
+      "prefix": "access/syn-budget-state-123456789012/"
+    },
+    "owner": "personal-infra-live:cnesdata",
+    "resources": {
+      "aws_s3_bucket.logging": {
+        "configured_name": "syn-budget-logs-123456789012",
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket.state": {
+        "configured_name": "syn-budget-state-123456789012",
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_lifecycle_configuration.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_logging.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_ownership_controls.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_policy.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_policy.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_public_access_block.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_public_access_block.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_versioning.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      }
+    },
+    "root_path": "personal-infra-live/bootstrap",
+    "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "budget-identities": {
+    "backend": {
+      "bucket": "syn-budget-state-123456789012",
+      "key": "bootstrap/budget-identities.tfstate"
+    },
+    "logging": {
+      "bucket": "syn-budget-logs-123456789012",
+      "prefix": "access/syn-budget-state-123456789012/"
+    },
+    "owner": "personal-infra-live:cnesdata",
+    "resources": {
+      "aws_iam_policy.freeze": {
+        "configured_name": "cnesdata-freeze",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.budget_action": {
+        "configured_name": "cnesdata-budget-action",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.budget_action": {
+        "configured_name": "cnesdata-budget-action",
+        "identity_kind": "configured"
+      }
+    },
+    "root_path": "personal-infra-live/bootstrap-identities",
+    "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "foundation": {
+    "backend": {
+      "bucket": "syn-cnesdata-state-123456789012",
+      "key": "bootstrap/foundation.tfstate"
+    },
+    "logging": {
+      "bucket": "syn-cnesdata-logs-123456789012",
+      "prefix": "access/syn-cnesdata-state-123456789012/"
+    },
+    "owner": "infra-ansible:cnesdata",
+    "resources": {
+      "aws_iam_policy.executor_boundary": {
+        "configured_name": "cnesdata-bootstrap-executor-boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.bootstrap_executor": {
+        "configured_name": "cnesdata-bootstrap-executor",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.bootstrap_readback": {
+        "configured_name": "cnesdata-bootstrap-readback",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.bootstrap_executor": {
+        "configured_name": "bootstrap-executor",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.bootstrap_readback": {
+        "configured_name": "bootstrap-readback",
+        "identity_kind": "configured"
+      },
+      "aws_iam_user.bootstrap_operator": {
+        "configured_name": "bootstrap-operator",
+        "identity_kind": "configured"
+      },
+      "aws_iam_user_policy.local_assume": {
+        "configured_name": "local-assume",
+        "identity_kind": "configured"
+      },
+      "aws_iam_user_policy_attachment.local_login": {
+        "configured_name": null,
+        "identity_kind": "provider_assigned"
+      },
+      "aws_kms_key.foundation": {
+        "configured_name": null,
+        "identity_kind": "provider_assigned"
+      },
+      "aws_s3_bucket.logging": {
+        "configured_name": "syn-cnesdata-logs-123456789012",
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket.state": {
+        "configured_name": "syn-cnesdata-state-123456789012",
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_lifecycle_configuration.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_logging.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_ownership_controls.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_ownership_controls.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_policy.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_policy.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_public_access_block.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_public_access_block.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.logging": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      },
+      "aws_s3_bucket_versioning.state": {
+        "configured_name": null,
+        "identity_kind": "configured"
+      }
+    },
+    "root_path": "opentofu/cnesdata-bootstrap/foundation",
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "identity-handoff": {
+    "backend": {
+      "bucket": "syn-cnesdata-state-123456789012",
+      "key": "bootstrap/identity-handoff.tfstate"
+    },
+    "logging": {
+      "bucket": "syn-cnesdata-logs-123456789012",
+      "prefix": "access/syn-cnesdata-state-123456789012/"
+    },
+    "owner": "infra-ansible:cnesdata",
+    "resources": {
+      "aws_iam_policy.budget_operator_boundary": {
+        "configured_name": "budget_operator_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_policy.github_host_deploy_boundary": {
+        "configured_name": "github_host_deploy_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_policy.github_infrastructure_deploy_boundary": {
+        "configured_name": "github_infrastructure_deploy_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_policy.github_infrastructure_plan_boundary": {
+        "configured_name": "github_infrastructure_plan_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_policy.roles_anywhere_api_boundary": {
+        "configured_name": "roles_anywhere_api_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_policy.shared_identity_manager_boundary": {
+        "configured_name": "shared_identity_manager_boundary",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.budget_operator": {
+        "configured_name": "budget_operator",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.github_host_deploy": {
+        "configured_name": "github_host_deploy",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.github_infrastructure_deploy": {
+        "configured_name": "github_infrastructure_deploy",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.github_infrastructure_plan": {
+        "configured_name": "github_infrastructure_plan",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.roles_anywhere_api": {
+        "configured_name": "roles_anywhere_api",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role.shared_identity_manager": {
+        "configured_name": "shared_identity_manager",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.budget_operator": {
+        "configured_name": "budget_operator",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.github_host_deploy": {
+        "configured_name": "github_host_deploy",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.github_infrastructure_deploy": {
+        "configured_name": "github_infrastructure_deploy",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.github_infrastructure_plan": {
+        "configured_name": "github_infrastructure_plan",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.roles_anywhere_api": {
+        "configured_name": "roles_anywhere_api",
+        "identity_kind": "configured"
+      },
+      "aws_iam_role_policy.shared_identity_manager": {
+        "configured_name": "shared_identity_manager",
+        "identity_kind": "configured"
+      },
+      "aws_iam_user_policy.successor_assume": {
+        "configured_name": "successor-assume",
+        "identity_kind": "configured"
+      }
+    },
+    "root_path": "opentofu/cnesdata-bootstrap/identity-handoff",
+    "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}

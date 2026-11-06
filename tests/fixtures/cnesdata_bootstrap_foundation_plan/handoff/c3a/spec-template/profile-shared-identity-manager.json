@@ -1,0 +1,67 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "identity-handoff",
+    "address": "aws_iam_role.shared_identity_manager", "attribute": "arn"},
+  "source_ids": ["shared_identity_manager"],
+  "trust_template_sha256": "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+  "policy_template_sha256": "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7",
+  "boundary_template_sha256": "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7",
+  "session_template_sha256": "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7",
+  "template_documents_sha256": [
+    "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+    "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7",
+    "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7",
+    "2bdd39ed7db97621deb8d7234d6d2d0929b3c361e5ffe48a87b4fb269c6512a7"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "iam:GetRole",
+        "Resource": {"kind": "configured", "root_id": "budget-identities",
+          "address": "aws_iam_role.budget_action", "attribute": "arn"}
+      }]
+    },
+    "boundary": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "iam:GetRole",
+        "Resource": {"kind": "configured", "root_id": "budget-identities",
+          "address": "aws_iam_role.budget_action", "attribute": "arn"}
+      }]
+    },
+    "session": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "iam:GetRole",
+        "Resource": {"kind": "configured", "root_id": "budget-identities",
+          "address": "aws_iam_role.budget_action", "attribute": "arn"}
+      }]
+    }
+  },
+  "capabilities": {
+    "read-role": {"action": "iam:GetRole", "resources": [
+      {"kind": "configured", "root_id": "budget-identities",
+        "address": "aws_iam_role.budget_action", "attribute": "arn"}
+    ], "context": [], "exception_source_id": null}
+  },
+  "probes": {
+    "shared-allow": {
+      "probe_id": "shared-allow", "subject_id": "shared_identity_manager", "kind": "simulation",
+      "action": "iam:GetRole",
+      "resource": {"kind": "configured", "root_id": "budget-identities",
+        "address": "aws_iam_role.budget_action", "attribute": "arn"},
+      "context": [], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "shared-deny": {
+      "probe_id": "shared-deny", "subject_id": "shared_identity_manager", "kind": "simulation",
+      "action": "iam:DeleteRole",
+      "resource": {"kind": "configured", "root_id": "budget-identities",
+        "address": "aws_iam_role.budget_action", "attribute": "arn"},
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}

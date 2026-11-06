@@ -1,0 +1,17 @@
+[
+  {
+    "$include": "lifecycle/objects/a9efd4c7928fb7de842394d0033b9324dab06f03f63e06aaaa2756ec5857289f.json"
+  },
+  {
+    "$include": "lifecycle/objects/34d828ec605dbba008e444f06c1ce5e30eafc351c10edb5ffcf96e57e7d82fca.json"
+  },
+  {
+    "$include": "lifecycle/objects/3b259ea7208a51cd853e3966e84855114d55ab69051f393f3521c3b151865e04.json"
+  },
+  {
+    "$include": "lifecycle/objects/b065a315ddfcd1de01216e5e0565aa3369665fedebb106fd9033fb1b7d288def.json"
+  },
+  {
+    "$include": "lifecycle/objects/6b4a3454acd6b9f1f7f1914c240beecbdfee18634258e05911018ad7b53433e9.json"
+  }
+]

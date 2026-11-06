@@ -1,0 +1,20 @@
+{
+  "Statement": [
+    {
+      "Action": [
+        "sts:AssumeRole"
+      ],
+      "Condition": {
+        "Bool": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      },
+      "Effect": "Allow",
+      "Resource": [
+        "arn:aws:iam::123456789012:role/cnesdata/cnesdata-bootstrap-readback",
+        "arn:aws:iam::123456789012:role/cnesdata/cnesdata-bootstrap-executor"
+      ]
+    }
+  ],
+  "Version": "2012-10-17"
+}

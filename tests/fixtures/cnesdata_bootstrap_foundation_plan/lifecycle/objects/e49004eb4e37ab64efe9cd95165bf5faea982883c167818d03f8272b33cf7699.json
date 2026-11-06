@@ -1,0 +1,94 @@
+{
+  "contract_version": 1,
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_sha256": "d8e2b7ff48bcfd9fd5adc3a2944dd845cb7bf1648fb653ef7ef2d69746b45209",
+  "spec_sha256": "6e72bb64e02e8830c6385be17b7b4b5487a51bc426b7caed53bf9e5bdddb7734",
+  "readback_sha256": "7e27fba354dfb47d48b0504944ad7cc7d8011b7cc109cf72b749be51f06e8ff8",
+  "checkpoint_sha256": "8b82ca43589d9361b39e91990eec9d03bf7430549cd649810d3821cce77ea0f2",
+  "authorization_sha256": "c65d8ccb401fdd9e8bc35604a5facde5cfe5bf476e723fe04b430d638342b25d",
+  "stage": "review_restore",
+  "expires_at": "2026-10-26T14:30:00Z",
+  "required_evidence": [
+    "adapter_authorization_provenance",
+    "native_binary_and_after_review",
+    "private_runtime_lock",
+    "fresh_readback_before_effect",
+    "scanner_gate_b2",
+    "operational_financial_readback",
+    "bounded_quarantine_credential",
+    "quarantine_stage_authorization",
+    "independent_restore_verification"
+  ],
+  "estimated_cost": {
+    "aggregate_forecast_gross": 3.8,
+    "aggregate_limit": 15,
+    "basis": "synthetic-gross-monthly-reservation",
+    "currency": "USD",
+    "project_forecast_gross": 3.8,
+    "project_limit": 8,
+    "rotation_max": 3.8
+  },
+  "status": "review_required",
+  "operations": [],
+  "blocked_reasons": [],
+  "proposals": [
+    {
+      "kind": "restore_quarantine",
+      "root_id": "foundation",
+      "source": {
+        "owner": "infra-ansible:cnesdata",
+        "backend_location": {
+          "account": "123456789012",
+          "region": "us-east-2",
+          "bucket": "syn-cnesdata-state-123456789012",
+          "key": "bootstrap/foundation.tfstate",
+          "owner": "infra-ansible:cnesdata"
+        },
+        "lineage": "synthetic-foundation-lineage",
+        "serial": 3,
+        "state_sha256": "2a929ad08c2b049e3e839ccbd3d67d3693deb1915dcbf4fcac4a6a1ec1dc238f",
+        "resource_ids": {
+          "aws_iam_user.bootstrap_operator": "bootstrap-operator",
+          "aws_iam_user_policy_attachment.local_login": "bootstrap-operator/arn:aws:iam::aws:policy/IAMUserChangePassword",
+          "aws_iam_user_policy.local_assume": "bootstrap-operator:local-assume",
+          "aws_iam_policy.executor_boundary": "arn:aws:iam::123456789012:policy/cnesdata/cnesdata-bootstrap-executor-boundary",
+          "aws_iam_role.bootstrap_readback": "cnesdata-bootstrap-readback",
+          "aws_iam_role.bootstrap_executor": "cnesdata-bootstrap-executor",
+          "aws_iam_role_policy.bootstrap_readback": "cnesdata-bootstrap-readback:bootstrap-readback",
+          "aws_iam_role_policy.bootstrap_executor": "cnesdata-bootstrap-executor:bootstrap-executor",
+          "aws_kms_key.foundation": "arn:aws:kms:us-east-2:123456789012:key/11111111-2222-4333-8444-555555555555",
+          "aws_s3_bucket.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket_versioning.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket_public_access_block.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket_server_side_encryption_configuration.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket_ownership_controls.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket_policy.state": "syn-cnesdata-state-123456789012",
+          "aws_s3_bucket.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_ownership_controls.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_public_access_block.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_server_side_encryption_configuration.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_policy.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_lifecycle_configuration.logging": "syn-cnesdata-logs-123456789012",
+          "aws_s3_bucket_logging.state": "syn-cnesdata-state-123456789012"
+        },
+        "version_id": "f-version3"
+      },
+      "destination": {
+        "account": "123456789012",
+        "region": "us-east-2",
+        "bucket": "syn-cnesdata-state-123456789012",
+        "owner": "infra-ansible:cnesdata",
+        "key": "quarantine/3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb/foundation/2a929ad08c2b049e3e839ccbd3d67d3693deb1915dcbf4fcac4a6a1ec1dc238f.tfstate"
+      },
+      "evidence_sha256": [
+        "ac2bc9d3c68cb448b6ef3aebfffacb64d73e726a1f5b52109c736fdad373e118",
+        "a1a7eaebbba3921e67383a28e99bb2a3e466ec30fd4fd92e33085bbbc566ba34"
+      ],
+      "required_evidence": [
+        "bounded_quarantine_credential",
+        "quarantine_stage_authorization",
+        "independent_restore_verification"
+      ]
+    }
+  ]
+}

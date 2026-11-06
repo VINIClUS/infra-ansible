@@ -1,0 +1,26 @@
+[
+  {
+    "$include": "lifecycle/objects/2eab243b9168f51d6baca1bbf68cf2980e71d344665f207a75e9ce605bf228fe.json"
+  },
+  {
+    "$include": "lifecycle/objects/643aa246c2d04f1ace3664639890f92b97967bc6c5fa3e209a784ca55547a74d.json"
+  },
+  {
+    "$include": "lifecycle/objects/641a659fdfac2d5772700d285a73b6af4bc40788f85d3a397fed23c6b3671f1a.json"
+  },
+  {
+    "$include": "lifecycle/objects/e64a6efed88a32d12e80f31d43b363d5d4c5e73855dff1d9e0b905439e28e3d0.json"
+  },
+  {
+    "$include": "lifecycle/objects/5b5b958df3955d54766b9ff93e706c4d67f336e4982b9d9a02d7d02eaee882af.json"
+  },
+  {
+    "$include": "lifecycle/objects/8a108ef7fbdc3aba8ab8d6274b856fb8e4692648d5fc98d0df104f7efffb9637.json"
+  },
+  {
+    "$include": "lifecycle/objects/089ca1570b390994d8ced2ecb71a655a5fa137e49dff4a4c85a0f6bcfcb23892.json"
+  },
+  {
+    "$include": "lifecycle/objects/0764c7a74dc2545f539dffce066ce52f866ae960721c7ed4e1e99232eb1585d2.json"
+  }
+]

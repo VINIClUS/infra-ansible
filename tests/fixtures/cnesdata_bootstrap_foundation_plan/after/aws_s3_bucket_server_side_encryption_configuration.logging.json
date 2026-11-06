@@ -1,0 +1,12 @@
+{
+  "action": "create",
+  "attributes": {
+    "bucket": {
+      "address": "aws_s3_bucket.logging",
+      "attribute": "id",
+      "root_id": "foundation"
+    },
+    "sse_algorithm": "AES256"
+  },
+  "policy_documents": []
+}

@@ -1,0 +1,245 @@
+{
+  "contract_version": 2,
+  "run": {
+    "account_id": "123456789012",
+    "region": "us-east-2",
+    "initial_run_id": "synthetic-static-v2-20261031",
+    "source_sha": "6666666666666666666666666666666666666666",
+    "inventory_sha": "7777777777777777777777777777777777777777777777777777777777777777",
+    "backend_template_sha256": "ddf69dc3835d9afa11ed581f36e359a378a40059f03f4d03c023101784a3631a",
+    "cost_manifest_sha256": "2ffa1f51851d1571b6309c68c773963aed67a5c37cd2850cb88d5206cce08947",
+    "tags": {"Environment": "synthetic", "Project": "CnesData"},
+    "identities": {
+      "operator": {"name": "syn-v2-operator", "path": "/syn/core/"},
+      "readback": {"name": "syn-v2-readback", "path": "/syn/core/"},
+      "executor": {"name": "syn-v2-executor", "path": "/syn/core/"},
+      "boundary": {"name": "syn-v2-executor-boundary", "path": "/syn/core/"}
+    },
+    "roots": {"$include": "handoff/c3a/spec-template/roots.json"},
+    "policy_template_digests": {
+      "foundation": {
+        "aws_iam_policy.executor_boundary":
+          "026f5e9a1d3a97ffd8c24302df965efbed6c8f784a685ec003d9581135510e32",
+        "aws_iam_role.bootstrap_executor":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.bootstrap_readback":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role_policy.bootstrap_executor":
+          "026f5e9a1d3a97ffd8c24302df965efbed6c8f784a685ec003d9581135510e32",
+        "aws_iam_role_policy.bootstrap_readback":
+          "b4b19a2042fdc7a71d258db5731ea0de190da734a7f2a5a442ab1714c2f49c7a",
+        "aws_iam_user_policy.local_assume":
+          "240c720d195feceff858bf413ecadf72069e161129020562768106fb1bcea567",
+        "aws_iam_user_policy_attachment.local_login":
+          "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "aws_kms_key.foundation":
+          "a8aa9515ab8642986477b4c3395202eb2dffb0fba03f0a049925219b9cfe71e4",
+        "aws_s3_bucket_policy.logging":
+          "34851c5db4bb4ad4a6d801e4fb1137d48f604b34de493c33fa3e1b7f096f0d5e",
+        "aws_s3_bucket_policy.state":
+          "c338815cbbc0f3810c37aec9e6ffe08e40be475de712498760468ce9f6f9803f"
+      },
+      "budget-backend": {
+        "aws_s3_bucket_policy.logging":
+          "eb2d457e623e2184c12585999f169d4448e992ea5092d0c80c7550d2ccd0a30f",
+        "aws_s3_bucket_policy.state":
+          "cca296099a3ee9f963491e90fd22f517f6353a9809244a36927149c13df6aa7c"
+      },
+      "identity-handoff": {
+        "aws_iam_policy.budget_operator_boundary":
+          "6f644b78d0272cf40de0a02320e6a3492e597569b0b3ecfe983fb43bb0bb481f",
+        "aws_iam_policy.shared_identity_manager_boundary":
+          "f0b9dcb2d08102d6176a42f8ab7c3ac349a4e9184b46376fd1f2244078633981",
+        "aws_iam_policy.github_infrastructure_plan_boundary":
+          "2e3dcae525e8f132dbe2873f1a80f911a2173c2aca67b36a08fff6ee3828e686",
+        "aws_iam_policy.github_infrastructure_deploy_boundary":
+          "a6a100041d13558f98956c582844c43250da8d324126cc3e585b4cd1aa962cc9",
+        "aws_iam_policy.github_host_deploy_boundary":
+          "4a8bdb649ac763c06498af865255a4509e5d199edf45569c29f1214390b75441",
+        "aws_iam_policy.roles_anywhere_api_boundary":
+          "8bc14cca2571b4d0c255e411f3e96372fd1ca657c91c15db49d530ed95206707",
+        "aws_iam_role.budget_operator":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.shared_identity_manager":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.github_infrastructure_plan":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.github_infrastructure_deploy":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.github_host_deploy":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role.roles_anywhere_api":
+          "28984cee9561acaaacef849dbf392ae9de47bab4efcf5d141c2700fb5ec3680c",
+        "aws_iam_role_policy.budget_operator":
+          "6f644b78d0272cf40de0a02320e6a3492e597569b0b3ecfe983fb43bb0bb481f",
+        "aws_iam_role_policy.shared_identity_manager":
+          "f0b9dcb2d08102d6176a42f8ab7c3ac349a4e9184b46376fd1f2244078633981",
+        "aws_iam_role_policy.github_infrastructure_plan":
+          "2e3dcae525e8f132dbe2873f1a80f911a2173c2aca67b36a08fff6ee3828e686",
+        "aws_iam_role_policy.github_infrastructure_deploy":
+          "a6a100041d13558f98956c582844c43250da8d324126cc3e585b4cd1aa962cc9",
+        "aws_iam_role_policy.github_host_deploy":
+          "4a8bdb649ac763c06498af865255a4509e5d199edf45569c29f1214390b75441",
+        "aws_iam_role_policy.roles_anywhere_api":
+          "8bc14cca2571b4d0c255e411f3e96372fd1ca657c91c15db49d530ed95206707",
+        "aws_iam_user_policy.successor_assume":
+          "1dd5fe98d0501cd75f3515d4b6873bfc69b0dc263f415f37df2e23c29e8dc148"
+      },
+      "budget-identities": {
+        "aws_iam_policy.freeze": "236003a8e7587c58c8d364e506e5f2e5b943f6d4a72478382b846d429dfa8708",
+        "aws_iam_role.budget_action":
+          "21d137cc0703ca1bea5a42949dd18d22f5b915275c42fa5b9d24ba1442e0de91",
+        "aws_iam_role_policy.budget_action":
+          "0ec0de14f82658929dfcf7b3812056fadb3528212cfff48b077949875434638e"
+      }
+    },
+    "capability_catalog": {
+      "sources": {"$include": "handoff/c3a/spec-template/sources.json"},
+      "profiles": {
+        "bootstrap_readback": {
+          "$include": "handoff/c3a/spec-template/profile-bootstrap-readback.json"
+        },
+        "bootstrap_executor": {
+          "$include": "handoff/c3a/spec-template/profile-bootstrap-executor.json"
+        },
+        "budget_operator": {
+          "$include": "handoff/c3a/spec-template/profile-budget-operator.json"
+        },
+        "shared_identity_manager": {
+          "$include": "handoff/c3a/spec-template/profile-shared-identity-manager.json"
+        },
+        "github_infrastructure_plan": {
+          "$include": "handoff/c3a/spec-template/profile-github-infrastructure-plan.json"
+        },
+        "github_infrastructure_deploy": {
+          "$include": "handoff/c3a/spec-template/profile-github-infrastructure-deploy.json"
+        },
+        "github_host_deploy": {
+          "$include": "handoff/c3a/spec-template/profile-github-host-deploy.json"
+        },
+        "roles_anywhere_api": {
+          "$include": "handoff/c3a/spec-template/profile-roles-anywhere-api.json"
+        },
+        "budget_action": {"$include": "handoff/c3a/spec-template/profile-budget-action.json"}
+      },
+      "policy_templates": {
+        "foundation": {"$include": "handoff/c3a/spec-template/policy-foundation.json"},
+        "budget-backend": {"$include": "handoff/c3a/spec-template/policy-budget-backend.json"},
+        "identity-handoff": {"$include": "handoff/c3a/spec-template/policy-identity-handoff.json"},
+        "budget-identities": {"$include": "handoff/c3a/spec-template/policy-budget-identities.json"}
+      },
+      "configured_iam_paths": {
+        "foundation": {
+          "aws_iam_policy.executor_boundary": "/syn/core/",
+          "aws_iam_role.bootstrap_executor": "/syn/core/",
+          "aws_iam_role.bootstrap_readback": "/syn/core/"
+        },
+        "budget-backend": {},
+        "identity-handoff": {
+          "aws_iam_policy.budget_operator_boundary": "/syn/budget-operator/",
+          "aws_iam_policy.shared_identity_manager_boundary": "/syn/shared-manager/",
+          "aws_iam_policy.github_infrastructure_plan_boundary": "/syn/plan/",
+          "aws_iam_policy.github_infrastructure_deploy_boundary": "/syn/deploy/",
+          "aws_iam_policy.github_host_deploy_boundary": "/syn/host/",
+          "aws_iam_policy.roles_anywhere_api_boundary": "/syn/api/",
+          "aws_iam_role.budget_operator": "/syn/budget-operator/",
+          "aws_iam_role.shared_identity_manager": "/syn/shared:manager/",
+          "aws_iam_role.github_infrastructure_plan": "/syn/plan/",
+          "aws_iam_role.github_infrastructure_deploy": "/syn/deploy/",
+          "aws_iam_role.github_host_deploy": "/syn/host/",
+          "aws_iam_role.roles_anywhere_api": "/syn/api/"
+        },
+        "budget-identities": {
+          "aws_iam_policy.freeze": "/syn/budget/",
+          "aws_iam_role.budget_action": "/syn/budget/"
+        }
+      },
+      "external_bindings": {
+        "external-budget": {
+          "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+          "owner": "synthetic-external-budget-owner", "source_id": "external-budget",
+          "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"
+        }
+      },
+      "next_plans": {
+        "synthetic-demonstration": {
+          "owner": "synthetic-only-no-operational-authority", "source_ids": ["catalog"],
+          "plan_sha256": "be621645bb27350e3e3f8f63e5ddda3bcda07919c91cda9cfdc920b39270f5ce",
+          "requirements": {
+            "readback": {
+              "principal_profile": "bootstrap_readback", "capability_id": "describe-key",
+              "action": "kms:DescribeKey",
+              "resource": {"kind": "provider_slot", "root_id": "foundation",
+                "address": "aws_kms_key.foundation", "attribute": "arn"},
+              "context": [], "dependency_requirement_ids": []
+            },
+            "executor": {
+              "principal_profile": "bootstrap_executor", "capability_id": "decrypt-key",
+              "action": "kms:Decrypt",
+              "resource": {"kind": "provider_slot", "root_id": "foundation",
+                "address": "aws_kms_key.foundation", "attribute": "arn"},
+              "context": [], "dependency_requirement_ids": ["readback"]
+            },
+            "budget": {
+              "principal_profile": "budget_operator", "capability_id": "view-budget",
+              "action": "budgets:ViewBudget",
+              "resource": {"kind": "external", "source_id": "external-budget",
+                "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+                "observation_sha256":
+                  "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"},
+              "context": [], "dependency_requirement_ids": []
+            },
+            "shared": {
+              "principal_profile": "shared_identity_manager", "capability_id": "read-role",
+              "action": "iam:GetRole",
+              "resource": {"kind": "configured", "root_id": "budget-identities",
+                "address": "aws_iam_role.budget_action", "attribute": "arn"},
+              "context": [], "dependency_requirement_ids": []
+            },
+            "plan": {
+              "principal_profile": "github_infrastructure_plan", "capability_id": "read-state",
+              "action": "s3:GetObject",
+              "resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+              "context": [], "dependency_requirement_ids": []
+            },
+            "deploy": {
+              "principal_profile": "github_infrastructure_deploy", "capability_id": "write-state",
+              "action": "s3:PutObject",
+              "resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+              "context": [], "dependency_requirement_ids": ["plan"]
+            },
+            "host": {
+              "principal_profile": "github_host_deploy", "capability_id": "read-state",
+              "action": "s3:GetObject",
+              "resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+              "context": [], "dependency_requirement_ids": ["deploy"]
+            },
+            "api": {
+              "principal_profile": "roles_anywhere_api", "capability_id": "read-state",
+              "action": "s3:GetObject",
+              "resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+              "context": [], "dependency_requirement_ids": []
+            },
+            "freeze": {
+              "principal_profile": "budget_action", "capability_id": "attach-freeze",
+              "action": "iam:AttachRolePolicy",
+              "resource": {"kind": "configured", "root_id": "identity-handoff",
+                "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+              "context": [{"key": "iam:PolicyARN", "type": "arn", "values": [
+                "arn:aws:iam::123456789012:policy/syn/budget/syn-v2-freeze"
+              ]}], "dependency_requirement_ids": ["budget"]
+            }
+          }
+        }
+      }
+    }
+  },
+  "step": {
+    "step_id": "synthetic-static-foundation", "stage": "foundation", "root_id": "foundation",
+    "enabled": true, "execution_mode": "initial_local", "execution_surface": "local",
+    "expected_principal_arn": "arn:aws:iam::123456789012:root",
+    "not_before": "2026-10-31T01:00:00Z", "expires_at": "2026-10-31T02:00:00Z",
+    "binary_plan_sha256": "14d1dac2c458c49aebcd4441b0be9d3bde8d66cc0ead3710c624cc6a20bff5be",
+    "migration_config_sha256": null, "input_bindings": []
+  }
+}

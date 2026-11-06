@@ -1,0 +1,119 @@
+{
+  "aws_iam_role.bootstrap_readback": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.bootstrap_executor": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role_policy.bootstrap_readback": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Sid": "SyntheticKeyRead", "Effect": "Allow", "Action": "kms:DescribeKey",
+      "Resource": {"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"}
+    }, {
+      "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+      "Resource": [
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+      ]
+    }]
+  }],
+  "aws_iam_role_policy.bootstrap_executor": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "Resource": [{"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"}]
+    }, {
+      "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
+      "Resource": [
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+      ]
+    }, {
+      "Effect": "Allow", "Action": "s3:DeleteObject", "Resource": [
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+      ]
+    }]
+  }],
+  "aws_iam_policy.executor_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
+      "Resource": [{"kind": "provider_slot", "root_id": "foundation",
+        "address": "aws_kms_key.foundation", "attribute": "arn"}]
+    }, {
+      "Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
+      "Resource": [
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+      ]
+    }, {
+      "Effect": "Allow", "Action": "s3:DeleteObject", "Resource": [
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/backend.tfstate.tflock",
+        "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate.tflock"
+      ]
+    }]
+  }],
+  "aws_iam_user_policy.local_assume": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole", "Resource": [
+        {"kind": "configured", "root_id": "foundation",
+          "address": "aws_iam_role.bootstrap_readback", "attribute": "arn"},
+        {"kind": "configured", "root_id": "foundation",
+          "address": "aws_iam_role.bootstrap_executor", "attribute": "arn"}
+      ], "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_user_policy_attachment.local_login": [],
+  "aws_kms_key.foundation": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Sid": "EnableIAMUserPermissions", "Effect": "Allow", "Action": "kms:*",
+      "Resource": "*", "Principal": {"AWS": "arn:aws:iam::123456789012:root"}
+    }]
+  }],
+  "aws_s3_bucket_policy.logging": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-logs/access/syn-v2-core-state/*",
+      "Principal": {"Service": "logging.s3.amazonaws.com"},
+      "Condition": {"StringEquals": {"aws:SourceAccount": "123456789012"}}
+    }]
+  }],
+  "aws_s3_bucket_policy.state": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Deny", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/*", "Principal": "*",
+      "Condition": {"Bool": {"aws:SecureTransport": "false"}}
+    }]
+  }]
+}

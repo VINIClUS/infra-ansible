@@ -1,0 +1,32 @@
+[
+  {
+    "$include": "lifecycle/objects/2eab243b9168f51d6baca1bbf68cf2980e71d344665f207a75e9ce605bf228fe.json"
+  },
+  {
+    "$include": "lifecycle/objects/d72e05212bffda7377a7f006f685c92feea2118607a58904c2c5dcb60e9065bf.json"
+  },
+  {
+    "$include": "lifecycle/objects/1d8f6509111a2db3e580dee2f448ada2bc32263526ae02870eec540d12a920af.json"
+  },
+  {
+    "$include": "lifecycle/objects/bf408726f3258fbbf9ab7f4cf04091d1d76cdfe0e6a7c39a1af6089f93c41f15.json"
+  },
+  {
+    "$include": "lifecycle/objects/1ab290f412f828b8748a399138a4db51f2290f7daea59c8bef7b822e1b9de394.json"
+  },
+  {
+    "$include": "lifecycle/objects/c9721150bb4de698162d8638ff5776af334e512bb2f37abac7e8c1f2bd05b59c.json"
+  },
+  {
+    "$include": "lifecycle/objects/60bbc31c108028951acec34fc4293c1a02e9354fd08a14595bae950bd51153c0.json"
+  },
+  {
+    "$include": "lifecycle/objects/53a6b01b2ea5ef861c7918eb6514d58c431dc06db41be3dd1f4d25292df5a55d.json"
+  },
+  {
+    "$include": "lifecycle/objects/d3f6c05a257d4a5e126ba468bbcb675e14dd879c149fc38461a29e2e7c9ed58f.json"
+  },
+  {
+    "$include": "lifecycle/objects/cbf0a89f6d3a9eaca8b999b4bd3f4011c11e020fbc62040c94b182f93d01e9b4.json"
+  }
+]

@@ -1,0 +1,140 @@
+{
+  "aws_iam_role.budget_operator": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.shared_identity_manager": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.github_infrastructure_plan": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.github_infrastructure_deploy": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.github_host_deploy": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role.roles_anywhere_api": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole",
+      "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }],
+  "aws_iam_role_policy.budget_operator": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "budgets:ViewBudget",
+      "Resource": {"kind": "external", "source_id": "external-budget",
+        "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+        "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+    }]
+  }],
+  "aws_iam_policy.budget_operator_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "budgets:ViewBudget",
+      "Resource": {"kind": "external", "source_id": "external-budget",
+        "exact_arn": "arn:aws:budgets::123456789012:budget/syn-v2-budget",
+        "observation_sha256": "b465e208c255313fb45049ab976976602c6e1a829d63cdbdc9f6e1f9b205bd57"}
+    }]
+  }],
+  "aws_iam_role_policy.shared_identity_manager": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "iam:GetRole",
+      "Resource": {"kind": "configured", "root_id": "budget-identities",
+        "address": "aws_iam_role.budget_action", "attribute": "arn"}
+    }]
+  }],
+  "aws_iam_policy.shared_identity_manager_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "iam:GetRole",
+      "Resource": {"kind": "configured", "root_id": "budget-identities",
+        "address": "aws_iam_role.budget_action", "attribute": "arn"}
+    }]
+  }],
+  "aws_iam_role_policy.github_infrastructure_plan": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+    }]
+  }],
+  "aws_iam_policy.github_infrastructure_plan_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/foundation.tfstate"
+    }]
+  }],
+  "aws_iam_role_policy.github_infrastructure_deploy": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate"
+    }]
+  }],
+  "aws_iam_policy.github_infrastructure_deploy_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate"
+    }]
+  }],
+  "aws_iam_role_policy.github_host_deploy": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate"
+    }]
+  }],
+  "aws_iam_policy.github_host_deploy_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-core-state/bootstrap/identity-handoff.tfstate"
+    }]
+  }],
+  "aws_iam_role_policy.roles_anywhere_api": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+    }]
+  }],
+  "aws_iam_policy.roles_anywhere_api_boundary": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+    }]
+  }],
+  "aws_iam_user_policy.successor_assume": [{
+    "Version": "2012-10-17", "Statement": [{
+      "Effect": "Allow", "Action": "sts:AssumeRole", "Resource": [
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.budget_operator", "attribute": "arn"},
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.shared_identity_manager", "attribute": "arn"},
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.github_infrastructure_plan", "attribute": "arn"},
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.github_infrastructure_deploy", "attribute": "arn"},
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.github_host_deploy", "attribute": "arn"},
+        {"kind": "configured", "root_id": "identity-handoff",
+          "address": "aws_iam_role.roles_anywhere_api", "attribute": "arn"}
+      ], "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    }]
+  }]
+}

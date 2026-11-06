@@ -1,0 +1,8 @@
+{
+  "status": "blocked",
+  "operations": [],
+  "proposals": [],
+  "blocked_reasons": [
+    "restore_proposal_invalid"
+  ]
+}

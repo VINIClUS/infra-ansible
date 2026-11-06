@@ -1,0 +1,61 @@
+{
+  "role_ref": {"kind": "configured", "root_id": "identity-handoff",
+    "address": "aws_iam_role.roles_anywhere_api", "attribute": "arn"},
+  "source_ids": ["roles_anywhere_api"],
+  "trust_template_sha256": "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+  "policy_template_sha256": "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647",
+  "boundary_template_sha256": "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647",
+  "session_template_sha256": "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647",
+  "template_documents_sha256": [
+    "b9dbbffe64bf922df3a93183f5671eb27525ee1f31fdd3f4d752f5bb1af915af",
+    "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647",
+    "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647",
+    "4fcee557285c6486c875624b2a2b74a8cbc39073f1c250e7273b644607699647"
+  ],
+  "documents": {
+    "trust": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "sts:AssumeRole",
+        "Principal": {"AWS": "arn:aws:iam::123456789012:user/syn/core/syn-v2-operator"},
+        "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+      }]
+    },
+    "inline": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+      }]
+    },
+    "boundary": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+      }]
+    },
+    "session": {
+      "Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+      }]
+    }
+  },
+  "capabilities": {
+    "read-state": {"action": "s3:GetObject", "resources": [
+      "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate"
+    ], "context": [], "exception_source_id": null}
+  },
+  "probes": {
+    "api-allow": {
+      "probe_id": "api-allow", "subject_id": "roles_anywhere_api",
+      "kind": "simulation", "action": "s3:GetObject",
+      "resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+      "context": [], "expected": "allowed", "expected_snapshot_sha256": null
+    },
+    "api-deny": {
+      "probe_id": "api-deny", "subject_id": "roles_anywhere_api",
+      "kind": "simulation", "action": "s3:DeleteObject",
+      "resource": "arn:aws:s3:::syn-v2-budget-state/bootstrap/budget-identities.tfstate",
+      "context": [], "expected": "implicitDeny", "expected_snapshot_sha256": null
+    }
+  }
+}

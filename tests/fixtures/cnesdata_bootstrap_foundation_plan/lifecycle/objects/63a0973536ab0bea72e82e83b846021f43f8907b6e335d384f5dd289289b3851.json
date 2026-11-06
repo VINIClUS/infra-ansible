@@ -1,0 +1,116 @@
+{
+  "run_sha256": "3275f39e89513938a7b6213a75b8def84d5dcd8f46e48577a27f2e62537fa6cb",
+  "step_id": "c2-budget-create",
+  "spec_sha256": "6bc16cb6de5ed3875e8c0899bb62095ec273d5cce398f14e101b73a99185adce",
+  "root_id": "budget-backend",
+  "target": {
+    "kind": "resource_set",
+    "resources": {
+      "aws_s3_bucket.state": {
+        "action": "create",
+        "target": {
+          "configured_name": "syn-budget-state-123456789012",
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      },
+      "aws_s3_bucket_versioning.state": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      },
+      "aws_s3_bucket_public_access_block.state": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.state": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      },
+      "aws_s3_bucket_policy.state": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      },
+      "aws_s3_bucket.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": "syn-budget-logs-123456789012",
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_ownership_controls.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_public_access_block.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_server_side_encryption_configuration.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_policy.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_lifecycle_configuration.logging": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-logs-123456789012"
+        }
+      },
+      "aws_s3_bucket_logging.state": {
+        "action": "create",
+        "target": {
+          "configured_name": null,
+          "identity_kind": "configured",
+          "exact_id": "syn-budget-state-123456789012"
+        }
+      }
+    }
+  },
+  "authorization_sha256": "356d06f88ef7eefae76439503b378ffdb5b1e17773933d4b32b3fa53669f0b76",
+  "binary_plan_sha256": "c9a1b4d4ffb4865688e283a6f391b0c6a1fe255fc76b08cdd7c5d701fef0a95a",
+  "migration_config_sha256": null,
+  "before_manifest_sha256": "8509ab77f49a80a01034a9ac28d41e0db606694dc7fab7cf93c6ad0f632516ee",
+  "after_manifest_sha256": "1d90b9a68a5a3116f4ba7cd7ab485cfe231d4a9eba6c5d885f06c0b6fc07548b",
+  "parent_checkpoint_sha256": "5ee3e0c5d72801989bd4cb4d78e36bcfc61f763243f683814c36a5f4595538e7",
+  "not_before": "2026-10-26T13:20:00Z",
+  "expires_at": "2026-10-26T14:00:00Z",
+  "principal_arn": "arn:aws:iam::123456789012:root"
+}

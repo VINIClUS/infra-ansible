@@ -1,0 +1,63 @@
+{
+  "backend": {
+    "bucket": "syn-budget-state-123456789012",
+    "key": "bootstrap/backend.tfstate"
+  },
+  "logging": {
+    "bucket": "syn-budget-logs-123456789012",
+    "prefix": "access/syn-budget-state-123456789012/"
+  },
+  "owner": "personal-infra-live:cnesdata",
+  "resources": {
+    "aws_s3_bucket.logging": {
+      "configured_name": "syn-budget-logs-123456789012",
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket.state": {
+      "configured_name": "syn-budget-state-123456789012",
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_lifecycle_configuration.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_logging.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_ownership_controls.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_policy.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_policy.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_public_access_block.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_public_access_block.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.logging": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_server_side_encryption_configuration.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    },
+    "aws_s3_bucket_versioning.state": {
+      "configured_name": null,
+      "identity_kind": "configured"
+    }
+  },
+  "root_path": "personal-infra-live/bootstrap",
+  "source_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
