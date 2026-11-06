@@ -1,0 +1,91 @@
+---
+# HA self-fencing (watchdog reset ~60 s after quorum loss) is faster than the
+# dead-man timer. Before a live firewall change every HA watchdog must be
+# released; HA is restored only after verification passes. Prefers the
+# cluster-wide "disarm-ha freeze"; falls back to per-resource "ignored" on
+# releases without it. Previous resource states are written next to the backup.
+- name: Read HA resources
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/ha/resources, --output-format, json]
+  register: proxmox_firewall_ha_resources
+  changed_when: false
+  check_mode: false
+  when: proxmox_firewall_ha_action == 'disarm'
+
+- name: Detect cluster-wide disarm support
+  ansible.builtin.command:
+    argv: [ha-manager, help, crm-command]
+  register: proxmox_firewall_ha_help
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: proxmox_firewall_ha_action == 'disarm'
+
+- name: Plan the HA guard
+  ansible.builtin.set_fact:
+    proxmox_firewall_ha_saved: >-
+      {{ proxmox_firewall_ha_resources.stdout | from_json
+         | rejectattr('state', 'equalto', 'ignored')
+         | items2dict(key_name='sid', value_name='state') }}
+    proxmox_firewall_ha_mode: >-
+      {{ 'cluster' if 'disarm-ha' in (proxmox_firewall_ha_help.stdout | default('')) else 'resource' }}
+  when: proxmox_firewall_ha_action == 'disarm'
+
+- name: Record previous HA resource states for manual recovery
+  ansible.builtin.copy:
+    dest: "{{ proxmox_firewall_backup_root }}/ha-states.json"
+    content: "{{ {'mode': proxmox_firewall_ha_mode, 'states': proxmox_firewall_ha_saved} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: proxmox_firewall_ha_action == 'disarm' and proxmox_firewall_ha_saved | length > 0
+
+- name: Disarm HA cluster-wide (freeze)
+  ansible.builtin.command:
+    argv: [ha-manager, crm-command, disarm-ha, freeze]
+  changed_when: true
+  when:
+    - proxmox_firewall_ha_saved | length > 0
+    - proxmox_firewall_ha_mode == 'cluster'
+    - proxmox_firewall_ha_action == 'disarm'
+
+- name: Set each HA resource to ignored
+  ansible.builtin.command:
+    argv: [ha-manager, set, "{{ item.key }}", --state, ignored]
+  loop: "{{ proxmox_firewall_ha_saved | dict2items }}"
+  changed_when: true
+  when:
+    - proxmox_firewall_ha_mode == 'resource'
+    - proxmox_firewall_ha_action == 'disarm'
+
+- name: Wait until no LRM holds an active watchdog
+  ansible.builtin.command:
+    argv: [ha-manager, status]
+  register: proxmox_firewall_ha_status
+  changed_when: false
+  check_mode: false
+  until: >-
+    (proxmox_firewall_ha_mode == 'cluster' and proxmox_firewall_ha_status.stdout is search('(?i)\bdisarmed\b'))
+    or (proxmox_firewall_ha_mode == 'resource'
+        and proxmox_firewall_ha_status.stdout_lines | select('match', '^lrm \S+ \(active') | list | length == 0)
+  retries: "{{ (proxmox_firewall_ha_wait_seconds | int / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  when: proxmox_firewall_ha_action == 'disarm' and proxmox_firewall_ha_saved | length > 0
+
+- name: Re-arm HA cluster-wide
+  ansible.builtin.command:
+    argv: [ha-manager, crm-command, arm-ha]
+  changed_when: true
+  when:
+    - proxmox_firewall_ha_saved | default({}) | length > 0
+    - proxmox_firewall_ha_mode | default('resource') == 'cluster'
+    - proxmox_firewall_ha_action == 'rearm'
+
+- name: Restore each HA resource state
+  ansible.builtin.command:
+    argv: [ha-manager, set, "{{ item.key }}", --state, "{{ item.value }}"]
+  loop: "{{ proxmox_firewall_ha_saved | default({}) | dict2items }}"
+  changed_when: true
+  when:
+    - proxmox_firewall_ha_mode | default('resource') == 'resource'
+    - proxmox_firewall_ha_action == 'rearm'

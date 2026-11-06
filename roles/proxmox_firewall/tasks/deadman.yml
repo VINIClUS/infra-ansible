@@ -1,0 +1,34 @@
+---
+# Arms or disarms a transient systemd timer on every cluster node. When it
+# fires it persists the rollback (datacenter enable: 0 through pmxcfs, so a
+# later reboot or daemon restart cannot re-apply the ruleset) and stops the
+# firewall locally (covers a node whose /etc/pve is read-only without quorum).
+# Peers are reached through the cluster's own root SSH trust.
+- name: "Dead-man timer: {{ proxmox_firewall_deadman_action }}"
+  vars:
+    proxmox_firewall_deadman_script: >-
+      {%- if proxmox_firewall_deadman_action == 'arm' -%}
+      systemctl stop {{ proxmox_firewall_deadman_unit }}.timer 2>/dev/null;
+      systemctl reset-failed {{ proxmox_firewall_deadman_unit }}.service 2>/dev/null;
+      test -x /usr/sbin/pve-firewall &&
+      systemd-run --unit={{ proxmox_firewall_deadman_unit }}
+      --on-active={{ proxmox_firewall_deadman_minutes | int }}min
+      --description='Revert Proxmox firewall unless confirmed'
+      /bin/sh -c "{{ proxmox_firewall_revert_command }}" &&
+      systemctl is-active --quiet {{ proxmox_firewall_deadman_unit }}.timer
+      {%- else -%}
+      systemctl stop {{ proxmox_firewall_deadman_unit }}.timer &&
+      ! systemctl is-active --quiet {{ proxmox_firewall_deadman_unit }}.timer
+      {%- endif -%}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['sh', '-c', proxmox_firewall_deadman_script]
+         if proxmox_firewall_item.key == ansible_facts['hostname']
+         else (proxmox_firewall_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_firewall_item.key,
+               '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_firewall_item.key ~ '/ssh_known_hosts',
+               'root@' ~ proxmox_firewall_item.value, proxmox_firewall_deadman_script]) }}
+  loop: "{{ proxmox_firewall_nodes | dict2items }}"
+  loop_control:
+    loop_var: proxmox_firewall_item
+    label: "{{ proxmox_firewall_item.key }}"
+  changed_when: true

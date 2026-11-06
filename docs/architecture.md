@@ -81,3 +81,16 @@ through `pvesm`. Proxmox receives `content backup`, `is_mountpoint=1`, and
 and protected credential-file reference. `ProxmoxMCP` owns only read-only
 contract verification and its existing approval-gated recovery execution. The
 broker never mounts filesystems or changes Proxmox storage configuration.
+
+## Proxmox cluster firewall and network isolation
+
+The `proxmox_firewall` role owns `/etc/pve/firewall/cluster.fw`, each node's
+`host.fw`, and the `.fw` files of guests declared in the private inventory. It
+is the first step of isolating the cluster: host and guest policy on the
+existing `vmbr0`, plus a guard that admits VXLAN (UDP 4789) only from the
+cluster nodes, before any SDN VXLAN zone is created. Later steps (SDN zone and
+VNets, the `rtr-01` router guest, node routes, guest re-addressing) are
+separate roles with their own tags.
+
+`infra-ansible-inventory` owns every IPset, alias, security group and rule.
+`ProxmoxMCP` keeps using the API and never changes firewall or SDN state.

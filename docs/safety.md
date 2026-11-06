@@ -91,3 +91,14 @@ storage unavailable instead of allowing backup payloads to fall through to the
 root filesystem. The role has no remove, unmount, manual prune, or direct
 `storage.cfg` edit path. After host-side validation, hand off to the broker's
 GET-only `recovery-preflight`; backup and restore approvals remain separate.
+
+## Proxmox firewall changes
+
+The firewall role must be invoked with a private inventory, an exact one-node
+`--limit`, and `--tags proxmox_firewall`. It backs up `/etc/pve/firewall`,
+`/etc/pve/nodes` and `/etc/network/interfaces` first, and arms a dead-man
+timer (`systemd-run ... pve-firewall stop`) on every node before any live
+firewall change. The timer is disarmed only after `pve-firewall compile` is
+clean, new SSH and 8006 connections from the controller succeed, and quorum is
+intact. Network-affecting steps use SSH to a node, never the public Proxmox
+hostname, because that path depends on the tunnel guest being reconfigured.

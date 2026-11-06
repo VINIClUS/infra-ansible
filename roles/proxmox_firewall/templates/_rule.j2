@@ -1,0 +1,17 @@
+{% macro render(r) -%}
+{%- set prefix = '' if (r.enable | default(true)) | bool else '|' -%}
+{%- if r.group is defined -%}
+{{ prefix }}GROUP {{ r.group }}{% if r.iface is defined %} -i {{ r.iface }}{% endif %}
+{%- else -%}
+{{ prefix }}{{ r.direction | upper }} {% if r.macro is defined %}{{ r.macro }}({{ r.action | upper }}){% else %}{{ r.action | upper }}{% endif %}
+{%- for opt, key in [('-i', 'iface'), ('-source', 'source'), ('-dest', 'dest'), ('-p', 'proto'), ('-dport', 'dport'), ('-sport', 'sport')] %}{% if r[key] is defined %} {{ opt }} {{ r[key] }}{% endif %}{% endfor %} -log {{ r.log | default('nolog') }}
+{%- endif %}{% if r.comment is defined %} # {{ r.comment }}{% endif %}
+{%- endmacro %}
+{% macro ipset(name, entries, comment='') -%}
+[IPSET {{ name }}]{% if comment %} # {{ comment }}{% endif %}
+
+{% for e in entries %}
+{{ '!' if e.nomatch | default(false) else '' }}{{ e.cidr }}{% if e.comment is defined %} # {{ e.comment }}{% endif %}
+
+{% endfor %}
+{%- endmacro %}

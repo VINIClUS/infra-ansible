@@ -1,0 +1,11 @@
+{% import '_rule.j2' as fw %}
+# {{ ansible_managed }} (role proxmox_firewall)
+[OPTIONS]
+
+enable: 1
+
+[RULES]
+
+{% for r in proxmox_firewall_host_rules.get(proxmox_firewall_item_node, []) %}
+{{ fw.render(r) }}
+{% endfor %}

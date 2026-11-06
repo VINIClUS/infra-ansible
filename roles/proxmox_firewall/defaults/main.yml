@@ -1,0 +1,61 @@
+---
+proxmox_firewall_enabled: false
+
+# Phase switch. false renders every file with the datacenter firewall still
+# disabled and only compiles it; true flips cluster.fw to enable: 1 under a
+# dead-man timer armed on every node.
+proxmox_firewall_activate: false
+
+# Cluster nodes that must receive the dead-man timer and pass verification.
+# Map of PVE node name -> management IPv4 address.
+proxmox_firewall_nodes: {}
+
+proxmox_firewall_policy_in: DROP
+proxmox_firewall_policy_out: ACCEPT
+proxmox_firewall_log_ratelimit: "enable=1,burst=10,rate=5/second"
+
+# VXLAN (UDP 4789) is unauthenticated: only the declared peer IPset may send
+# it. The rule is always rendered first in cluster.fw [RULES].
+proxmox_firewall_vxlan_guard_ipset: pve_nodes
+proxmox_firewall_vxlan_port: 4789
+
+# name -> list of {cidr, comment?, nomatch?}
+proxmox_firewall_ipsets: {}
+# name -> {cidr, comment?}
+proxmox_firewall_aliases: {}
+# name -> {comment?, rules: [rule]}
+proxmox_firewall_security_groups: {}
+# Rules rendered into cluster.fw [RULES] (apply to every host).
+proxmox_firewall_cluster_rules: []
+# PVE node name -> list of rules rendered into nodes/<node>/host.fw.
+proxmox_firewall_host_rules: {}
+# VMID -> {options: {}, rules: [rule], ipsets: {name: [entries]}}
+proxmox_firewall_guests: {}
+
+# rule := {direction: IN|OUT, action: ACCEPT|DROP|REJECT, macro?, source?,
+#          dest?, proto?, dport?, sport?, iface?, log?, enable?, comment?}
+#       | {group: <security group>, iface?, enable?, comment?}
+
+proxmox_firewall_deadman_minutes: 10
+# Node-to-node SSH as PVE 9 does it: HostKeyAlias=<node> plus the per-node
+# /etc/pve/nodes/<node>/ssh_known_hosts (added per call). Peer names are not
+# assumed to resolve.
+proxmox_firewall_peer_ssh_base: [ssh, -o, BatchMode=yes, -o, ConnectTimeout=10]
+# Persistent rollback used by the dead-man timer and by the rescue path.
+proxmox_firewall_revert_command: >-
+  pvesh set /cluster/firewall/options --enable 0 || true;
+  /usr/sbin/pve-firewall stop
+# Disarm HA (freeze) cluster-wide before a live change when HA resources exist.
+proxmox_firewall_ha_guard: true
+# LRM goes idle after 60 rounds of ~10 s with no service (PVE::HA::LRM).
+proxmox_firewall_ha_wait_seconds: 1200
+proxmox_firewall_deadman_unit: pve-firewall-deadman
+proxmox_firewall_backup_root: /root/netiso-backup
+# Root-only local staging tree mirroring /etc/pve paths (pmxcfs rejects chmod).
+proxmox_firewall_staging_root: /root/netiso-backup/staging
+proxmox_firewall_backup_paths:
+  - etc/pve/firewall
+  - etc/pve/nodes
+  - etc/pve/sdn
+  - etc/network/interfaces
+proxmox_firewall_settle_seconds: 20

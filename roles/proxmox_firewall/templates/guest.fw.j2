@@ -1,0 +1,17 @@
+{% import '_rule.j2' as fw %}
+{% set guest = proxmox_firewall_guests[proxmox_firewall_item_vmid] if proxmox_firewall_item_vmid in proxmox_firewall_guests else proxmox_firewall_guests[proxmox_firewall_item_vmid | int] %}
+# {{ ansible_managed }} (role proxmox_firewall)
+[OPTIONS]
+
+{% for key, value in (guest.options | default({})) | dictsort %}
+{{ key }}: {{ (1 if value else 0) if value is boolean else value }}
+{% endfor %}
+
+{% for name, entries in (guest.ipsets | default({})) | dictsort %}
+{{ fw.ipset(name, entries) }}
+{% endfor %}
+[RULES]
+
+{% for r in guest.rules | default([]) %}
+{{ fw.render(r) }}
+{% endfor %}

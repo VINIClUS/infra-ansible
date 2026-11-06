@@ -1,0 +1,13 @@
+---
+# Streams one staged file into pmxcfs (no chmod) and re-compares.
+- name: "Write into pmxcfs: {{ proxmox_firewall_write.dest }}"
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - 'cmp -s "$1" "$2" 2>/dev/null && exit 0; cat "$1" > "$2" && cmp -s "$1" "$2" && echo CHANGED'
+      - write
+      - "{{ proxmox_firewall_staging_root }}{{ proxmox_firewall_write.dest }}"
+      - "{{ proxmox_firewall_write.dest }}"
+  register: proxmox_firewall_write_result
+  changed_when: "'CHANGED' in proxmox_firewall_write_result.stdout"

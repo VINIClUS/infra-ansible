@@ -40,6 +40,7 @@ $requiredPaths = @(
     "playbooks\validate-minio-access.yml",
     "playbooks\proxmox-template-preflight.yml",
     "playbooks\proxmox-backup-storage.yml",
+    "playbooks\proxmox-firewall.yml",
     "playbooks\provision-ansible-controller.yml",
     "playbooks\publish-validation-report.yml",
     "playbooks\bootstrap-esus-pec.yml",
@@ -59,6 +60,10 @@ $requiredPaths = @(
     "roles\proxmox_backup_storage\tasks\main.yml",
     "roles\proxmox_backup_storage\handlers\main.yml",
     "roles\proxmox_backup_storage\README.md",
+    "roles\proxmox_firewall\defaults\main.yml",
+    "roles\proxmox_firewall\tasks\main.yml",
+    "roles\proxmox_firewall\tasks\deadman.yml",
+    "roles\proxmox_firewall\README.md",
     "roles\proxmox_lxc_guest\defaults\main.yml",
     "roles\proxmox_lxc_guest\tasks\main.yml",
     "roles\proxmox_lxc_guest\README.md",
@@ -100,6 +105,9 @@ if ($envExample -match "(?m)^INFISICAL_SECRET_PATH=") {
     throw "INFISICAL_SECRET_PATH must be derived instead of configured"
 }
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_backup_storage"
+Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "proxmox_firewall"
+Assert-FileContains -RelativePath "roles\proxmox_firewall\defaults\main.yml" -Pattern "proxmox_firewall_enabled:\s+false"
+Assert-FileContains -RelativePath "docs\safety.md" -Pattern "dead-man"
 Assert-FileContains -RelativePath "docs\architecture.md" -Pattern "keep-last=2"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "is_mountpoint"
 Assert-FileContains -RelativePath "docs\safety.md" -Pattern "--limit"
