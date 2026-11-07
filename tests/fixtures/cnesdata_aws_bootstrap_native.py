@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 from typing import cast
 import pytest
+from tools.ci.native_bootstrap import provider_binary
 from fixtures.cnesdata_aws_bootstrap_mutations import mutate
 from fixtures.cnesdata_aws_bootstrap_witness import (
     _add,
@@ -26,6 +27,36 @@ from fixtures.cnesdata_aws_bootstrap_witness import (
 
 __all__ = ["observation"]
 REPO = Path(__file__).resolve().parents[2]
+
+
+def native_context():
+    context = os.environ.get("CNESDATA_NATIVE_CONTEXT", "operator")
+    assert context in {"operator", "public-ci"}, "native_context_invalid"
+    return context
+
+
+def target_source(root):
+    context = native_context()
+    if root == "foundation":
+        return REPO / "opentofu/cnesdata-bootstrap/foundation"
+    assert root == "budget-backend", "native_root_invalid"
+    if context == "public-ci":
+        pytest.skip(
+            "external_budget_target: public-ci has no private source; the consumer's "
+            "required operator-context gate must test a reviewed public SHA"
+        )
+    configured = os.environ.get("CNESDATA_TEST_BUDGET_SOURCE_DIR")
+    assert configured, (
+        "external_target_absent: set CNESDATA_TEST_BUDGET_SOURCE_DIR "
+        "to the reviewed private bootstrap root"
+    )
+    origin = Path(configured)
+    assert origin.is_dir() and [*origin.glob("*.tf"), *origin.glob("*.tf.json")], (
+        "external_target_absent: private bootstrap root must contain real source files"
+    )
+    return origin
+
+
 FOUNDATION = (
     "aws_iam_user.bootstrap_operator",
     "aws_iam_user_policy_attachment.local_login",
@@ -404,6 +435,8 @@ class NativeHarness:
     def _plan(self, key):
         case_id, requested_root, source, mutation = key
         root, exact = _root_mode(requested_root)
+        if source == "target":
+            target_source(root)  # Classify external targets before any plan work.
         if key in self.failures:
             raise AssertionError(self.failures[key])
         if key in self.cache:
@@ -428,23 +461,12 @@ class NativeHarness:
         self.cache[key] = result
         return result
     def _copy_source(self, work, root, inputs):
-        origin = (
-            REPO / "opentofu/cnesdata-bootstrap/foundation"
-            if root == "foundation"
-            else Path("/home/vinicius/code/personal-infra-live/bootstrap")
-        )
+        origin = target_source(root)
         files = [*origin.glob("*.tf"), *origin.glob("*.tf.json")]
+        assert files, "native_target_source_absent"
         for file in files:
             assert not file.is_symlink(), "native_source_symlink"
             shutil.copy2(file, work / file.name)
-        if not files:
-            config = {
-                "terraform": {
-                    "required_providers": {"aws": {"source": "hashicorp/aws", "version": "=6.54.0"}}
-                },
-                "variable": {key: {"type": "any"} for key in inputs},
-            }
-            (work / "empty.tf.json").write_text(json.dumps(config))
     def _copy_provider(self, work):
         shutil.copytree(self.prepared / ".terraform", work / ".terraform", symlinks=True)
         shutil.copy2(self.prepared / ".terraform.lock.hcl", work / ".terraform.lock.hcl")
@@ -484,6 +506,7 @@ class NativeHarness:
         assert "prevent_destroy" in result.stderr
 @pytest.fixture(scope="module")
 def native(tmp_path_factory):
+    native_context()
     assert shutil.which("unshare") and shutil.which("tofu") and shutil.which("rtk"), (
         "offline_binaries_absent"
     )
@@ -495,5 +518,6 @@ def native(tmp_path_factory):
     )
     configured = os.environ.get("CNESDATA_TEST_AWS_PROVIDER_DIR")
     provider = Path(configured) if configured else (candidates[0] if candidates else None)
-    assert provider and (provider / "terraform-provider-aws").is_file(), "cached_provider_absent"
+    assert provider, "cached_provider_absent"
+    provider_binary(provider)
     return NativeHarness(tmp_path_factory.mktemp("cnesdata-b1a"), provider.resolve())
