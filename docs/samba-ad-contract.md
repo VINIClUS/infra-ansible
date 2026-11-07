@@ -92,12 +92,20 @@ as regras destes devem efetivamente recusar origens não aprovadas. Testar
 conexões permitidas e negadas, inclusive de LAN/ops não administrativas, e
 retorno `established/related`. Sem exposição de AD à Internet ou regras `any`.
 
+`resource_groups` lista exatamente as chaves de recursos de cada grupo; não
+corresponde a grupos Ansible existentes. `identity_guests` inclui os seis
+guests deste projeto, inclusive backup em outra rede. `ssh_targets` exclui
+Windows; `backup_senders` contém somente DC01, DC02 e CA, nunca pilotos.
+Administradores vêm de `network.admin_sources`; DNS e tempo vêm das listas
+exatas correspondentes. O coletor é um endpoint existente, a ser fixado por
+identidade e porta em S7, sem ampliar o grupo dos seis guests do projeto.
+
 | Origem → destino | TCP | UDP |
 | --- | --- | --- |
 | Pilotos/administradores exatos → DCs | 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 49152–65535 | 53, 88, 389, 464; 123 somente pilotos |
 | DCs → DCs | mesmas portas TCP de AD | 53, 88, 389, 464 |
 | DC01 → DC02 | 22 com chave de comando restrito para SYSVOL | — |
-| Administradores exatos → guests de identidade | 22; Windows administrado por console inicialmente | — |
+| Administradores exatos → `ssh_targets` | 22; Windows administrado por console inicialmente | — |
 | Guests de identidade → CA | 443 com identidade TLS validada | — |
 | DCs → forwarders exatos | 53 | 53 |
 | Guests de identidade → fontes de tempo exatas | — | 123 |

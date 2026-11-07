@@ -2,6 +2,17 @@
 # Symbolic endpoints expand to exact private identities in a future reviewed stage.
 # Return traffic is established/related only. No Internet-facing AD listener.
 enforcement: [router, guest_default_drop]
+# These are project role keys, never existing Ansible inventory groups.
+resource_groups:
+  dcs: [dc01, dc02]
+  pilots: [windows_pilot, linux_pilot]
+  identity_guests: [dc01, dc02, ca, backup, windows_pilot, linux_pilot]
+  ssh_targets: [dc01, dc02, ca, backup, linux_pilot]
+  backup_senders: [dc01, dc02, ca]
+  backup_receiver: [backup]
+  ca: [ca]
+  dc01: [dc01]
+  dc02: [dc02]
 flows:
   - source: pilots
     destination: dcs
@@ -24,7 +35,7 @@ flows:
     protocol: tcp
     ports: ["22"]
   - source: administrators
-    destination: identity_guests
+    destination: ssh_targets
     protocol: tcp
     ports: ["22"]
   - source: administrators
@@ -55,7 +66,7 @@ flows:
     destination: collector
     protocol: tcp
     ports: ["443"]
-  - source: identity_guests
+  - source: backup_senders
     destination: backup_receiver
     protocol: tcp
     ports: ["22"]
