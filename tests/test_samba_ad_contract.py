@@ -134,7 +134,7 @@ def test_no_automatic_deployer_or_inventory_consumes_samba_contract():
     from tools.deploy.infra_ansible_deploy import FIXED_RUNS
 
     assert all("samba" not in run.playbook for run in FIXED_RUNS)
-    assert not list((ROOT / "playbooks").glob("*samba*"))
+    # S1 provides dedicated manual entrypoints, excluded from FIXED_RUNS.
     inventory = subprocess.run(
         ["ansible-inventory", "-i", "inventories/example/hosts.yml", "--list"],
         cwd=ROOT, text=True, capture_output=True, check=False,
@@ -167,3 +167,24 @@ def test_port_contract_has_only_scoped_origins_and_modern_ad_protocols():
         "ssh_targets": ["dc01", "dc02", "ca", "linux_pilot"],
         "ca": ["ca"], "dc01": ["dc01"], "dc02": ["dc02"],
     }
+
+
+@pytest.mark.parametrize("field,value", [
+    ("os", None), ("os", []), ("os", ""), ("source_candidate", {}),
+    ("source_candidate", "http://unsigned.invalid/repo"), ("suite", False),
+    ("suite", "a b"), ("fingerprint_ref", []), ("fingerprint_ref", ""),
+])
+def test_software_metadata_has_explicit_scalar_semantics(field, value):
+    data = contract()
+    data["software"][field] = value
+    with pytest.raises(ValueError):
+        validator().validate_manifest(data)
+
+
+@pytest.mark.parametrize("name", ["a..invalid", "-a.invalid", "a-.invalid", ".a.invalid", "a.invalid.",
+                                  "a" * 64 + ".invalid", "a_underscore.invalid"])
+def test_pilot_names_are_valid_dns_labels(name):
+    data = contract()
+    data["split_dns"]["pilot_public_names"] = [name]
+    with pytest.raises(ValueError):
+        validator().validate_manifest(data)

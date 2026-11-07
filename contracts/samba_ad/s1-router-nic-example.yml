@@ -1,0 +1,21 @@
+---
+# Fictional, inert router request; refresh identity and digest from live readback.
+samba_ad_router_nic_enabled: false
+samba_ad_router_nic_apply: false
+samba_ad_router_nic_console_verified: false
+samba_ad_router_nic_guest_host: router-test
+samba_ad_router_nic_request:
+  node: node-a
+  vmid: 800040
+  name: router-test
+  smbios1: uuid=example
+  expected_digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  nic: net4
+  mac: 02:00:5E:70:00:40
+  bridge: vnidtest
+  mtu: 1450
+  interface: eth4
+  address: 198.51.100.1/25
+  existing_nics:
+    net0: virtio=02:00:5E:00:00:01,bridge=vmbr0,firewall=0
+    net1: virtio=02:00:5E:00:00:02,bridge=vnold,firewall=0,mtu=1

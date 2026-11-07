@@ -1,7 +1,7 @@
 # {{ ansible_managed }}
 # DNS and DHCP for the private VNets only; never bound to the uplink.
 port=53
-{% for zone in network_router_zones.values() %}
+{% for zone in network_router_zones.values() if not zone.restricted | default(false) %}
 interface={{ zone.interface }}
 {% endfor %}
 except-interface=lo

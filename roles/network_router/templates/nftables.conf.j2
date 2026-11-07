@@ -8,6 +8,11 @@
 "{{ network_router_wan_interface if zone == 'wan' else network_router_zones[zone].interface }}"
 {%- endmacro %}
 {% set zone_ifaces = network_router_zones.values() | map(attribute='interface') | list %}
+{% set service_ifaces = [] %}
+{% for name, zone in network_router_zones.items() if not zone.restricted | default(false) %}
+{% set _ = service_ifaces.append(zone.interface) %}
+{% endfor %}
+{% set service_list = '{ "' ~ (service_ifaces | join('", "')) ~ '" }' %}
 {% set zone_list = '{ "' ~ (zone_ifaces | join('", "')) ~ '" }' %}
 {% set private_cidrs = network_router_zones.values() | map(attribute='cidr') | list %}
 
@@ -38,19 +43,35 @@ table inet filter {
 		iifname "{{ network_router_wan_interface }}" udp dport { 53, 67 } drop
 		iifname "{{ network_router_wan_interface }}" tcp dport 53 drop
 		iifname "{{ network_router_wan_interface }}" ip saddr @lan icmp type echo-request accept
-		iifname {{ zone_list }} icmp type echo-request accept
+		{% for name, zone in network_router_zones.items() if zone.restricted | default(false) %}
+    iifname "{{ zone.interface }}" counter drop
+{% endfor %}
+    iifname {{ zone_list }} icmp type echo-request accept
 {% if network_router_admin_sources | length > 0 %}
 		iifname "{{ network_router_wan_interface }}" ip saddr {{ addr(network_router_admin_sources) }} tcp dport 22 accept
 {% endif %}
-		iifname {{ zone_list }} udp dport { 53, 67 } accept
-		iifname {{ zone_list }} tcp dport 53 accept
+		{% if service_ifaces %}
+    iifname {{ service_list }} udp dport { 53, 67 } accept
+		iifname {{ service_list }} tcp dport 53 accept
+{% endif %}
 {% for name, zone in network_router_zones.items() if zone.ssh_to_router | default(false) %}
 		iifname "{{ zone.interface }}" tcp dport 22 accept comment "{{ name }} administers the router"
 {% endfor %}
 		counter comment "input drop"
 	}
 
-	chain forward {
+	{% for name, zone in network_router_zones.items() if zone.restricted | default(false) %}
+  chain restricted_{{ name }} {
+{% for rule in network_router_forward_rules if rule.from == name or rule.to == name %}
+    iifname {{ ifname(rule.from) }} oifname {{ ifname(rule.to) }}
+{%- if rule.saddr is defined %} ip saddr {{ addr(rule.saddr) }}{% endif %}
+{%- if rule.daddr is defined %} ip daddr {{ addr(rule.daddr) }}{% endif %}
+{%- if rule.proto is defined %} {{ rule.proto }} dport {{ addr(rule.dport) }}{% endif %} accept comment "{{ rule.comment }}"
+{% endfor %}
+    counter drop
+  }
+{% endfor %}
+  chain forward {
 		type filter hook forward priority filter; policy drop;
 		# Every forwarded flow has one end in a VNet (MTU {{ network_router_mtu }}). Lower the
 		# MSS of both SYNs to fit it: a guest's Docker bridge still announces 1460.
@@ -58,6 +79,10 @@ table inet filter {
 		ct state invalid drop
 		ct state established,related accept
 		meta nfproto ipv6 drop
+{% for name, zone in network_router_zones.items() if zone.restricted | default(false) %}
+    iifname "{{ zone.interface }}" jump restricted_{{ name }}
+    oifname "{{ zone.interface }}" jump restricted_{{ name }}
+{% endfor %}
 {% for name, zone in network_router_zones.items() if zone.full_access | default(false) %}
 		iifname "{{ zone.interface }}" accept comment "{{ name }} reaches every zone and the LAN"
 {% endfor %}
@@ -67,7 +92,9 @@ table inet filter {
 {% for name, zone in network_router_zones.items() if zone.internet | default(false) %}
 		iifname "{{ zone.interface }}" oifname "{{ network_router_wan_interface }}" ip daddr != @non_internet accept comment "{{ name }} to the internet"
 {% endfor %}
-{% for rule in network_router_forward_rules %}
+{% for rule in network_router_forward_rules
+   if not ((rule.from != 'wan' and network_router_zones[rule.from].restricted | default(false))
+       or (rule.to != 'wan' and network_router_zones[rule.to].restricted | default(false))) %}
 		iifname {{ ifname(rule.from) }} oifname {{ ifname(rule.to) }}
 {%- if rule.saddr is defined %} ip saddr {{ addr(rule.saddr) }}{% endif %}
 {%- if rule.daddr is defined %} ip daddr {{ addr(rule.daddr) }}{% endif %}
