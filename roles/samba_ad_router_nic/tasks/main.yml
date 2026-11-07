@@ -43,13 +43,59 @@
     samba_ad_router_nic_plan: "{{ samba_ad_router_nic_plan_raw.stdout | from_json }}"
   no_log: true
 
-- name: Read guest networkd readiness and preserve default routes
+- name: Capture guest interface address and route inventory through a fresh connection
   ansible.builtin.command:
-    argv: [sh, -ec, 'systemctl is-active --quiet systemd-networkd; ip -j -4 route show default']
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_state.py') }}"
+      - --snapshot
+  vars:
+    ansible_ssh_args: >-
+      -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
+      -o IdentityAgent=none -o IdentitiesOnly=yes
   delegate_to: "{{ samba_ad_router_nic_guest_host }}"
-  register: samba_ad_router_nic_routes
+  register: samba_ad_router_nic_snapshot
   changed_when: false
   check_mode: false
+  no_log: true
+
+- name: Check whether an earlier protected network baseline still exists
+  ansible.builtin.stat:
+    path: /root/samba-ad-s1-network/before.json
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_baseline_file
+
+- name: Refuse to reuse an earlier baseline for a new extension
+  ansible.builtin.assert:
+    that:
+      - samba_ad_router_nic_plan.action == 'verify' or not samba_ad_router_nic_baseline_file.stat.exists
+    fail_msg: "A prior S1 network baseline exists; review technical recovery before a new extension."
+
+- name: Use the pre-mutation snapshot only for a new interface
+  ansible.builtin.set_fact:
+    samba_ad_router_nic_baseline: "{{ samba_ad_router_nic_snapshot.stdout | from_json }}"
+  when: samba_ad_router_nic_plan.action == 'add'
+  no_log: true
+
+- name: Load the protected original network baseline for reexecution
+  ansible.builtin.slurp:
+    src: /root/samba-ad-s1-network/before.json
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_saved_baseline
+  when: samba_ad_router_nic_plan.action == 'verify'
+  no_log: true
+
+- name: Keep reexecution bound to the original network baseline
+  ansible.builtin.set_fact:
+    samba_ad_router_nic_baseline: "{{ samba_ad_router_nic_saved_baseline.content | b64decode | from_json }}"
+  when: samba_ad_router_nic_plan.action == 'verify'
+  no_log: true
+
+- name: Validate absence or live state without repairing drift
+  ansible.builtin.include_tasks: readback.yml
+  vars:
+    samba_ad_router_nic_readback_phase: "{{ 'absent' if samba_ad_router_nic_plan.action == 'add' else 'verify' }}"
 
 - name: Read the dedicated network file
   ansible.builtin.stat:

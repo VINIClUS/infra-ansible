@@ -10,11 +10,23 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import time
 
 GIB = 1024 ** 3
+
+# Use the installed authoritative parser, which can retain errors and skip a rule.
+PVE_VALIDATE_FW = r"""
+use strict; use warnings;
+local $SIG{__WARN__} = sub { die "firewall parser warning\n"; };
+my $cluster = PVE::Firewall::load_clusterfw_conf();
+my $conf = PVE::Firewall::load_vmfw_conf($cluster, $ARGV[0], $ARGV[1]);
+my $rules = $conf->{rules};
+die "rule count mismatch\n" unless scalar(@$rules) == $ARGV[2];
+for my $r (@$rules) { die "invalid firewall rule\n" if $r->{errors}; }
+"""
 
 
 def require(ok, field):
@@ -86,11 +98,12 @@ def validate(r):
 def firewall_text(r):
     c = r["resource"]
     lines = ["# " + marker(r), "[OPTIONS]", "enable: 1", "policy_in: DROP", "policy_out: DROP",
-             "ipfilter: 1", "macfilter: 1", "dhcp: 0", "ndp: 0", "radv: 0", "", "[IPSET ipfilter-net0]",
+             "ipfilter: 1", "macfilter: 1", "dhcp: 0", "ndp: 0", "radv: 0", "log_level_in: nolog", "log_level_out: nolog", "", "[IPSET ipfilter-net0]",
              str(ipaddress.IPv4Interface(c["address"]).ip), "", "[RULES]"]
     for flow in r["firewall"]["flows"]:
         peer = "-source" if flow["direction"] == "IN" else "-dest"
-        lines.append(f'{flow["direction"]} ACCEPT {peer} {flow["peer"]} -p {flow["proto"]} -dport {flow["port"]}')
+        lines.append(f'{flow["direction"]} ACCEPT {peer} {flow["peer"]} -p {flow["proto"]} -dport {flow["port"].replace("-", ":")}')
+    lines += ["IN DROP", "OUT DROP"]
     return "\n".join(lines) + "\n"
 
 
@@ -166,6 +179,27 @@ def capacity(api, r, guests, booting=False):
                 and status.get("avail", 0) >= c["disk_gib"] * GIB + 2 * GIB, "storage capacity")
 
 
+def check_collisions(r, api, guests):
+    c = r["resource"]
+    for g in guests:
+        if g.get("type") not in ["lxc", "qemu"]:
+            continue
+        if g.get("vmid") == c["vmid"]:
+            continue
+        for current in [1, 0]:
+            config = api.get(f'/nodes/{g["node"]}/{g["type"]}/{g["vmid"]}/config', current=current)
+            require(c["name"] not in [config.get("name"), config.get("hostname")], "name collision")
+            for key, value in config.items():
+                if re.fullmatch(r"(?:net|ipconfig)[0-9]+", key):
+                    require(c["mac"].lower() not in str(value).lower(), "MAC collision")
+                    require(not re.search(r"(?:^|,)ip=" + re.escape(str(ipaddress.IPv4Interface(c["address"]).ip))
+                                          + r"(?:/|,|$)", str(value)), "IP collision")
+
+
+def pending_empty(api, path):
+    require(not any("pending" in x or x.get("delete") for x in api.get(path + "/pending")), "pending changes")
+
+
 def reconcile(r, api, check=False):
     validate(r)
     c, t = r["resource"], r["template"]
@@ -184,7 +218,7 @@ def reconcile(r, api, check=False):
         require(live[0].get("node") in allowed_nodes and live[0].get("type") == c["kind"], "placement/type")
         if r["action"] == "absent":
             path = f'/nodes/{live[0]["node"]}/{c["kind"]}/{c["vmid"]}'
-        cfg = api.get(path + "/config")
+        cfg = api.get(path + "/config", current=1)
         require(digest(r["expected_digest"]) and cfg.get("digest") == r["expected_digest"], "guest digest")
         verify_config(r, cfg, configured=r["action"] != "absent", isolated=not r["boot"] or r["action"] == "start")
         require(not any("pending" in x or x.get("delete") for x in api.get(path + "/pending")), "pending changes")
@@ -208,21 +242,12 @@ def reconcile(r, api, check=False):
     require(r["action"] != "start", "cannot start absent guest")
     require(r["expected_digest"] is None, "new guest absence")
     require(c["node"] != t["node"] or c["storage"] == t["storage"], "local clone storage")
-    for g in guests:
-        if g.get("type") not in ["lxc", "qemu"]:
-            continue
-        config = api.get(f'/nodes/{g["node"]}/{g["type"]}/{g["vmid"]}/config')
-        require(c["name"] not in [config.get("name"), config.get("hostname")], "name collision")
-        for key, value in config.items():
-            if re.fullmatch(r"(?:net|ipconfig)[0-9]+", key):
-                require(c["mac"].lower() not in str(value).lower(), "MAC collision")
-                require(not re.search(r"(?:^|,)ip=" + re.escape(str(ipaddress.IPv4Interface(c["address"]).ip))
-                                      + r"(?:/|,|$)", str(value)), "IP collision")
+    check_collisions(r, api, guests)
     capacity(api, r, guests)
     require(api.get("/cluster/firewall/options").get("enable") == 1, "cluster firewall enabled")
     require(api.get(f'/nodes/{c["node"]}/firewall/options').get("enable", 1) == 1, "node firewall enabled")
     template_path = f'/nodes/{t["node"]}/{c["kind"]}/{t["vmid"]}'
-    source = api.get(template_path + "/config")
+    source = api.get(template_path + "/config", current=1)
     require(source.get("template") == 1 and source.get("digest") == t["digest"] and not source.get("lock")
             and not source.get("onboot"), "template digest/identity")
     safe_devices(source, t["disk"])
@@ -234,87 +259,232 @@ def reconcile(r, api, check=False):
             and size_gib(source, t["disk"]) <= c["disk_gib"], "local disk/no shrink")
     if check:
         return {"changed": True, "state": "planned"}
-    api.probe(r) if hasattr(api, "probe") else None
+    api.assert_firewall_absent(r)
+    api.probe_address(r)
     # Recheck the template immediately before clone; clone API has no digest parameter.
-    require(api.get(template_path + "/config").get("digest") == t["digest"], "template changed")
+    require(api.get(template_path + "/config", current=1).get("digest") == t["digest"], "template changed")
     api.mutate("create", template_path + "/clone", newid=c["vmid"], full=1, storage=t["storage"],
                description=marker(r), **{("hostname" if c["kind"] == "lxc" else "name"): c["name"]})
     source_path = f'/nodes/{t["node"]}/{c["kind"]}/{c["vmid"]}'
-    clone = api.get(source_path + "/config")
+    clone = api.get(source_path + "/config", current=1)
     verify_config(r, clone, configured=False)
     require(api.get(source_path + "/status/current")["status"] == "stopped", "clone stopped")
     params = desired_config(r, isolated=True)
     if c["kind"] == "lxc" and clone.get("features"):
         params["delete"] = "features"
     api.mutate("set", source_path + "/config", digest=clone["digest"], **params)
-    clone = api.get(source_path + "/config")
+    clone = api.get(source_path + "/config", current=1)
     if size_gib(clone, t["disk"]) < c["disk_gib"]:
         api.mutate("set", source_path + "/resize", disk=t["disk"], size=str(c["disk_gib"]) + "G", digest=clone["digest"])
     if t["node"] != c["node"]:
         require(api.get(source_path + "/status/current")["status"] == "stopped", "offline migration")
         api.mutate("create", source_path + "/migrate", target=c["node"], online=0,
                    **({"target-storage": c["storage"]} if c["kind"] == "lxc" else {"targetstorage": c["storage"], "with-local-disks": 1}))
-    cfg = api.get(path + "/config")
+    cfg = api.get(path + "/config", current=1)
     verify_config(r, cfg, isolated=True)
     require(api.get(path + "/status/current")["status"] == "stopped", "destination stopped")
     require(api.firewall(c["node"], c["kind"], c["vmid"], firewall_text(r), True), "firewall readback")
     if r["boot"]:
         boot_disconnected(r, api, path, cfg)
-    return {"changed": True, "state": "created", "digest": api.get(path + "/config")["digest"]}
+    return {"changed": True, "state": "created", "digest": api.get(path + "/config", current=1)["digest"]}
 
 
 def boot_disconnected(r, api, path, cfg):
-    capacity(api, r, api.get("/cluster/resources"), booting=True)
-    require(api.get(path + "/config")["digest"] == cfg["digest"], "preboot digest")
+    guests = api.get("/cluster/resources")
+    check_collisions(r, api, guests)
+    api.probe_address(r)
+    capacity(api, r, guests, booting=True)
+    require(api.get(path + "/config", current=1)["digest"] == cfg["digest"], "preboot digest")
     api.mutate("create", path + "/status/start")
     require(api.get(path + "/status/current")["status"] == "running", "boot readback")
     require(api.enforce(r), "runtime firewall; guest left disconnected")
-    before_link = api.get(path + "/config")
+    before_link = api.get(path + "/config", current=1)
     verify_config(r, before_link, isolated=True)
+    check_collisions(r, api, api.get("/cluster/resources"))
+    api.probe_address(r)
+    pending_empty(api, path)
     api.mutate("set", path + "/config", digest=before_link["digest"], net0=desired_config(r)["net0"])
-    verify_config(r, api.get(path + "/config"))
+    pending_empty(api, path)
+    verify_config(r, api.get(path + "/config", current=1))
+    require(api.link_ready(r, connected=True), "effective host NIC link")
+
+
+PVE_READ_RUNTIME = r"""
+import json, subprocess, sys
+from pathlib import Path
+def read(argv):
+    return subprocess.run(argv, check=True, text=True, capture_output=True, timeout=20).stdout
+print(json.dumps({"status":read(["pve-firewall","status"]),
+ "ipv4":read(["iptables-save","-t","filter"]), "ipv6":read(["ip6tables-save","-t","filter"]),
+ "ipsets":read(["ipset","save"]), "links":json.loads(read(["ip","-j","-d","link","show"])),
+ "bridge_filter":{"ipv4":int(Path("/proc/sys/net/bridge/bridge-nf-call-iptables").read_text()),
+                  "ipv6":int(Path("/proc/sys/net/bridge/bridge-nf-call-ip6tables").read_text())},
+ "firewall":Path("/etc/pve/firewall/"+str(int(sys.argv[1]))+".fw").read_text()}))
+"""
+
+
+def ipt_rule(body):
+    """Canonical AND clauses, preserving negation and jump/goto semantics."""
+    tokens = shlex.split(body)
+    if len(tokens) == 4 and tokens[:3] == ["-m", "comment", "--comment"] and re.fullmatch(r"PVESIG:[a-fA-F0-9]{40}", tokens[3]):
+        return None  # Pure non-terminating signature, never ignore a rule with a target.
+    aliases = {"--jump": "-j", "--goto": "-g", "--match": "-m", "--protocol": "-p", "--source": "-s", "--destination": "-d", "--set-mark": "--set-xmark"}
+    widths = {"--physdev-is-bridged": 0, "--match-set": 2, "--tcp-flags": 2}
+    singles = {"-j", "-g", "-m", "-p", "-s", "-d", "-i", "-o", "--physdev-in", "--physdev-out", "--ctstate", "--mac-source", "--set-xmark", "--dport", "--sport", "--icmpv6-type", "--src-type", "--dst-type", "--limit", "--limit-burst", "--nflog-prefix", "--nflog-group", "--nflog-range", "--nflog-threshold", "--reject-with"}
+    clauses = []; i = 0
+    while i < len(tokens):
+        negate = tokens[i] == "!"
+        if negate: i += 1
+        key = aliases.get(tokens[i], tokens[i]); i += 1
+        require(key in singles or key in widths, "unsupported runtime clause")
+        width = widths.get(key, 1); values = tokens[i:i + width]; i += width
+        require(len(values) == width, "truncated runtime clause")
+        if key == "-p": values[0] = {"6": "tcp", "17": "udp", "58": "ipv6-icmp", "icmpv6": "ipv6-icmp"}.get(values[0], values[0])
+        if key in ["-s", "-d"]: values[0] = str(ipaddress.ip_network(values[0], strict=False))
+        if key == "--mac-source": values[0] = values[0].lower()
+        if key == "--ctstate": values[0] = ",".join(sorted(values[0].split(",")))
+        if key == "--icmpv6-type": values[0] = {"router-advertisement": "134"}.get(values[0], values[0])
+        if key == "--set-xmark":
+            mark, _, mask = values[0].partition("/")
+            values[0] = hex(int(mark, 0)) + "/" + hex(int(mask, 0) if mask else 0xffffffff)
+        if key == "-m" and values[0] in ["tcp", "udp"] and "-p" in tokens and tokens[tokens.index("-p") + 1] in [values[0], {"tcp": "6", "udp": "17"}[values[0]]]:
+            require(not negate, "negated protocol module")
+            continue
+        clauses.append(tuple((["!" + key] if negate else [key]) + values))
+    require(sum(item[0] in ["-j", "-g"] for item in clauses) == 1, "missing/duplicate runtime target")
+    return tuple(sorted(clauses))
+
+
+def saved_filter(text):
+    require(text.count("*filter\n") == 1 and text.count("COMMIT") == 1, "filter family")
+    chains = {}; policies = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#") or line in ["*filter", "COMMIT"]: continue
+        if line.startswith(":"):
+            name, policy, counters = line[1:].split()
+            require(name not in chains, "duplicate chain")
+            chains[name] = []; policies[name] = policy
+        else:
+            require(line.startswith("-A "), "unknown save command")
+            _, chain, body = line.split(" ", 2)
+            require(chain in chains, "undeclared chain")
+            rule = ipt_rule(body)
+            if rule is not None: chains[chain].append(rule)
+    return chains, policies
+
+
+def target_of(rule):
+    return next((item[1] for item in rule if item[0] in ["-j", "-g"]), None)
+
+
+def deny_helper(chains, name, seen=None):
+    seen = set() if seen is None else seen
+    if name not in chains or name in seen: return False
+    for rule in chains[name]:
+        target = target_of(rule)
+        if target in ["DROP", "REJECT", "RETURN", "NFLOG", "LOG"]: continue
+        if not deny_helper(chains, target, seen | {name}): return False
+    return True
+
+
+def bridge_bindings(chains, direction, iface, vmid):
+    parent = "PVEFW-FWBR-" + direction
+    require(parent in chains, "FWBR parent")
+    expected = ipt_rule(f'-m physdev --physdev-is-bridged --physdev-{"out" if direction == "IN" else "in"} {iface} -j {iface}-{direction}')
+    require(chains[parent].count(expected) == 1, "exact own FWBR binding")
+    for rule in chains[parent]:
+        if rule == expected: continue
+        # Exact other-VM interface bindings cannot match this guest's device.
+        physical = next((item[1] for item in rule if item[0] == "--physdev-" + ("out" if direction == "IN" else "in")), None)
+        match = re.fullmatch(r"(?:tap|veth)([0-9]+)i[0-9]+", physical or "")
+        if match and int(match[1]) != vmid:
+            foreign = ipt_rule(f'-m physdev --physdev-is-bridged --physdev-{"out" if direction == "IN" else "in"} {physical} -j {physical}-{direction}')
+            if rule == foreign: continue
+        target = target_of(rule)
+        require(target not in ["ACCEPT", "RETURN", "MARK", "CONNMARK"] and deny_helper(chains, target), "broader FWBR path")
+
+
+def exact_ipsets(r, text):
+    c = r["resource"]; base = f'PVEFW-{c["vmid"]}-ipfilter-net0-v'
+    sets = {}; members = {}
+    for line in text.splitlines():
+        fields = shlex.split(line)
+        if not fields or len(fields) < 2 or fields[1] not in [base + "4", base + "6"]: continue
+        name = fields[1]
+        if fields[0] == "create":
+            require(name not in sets and fields[2] == "hash:net" and "family" in fields, "ipset type")
+            sets[name] = fields[fields.index("family") + 1]; members[name] = set()
+        elif fields[0] == "add":
+            require(name in members and len(fields) in [3, 4] and (len(fields) == 3 or fields[3] == "nomatch"), "ipset member flags")
+            entry = (str(ipaddress.ip_network(fields[2], strict=False)), len(fields) == 4)
+            require(entry not in members[name], "duplicate ipset member"); members[name].add(entry)
+        else: require(False, "unexpected ipset operation")
+    require(sets == {base + "4": "inet", base + "6": "inet6"}, "ipset families")
+    mac = bytearray.fromhex(c["mac"].replace(":", "")); mac[0] ^= 2
+    eui = bytes(mac[:3]) + bytes.fromhex("fffe") + bytes(mac[3:])
+    linklocal = ipaddress.IPv6Address(int(ipaddress.IPv6Address("fe80::")) | int.from_bytes(eui, "big"))
+    require(members[base + "4"] == {(str(ipaddress.ip_network(str(ipaddress.IPv4Interface(c["address"]).ip) + "/32")), False)}
+            and members[base + "6"] == {(str(linklocal) + "/128", False), ("fe80::/10", True)}, "broader/stale ipset membership")
 
 
 def runtime_firewall_ready(r, saved):
-    c = r["resource"]
-    if "Status: enabled/running" not in saved:
+    """Prove the supported legacy PVE path and exact project policy; unknown fails closed."""
+    try:
+        require(isinstance(saved, dict) and saved["status"].strip() == "Status: enabled/running", "firewall service")
+        c = r["resource"]; vmid = c["vmid"]
+        iface = ("veth" if c["kind"] == "lxc" else "tap") + str(vmid) + "i0"
+        exact_ipsets(r, saved["ipsets"])
+        require(saved["bridge_filter"] == {"ipv4": 1, "ipv6": 1}, "bridge netfilter hooks")
+        links = {link["ifname"]: link for link in saved["links"]}
+        bridge, left, right = f"fwbr{vmid}i0", f"fwln{vmid}i0", f"fwpr{vmid}p0"
+        require(links[iface].get("master") == bridge and links[left].get("master") == bridge
+                and links[right].get("master") == c["bridge"]
+                and links[left].get("link_index") == links[right]["ifindex"]
+                and links[right].get("link_index") == links[left]["ifindex"]
+                and links[bridge]["linkinfo"]["info_kind"] == "bridge"
+                and links[c["bridge"]]["linkinfo"]["info_kind"] == "bridge", "same-L2 bridge path")
+        for version in [4, 6]:
+            chains, policies = saved_filter(saved[f"ipv{version}"])
+            require(chains.get("FORWARD") == [ipt_rule("-j PVEFW-FORWARD")], "reachable first FORWARD hook")
+            forward = ["-m conntrack --ctstate INVALID -j DROP", "-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+                       "-m physdev --physdev-is-bridged --physdev-in fwln+ -j PVEFW-FWBR-IN",
+                       "-m physdev --physdev-is-bridged --physdev-out fwln+ -j PVEFW-FWBR-OUT"]
+            require(chains.get("PVEFW-FORWARD") == [ipt_rule(x) for x in forward], "broader PVE forward path")
+            require(chains.get("PVEFW-SET-ACCEPT-MARK") == [ipt_rule("-j MARK --set-mark 0x80000000/0x80000000")], "accept-mark helper")
+            for direction in ["IN", "OUT"]:
+                bridge_bindings(chains, direction, iface, vmid)
+                bodies = [f"-j CONNMARK --set-mark {vmid}"]
+                if direction == "OUT":
+                    bodies.append(f'-m mac ! --mac-source {c["mac"]} -j DROP')
+                    if version == 6: bodies.append("-p ipv6-icmp -m icmp6 --icmpv6-type 134 -j DROP")
+                    bodies += [f'-m set ! --match-set PVEFW-{vmid}-ipfilter-net0-v{version} src -j DROP',
+                               "-j MARK --set-mark 0x0/0x80000000"]
+                if version == 4:
+                    for flow in r["firewall"]["flows"]:
+                        if flow["direction"] != direction: continue
+                        peer = "-s" if direction == "IN" else "-d"
+                        action = "-j ACCEPT" if direction == "IN" else "-g PVEFW-SET-ACCEPT-MARK"
+                        bodies.append(f'{peer} {flow["peer"]} -p {flow["proto"]} --dport {flow["port"].replace("-", ":")} {action}')
+                # Explicit final rules block before PVE's implicit ICMP policy helper.
+                bodies += ["-j DROP", "-j PVEFW-Drop", "-j DROP"]
+                require(chains.get(iface + "-" + direction) == [ipt_rule(x) for x in bodies], "stale/broader project policy")
+        return True
+    except (ValueError, KeyError, TypeError, IndexError):
         return False
-    iface = ("veth" if c["kind"] == "lxc" else "tap") + str(c["vmid"]) + "i0"
-    families = saved.split("*filter\n")[1:]
-    if len(families) != 2:
-        return False
-    for family in families:
-        lines = family.split("COMMIT")[0].splitlines()
-        for direction in ["IN", "OUT"]:
-            chain = iface + "-" + direction
-            if not any(line.startswith(":" + chain + " ") for line in lines):
-                return False
-            # An INVALID-only DROP or anti-spoof DROP is not a default-drop policy.
-            if "-A " + chain + " -j DROP" not in lines:
-                return False
-            binding = "--physdev-out " if direction == "IN" else "--physdev-in "
-            if not any(line.startswith("-A PVEFW-FWBR-" + direction + " ") and binding + iface + " " in line
-                       and line.endswith("-j " + chain) for line in lines):
-                return False
-        outbound = "-A " + iface + "-OUT "
-        if not any(line.startswith(outbound) and "--mac-source " + c["mac"].lower() in line.lower()
-                   and line.endswith("-j DROP") for line in lines):
-            return False
-        if not any(line.startswith(outbound) and "! --match-set PVEFW-" + str(c["vmid"]) + "-ipfilter-net0-" in line
-                   and line.endswith("src -j DROP") for line in lines):
-            return False
-    return True
 
 
 class Pvesh:
     def run(self, argv):
         result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=180)
-        if result.returncode:
+        if result.returncode or (argv[:2] == ["pve-firewall", "compile"] and result.stderr.strip()):
             raise RuntimeError("PVE command failed; output suppressed; resource may require recovery")
         return result.stdout
 
-    def get(self, path):
-        return json.loads(self.run(["pvesh", "get", path, "--output-format", "json"]))
+    def get(self, path, **params):
+        argv = ["pvesh", "get", path, "--output-format", "json"]
+        for key, value in params.items():
+            argv += ["--" + key, str(value)]
+        return json.loads(self.run(argv))
 
     def mutate(self, method, path, **params):
         argv = ["pvesh", method, path, "--output-format", "json"]
@@ -333,26 +503,38 @@ class Pvesh:
             raise RuntimeError("PVE task timeout; do not retry until live task readback")
 
     def enforce(self, r):
+        for _ in range(15):
+            rules = json.loads(self.node_run(r, "python3 -c " + shlex.quote(PVE_READ_RUNTIME) + " " + str(r["resource"]["vmid"])))
+            if rules.get("firewall") == firewall_text(r) and runtime_firewall_ready(r, rules):
+                return True
+            time.sleep(2)
+        return False
+
+    def node_run(self, r, remote_command):
         c = r["resource"]
         nodes = self.get("/cluster/status")
         peers = [n for n in nodes if n.get("type") == "node" and n.get("name") == c["node"]]
         require(len(peers) == 1, "firewall node identity")
         address = str(ipaddress.IPv4Address(peers[0]["ip"]))
-        iface = ("veth" if c["kind"] == "lxc" else "tap") + str(c["vmid"]) + "i0"
         command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes",
                    "-o", "HostKeyAlias=" + c["node"], "-o", "UserKnownHostsFile=/etc/pve/nodes/" + c["node"]
-                   + "/ssh_known_hosts", "root@" + address, "pve-firewall status && iptables-save -t filter && ip6tables-save -t filter"]
-        for _ in range(15):
-            rules = self.run(command)
-            # The audited legacy PVE firewall is required; other backends fail closed.
-            if runtime_firewall_ready(r, rules):
-                return True
-            time.sleep(2)
-        return False
+                   + "/ssh_known_hosts", "root@" + address, remote_command]
+        return self.run(command)
 
-    def probe(self, r):
+
+    def link_ready(self, r, connected):
         c = r["resource"]
-        require(not Path(f"/etc/pve/firewall/{c['vmid']}.fw").exists(), "orphan firewall policy")
+        name = ("veth" if c["kind"] == "lxc" else "tap") + str(c["vmid"]) + "i0"
+        links = json.loads(self.node_run(r, "ip -j link show"))
+        matches = [link for link in links if link.get("ifname") == name]
+        return (len(matches) == 1 and (not connected or
+                {"UP", "LOWER_UP"} <= set(matches[0].get("flags", []))))
+
+    def assert_firewall_absent(self, r):
+        require(not Path(f"/etc/pve/firewall/{r['resource']['vmid']}.fw").exists(), "orphan firewall policy")
+
+    def probe_address(self, r):
+        c = r["resource"]
         self.run(["arping", "-D", "-I", c["bridge"], "-c", "3", "-w", "5", str(ipaddress.IPv4Interface(c["address"]).ip)])
 
     def firewall(self, node, kind, vmid, text, apply):
@@ -362,6 +544,8 @@ class Pvesh:
             require(not path.exists(), "preexisting firewall policy")
             with path.open("x") as f:
                 f.write(text)
+            self.run(["perl", "-MPVE::Firewall", "-e", PVE_VALIDATE_FW,
+                      "ct" if kind == "lxc" else "vm", str(vmid), str(len([line for line in text.split("[RULES]\n")[1].splitlines() if line]))])
             self.run(["pve-firewall", "compile"])
             self.run(["pve-firewall", "status"])
         return path.exists() and path.read_text() == text

@@ -52,6 +52,15 @@
     mode: "0700"
   delegate_to: "{{ samba_ad_router_nic_guest_host }}"
 
+- name: Preserve original interfaces addresses and routes for future readonly verification
+  ansible.builtin.copy:
+    content: "{{ samba_ad_router_nic_baseline | to_nice_json }}"
+    dest: /root/samba-ad-s1-network/before.json
+    mode: "0600"
+    force: false
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  no_log: true
+
 - name: Preserve existing persistent network files for console recovery
   ansible.builtin.command:
     argv:
@@ -130,72 +139,26 @@
       changed_when: true
       no_log: true
 
-    - name: Wait for the declared guest interface
-      ansible.builtin.command:
-        argv: [ip, link, show, dev, "{{ samba_ad_router_nic_request.interface }}"]
-      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
-      register: samba_ad_router_nic_link
-      changed_when: false
-      until: samba_ad_router_nic_link.rc == 0
-      retries: 6
-      delay: 2
+    - name: Wait for the new device then prove MAC PCI identity and unchanged old network
+      ansible.builtin.include_tasks: readback.yml
+      vars:
+        samba_ad_router_nic_readback_phase: preconfigure
 
-    - name: Configure only the new interface persistently
+    - name: Revalidate device identity immediately before reconfiguring only the new device
       ansible.builtin.command:
         argv:
-          - sh
-          - -ec
-          - 'networkctl reload; networkctl reconfigure "$1"'
-          - network
-          - "{{ samba_ad_router_nic_request.interface }}"
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_state.py') }}"
+          - --reconfigure
+        stdin: >-
+          {{ {'request': samba_ad_router_nic_request, 'baseline': samba_ad_router_nic_baseline} | to_json }}
       delegate_to: "{{ samba_ad_router_nic_guest_host }}"
       changed_when: true
-
-    - name: Drop persistent management connections before readback
-      ansible.builtin.meta: reset_connection
-
-    - name: Read the guest from a fresh strict SSH connection
-      ansible.builtin.command:
-        argv:
-          - ssh
-          - -o
-          - BatchMode=yes
-          - -o
-          - StrictHostKeyChecking=yes
-          - -o
-          - ControlMaster=no
-          - -o
-          - ControlPath=none
-          - -o
-          - IdentityAgent=none
-          - -o
-          - IdentitiesOnly=yes
-          - -i
-          - "{{ hostvars[samba_ad_router_nic_guest_host].ansible_ssh_private_key_file }}"
-          - >-
-            {{ hostvars[samba_ad_router_nic_guest_host].ansible_user }}@{{
-            hostvars[samba_ad_router_nic_guest_host].ansible_host }}
-          - 'ip -j -4 route show default; ip -j address show dev {{ samba_ad_router_nic_request.interface }}'
-      delegate_to: localhost
-      become: false
-      register: samba_ad_router_nic_network_readback
-      changed_when: false
       no_log: true
 
-    - name: Confirm route MAC address and MTU survived a new management connection
-      vars:
-        lines: "{{ samba_ad_router_nic_network_readback.stdout_lines }}"
-        iface: "{{ (lines[1] | from_json)[0] }}"
-        wanted: "{{ samba_ad_router_nic_request.address.split('/') }}"
-      ansible.builtin.assert:
-        that:
-          - (lines[0] | from_json) == (samba_ad_router_nic_routes.stdout | from_json)
-          - iface.address | upper == samba_ad_router_nic_request.mac
-          - iface.mtu | int == samba_ad_router_nic_request.mtu
-          - iface.addr_info | selectattr('local', 'equalto', wanted[0]) | list | length == 1
-          - >-
-            (iface.addr_info | selectattr('local', 'equalto', wanted[0]) | first).prefixlen | int == wanted[1] | int
-      no_log: true
+    - name: Verify live address prefix MAC MTU link and original routes through a fresh connection
+      ansible.builtin.include_tasks: readback.yml
 
     - name: Read current PVE digest after guest verification
       ansible.builtin.command:
@@ -203,6 +166,8 @@
           - pvesh
           - get
           - "/nodes/{{ samba_ad_router_nic_request.node }}/qemu/{{ samba_ad_router_nic_request.vmid }}/config"
+          - --current
+          - "1"
           - --output-format
           - json
       register: samba_ad_router_nic_final_config

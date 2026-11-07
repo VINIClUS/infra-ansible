@@ -5,3 +5,5 @@ samba_ad_guest_request: {}
 samba_ad_guest_router_host: ""
 samba_ad_guest_router_zone: identity
 samba_ad_guest_router_ruleset_sha256: ""
+samba_ad_guest_router_runtime_sha256: ""
+samba_ad_guest_router_contract: {}

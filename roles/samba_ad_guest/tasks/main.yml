@@ -21,22 +21,20 @@
       - samba_ad_guest_router_host in hostvars
       - samba_ad_guest_router_zone is match('^[a-z][a-z0-9]{0,15}$')
       - samba_ad_guest_router_ruleset_sha256 is match('^[a-f0-9]{64}$')
+      - samba_ad_guest_router_runtime_sha256 is match('^[a-f0-9]{64}$')
+      - samba_ad_guest_router_contract is mapping
     fail_msg: "S1 requires a private request, exact source-node limit and tag; no automatic deploy."
 
 - name: Read the effective router guard and persistent ruleset
   ansible.builtin.command:
-    argv:
-      - sh
-      - -ec
-      - >-
-        nft list chain inet filter restricted_{{ samba_ad_guest_router_zone }};
-        nft list chain inet filter forward
+    argv: [nft, -j, list, ruleset]
   vars:
     ansible_ssh_args: -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
   delegate_to: "{{ samba_ad_guest_router_host }}"
   register: samba_ad_guest_router_guard
   changed_when: false
   check_mode: false
+  no_log: true
 
 - name: Read the approved persistent router policy digest
   ansible.builtin.stat:
@@ -48,11 +46,23 @@
 - name: Refuse absent or changed network isolation
   ansible.builtin.assert:
     that:
-      - samba_ad_guest_router_guard.stdout is search('counter.*drop')
-      - >-
-        samba_ad_guest_router_guard.stdout | regex_findall('jump restricted_' ~ samba_ad_guest_router_zone)
-        | length == 2
       - samba_ad_guest_router_policy.stat.checksum == samba_ad_guest_router_ruleset_sha256
+
+- name: Prove the approved loaded router matrix and interface jump precedence
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_guard.py') }}"
+    stdin: >-
+      {{ {'runtime': samba_ad_guest_router_guard.stdout | from_json,
+          'contract': samba_ad_guest_router_contract, 'sha256': samba_ad_guest_router_runtime_sha256,
+          'zone': samba_ad_guest_router_zone} | to_json }}
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
 
 - name: Run the dedicated simulated or explicit lifecycle without command-line values
   ansible.builtin.command:

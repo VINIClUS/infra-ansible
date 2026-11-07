@@ -101,3 +101,34 @@ consultadas nesta sessão, além dos contratos versionados e ajuda Ansible insta
   cadeias tap/veth, hooks FWBR, DROP e ipfilter/macfilter.
 - [systemd.network](https://www.freedesktop.org/software/systemd/man/latest/systemd.network.html):
   match por MAC, MTU, Address, DHCP/RA/link-local desabilitados.
+
+## Gates corrigidos na revisão independente — round 1
+
+A aplicação continua pendente. A preparação agora distingue config ativa
+(`current=1`), desejada e pending; nenhum pending de link-up/delete produz sucesso.
+Colisões e ARP-DAD são repetidos antes de start e link, excluindo só o VMID próprio.
+O verificador PVE exige matriz, ordem/terminação, hooks FORWARD/FWBR, bridge e
+ipsets exatos em IPv4/IPv6; formatos desconhecidos falham fechados. Intervalos
+usam `:` apenas no PVE, com validação pelo parser instalado e warnings fatais.
+
+Antes de executar o guest, revisar o artefato de `nft -j list ruleset` capturado
+por conexão nova. O contrato do request inclui interface/matriz do roteador e
+`samba_ad_guest_router_runtime_sha256`. Calcular o fingerprint localmente, sem
+considerá-lo aprovação automática:
+
+```bash
+python3 tools/samba_ad/router_guard.py --fingerprint < /caminho/protegido/runtime-aprovado.json
+```
+
+Somente após revisão do artefato preencher o request inerte. O gate lê runtime
+novo e exige fingerprint, matriz, hook e ambos os jumps pela interface antes das
+permissões LAN/ops. Hash persistente em disco sozinho não prova regras carregadas.
+
+A extensão do router inventaria e preserva o baseline original de interfaces,
+endereços e rotas. MAC/PCI/ifindex são conferidos antes de reconfigure. Add e verify
+compartilham a mesma checagem readonly por conexão nova; drift de IP, prefixo, MAC,
+MTU, link e rotas falha sem reparo silencioso. O baseline protegido não é substituído.
+A retirada efetiva do tap é conferida depois de delete, sem reboot para limpar pending.
+
+Testes incluem snapshots adversos e o render nft em namespace local isolado, com
+AST conferido. Isso não substitui prova nos hosts reais nem auditoria pós-apply.

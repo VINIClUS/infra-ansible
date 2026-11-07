@@ -66,8 +66,7 @@ table inet filter {
     iifname {{ ifname(rule.from) }} oifname {{ ifname(rule.to) }}
 {%- if rule.saddr is defined %} ip saddr {{ addr(rule.saddr) }}{% endif %}
 {%- if rule.daddr is defined %} ip daddr {{ addr(rule.daddr) }}{% endif %}
-{%- if rule.proto is defined %} {{ rule.proto }} dport {{ addr(rule.dport) }}{% endif %}
-    accept comment "{{ rule.comment }}"
+{%- if rule.proto is defined %} {{ rule.proto }} dport {{ addr(rule.dport) }}{% endif %} accept comment "{{ rule.comment }}"
 {% endfor %}
     counter drop
   }
@@ -93,7 +92,9 @@ table inet filter {
 {% for name, zone in network_router_zones.items() if zone.internet | default(false) %}
 		iifname "{{ zone.interface }}" oifname "{{ network_router_wan_interface }}" ip daddr != @non_internet accept comment "{{ name }} to the internet"
 {% endfor %}
-{% for rule in network_router_forward_rules %}
+{% for rule in network_router_forward_rules
+   if not ((rule.from != 'wan' and network_router_zones[rule.from].restricted | default(false))
+       or (rule.to != 'wan' and network_router_zones[rule.to].restricted | default(false))) %}
 		iifname {{ ifname(rule.from) }} oifname {{ ifname(rule.to) }}
 {%- if rule.saddr is defined %} ip saddr {{ addr(rule.saddr) }}{% endif %}
 {%- if rule.daddr is defined %} ip daddr {{ addr(rule.daddr) }}{% endif %}

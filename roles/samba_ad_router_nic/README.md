@@ -30,3 +30,19 @@ falha fechado para recuperação. A política de zona é uma operação manual s
 pela role existente `network_router`, com `restricted: true`, preservando a política
 completa das zonas antigas. SDN continua pela role `proxmox_sdn` existente.
 Ver [runbook S1](../../docs/samba-ad-s1.md). Nada se aplica via main.
+
+## Identidade prévia e reexecução
+
+`router_state.py` captura interfaces, MACs, ifindices, devices/drivers, endereços e
+rotas IPv4/IPv6 antes da alteração. Nome/MAC/endereço novos devem estar ausentes.
+O snapshot original fica root-only em `/root/samba-ad-s1-network/before.json`,
+sem substituição silenciosa. Baseline anterior bloqueia uma nova extensão até
+revisão da recuperação; baseline ausente impede declarar uma reexecução verificada.
+
+Após hotplug, a checagem precede `networkctl reconfigure`: MAC, PCI virtio e
+ifindex novos, sem mudança de interfaces/endereço/rotas antigos. O executor repete
+a checagem imediatamente antes do comando; dispositivo errado não é reconfigurado.
+O mesmo `readback.yml` readonly por conexão nova serve add e verify e confere
+IP/prefixo/MTU/MAC/link, rotas antigas e ausência de default route no novo device.
+Drift falha sem reparo. Remoção PVE só termina com current=1 sem NIC, pending vazio
+e ausência do tap efetivo no host; pending preserva falha/console, sem reboot.

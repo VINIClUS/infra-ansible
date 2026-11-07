@@ -41,3 +41,25 @@ S1 aceita somente `scope: lab` e nomes sob `lab.ad.test`. `scope: production`
 é bloqueado no código até a integração revisada de S2, sem override booleano.
 VM Debian de laboratório usa o mesmo lifecycle para fallback; não cria outro LXC
 quando a primeira prova protegida já falha. Consultar [runbook](../../docs/samba-ad-s1.md).
+
+## Readback após revisão S1 round 1
+
+Antes de `start` e antes de conectar, a varredura repete nome/MAC/IP em config
+ativa e desejada de todos os outros VMIDs, e ARP-DAD no segmento. Somente o próprio
+VMID é excluído. DAD independe da ausência do arquivo firewall. `current=1`, pending
+vazio e link efetivo no PVE são exigidos; pending não é sucesso nem motivo para
+reiniciar guests. Uma falha deixa diagnóstico para recuperação por console.
+
+O gate lê IPv4/IPv6, ipsets, bridge e hooks. Compara o caminho FORWARD/FWBR, a
+ordem e todas as regras do guest com a matriz, os membros exatos dos dois ipsets,
+MAC, accept-mark e netfilter da bridge. ACCEPT anterior, política antiga, set
+amplo, hook divergente ou variante desconhecida falham fechados. Regras finais
+DROP explícitas precedem helpers implícitos do PVE. Intervalos canônicos usam
+hífen no contrato/nft e dois-pontos no PVE; o parser PVE instalado recusa erros
+em regras e warnings de compile são fatais. Nenhuma liberação por fragmentos.
+
+O roteador exige `samba_ad_guest_router_contract` (interface e matriz exata),
+`samba_ad_guest_router_runtime_sha256` de artefato JSON carregado/revisado e o hash
+persistente já existente. `router_guard.py --fingerprint` normaliza counters e
+handles, mas não aprova o artefato. O gate compara runtime novo, matriz, hook inet
+e jumps pela interface antes de LAN/ops; um hash correto de disco não o substitui.

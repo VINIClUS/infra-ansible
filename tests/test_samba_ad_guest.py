@@ -43,8 +43,8 @@ class Fake:
         self.enforcement_ok = True
         self.fw = {}
 
-    def get(self, path):
-        self.calls.append(("get", path, {}))
+    def get(self, path, **params):
+        self.calls.append(("get", path, params))
         if path == "/cluster/status":
             return [{"type": "cluster", "quorate": 1}, *[{"type": "node", "name": n, "online": 1}
                     for n in ["node-a", "node-b"]]]
@@ -88,6 +88,16 @@ class Fake:
             self.guests[int(path.split("/")[4])]["status"] = "running"
         elif method == "delete":
             del self.guests[int(path.split("/")[4])]
+
+    def probe_address(self, r):
+        self.calls.append(("probe", "address", {}))
+
+    def assert_firewall_absent(self, r):
+        assert r["resource"]["vmid"] not in self.fw
+
+    def link_ready(self, r, connected):
+        self.calls.append(("link", "runtime", {"connected": connected}))
+        return True
 
     def enforce(self, r):
         self.calls.append(("enforce", "runtime", {}))
@@ -153,7 +163,7 @@ def test_reexecution_requires_digest_and_verifies_without_reconfiguring():
     m = module(); api = Fake(); r = request(); m.reconcile(r, api)
     r["expected_digest"] = "b" * 40; api.calls.clear()
     assert not m.reconcile(r, api)["changed"]
-    assert all(method in ["get", "firewall", "enforce"] for method, _, _ in api.calls)
+    assert all(method in ["get", "firewall", "enforce", "link"] for method, _, _ in api.calls)
     r["expected_digest"] = "f" * 40
     with pytest.raises(ValueError): m.reconcile(r, api)
 
@@ -244,7 +254,8 @@ def test_runtime_firewall_requires_unconditional_drop_and_bindings_in_both_famil
             f"-A {iface}-IN -j DROP", f"-A {iface}-OUT -j DROP", "COMMIT"])
     valid = "Status: enabled/running\n" + family() + "\n" + family()
     assert hasattr(m, "runtime_firewall_ready"), "runtime policy verification missing"
-    assert m.runtime_firewall_ready(r, valid)
+    # Fragment-only legacy evidence has no ipsets, topology or approved path proof.
+    assert not m.runtime_firewall_ready(r, valid)
     assert not m.runtime_firewall_ready(r, "Status: enabled/running\n" + family())
     assert not m.runtime_firewall_ready(r, valid.replace(f"-A {iface}-IN -j DROP", f"-A {iface}-IN -m conntrack --ctstate INVALID -j DROP"))
     assert not m.runtime_firewall_ready(r, valid.replace("--physdev-out " + iface, "--physdev-out foreign"))
@@ -279,7 +290,7 @@ def test_explicit_start_rechecks_host_reserve_after_offline_preparation():
     api.available = 6 * 1024**3 - 1; api.calls.clear()
     r.update(action="start", boot=True, expected_digest="b" * 40)
     with pytest.raises(ValueError): m.reconcile(r, api)
-    assert all(method in ["get", "firewall"] for method, _, _ in api.calls)
+    assert all(method in ["get", "firewall", "probe"] for method, _, _ in api.calls)
     assert api.guests[800080].get("status", "stopped") == "stopped"
 
 
@@ -288,8 +299,8 @@ def test_start_does_not_count_own_ram_reservation_twice_or_change_foreign_guests
     api.guests[800081] = {"node": "node-b", "hostname": "foreign", "memory": 23 * 1024,
                          "digest": "f" * 40}
     foreign = api.guests[800081].copy()
-    def reserved(path):
-        result = original_get(path)
+    def reserved(path, **params):
+        result = original_get(path, **params)
         if path == "/cluster/resources":
             for guest in result:
                 guest["maxmem"] = int(api.guests[guest["vmid"]].get("memory", 0)) * 1024**2
@@ -299,3 +310,17 @@ def test_start_does_not_count_own_ram_reservation_twice_or_change_foreign_guests
     r.update(action="start", boot=True, expected_digest="b" * 40)
     assert m.reconcile(r, api)["state"] == "started"
     assert api.guests[800081] == foreign
+
+
+def test_rpc_range_is_valid_numeric_pve_grammar_and_compile_warnings_are_fatal(monkeypatch):
+    import re
+    import types
+    m = module(); r = request(); r["firewall"]["flows"][0]["port"] = "49152-65535"
+    text = m.firewall_text(r)
+    ports = re.findall(r"-dport (\S+)", text)
+    assert "49152:65535" in ports
+    # PVE parse_port_name_number_or_range numeric branch (official source cached).
+    assert all(re.fullmatch(r"[0-9]+(?::[0-9]+)?", p) for p in ports)
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: types.SimpleNamespace(
+        returncode=0, stdout="", stderr="warning: invalid port; rule ignored"))
+    with pytest.raises(RuntimeError): m.Pvesh().run(["pve-firewall", "compile"])

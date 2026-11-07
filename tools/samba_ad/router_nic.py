@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import socket
 
 
 def require(ok, field):
@@ -67,6 +68,14 @@ def api(method, path, **params):
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
+def host_nic_present(r):
+    require(socket.gethostname().split(".")[0] == r["node"], "local PVE node identity")
+    result = subprocess.run(["ip", "-j", "link", "show"], capture_output=True, text=True, check=False, timeout=15)
+    require(result.returncode == 0, "host link readback")
+    return any(link.get("ifname") == "tap" + str(r["vmid"]) + "i" + r["nic"][3:]
+               for link in json.loads(result.stdout))
+
+
 def main():
     try:
         r = json.load(sys.stdin)
@@ -74,19 +83,22 @@ def main():
         require(type(r.get("vmid")) is int and isinstance(r.get("node"), str)
                 and re.fullmatch(r"[a-z0-9-]+", r["node"]), "identity")
         path = f'/nodes/{r["node"]}/qemu/{r["vmid"]}'
-        config = api("get", path + "/config")
+        config = api("get", path + "/config", current=1)
         result = plan(r, config, api("get", path + "/pending"), reverting="--revert" in sys.argv)
         require(api("get", path + "/status/current").get("status") == "running", "running router")
         if "--revert" in sys.argv:
             if result["action"] == "verify":
                 api("set", path + "/config", digest=config["digest"], delete=r["nic"])
-                require(r["nic"] not in api("get", path + "/config"), "remove readback")
+                pending = api("get", path + "/pending")
+                require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; console required")
+                require(r["nic"] not in api("get", path + "/config", current=1), "active remove readback")
+                require(not host_nic_present(r), "effective host NIC remains; console required")
             print(json.dumps({"changed": result["action"] == "verify"}))
             return 0
         changed = result["action"] == "add"
         if "--plan" not in sys.argv and changed:
             api("set", path + "/config", **result["params"])
-            after = api("get", path + "/config")
+            after = api("get", path + "/config", current=1)
             r["expected_digest"] = after["digest"]
             require(plan(r, after, api("get", path + "/pending"))["action"] == "verify", "NIC readback")
         print(json.dumps({"changed": changed, "action": result["action"], "network": result["network"]}))

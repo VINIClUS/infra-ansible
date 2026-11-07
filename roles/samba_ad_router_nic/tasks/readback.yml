@@ -1,0 +1,23 @@
+---
+- name: Prove current guest identity and old network preservation over a new strict connection
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_state.py') }}"
+      - --verify-live
+    stdin: >-
+      {{ {'request': samba_ad_router_nic_request, 'baseline': samba_ad_router_nic_baseline,
+          'phase': samba_ad_router_nic_readback_phase | default('verify')} | to_json }}
+  vars:
+    ansible_ssh_args: >-
+      -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
+      -o IdentityAgent=none -o IdentitiesOnly=yes
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_readback
+  changed_when: false
+  check_mode: false
+  until: samba_ad_router_nic_readback.rc == 0
+  retries: 6
+  delay: 2
+  no_log: true

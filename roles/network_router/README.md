@@ -68,3 +68,9 @@ zones keep their current policy. Restricted zones cannot enable `full_access`,
 Return traffic is established/related. This routes policy only: same-L2 traffic
 requires the dedicated guest firewall with default IN/OUT DROP and anti-spoofing.
 Samba S1 adds the QEMU NIC with `samba_ad_router_nic` before this role runs.
+
+As regras da cadeia restrita emitem match e verdict na mesma instrução nft.
+Fluxos dessa zona não são emitidos novamente no loop genérico de forward; o
+render não cria um ACCEPT incondicional por quebra de linha. A política legada
+fora da zona restrita permanece no seu caminho existente. A prova S1 também
+verifica o AST carregado contra a matriz e os jumps, além do fingerprint aprovado.

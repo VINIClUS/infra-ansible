@@ -1,5 +1,5 @@
 ---
-# Fictional, inert request; not S0 manifest, not loaded inventory.
+# Inert S1 request. Runtime SHA256 stays empty until a reviewed live readback.
 samba_ad_guest_enabled: false
 samba_ad_guest_apply: false
 samba_ad_guest_router_host: router-test
@@ -47,3 +47,13 @@ samba_ad_guest_request:
         peer: 192.0.2.123/32
         proto: udp
         port: '123'
+samba_ad_guest_router_runtime_sha256: ''
+samba_ad_guest_router_contract:
+  interface: eth4
+  rules:
+    - iif: eth0
+      oif: eth4
+      source: 192.0.2.25/32
+      destination: 198.51.100.80/32
+      proto: tcp
+      port: '22'
