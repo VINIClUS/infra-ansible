@@ -88,6 +88,12 @@ def validate(r, observed, baseline, phase):
             and link["ifindex"] not in {old["ifindex"] for old in baseline["links"]}, "wrong MAC/device/index")
     require(sum(item.get("address", "").lower() == mac for item in observed["links"]) == 1, "duplicate MAC")
     if phase == "verify":
+        connected = [route for route in observed["routes4"]
+                     if route.get("dev") == name and route.get("type", "unicast") == "unicast"
+                     and route.get("table", "main") in ["main", 254]
+                     and route.get("protocol") in ["kernel", 2] and route.get("scope") in ["link", 253]
+                     and not route.get("gateway") and route.get("dst") == str(target.network)]
+        require(len(connected) == 1, "connected route missing/ambiguous in main table")
         require(link.get("mtu") == r["mtu"] and link.get("operstate") == "UP"
                 and {"UP", "LOWER_UP"} <= set(link.get("flags", [])), "link/MTU drift")
         ips = [a for item in observed["addresses"] if item["ifname"] == name for a in item.get("addr_info", [])]

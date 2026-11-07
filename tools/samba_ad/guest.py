@@ -326,11 +326,11 @@ print(json.dumps({"status":read(["pve-firewall","status"]),
 def ipt_rule(body):
     """Canonical AND clauses, preserving negation and jump/goto semantics."""
     tokens = shlex.split(body)
-    if len(tokens) == 4 and tokens[:3] == ["-m", "comment", "--comment"] and re.fullmatch(r"PVESIG:[a-fA-F0-9]{40}", tokens[3]):
+    if len(tokens) == 4 and tokens[:3] == ["-m", "comment", "--comment"] and re.fullmatch(r"PVESIG:(?:[A-Za-z0-9+/]{27}|[a-fA-F0-9]{40})", tokens[3]):
         return None  # Pure non-terminating signature, never ignore a rule with a target.
     aliases = {"--jump": "-j", "--goto": "-g", "--match": "-m", "--protocol": "-p", "--source": "-s", "--destination": "-d", "--set-mark": "--set-xmark"}
     widths = {"--physdev-is-bridged": 0, "--match-set": 2, "--tcp-flags": 2}
-    singles = {"-j", "-g", "-m", "-p", "-s", "-d", "-i", "-o", "--physdev-in", "--physdev-out", "--ctstate", "--mac-source", "--set-xmark", "--dport", "--sport", "--icmpv6-type", "--src-type", "--dst-type", "--limit", "--limit-burst", "--nflog-prefix", "--nflog-group", "--nflog-range", "--nflog-threshold", "--reject-with"}
+    singles = {"-j", "-g", "-m", "-p", "-s", "-d", "-i", "-o", "--physdev-in", "--physdev-out", "--ctstate", "--mac-source", "--set-xmark", "--dport", "--sport", "--dports", "--sports", "--icmp-type", "--icmpv6-type", "--mark", "--src-type", "--dst-type", "--limit", "--limit-burst", "--nflog-prefix", "--nflog-group", "--nflog-range", "--nflog-threshold", "--reject-with"}
     clauses = []; i = 0
     while i < len(tokens):
         negate = tokens[i] == "!"
@@ -370,18 +370,25 @@ def saved_filter(text):
             require(chain in chains, "undeclared chain")
             rule = ipt_rule(body)
             if rule is not None: chains[chain].append(rule)
+    # A real save cannot reference an undeclared user chain. Reject incomplete
+    # evidence too, including references after a terminal rule.
+    builtin = {"ACCEPT", "DROP", "REJECT", "RETURN", "MARK", "CONNMARK", "NFLOG", "LOG", "NFQUEUE"}
+    for rules in chains.values():
+        for rule in rules:
+            transfer, target = transfer_of(rule)
+            require(target in chains or (transfer == "-j" and target in builtin), "undeclared runtime target")
     return chains, policies
 
 
-def target_of(rule):
-    return next((item[1] for item in rule if item[0] in ["-j", "-g"]), None)
+def transfer_of(rule):
+    return next(((item[0], item[1]) for item in rule if item[0] in ["-j", "-g"]), (None, None))
 
 
 def deny_helper(chains, name, seen=None):
     seen = set() if seen is None else seen
     if name not in chains or name in seen: return False
     for rule in chains[name]:
-        target = target_of(rule)
+        transfer, target = transfer_of(rule)
         if target in ["DROP", "REJECT", "RETURN", "NFLOG", "LOG"]: continue
         if not deny_helper(chains, target, seen | {name}): return False
     return True
@@ -400,7 +407,10 @@ def bridge_bindings(chains, direction, iface, vmid):
         if match and int(match[1]) != vmid:
             foreign = ipt_rule(f'-m physdev --physdev-is-bridged --physdev-{"out" if direction == "IN" else "in"} {physical} -j {physical}-{direction}')
             if rule == foreign: continue
-        target = target_of(rule)
+        transfer, target = transfer_of(rule)
+        # A jump returns here; a goto may return to PVEFW-FORWARD and skip the
+        # binding. No parent goto is accepted without a total-termination proof.
+        require(transfer == "-j", "goto can escape the FWBR binding")
         require(target not in ["ACCEPT", "RETURN", "MARK", "CONNMARK"] and deny_helper(chains, target), "broader FWBR path")
 
 

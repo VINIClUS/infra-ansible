@@ -121,3 +121,47 @@ def test_recovery_can_remove_exact_own_pending_nic_but_refuses_foreign_pending()
     assert m.plan(r, c, pending, reverting=True)["action"] == "verify"
     with pytest.raises(ValueError): m.plan(r, c, pending)
     with pytest.raises(ValueError): m.plan(r, c, pending + [{"key": "memory", "pending": 2048}], reverting=True)
+
+
+@pytest.mark.parametrize("host_state,expected", [("residual", 2), ("read_error", 2), ("absent", 0)])
+def test_revert_already_absent_always_proves_host_tap_absence(monkeypatch, capsys, host_state, expected):
+    import io, json
+    m = module(); r = request(); cfg = config(); calls = []; host_checks = []
+    def api(method, path, **params):
+        calls.append((method, path, params))
+        assert method == "get", "absent revert must stay readonly"
+        if path.endswith("/config"):
+            assert params.get("current") == 1
+            return cfg.copy()
+        if path.endswith("/pending"): return []
+        if path.endswith("/status/current"): return {"status": "running"}
+        raise AssertionError(path)
+    def host(r):
+        host_checks.append(True)
+        if host_state == "read_error": raise OSError("host read unavailable")
+        return host_state == "residual"
+    monkeypatch.setattr(m, "api", api); monkeypatch.setattr(m, "host_nic_present", host)
+    monkeypatch.setattr(m.sys, "stdin", io.StringIO(json.dumps(r))); monkeypatch.setattr(m.sys, "argv", ["router_nic.py", "--revert"])
+    assert m.main() == expected
+    assert host_checks == [True]
+    if expected == 0: assert json.loads(capsys.readouterr().out)["changed"] is False
+
+
+def test_revert_retry_after_delete_still_refuses_a_residual_tap(monkeypatch):
+    import io, json
+    m = module(); r = request(); cfg = config(); cfg["net4"] = m.nic_text(r); deletes = []; checks = []
+    def api(method, path, **params):
+        if method == "set": deletes.append(path); cfg.pop("net4", None); return None
+        if path.endswith("/config"):
+            assert params.get("current") == 1
+            return cfg.copy()
+        if path.endswith("/pending"): return []
+        if path.endswith("/status/current"): return {"status": "running"}
+        raise AssertionError(path)
+    def host(r): checks.append(True); return True
+    monkeypatch.setattr(m, "api", api); monkeypatch.setattr(m, "host_nic_present", host)
+    monkeypatch.setattr(m.sys, "argv", ["router_nic.py", "--revert"])
+    for _ in range(2):
+        monkeypatch.setattr(m.sys, "stdin", io.StringIO(json.dumps(r)))
+        assert m.main() == 2
+    assert len(deletes) == 1 and len(checks) == 2

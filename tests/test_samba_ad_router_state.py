@@ -29,7 +29,12 @@ def observed():
                        "flags": ["UP", "LOWER_UP"], "operstate": "UP", "link_type": "ether",
                        "device": "/sys/devices/pci0000:00/0000:00:05.0/virtio4", "driver": "virtio_net"})
     d["addresses"].append({"ifname": "eth4", "addr_info": [{"family": "inet", "local": "198.51.100.1", "prefixlen": 25}]})
-    d["routes4"].append({"dst": "198.51.100.0/25", "dev": "eth4", "protocol": "kernel"})
+    d["routes4"] += [
+        {"dst": "198.51.100.0/25", "dev": "eth4", "protocol": "kernel", "scope": "link", "table": "main", "type": "unicast"},
+        {"dst": "198.51.100.1", "dev": "eth4", "protocol": "kernel", "scope": "host", "table": "local", "type": "local"},
+        {"dst": "198.51.100.0", "dev": "eth4", "protocol": "kernel", "scope": "link", "table": "local", "type": "broadcast"},
+        {"dst": "198.51.100.127", "dev": "eth4", "protocol": "kernel", "scope": "link", "table": "local", "type": "broadcast"},
+    ]
     return d
 
 
@@ -86,3 +91,28 @@ def test_cli_never_reconfigures_a_wrong_device_or_repairs_verify_drift(monkeypat
     monkeypatch.setattr(m.sys, "argv", ["router_state.py", mode])
     monkeypatch.setattr(m.sys, "stdin", io.StringIO(json.dumps({"request": r, "baseline": b, "phase": "verify"})))
     assert m.main() == 2 and not calls
+
+
+@pytest.mark.parametrize("change", ["missing", "local_only", "broadcast_only", "wrong_table", "wrong_prefix", "wrong_protocol", "wrong_scope"])
+def test_verify_requires_unicast_connected_route_not_just_address_or_local_routes(change):
+    m = module(); r = R["request"](); b = baseline(); d = observed()
+    route = d["routes4"][1]
+    if change == "missing": d["routes4"].pop(1)
+    if change == "local_only": route.update(type="local", table="local")
+    if change == "broadcast_only": route.update(type="broadcast", table="local")
+    if change == "wrong_table": route["table"] = 123
+    if change == "wrong_prefix": route["dst"] = "198.51.100.0/26"
+    if change == "wrong_protocol": route["protocol"] = "static"
+    if change == "wrong_scope": route["scope"] = "host"
+    before = copy.deepcopy(d)
+    with pytest.raises(ValueError, match="connected route"): m.validate(r, d, b, "verify")
+    assert d == before
+
+
+@pytest.mark.parametrize("representation", ["implicit_main_unicast", "numeric_kernel_metadata"])
+def test_connected_route_accepts_equivalent_kernel_json_representations(representation):
+    m = module(); d = observed(); route = d["routes4"][1]
+    if representation == "implicit_main_unicast":
+        route.pop("type"); route.pop("table")
+    else: route.update(table=254, protocol=2, scope=253)
+    m.validate(R["request"](), d, baseline(), "verify")

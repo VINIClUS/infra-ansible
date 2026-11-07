@@ -89,10 +89,10 @@ def main():
         if "--revert" in sys.argv:
             if result["action"] == "verify":
                 api("set", path + "/config", digest=config["digest"], delete=r["nic"])
-                pending = api("get", path + "/pending")
-                require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; console required")
-                require(r["nic"] not in api("get", path + "/config", current=1), "active remove readback")
-                require(not host_nic_present(r), "effective host NIC remains; console required")
+            pending = api("get", path + "/pending")
+            require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; console required")
+            require(r["nic"] not in api("get", path + "/config", current=1), "active remove readback")
+            require(not host_nic_present(r), "effective host NIC remains; console required")
             print(json.dumps({"changed": result["action"] == "verify"}))
             return 0
         changed = result["action"] == "add"

@@ -46,3 +46,10 @@ O mesmo `readback.yml` readonly por conexão nova serve add e verify e confere
 IP/prefixo/MTU/MAC/link, rotas antigas e ausência de default route no novo device.
 Drift falha sem reparo. Remoção PVE só termina com current=1 sem NIC, pending vazio
 e ausência do tap efetivo no host; pending preserva falha/console, sem reboot.
+
+Na round 2, toda reversão verifica novamente config ativa ausente, pending vazio
+e tap ausente, mesmo se não houver delete nessa chamada. `changed` indica só a
+mutação feita. Um tap residual ou erro de leitura continua falhando na repetição.
+Verify exige também a rota conectada unicast kernel/link, na tabela main, para
+o prefixo e device exatos. Rotas local/broadcast e endereço configurado não
+substituem essa rota. Nenhum desses desvios é reparado silenciosamente.

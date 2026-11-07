@@ -63,3 +63,17 @@ O roteador exige `samba_ad_guest_router_contract` (interface e matriz exata),
 persistente já existente. `router_guard.py --fingerprint` normaliza counters e
 handles, mas não aprova o artefato. O gate compara runtime novo, matriz, hook inet
 e jumps pela interface antes de LAN/ops; um hash correto de disco não o substitui.
+
+## Revisão S1 round 2
+
+O parent FWBR exige transferência por jump: goto para helper não é aceito sem
+prova de terminação total, pois RETURN/fim poderia pular o binding próprio. Jump
+para helper que só nega/loga/retorna permanece permitido. O parser conserva o
+tipo de transferência e reconhece as formas nativas ICMP/multiport/mark e
+assinaturas SHA1/base64 do PVE. Referências a chains não declaradas invalidam
+a evidência, inclusive depois de DROP. Helpers alcançáveis continuam analisados;
+a presença de ACCEPT neles não é ignorada por serem padrões do PVE.
+
+As fixtures de teste são completas e sintéticas, com helpers e políticas de
+host separados, e têm validação xtables em namespace local. Uma captura privada
+readonly de baseline carregado comprova parsing, sem declarar probe pronto.
