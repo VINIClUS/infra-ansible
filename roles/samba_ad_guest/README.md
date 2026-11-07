@@ -13,7 +13,8 @@ executável também retorna digest do guest para o operador privado.
 
 O script stdlib `tools/samba_ad/guest.py` usa pvesh local no nó de origem e seu
 proxy de cluster. Revalida quorum, nós, VMID/nome/MAC/IP (incluindo cloud-init),
-capacidades conservadoras de RAM e storage em origem/destino (reserva >=2 GiB),
+RAM conservadora no destino e piso vivo na origem (reserva >=2 GiB),
+storage completo em origem/destino,
 config/digest do template local, isolamento e ausência de devices/hooks extras
 (incluindo passthrough/virtiofs). VMs fixam sockets=1 e balloon=0 para manter o
 dimensionamento declarado.
@@ -89,3 +90,19 @@ a presença de ACCEPT neles não é ignorada por serem padrões do PVE.
 As fixtures de teste são completas e sintéticas, com helpers e políticas de
 host separados, e têm validação xtables em namespace local. Uma captura privada
 readonly de baseline carregado comprova parsing, sem declarar probe pronto.
+
+## Admissão de memória por fase
+
+Clone e migração offline ficam parados: a origem precisa manter >=2 GiB de RAM
+viva livre, sem descontar RAM de um guest que não inicia ali. No destino a admissão
+usa o menor entre memória viva livre e total menos os máximos configurados dos
+guests running; desconta a nova alocação e exige >=2 GiB restantes. Configurações
+stopped de terceiros não reservam RAM nessa conta. Estado desconhecido, memória
+ausente, não inteira, negativa ou sem limite conhecido falha fechado. Templates
+não entram na soma. Não para, redimensiona ou migra terceiros para abrir espaço.
+
+O start explícito repete a admissão somente no destino e não conta o próprio
+guest duas vezes. Storage continua conferido em ambos os nós antes da criação.
+Observação não é reserva transacional; aprovações de múltiplos recursos precisam
+considerar o budget acumulado. O contrato de produção mantém 4 GiB por DC e o
+bloqueio de produção até S2; não reduzir dimensionamento para satisfazer o gate.

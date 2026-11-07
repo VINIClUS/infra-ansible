@@ -49,7 +49,7 @@ def test_duplicate_guest_identity_is_rejected(field):
 
 @pytest.mark.parametrize("change", [
     {"node": "node-a"}, {"kind": "qemu"}, {"vmid": True},
-    {"address": "198.51.100.200"}, {"address": "198.51.100.1"},
+    {"memory_mib": 3072}, {"address": "198.51.100.200"}, {"address": "198.51.100.1"},
     {"fqdn": "dc02.other.invalid"}, {"state": "reserved"}, {"unprivileged": False},
 ])
 def test_unsafe_dc_placement_or_identity_is_rejected(change):

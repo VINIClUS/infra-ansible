@@ -4,5 +4,6 @@ samba_ad_router_nic_apply: false
 samba_ad_router_nic_request: {}
 samba_ad_router_nic_guest_host: ""
 samba_ad_router_nic_console_verified: false
+samba_ad_router_nic_qga_recovery: false
 samba_ad_router_nic_deadman_minutes: 5
 samba_ad_router_nic_state_root: /root/samba-ad-s1-router
