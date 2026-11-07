@@ -166,11 +166,21 @@ def capacity(api, r, guests, booting=False):
     c, t = r["resource"], r["template"]
     for node in ({c["node"]} if booting else {c["node"], t["node"]}):
         memory = api.get(f"/nodes/{node}/status")["memory"]
-        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"] and not g.get("template")
+        require(isinstance(memory, dict) and all(type(memory.get(k)) is int for k in ["total", "used"])
+                and memory["total"] > 0 and 0 <= memory["used"] <= memory["total"], "host memory known")
+        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"]
+                       and not g.get("template")]
+        require(all(g.get("status") in ["running", "stopped"] and type(g.get("maxmem")) is int
+                    and g["maxmem"] > 0 for g in allocations), "guest status/memory known")
+        free = memory["total"] - memory["used"]
+        if node == c["node"]:
+            running = [g for g in allocations if g["status"] == "running"
                        and (not booting or g.get("vmid") != c["vmid"])]
-        require(all(type(g.get("maxmem")) is int for g in allocations), "capacity reservations known")
-        free = min(memory["total"] - memory["used"], memory["total"] - sum(g["maxmem"] for g in allocations))
-        require(free - c["memory_mib"] * 1024**2 >= 2 * GIB, "2 GiB host reserve")
+            free = min(free, memory["total"] - sum(g["maxmem"] for g in running))
+            free -= c["memory_mib"] * 1024**2
+        # The source clone and migration are stopped: keep live host headroom,
+        # without charging guest RAM that is allocated only at the destination.
+        require(free >= 2 * GIB, "2 GiB host reserve")
     if booting:
         return
     for node, storage in {(t["node"], t["storage"]), (c["node"], c["storage"])}:
