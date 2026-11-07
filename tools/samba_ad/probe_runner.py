@@ -30,24 +30,52 @@ class PctTransport:
                                 text=True, timeout=45, check=False)
         return result.returncode, json.loads(result.stdout)
 
-    def capture(self, r, source, filesystem):
-        vmid = r["resource"]["vmid"]
+    def init_anchor(self, vmid, expected_pid=None):
+        """Host-view membership belongs to the PID authoritatively resolved by pct."""
         raw = self.api.run(["pct", "pid", str(vmid)]).strip()
         evidence.require(re.fullmatch(r"[1-9][0-9]*", raw))
+        evidence.require(expected_pid is None or raw == str(expected_pid))
         proc = Path("/proc") / raw
+        namespaces = {n: os.readlink(proc / "ns" / n) for n in ["user", "mnt", "pid", "cgroup"]}
+        records = [line.split()[1:] for line in (proc / "status").read_text().splitlines()
+                   if line.startswith("NSpid:")]
+        evidence.require(len(records) == 1 and len(records[0]) >= 2 and all(v.isdigit() for v in records[0]))
+        nspid = [int(v) for v in records[0]]
+        evidence.require(nspid[0] == int(raw) and nspid[-1] == 1)
+        stat_line = (proc / "stat").read_text()
+        evidence.require(stat_line.split(" ", 1)[0] == raw)
+        tail = stat_line.rsplit(")", 1)
+        evidence.require(len(tail) == 2 and len(tail[1].split()) >= 20)
+        starttime = tail[1].split()[19]
+        evidence.require(starttime.isdigit())
+        cgroup = (proc / "cgroup").read_text().strip()
+        evidence.require(bool(cgroup))
+        for record in cgroup.splitlines():
+            parts = record.split(":", 2)
+            evidence.require(len(parts) == 3 and parts[0].isdigit() and parts[2].startswith("/"))
+        return proc, namespaces, {"vmid": vmid, "init_pid": int(raw), "starttime": starttime,
+                                  "nspid": nspid, "cgroup": cgroup}
+
+    def capture(self, r, source, filesystem):
+        vmid = r["resource"]["vmid"]
+        proc, namespaces, anchor = self.init_anchor(vmid)
+        host_namespaces = {n: os.readlink("/proc/self/ns/" + n) for n in namespaces}
+        evidence.require(all(namespaces[n] != host_namespaces[n] for n in namespaces))
         program = "import json; ns={'__name__':'snapshot'}; exec(" + repr(source) + ",ns); print(json.dumps(ns['identity']()))"
         rc, observed = self.command(r, program)
         evidence.require(rc == 0)
         parent = (proc / "root/var/lib").stat()
-        observed.update(hostname=r["resource"]["name"], euid=0,
-                        namespaces={n: os.readlink(proc / "ns" / n) for n in ["user", "mnt", "pid"]},
+        expected = dict(observed, hostname=r["resource"]["name"], euid=0, namespaces=namespaces,
                         uid_map=" ".join((proc / "uid_map").read_text().split()),
                         apparmor=(proc / "attr/current").read_text().strip(), filesystem=filesystem,
                         parent_dev=parent.st_dev, parent_ino=parent.st_ino,
-                        boot_id=(proc / "root/proc/sys/kernel/random/boot_id").read_text().strip(),
-                        cgroup=(proc / "root/proc/1/cgroup").read_text().strip())
-        return {"guest": observed,
-                "host_namespaces": {n: os.readlink("/proc/self/ns/" + n) for n in ["user", "mnt", "pid"]}}
+                        boot_id=(proc / "root/proc/sys/kernel/random/boot_id").read_text().strip())
+        # cgroup path stays guest-view. Reading a guest procfs from the PVE does
+        # not enter its cgroup namespace; inode identities are view-independent.
+        evidence.require(observed == expected and bool(observed["cgroup"]))
+        _, after_namespaces, after_anchor = self.init_anchor(vmid, anchor["init_pid"])
+        evidence.require(namespaces == after_namespaces and anchor == after_anchor)
+        return {"guest": expected, "host_namespaces": host_namespaces, "host_anchor": anchor}
 
     def execute(self, r, source, expectation):
         return self.command(r, source, expectation)
@@ -121,6 +149,7 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
         after = transport.capture(r, probe_source, provenance["filesystem"])
         report["observations"]["probe"]["after"] = after
         evidence.require(after["guest"] == expectation["guest"] and after["host_namespaces"] == expectation["host_namespaces"])
+        evidence.require(after["host_anchor"] == expectation["host_anchor"])
         evidence.require(guest.reconcile(r, api, check=True)["state"] == "verified")
         status = result["status"]
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):

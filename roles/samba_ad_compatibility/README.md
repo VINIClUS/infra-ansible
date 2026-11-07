@@ -20,8 +20,11 @@ mudado, digest obsoleto ou power state diferente são recusados.
 
 Em apply explícito, o transporte é `pct exec` no VMID conferido. Antes de abrir
 um arquivo exclusivo em `/var/lib`, o helper compara hostname, euid, namespaces
-user/mnt/pid com o init do LXC e com o PVE, uid_map não identidade, AppArmor,
-cgroup, boot-id, filesystem e device/inode do diretório. O arquivo usa
+user/mnt/pid/cgroup com o init do LXC e com o PVE, uid_map não identidade, AppArmor,
+boot-id, filesystem e device/inode do diretório. O path de cgroup lido dentro do
+guest permanece nessa representação; o host registra separadamente membership,
+PID/starttime/NSpid do init resolvido por `pct pid VMID`, estáveis antes/depois.
+Paths de namespaces de cgroup diferentes não são comparados. O arquivo usa
 O_EXCL/O_NOFOLLOW e fd; cleanup confere nome/device/inode, sem globs ou rm -rf.
 Somente ext4/xfs/zfs/btrfs são aceitos nesta implementação; outro layout é erro
 operacional que exige revisão, não incompatibilidade Samba automática.

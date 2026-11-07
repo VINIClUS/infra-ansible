@@ -70,6 +70,11 @@ Cleanup separa `file: complete|incomplete|not_created` de
 Fingerprint inclui versões de kernel/PVE por nó, templates/digests, filesystem,
 isolamento e hash de política. Os valores de identidade/observações são privados;
 o relatório público deve referenciar seus hashes e contagens sanitizados.
+Nas observações, `host_anchor` vincula VMID ao init por `pct pid`, starttime,
+NSpid terminando em 1 e membership host-side, revalidados durante a captura e
+após a prova. O namespace cgroup é conferido por inode junto a user/mnt/pid.
+O path `guest.cgroup` é observado dentro do CT e comparado somente nessa mesma
+representação; nunca com o path host-side do init lido pelo processo do PVE.
 
 `select_platform(report)` distingue erro operacional e incompatibilidade
 reproduzida. `qualification(report)` exige dois nós distintos e todos os checks:

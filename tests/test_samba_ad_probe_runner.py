@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -139,3 +140,68 @@ def test_inconsistent_guest_cleanup_is_operational(monkeypatch):
     transport.execute = execute
     result = m.run(prepared(), api, transport, "fixed source")
     assert result["status"] == "operational_error" and result["report"]["selection"] is None
+
+
+def pct_capture(monkeypatch, change=None):
+    """Exercise the real transport transformation; no procfs, subprocess or guest IO."""
+    m = module(monkeypatch); observed = expected()["guest"]
+    files = {"/proc/4321/uid_map": "0 100000 65536", "/proc/4321/attr/current": "lxc-test (enforce)",
+             "/proc/4321/cgroup": "0::/lxc/800080/ns/init.scope",
+             "/proc/4321/root/proc/1/cgroup": "0::/lxc/800080/ns/init.scope",
+             "/proc/4321/root/proc/sys/kernel/random/boot_id": "b" * 32,
+             "/proc/4321/status": "Name:\tinit\nNSpid:\t4321\t1\n",
+             "/proc/4321/stat": "4321 (init) " + " ".join(["S"] + ["0"] * 18 + ["100"])}
+    links = {}
+    for ns in ["user", "mnt", "pid", "cgroup"]:
+        links["/proc/4321/ns/" + ns] = ns + ":[2]"
+        links["/proc/self/ns/" + ns] = ns + ":[1]"
+    if change == "guest_ns": observed["namespaces"]["pid"] = "pid:[3]"
+    if change == "guest_cgroup_ns": observed["namespaces"]["cgroup"] = "cgroup:[3]"
+    if change == "host_cgroup_ns": links["/proc/4321/ns/cgroup"] = "cgroup:[1]"
+    if change == "hostname": observed["hostname"] = "foreign.lab.ad.test"
+    if change == "init_pid": files["/proc/4321/status"] = "NSpid:\t4321\t2\n"
+
+    class ProcPath:
+        def __init__(self, value): self.value = str(value)
+        def __truediv__(self, value): return ProcPath(self.value + "/" + str(value))
+        def __str__(self): return self.value
+        def read_text(self):
+            value = files[self.value]
+            if len(calls) > 1 and change == "starttime_reused" and self.value.endswith("/stat"):
+                return value.removesuffix("100") + "101"
+            if len(calls) > 1 and change == "host_membership" and self.value.endswith("/cgroup"):
+                return "0::/lxc/800081/ns/init.scope"
+            return value
+        def stat(self):
+            assert self.value == "/proc/4321/root/var/lib"
+            return SimpleNamespace(st_dev=10, st_ino=20)
+
+    calls = []
+    def run(argv):
+        assert argv == ["pct", "pid", "800080"]
+        calls.append(argv)
+        return "4322" if change == "pid_reused" and len(calls) > 1 else "4321"
+    monkeypatch.setattr(m, "Path", ProcPath)
+    monkeypatch.setattr(m, "os", SimpleNamespace(readlink=lambda path: links[str(path)]))
+    transport = m.PctTransport(SimpleNamespace(run=run))
+    monkeypatch.setattr(transport, "command", lambda *args: (0, observed))
+    return m, transport
+
+
+def test_real_pct_capture_separates_host_and_guest_cgroup_views(monkeypatch):
+    m, transport = pct_capture(monkeypatch)
+    result = transport.capture(request(), "static helper", "ext4")
+    assert result["guest"]["cgroup"] == "0::/init.scope"
+    assert result["host_anchor"] == {"vmid": 800080, "init_pid": 4321, "starttime": "100",
+                                     "nspid": [4321, 1], "cgroup": "0::/lxc/800080/ns/init.scope"}
+    assert result["guest"]["namespaces"]["cgroup"] == "cgroup:[2]"
+    result["run_id"] = "a" * 32
+    from test_samba_ad_guest_probe import module as probe_module
+    probe_module().validate_identity(result, expected()["guest"])
+
+
+@pytest.mark.parametrize("change", ["guest_ns", "guest_cgroup_ns", "host_cgroup_ns", "hostname", "init_pid",
+                                   "pid_reused", "starttime_reused", "host_membership"])
+def test_real_pct_capture_rejects_wrong_namespace_or_init_identity(monkeypatch, change):
+    m, transport = pct_capture(monkeypatch, change)
+    with pytest.raises(ValueError): transport.capture(request(), "static helper", "ext4")

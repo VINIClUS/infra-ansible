@@ -33,7 +33,7 @@ def identity():
             mounts.append((len(point), after.split()[0]))
     require(bool(mounts))
     return {"hostname": os.uname().nodename, "euid": os.geteuid(),
-            "namespaces": {n: os.readlink("/proc/self/ns/" + n) for n in ["user", "mnt", "pid"]},
+            "namespaces": {n: os.readlink("/proc/self/ns/" + n) for n in ["user", "mnt", "pid", "cgroup"]},
             "uid_map": " ".join(Path("/proc/self/uid_map").read_text().split()),
             "apparmor": Path("/proc/self/attr/current").read_text().strip(),
             "filesystem": max(mounts)[1], "parent_dev": parent.st_dev, "parent_ino": parent.st_ino,
@@ -42,18 +42,26 @@ def identity():
 
 
 def validate_identity(expected, actual):
-    require(set(expected) == {"run_id", "guest", "host_namespaces"})
+    require(set(expected) == {"run_id", "guest", "host_namespaces", "host_anchor"})
     require(isinstance(expected["run_id"], str) and re.fullmatch(r"[a-f0-9]{32}", expected["run_id"]))
     require(actual == expected["guest"] and actual["euid"] == 0)
     require(actual["hostname"].endswith(".lab.ad.test"))
     require(actual["filesystem"] in ["ext4", "xfs", "zfs", "btrfs"])
     require("unconfined" not in actual["apparmor"] and actual["apparmor"].endswith("(enforce)"))
-    for ns in ["user", "mnt", "pid"]:
+    for ns in ["user", "mnt", "pid", "cgroup"]:
         require(re.fullmatch(ns + r":\[[0-9]+\]", actual["namespaces"][ns]))
         require(actual["namespaces"][ns] != expected["host_namespaces"][ns])
     mapping = [int(v) for v in actual["uid_map"].split()]
     require(len(mapping) == 3 and mapping[0] == 0 and mapping[1] > 0 and mapping[2] >= 65535)
     require(bool(actual["cgroup"]) and bool(actual["boot_id"]))
+    anchor = expected["host_anchor"]
+    require(set(anchor) == {"vmid", "init_pid", "starttime", "nspid", "cgroup"})
+    require(type(anchor["vmid"]) is int and 100 <= anchor["vmid"] <= 999999999)
+    require(type(anchor["init_pid"]) is int and anchor["init_pid"] > 1)
+    require(isinstance(anchor["starttime"], str) and anchor["starttime"].isdigit())
+    require(isinstance(anchor["nspid"], list) and len(anchor["nspid"]) >= 2
+            and anchor["nspid"][0] == anchor["init_pid"] and anchor["nspid"][-1] == 1)
+    require(isinstance(anchor["cgroup"], str) and bool(anchor["cgroup"]))
 
 
 class NativeOps:

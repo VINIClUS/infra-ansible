@@ -17,9 +17,11 @@ def module():
 
 
 def expected():
-    return {"run_id": "a" * 32, "host_namespaces": {n: n + ":[1]" for n in ["user", "mnt", "pid"]},
+    return {"run_id": "a" * 32, "host_namespaces": {n: n + ":[1]" for n in ["user", "mnt", "pid", "cgroup"]},
+            "host_anchor": {"vmid": 800080, "init_pid": 4321, "starttime": "100", "nspid": [4321, 1],
+                            "cgroup": "0::/lxc/800080/ns/init.scope"},
             "guest": {"hostname": "probe.lab.ad.test", "euid": 0,
-                      "namespaces": {n: n + ":[2]" for n in ["user", "mnt", "pid"]},
+                      "namespaces": {n: n + ":[2]" for n in ["user", "mnt", "pid", "cgroup"]},
                       "uid_map": "0 100000 65536", "apparmor": "lxc-test (enforce)",
                       "filesystem": "ext4", "parent_dev": 10, "parent_ino": 20,
                       "boot_id": "b" * 32, "cgroup": "0::/init.scope"}}
@@ -52,10 +54,11 @@ class Ops:
         self.cleaned = True
 
 
-@pytest.mark.parametrize("change", ["host_ns", "uid_map", "hostname", "tmpfs", "apparmor", "device"])
+@pytest.mark.parametrize("change", ["host_ns", "cgroup_ns", "uid_map", "hostname", "tmpfs", "apparmor", "device"])
 def test_probe_rejects_host_identity_before_open(change):
     m = module(); ops = Ops()
     if change == "host_ns": ops.current["namespaces"]["mnt"] = "mnt:[1]"
+    if change == "cgroup_ns": ops.current["namespaces"]["cgroup"] = "cgroup:[1]"
     if change == "uid_map": ops.current["uid_map"] = "0 0 4294967295"
     if change == "hostname": ops.current["hostname"] = "host"
     if change == "tmpfs": ops.current["filesystem"] = "tmpfs"
