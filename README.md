@@ -39,6 +39,10 @@ Este repositorio contem codigo Ansible generico para operar a infraestrutura:
 
 ## Validacao
 
+O [contrato Samba AD DC S0](docs/samba-ad-contract.md) define dados inertes,
+validação local e execução manual futura, separados do deploy automático.
+Não há provisionamento de floresta nesta etapa.
+
 Os [testes nativos de bootstrap](docs/ci-native-bootstrap.md) usam contexto
 publico explicito na CI e exigem um gate separado e estrito no consumidor
 privado antes de promover uma revisao publica.

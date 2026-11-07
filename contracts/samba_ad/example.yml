@@ -1,0 +1,225 @@
+---
+# Fictional documentation addresses only; never load as production inventory.
+schema: 1
+stage: S0
+enabled: false
+apply: false
+owner: samba-ad
+execution:
+  mode: manual
+  exact_limit_required: true
+  dedicated_tag_required: true
+  identity_readback_required: true
+  digest_required: true
+domain:
+  dns_domain: ad.example.invalid
+  realm: AD.EXAMPLE.INVALID
+  netbios: EXAMPLEAD
+  sid: null
+  new_forest_confirmed: true
+network:
+  cidr: 198.51.100.0/25
+  gateway: 198.51.100.1
+  vnet: vnidtest
+  tag: 10777
+  mtu: 1450
+  existing_cidrs:
+    - 203.0.113.0/25
+  admin_sources:
+    - 192.0.2.25/32
+  dns_forwarders:
+    - 192.0.2.53
+  time_sources:
+    - 192.0.2.123
+resources:
+  dc01:
+    vmid: 800001
+    node: node-a
+    kind: lxc
+    fqdn: dc01.ad.example.invalid
+    owner: samba-ad
+    state: candidate
+    mac: 02:00:5E:70:00:01
+    address: 198.51.100.10
+    cidr: 198.51.100.0/25
+    bridge: vnidtest
+    storage: local-lvm
+    template:
+      vmid: 7900
+      node: node-c
+      kind: lxc
+      storage: local-lvm
+    full_clone: true
+    first_boot_after_migration: true
+    cores: 2
+    memory_mib: 4096
+    disk_gib: 64
+    unprivileged: true
+    nesting: false
+    apparmor: default
+  dc02:
+    vmid: 800002
+    node: node-b
+    kind: lxc
+    fqdn: dc02.ad.example.invalid
+    owner: samba-ad
+    state: candidate
+    mac: 02:00:5E:70:00:02
+    address: 198.51.100.11
+    cidr: 198.51.100.0/25
+    bridge: vnidtest
+    storage: local-lvm
+    template:
+      vmid: 7900
+      node: node-c
+      kind: lxc
+      storage: local-lvm
+    full_clone: true
+    first_boot_after_migration: true
+    cores: 2
+    memory_mib: 4096
+    disk_gib: 64
+    unprivileged: true
+    nesting: false
+    apparmor: default
+  ca:
+    vmid: 800003
+    node: node-a
+    kind: qemu
+    fqdn: ca.ad.example.invalid
+    owner: samba-ad
+    state: candidate
+    mac: 02:00:5E:70:00:03
+    address: 198.51.100.12
+    cidr: 198.51.100.0/25
+    bridge: vnidtest
+    storage: local-lvm
+    template:
+      vmid: 7901
+      node: node-c
+      kind: qemu
+      storage: local-lvm
+    full_clone: true
+    first_boot_after_migration: true
+    cores: 2
+    memory_mib: 2048
+    disk_gib: 20
+  windows_pilot:
+    vmid: 800005
+    node: node-a
+    kind: qemu
+    fqdn: windows-pilot.ad.example.invalid
+    owner: samba-ad
+    state: candidate
+    mac: 02:00:5E:70:00:05
+    address: 198.51.100.14
+    cidr: 198.51.100.0/25
+    bridge: vnidtest
+    storage: local-lvm
+    template:
+      vmid: 7902
+      node: node-c
+      kind: qemu
+      storage: local-lvm
+    full_clone: true
+    first_boot_after_migration: true
+    cores: 2
+    memory_mib: 4096
+    disk_gib: 80
+  linux_pilot:
+    vmid: 800006
+    node: node-a
+    kind: qemu
+    fqdn: linux-pilot.ad.example.invalid
+    owner: samba-ad
+    state: candidate
+    mac: 02:00:5E:70:00:06
+    address: 198.51.100.15
+    cidr: 198.51.100.0/25
+    bridge: vnidtest
+    storage: local-lvm
+    template:
+      vmid: 7901
+      node: node-c
+      kind: qemu
+      storage: local-lvm
+    full_clone: true
+    first_boot_after_migration: true
+    cores: 1
+    memory_mib: 1024
+    disk_gib: 20
+software:
+  os: Debian 13
+  samba_version: 4.25.1
+  functional_level: '2016'
+  schema_version: 88
+  source_candidate: https://samba.tranquil.it/debian/samba-4.25/
+  suite: trixie
+  signature_status: pending
+  advisory_status: pending
+  fingerprint_ref: null
+secret_refs:
+  domain_admin:
+    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
+    variable: vault_samba_ad_domain_admin_password
+  dsrm:
+    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
+    variable: vault_samba_ad_dsrm_password
+  ca_provisioner:
+    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
+    variable: vault_samba_ad_ca_provisioner_password
+  sysvol:
+    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
+    variable: vault_samba_ad_sysvol_key_ref
+  telemetry:
+    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
+    variable: vault_samba_ad_telemetry_credential_ref
+certificate_profiles:
+  dc01:
+    sans:
+      - dc01.ad.example.invalid
+    eku:
+      - serverAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+  dc02:
+    sans:
+      - dc02.ad.example.invalid
+    eku:
+      - serverAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+  ca:
+    sans:
+      - ca.ad.example.invalid
+    eku:
+      - serverAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+  telemetry_dc01:
+    sans:
+      - dc01.ad.example.invalid
+    eku:
+      - clientAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+  telemetry_dc02:
+    sans:
+      - dc02.ad.example.invalid
+    eku:
+      - clientAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+  telemetry_ca:
+    sans:
+      - ca.ad.example.invalid
+    eku:
+      - clientAuth
+    validity_hours: 168
+    rotate_before_fraction: 0.66
+split_dns:
+  strategy: explicit_records
+  municipal_cutover: false
+  pilot_public_names:
+    - portal.example.invalid
+    - support.example.invalid

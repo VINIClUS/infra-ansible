@@ -1,0 +1,66 @@
+---
+# Symbolic endpoints expand to exact private identities in a future reviewed stage.
+# Return traffic is established/related only. No Internet-facing AD listener.
+enforcement: [router, guest_default_drop]
+# These are project role keys, never existing Ansible inventory groups.
+resource_groups:
+  dcs: [dc01, dc02]
+  pilots: [windows_pilot, linux_pilot]
+  identity_guests: [dc01, dc02, ca, windows_pilot, linux_pilot]
+  ssh_targets: [dc01, dc02, ca, linux_pilot]
+  ca: [ca]
+  dc01: [dc01]
+  dc02: [dc02]
+flows:
+  - source: pilots
+    destination: dcs
+    protocol: tcp
+    ports: ["53", "88", "135", "389", "445", "464", "636", "3268", "3269", "49152-65535"]
+  - source: pilots
+    destination: dcs
+    protocol: udp
+    ports: ["53", "88", "123", "389", "464"]
+  - source: dcs
+    destination: dcs
+    protocol: tcp
+    ports: ["53", "88", "135", "389", "445", "464", "636", "3268", "3269", "49152-65535"]
+  - source: dcs
+    destination: dcs
+    protocol: udp
+    ports: ["53", "88", "389", "464"]
+  - source: dc01
+    destination: dc02
+    protocol: tcp
+    ports: ["22"]
+  - source: administrators
+    destination: ssh_targets
+    protocol: tcp
+    ports: ["22"]
+  - source: administrators
+    destination: dcs
+    protocol: tcp
+    ports: ["53", "88", "135", "389", "445", "464", "636", "3268", "3269", "49152-65535"]
+  - source: administrators
+    destination: dcs
+    protocol: udp
+    ports: ["53", "88", "389", "464"]
+  - source: identity_guests
+    destination: ca
+    protocol: tcp
+    ports: ["443"]
+  - source: dcs
+    destination: dns_forwarders
+    protocol: tcp
+    ports: ["53"]
+  - source: dcs
+    destination: dns_forwarders
+    protocol: udp
+    ports: ["53"]
+  - source: identity_guests
+    destination: time_sources
+    protocol: udp
+    ports: ["123"]
+  - source: identity_guests
+    destination: collector
+    protocol: tcp
+    ports: ["443"]
