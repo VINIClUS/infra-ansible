@@ -1,0 +1,79 @@
+---
+- name: Validate router extension activation
+  ansible.builtin.assert:
+    that:
+      - samba_ad_router_nic_enabled is boolean
+      - samba_ad_router_nic_apply is boolean
+      - samba_ad_router_nic_console_verified is boolean
+
+- name: Stop the disabled router extension
+  ansible.builtin.meta: end_role
+  when: not samba_ad_router_nic_enabled
+
+- name: Require one exact manual router node and console recovery
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_router_nic']
+      - samba_ad_router_nic_request.node == ansible_facts.hostname
+      - samba_ad_router_nic_guest_host in hostvars
+      - samba_ad_router_nic_console_verified
+      - samba_ad_router_nic_state_root == '/root/samba-ad-s1-router'
+      - samba_ad_router_nic_deadman_minutes | int >= 3
+      - samba_ad_router_nic_deadman_minutes | int <= 30
+    fail_msg: "Use the exact PVE node, private request, dedicated tag and verified Proxmox console recovery."
+
+- name: Read and validate QEMU identity digest and all existing NICs
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_nic.py') }}"
+      - --plan
+    stdin: "{{ samba_ad_router_nic_request | to_json }}"
+  register: samba_ad_router_nic_plan_raw
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse the router extension plan
+  ansible.builtin.set_fact:
+    samba_ad_router_nic_plan: "{{ samba_ad_router_nic_plan_raw.stdout | from_json }}"
+  no_log: true
+
+- name: Read guest networkd readiness and preserve default routes
+  ansible.builtin.command:
+    argv: [sh, -ec, 'systemctl is-active --quiet systemd-networkd; ip -j -4 route show default']
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_routes
+  changed_when: false
+  check_mode: false
+
+- name: Read the dedicated network file
+  ansible.builtin.stat:
+    path: /etc/systemd/network/05-samba-ad-identity.network
+    checksum_algorithm: sha256
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_file
+
+- name: Refuse an occupied file or a partial earlier extension
+  ansible.builtin.assert:
+    that:
+      - >-
+        (samba_ad_router_nic_plan.action == 'add' and not samba_ad_router_nic_file.stat.exists)
+        or (samba_ad_router_nic_plan.action == 'verify' and samba_ad_router_nic_file.stat.exists
+            and samba_ad_router_nic_file.stat.checksum == (samba_ad_router_nic_plan.network | hash('sha256')))
+    fail_msg: "Existing or partial network state requires exact technical recovery before reexecution."
+
+- name: Apply one additional interface under independent PVE and guest dead-man timers
+  ansible.builtin.include_tasks: apply.yml
+  when:
+    - samba_ad_router_nic_apply
+    - not ansible_check_mode
+    - samba_ad_router_nic_plan.action == 'add'
+
+- name: Report router extension outcome
+  ansible.builtin.debug:
+    msg: "S1 QEMU NIC={{ samba_ad_router_nic_plan.action }}; existing interfaces preserved."

@@ -1,0 +1,66 @@
+---
+- name: Validate S1 activation flags
+  ansible.builtin.assert:
+    that:
+      - samba_ad_guest_enabled is boolean
+      - samba_ad_guest_apply is boolean
+
+- name: Stop the disabled dedicated lifecycle
+  ansible.builtin.meta: end_role
+  when: not samba_ad_guest_enabled
+
+- name: Require one exact manual source node and dedicated tag
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_guest']
+      - samba_ad_guest_request is mapping
+      - samba_ad_guest_request.template.node == ansible_facts.hostname
+      - samba_ad_guest_router_host in hostvars
+      - samba_ad_guest_router_zone is match('^[a-z][a-z0-9]{0,15}$')
+      - samba_ad_guest_router_ruleset_sha256 is match('^[a-f0-9]{64}$')
+    fail_msg: "S1 requires a private request, exact source-node limit and tag; no automatic deploy."
+
+- name: Read router policy through a new connection before lifecycle
+  ansible.builtin.meta: reset_connection
+  delegate_to: "{{ samba_ad_guest_router_host }}"
+
+- name: Read the effective router guard and persistent ruleset
+  ansible.builtin.command:
+    argv: [nft, list, chain, inet, filter, "restricted_{{ samba_ad_guest_router_zone }}"]
+  delegate_to: "{{ samba_ad_guest_router_host }}"
+  register: samba_ad_guest_router_guard
+  changed_when: false
+  check_mode: false
+
+- name: Read the approved persistent router policy digest
+  ansible.builtin.stat:
+    path: /etc/nftables.conf
+    checksum_algorithm: sha256
+  delegate_to: "{{ samba_ad_guest_router_host }}"
+  register: samba_ad_guest_router_policy
+
+- name: Refuse absent or changed network isolation
+  ansible.builtin.assert:
+    that:
+      - samba_ad_guest_router_guard.stdout is search('counter.*drop')
+      - samba_ad_guest_router_policy.stat.checksum == samba_ad_guest_router_ruleset_sha256
+
+- name: Run the dedicated simulated or explicit lifecycle without command-line values
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') }}"
+      - "{{ '--check' if ansible_check_mode or not samba_ad_guest_apply else '--execute' }}"
+    stdin: "{{ samba_ad_guest_request | combine({'enabled': true, 'apply': samba_ad_guest_apply}) | to_json }}"
+  register: samba_ad_guest_result
+  changed_when: (samba_ad_guest_result.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+
+- name: Report counts and outcome only
+  ansible.builtin.debug:
+    msg: "S1 lifecycle state={{ (samba_ad_guest_result.stdout | from_json).state }}; resources=1"

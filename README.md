@@ -89,3 +89,7 @@ container_runtime_technical_user: vagrant
 O entrypoint e destinado ao harness local; ele nao consome o inventory privado,
 nao altera regras de firewall ou SSH e nao deve ser usado para provisionar
 hosts de producao sem uma revisao dedicada.
+
+Samba AD S1: os entrypoints manuais dedicados, exemplos inertes, gates e sequência
+de aplicação estão em [docs/samba-ad-s1.md](docs/samba-ad-s1.md). O deploy automático
+não executa esse lifecycle.

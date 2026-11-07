@@ -1,0 +1,241 @@
+---
+- name: Refuse an outstanding PVE router extension timer
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, samba-ad-router-nic-deadman.timer]
+  register: samba_ad_router_nic_timer
+  changed_when: false
+  failed_when: samba_ad_router_nic_timer.rc == 0
+
+- name: Refuse an outstanding guest extension timer
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, samba-ad-router-network-deadman.timer]
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  register: samba_ad_router_nic_network_timer
+  changed_when: false
+  failed_when: samba_ad_router_nic_network_timer.rc == 0
+
+- name: Create root-only PVE recovery directory
+  ansible.builtin.file:
+    path: "{{ samba_ad_router_nic_state_root }}"
+    state: directory
+    mode: "0700"
+
+- name: Save the exact request for digest-guarded NIC recovery
+  ansible.builtin.copy:
+    content: "{{ samba_ad_router_nic_request | to_nice_json }}"
+    dest: "{{ samba_ad_router_nic_state_root }}/request.json"
+    mode: "0600"
+  no_log: true
+
+- name: Save the dedicated recovery program on the router node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../tools/samba_ad/router_nic.py"
+    dest: "{{ samba_ad_router_nic_state_root }}/router_nic.py"
+    mode: "0700"
+
+- name: Preserve PVE router configuration before the extension
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -ec
+      - >-
+        umask 077; pvesh get
+        /nodes/{{ samba_ad_router_nic_request.node }}/qemu/{{ samba_ad_router_nic_request.vmid }}/config
+        --output-format json > /root/samba-ad-s1-router/config-before.json
+  changed_when: false
+  no_log: true
+
+- name: Create root-only guest network recovery directory
+  ansible.builtin.file:
+    path: /root/samba-ad-s1-network
+    state: directory
+    mode: "0700"
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+
+- name: Preserve existing persistent network files for console recovery
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -ec
+      - >-
+        umask 077; tar --create --file /root/samba-ad-s1-network/network-before.tar
+        --directory=/ etc/systemd/network etc/netplan
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  changed_when: false
+
+- name: Install technical recovery for only the owned guest interface
+  ansible.builtin.copy:
+    dest: /root/samba-ad-s1-network/revert.sh
+    mode: "0700"
+    content: |
+      #!/bin/sh
+      set -eu
+      file=/etc/systemd/network/05-samba-ad-identity.network
+      if [ -f "$file" ]; then
+        expected={{ (samba_ad_router_nic_plan.network | hash('sha256')) | quote }}
+        actual=$(sha256sum "$file" | cut -d ' ' -f 1)
+        [ "$actual" = "$expected" ] || exit 1
+        iface={{ samba_ad_router_nic_request.interface | quote }}
+        if [ -e "/sys/class/net/$iface/address" ]; then
+          wanted_mac={{ (samba_ad_router_nic_request.mac | lower) | quote }}
+          [ "$(cat "/sys/class/net/$iface/address")" = "$wanted_mac" ] || exit 1
+          networkctl down "$iface"
+        fi
+        rm -- "$file"
+        networkctl reload
+      fi
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+
+- name: Arm guest technical network recovery before adding any NIC
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -ec
+      - >-
+        systemctl reset-failed samba-ad-router-network-deadman.service 2>/dev/null || true;
+        systemd-run --unit=samba-ad-router-network-deadman
+        --on-active={{ samba_ad_router_nic_deadman_minutes | int }}min
+        /bin/sh /root/samba-ad-s1-network/revert.sh;
+        systemctl is-active --quiet samba-ad-router-network-deadman.timer
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  changed_when: true
+
+- name: Arm the existing PVE change guard for exact NIC removal
+  ansible.builtin.include_role:
+    name: proxmox_change_guard
+    tasks_from: deadman.yml
+  vars:
+    proxmox_change_guard_action: arm
+    proxmox_change_guard_nodes: "{{ {ansible_facts.hostname: ansible_host} }}"
+    proxmox_change_guard_deadman_unit: samba-ad-router-nic-deadman
+    proxmox_change_guard_deadman_minutes: "{{ samba_ad_router_nic_deadman_minutes }}"
+    proxmox_change_guard_deadman_description: Revert only the additional Samba router NIC
+    proxmox_change_guard_revert_command: >-
+      python3 /root/samba-ad-s1-router/router_nic.py --revert < /root/samba-ad-s1-router/request.json
+
+- name: Extend and verify the router without changing existing interfaces
+  block:
+    - name: Install one MAC-matched networkd file without modifying netplan or cloud-init
+      ansible.builtin.copy:
+        content: "{{ samba_ad_router_nic_plan.network }}"
+        dest: /etc/systemd/network/05-samba-ad-identity.network
+        mode: "0644"
+        force: false
+      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+
+    - name: Hotplug only the declared additional QEMU NIC
+      ansible.builtin.command:
+        argv: [python3, /root/samba-ad-s1-router/router_nic.py]
+        stdin: "{{ samba_ad_router_nic_request | to_json }}"
+      changed_when: true
+      no_log: true
+
+    - name: Wait for the declared guest interface
+      ansible.builtin.command:
+        argv: [ip, link, show, dev, "{{ samba_ad_router_nic_request.interface }}"]
+      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+      register: samba_ad_router_nic_link
+      changed_when: false
+      until: samba_ad_router_nic_link.rc == 0
+      retries: 6
+      delay: 2
+
+    - name: Configure only the new interface persistently
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -ec
+          - 'networkctl reload; networkctl reconfigure "$1"'
+          - network
+          - "{{ samba_ad_router_nic_request.interface }}"
+      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+      changed_when: true
+
+    - name: Drop persistent management connections before readback
+      ansible.builtin.meta: reset_connection
+
+    - name: Read the guest from a fresh strict SSH connection
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - BatchMode=yes
+          - -o
+          - StrictHostKeyChecking=yes
+          - -o
+          - ControlMaster=no
+          - -o
+          - ControlPath=none
+          - -o
+          - IdentityAgent=none
+          - -o
+          - IdentitiesOnly=yes
+          - -i
+          - "{{ hostvars[samba_ad_router_nic_guest_host].ansible_ssh_private_key_file }}"
+          - >-
+            {{ hostvars[samba_ad_router_nic_guest_host].ansible_user }}@{{
+            hostvars[samba_ad_router_nic_guest_host].ansible_host }}
+          - 'ip -j -4 route show default; ip -j address show dev {{ samba_ad_router_nic_request.interface }}'
+      delegate_to: localhost
+      become: false
+      register: samba_ad_router_nic_network_readback
+      changed_when: false
+      no_log: true
+
+    - name: Confirm route MAC address and MTU survived a new management connection
+      vars:
+        lines: "{{ samba_ad_router_nic_network_readback.stdout_lines }}"
+        iface: "{{ (lines[1] | from_json)[0] }}"
+        wanted: "{{ samba_ad_router_nic_request.address.split('/') }}"
+      ansible.builtin.assert:
+        that:
+          - (lines[0] | from_json) == (samba_ad_router_nic_routes.stdout | from_json)
+          - iface.address | upper == samba_ad_router_nic_request.mac
+          - iface.mtu | int == samba_ad_router_nic_request.mtu
+          - iface.addr_info | selectattr('local', 'equalto', wanted[0]) | list | length == 1
+          - >-
+            (iface.addr_info | selectattr('local', 'equalto', wanted[0]) | first).prefixlen | int == wanted[1] | int
+      no_log: true
+
+    - name: Disarm guest recovery only after fresh connection readback
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -ec
+          - >-
+            systemctl stop samba-ad-router-network-deadman.timer;
+            ! systemctl is-active --quiet samba-ad-router-network-deadman.timer
+      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+      changed_when: true
+
+    - name: Disarm PVE recovery only after guest verification
+      ansible.builtin.include_role:
+        name: proxmox_change_guard
+        tasks_from: deadman.yml
+      vars:
+        proxmox_change_guard_action: disarm
+        proxmox_change_guard_nodes: "{{ {ansible_facts.hostname: ansible_host} }}"
+        proxmox_change_guard_deadman_unit: samba-ad-router-nic-deadman
+
+  rescue:
+    - name: Revert only the additional guest interface
+      ansible.builtin.command:
+        argv: [sh, /root/samba-ad-s1-network/revert.sh]
+      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Remove only the exact additional QEMU NIC
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -ec
+          - >-
+            python3 /root/samba-ad-s1-router/router_nic.py --revert
+            < /root/samba-ad-s1-router/request.json
+      changed_when: true
+      failed_when: false
+
+    - name: Fail with timers retained for unreachable endpoints
+      ansible.builtin.fail:
+        msg: "S1 extension failed; exact-interface recovery attempted; timers remain armed. Use the Proxmox console."

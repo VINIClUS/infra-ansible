@@ -1,0 +1,49 @@
+---
+# Fictional, inert request; not S0 manifest, not loaded inventory.
+samba_ad_guest_enabled: false
+samba_ad_guest_apply: false
+samba_ad_guest_router_host: router-test
+samba_ad_guest_router_zone: identity
+samba_ad_guest_router_ruleset_sha256: ''
+samba_ad_guest_request:
+  schema: 1
+  enabled: false
+  apply: false
+  action: present
+  owner: samba-ad
+  scope: lab
+  compatibility: null
+  boot: false
+  resource:
+    vmid: 800080
+    node: node-b
+    kind: lxc
+    name: probe.lab.ad.test
+    address: 198.51.100.80/25
+    gateway: 198.51.100.1
+    bridge: vnidtest
+    mac: 02:00:5E:70:00:80
+    storage: local-lvm
+    cores: 2
+    memory_mib: 4096
+    disk_gib: 64
+    mtu: 1450
+  template:
+    node: node-a
+    vmid: 7900
+    digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    disk: rootfs
+    storage: local-lvm
+  expected_digest: null
+  firewall:
+    admin_sources:
+      - 192.0.2.25/32
+    flows:
+      - direction: IN
+        peer: 192.0.2.25/32
+        proto: tcp
+        port: '22'
+      - direction: OUT
+        peer: 192.0.2.123/32
+        proto: udp
+        port: '123'

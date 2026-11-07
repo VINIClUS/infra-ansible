@@ -56,3 +56,15 @@ collide with the old address holder:
 4. Update the inventory, re-pin the host key (cloud-init regenerates it when
    the instance changes) and re-run `network_router` and the node routes.
 
+
+## Restricted identity zone
+
+A zone may opt into `restricted: true`. Its forward chain runs before existing
+LAN, operations `full_access` and Internet allowances; only explicit
+`network_router_forward_rules` with exact IPv4 source/destination and TCP/UDP
+ports pass. All other forwarded traffic with that zone is dropped. Existing
+zones keep their current policy. Restricted zones cannot enable `full_access`,
+`internet`, `ssh_to_router` or DHCP, and dnsmasq does not bind their interfaces.
+Return traffic is established/related. This routes policy only: same-L2 traffic
+requires the dedicated guest firewall with default IN/OUT DROP and anti-spoofing.
+Samba S1 adds the QEMU NIC with `samba_ad_router_nic` before this role runs.
