@@ -301,7 +301,10 @@ def test_guest_power_goes_through_ha_for_ha_guests():
 def run_mtu(tmp_path, content: str, *args: str) -> tuple:
     path = tmp_path / "interfaces"
     path.write_text(content, encoding="utf-8")
-    env = dict(os.environ, NETISO_INTERFACES_FILE=str(path))
+    # A missing sysfs root keeps "post" off the real links of the test machine
+    # (a CI runner has an eth0 and would get "ip link set" on it).
+    env = dict(os.environ, NETISO_INTERFACES_FILE=str(path),
+               NETISO_SYS_CLASS_NET=str(tmp_path / "no-sys-class-net"))
     result = subprocess.run(["sh", str(GUEST_FILES / "guest-mtu.sh"), *args], env=env,
                             capture_output=True, text=True)
     return result, path.read_text(encoding="utf-8")

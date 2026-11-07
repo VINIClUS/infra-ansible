@@ -16,6 +16,8 @@ mode=$1
 mtu=$2
 iface=${3:-eth0}
 f=${NETISO_INTERFACES_FILE:-/etc/network/interfaces}
+# Overridable so tests never touch the real links of the machine running them.
+net=${NETISO_SYS_CLASS_NET:-/sys/class/net}
 case "$mode" in pre | post) ;; *) echo "usage: pre|post <mtu> [<iface>]" >&2; exit 2 ;; esac
 case "$mtu" in '' | *[!0-9]*) echo "bad mtu" >&2; exit 2 ;; esac
 case "$iface" in eth[0-9] | eth[1-9][0-9]) ;; *) echo "bad iface" >&2; exit 2 ;; esac
@@ -51,7 +53,7 @@ if [ "$state" = fix ]; then
 fi
 rm -f "$f.netiso"
 
-if [ "$mode" = post ] && [ -e "/sys/class/net/$iface" ] && [ "$(cat "/sys/class/net/$iface/mtu")" != "$mtu" ]; then
+if [ "$mode" = post ] && [ -e "$net/$iface" ] && [ "$(cat "$net/$iface/mtu")" != "$mtu" ]; then
 	ip link set dev "$iface" mtu "$mtu"
 	echo live=changed
 fi
