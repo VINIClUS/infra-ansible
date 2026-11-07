@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import subprocess
 import sys
-import uuid
 
 import s2_guest as guest
 import s2_compatibility as evidence
@@ -86,7 +85,7 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
         evidence.require(type(payload.get(key)) is bool)
     if not payload["enabled"]:
         return {"state": "disabled"}
-    evidence.fields(payload, "enabled apply check limit inventory_host node_hostname hosts_count tags request provenance")
+    evidence.fields(payload, "enabled apply check limit inventory_host node_hostname hosts_count tags request provenance run_id")
     evidence.require(payload["limit"] == payload["inventory_host"] and bool(payload["limit"]))
     evidence.require(type(payload["hosts_count"]) is int and payload["hosts_count"] == 1)
     evidence.require(payload["tags"] == ["samba_ad_compatibility"])
@@ -107,6 +106,7 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
     evidence.require(guest.reconcile(r, api, check=True)["state"] == "verified")
     if payload["check"] or not payload["apply"]:
         return {"state": "preflight"}
+    evidence.hex_value(payload["run_id"], 32)
     fingerprint = {"nodes": {}, "templates": [dict(node=r["template"]["node"], kind="lxc",
                     vmid=r["template"]["vmid"], digest=r["template"]["digest"])],
                    "filesystem": provenance["filesystem"], "isolation": "lxc-unprivileged-apparmor",
@@ -116,7 +116,7 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
         evidence.require(state["memory"]["total"] - state["memory"]["used"] >= 2 * guest.GIB)
         fingerprint["nodes"][node] = {"kernel": state["kversion"], "pve": state["pveversion"]}
     expectation = transport.capture(r, probe_source, provenance["filesystem"])
-    expectation["run_id"] = uuid.uuid4().hex
+    expectation["run_id"] = payload["run_id"]
     report = {"schema": "samba-ad-s2/v1", "run_id": expectation["run_id"],
               "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
               "public_revision": provenance["public_revision"], "private_revision": provenance["private_revision"],

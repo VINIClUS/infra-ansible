@@ -153,22 +153,23 @@ def test_production_rejects_unpinned_or_mismatched_s2(change):
 
 def test_write_report_is_exclusive_private_and_cannot_replace_a_run(tmp_path):
     m = module(); tmp_path.chmod(0o700); evidence = report()
-    result = m.write_report(str(tmp_path), evidence)
+    prepared_record = m.prepare_report(str(tmp_path), evidence["run_id"])
+    result = m.write_report(str(tmp_path), evidence, prepared_record)
     path = tmp_path / (evidence["run_id"] + ".json")
     assert json.loads(path.read_text()) == evidence
     assert path.stat().st_mode & 0o777 == 0o600
     assert result == {"sha256": sha(evidence)}
-    with pytest.raises(FileExistsError): m.write_report(str(tmp_path), evidence)
+    with pytest.raises(FileExistsError): m.write_report(str(tmp_path), evidence, prepared_record)
     assert json.loads(path.read_text()) == evidence
 
 
 def test_write_report_rejects_shared_or_symlink_directory(tmp_path):
     m = module(); tmp_path.chmod(0o755)
-    with pytest.raises(ValueError): m.write_report(str(tmp_path), report())
+    with pytest.raises(ValueError): m.prepare_report(str(tmp_path), report()["run_id"])
     assert not list(tmp_path.glob("*.json"))
     target = tmp_path / "private"; target.mkdir(mode=0o700)
     link = tmp_path / "alias"; link.symlink_to(target, target_is_directory=True)
-    with pytest.raises(ValueError): m.write_report(str(link), report())
+    with pytest.raises(ValueError): m.prepare_report(str(link), report()["run_id"])
 
 
 def test_lxc_selection_requires_all_checks_on_two_physical_nodes():
@@ -231,3 +232,37 @@ def test_mixed_templates_require_an_actual_subject_for_the_approved_target_pair(
     reseal(r)
     assert data["choice"]["target_sha256"] == approved_target
     assert m.validate_bundle(r["compatibility"], r)["isolation"] == "qemu-no-passthrough"
+
+
+def test_writer_revalidates_directory_mode_after_controller_preflight(tmp_path):
+    m = module(); tmp_path.chmod(0o700)
+    prepared_record = m.prepare_report(str(tmp_path), report()["run_id"])
+    tmp_path.chmod(0o755)
+    with pytest.raises(ValueError): m.write_report(str(tmp_path), report(), prepared_record)
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_writer_refuses_replaced_directory_after_controller_preflight(tmp_path):
+    m = module(); directory = tmp_path / "evidence"; directory.mkdir(mode=0o700)
+    prepared_record = m.prepare_report(str(directory), report()["run_id"])
+    directory.rename(tmp_path / "previous"); directory.mkdir(mode=0o700)
+    with pytest.raises(ValueError): m.write_report(str(directory), report(), prepared_record)
+    assert not list(directory.glob("*.json"))
+
+
+def test_writer_rejects_an_effective_user_change_even_if_the_directory_owner_changed(monkeypatch, tmp_path):
+    m = module(); tmp_path.chmod(0o700)
+    prepared_record = m.prepare_report(str(tmp_path), report()["run_id"])
+    real_os = m.os
+
+    class OtherActor:
+        def __getattr__(self, name): return getattr(real_os, name)
+        def geteuid(self): return real_os.geteuid() + 1
+        def fstat(self, fd):
+            original = real_os.fstat(fd)
+            from types import SimpleNamespace
+            return SimpleNamespace(st_mode=original.st_mode, st_uid=self.geteuid(),
+                                   st_dev=original.st_dev, st_ino=original.st_ino)
+    monkeypatch.setattr(m, "os", OtherActor())
+    with pytest.raises(ValueError): m.write_report(str(tmp_path), report(), prepared_record)
+    assert not list(tmp_path.glob("*.json"))

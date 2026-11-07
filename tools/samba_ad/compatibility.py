@@ -5,6 +5,7 @@ No public operational pin, approval flag, infrastructure access or lab runner.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import json
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import uuid
 
 MINIMUM = {"security_ntacl", "posix_acl", "systemd", "clock", "audit", "isolation", "network"}
 LXC_FULL = MINIMUM | {"samba_systemd", "sysvol", "replication"}
@@ -191,21 +193,49 @@ def validate_bundle(envelope: dict, target: dict) -> dict:
     return fingerprint
 
 
-def write_report(directory: str, report: dict) -> dict:
-    """Exclusive durable write to a pre-existing, private operator directory."""
-    validate_report(report)
+@contextmanager
+def report_directory(directory: str, run_id: str):
+    """Identical controller checks before proof and at the eventual writer."""
+    hex_value(run_id, 32)
     path = Path(directory)
-    require(path.is_absolute() and path.resolve() == path)
+    require(path.is_absolute() and path.resolve(strict=True) == path)
     parent = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         info = os.fstat(parent)
         require(stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.geteuid())
+        require(os.access(path, os.W_OK | os.X_OK, effective_ids=True, follow_symlinks=False))
+        try:
+            os.stat(run_id + ".json", dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError("S2 run output already exists; no overwrite")
+        yield parent, info
+    finally:
+        os.close(parent)
+
+
+def prepare_report(directory: str, run_id: str | None = None) -> dict:
+    """Validate predictably before the proof, without creating a fake report."""
+    run_id = uuid.uuid4().hex if run_id is None else run_id
+    with report_directory(directory, run_id) as (_, info):
+        return {"directory": str(Path(directory)), "run_id": run_id, "euid": info.st_uid,
+                "device": info.st_dev, "inode": info.st_ino}
+
+
+def write_report(directory: str, report: dict, prepared: dict) -> dict:
+    """Revalidate the same directory/user/run, then exclusively persist and fsync."""
+    validate_report(report)
+    fields(prepared, "directory run_id euid device inode")
+    require(prepared["directory"] == str(Path(directory)) and prepared["run_id"] == report["run_id"])
+    require(all(type(prepared[k]) is int and prepared[k] >= 0 for k in ["euid", "device", "inode"]))
+    with report_directory(directory, report["run_id"]) as (parent, info):
+        require(prepared["euid"] == os.geteuid() and
+                (prepared["device"], prepared["inode"]) == (info.st_dev, info.st_ino))
         fd = os.open(report["run_id"] + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o600, dir_fd=parent)
         with os.fdopen(fd, "w") as output:
             json.dump(report, output, sort_keys=True, separators=(",", ":"))
             output.flush(); os.fsync(output.fileno())
         os.fsync(parent)
-    finally:
-        os.close(parent)
     return {"sha256": sha(report)}

@@ -65,24 +65,22 @@
   check_mode: false
   no_log: true
 
-- name: Check the private evidence directory before a mutating proof
-  ansible.builtin.stat:
-    path: "{{ samba_ad_compatibility_evidence_directory }}"
-    follow: false
+- name: Preflight the evidence directory and output name as the controller writer user
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}
+        import sys
+        payload = json.load(sys.stdin)
+        print(json.dumps(prepare_report(payload['directory'])))
+    stdin: "{{ {'directory': samba_ad_compatibility_evidence_directory} | to_json }}"
   delegate_to: localhost
   become: false
-  register: samba_ad_compatibility_directory
-  when: samba_ad_compatibility_apply and not ansible_check_mode
-  no_log: true
-
-- name: Require a pre-existing restricted evidence directory
-  ansible.builtin.assert:
-    that:
-      - samba_ad_compatibility_evidence_directory is match('^/')
-      - samba_ad_compatibility_directory.stat.isdir | default(false)
-      - not (samba_ad_compatibility_directory.stat.islnk | default(true))
-      - samba_ad_compatibility_directory.stat.mode == '0700'
-    fail_msg: S2 requires a private operator evidence directory before the proof.
+  register: samba_ad_compatibility_prepared
+  changed_when: false
+  check_mode: false
   when: samba_ad_compatibility_apply and not ansible_check_mode
   no_log: true
 
@@ -111,7 +109,8 @@
             'check': ansible_check_mode, 'limit': ansible_limit, 'inventory_host': inventory_hostname,
             'node_hostname': ansible_facts.hostname, 'hosts_count': ansible_play_hosts_all | length,
             'tags': ansible_run_tags | list | sort, 'request': samba_ad_compatibility_request,
-            'provenance': samba_ad_compatibility_provenance},
+            'provenance': samba_ad_compatibility_provenance,
+            'run_id': ((samba_ad_compatibility_prepared.stdout | default('{}') | from_json).run_id | default(none))},
           'probe_source': lookup('ansible.builtin.file',
             playbook_dir ~ '/../tools/samba_ad/guest_probe.py')} | to_json }}
   register: samba_ad_compatibility_result
@@ -131,10 +130,11 @@
         {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}
         import sys
         payload = json.load(sys.stdin)
-        print(json.dumps(write_report(payload['directory'], payload['report'])))
+        print(json.dumps(write_report(payload['directory'], payload['report'], payload['prepared'])))
     stdin: >-
       {{ {'directory': samba_ad_compatibility_evidence_directory,
-          'report': (samba_ad_compatibility_result.stdout | from_json).report} | to_json }}
+          'report': (samba_ad_compatibility_result.stdout | from_json).report,
+          'prepared': samba_ad_compatibility_prepared.stdout | from_json} | to_json }}
   delegate_to: localhost
   become: false
   changed_when: true

@@ -38,8 +38,12 @@ e negação por outro UID. Não há dependência nova de ferramenta/pacote ACL.
 
 A evidência privada contém observações de identidade antes/depois e o resultado
 estruturado, sem saída bruta de comandos. Diretório do operador deve existir,
-ser próprio, canônico, sem symlinks e modo 0700; `write_report` grava
-`<run_id>.json` por O_EXCL, modo 0600 e fsync. Não sobrescreve runs anteriores.
+ser próprio, canônico, sem symlinks em nenhum ancestral e modo 0700. Antes da
+prova, `prepare_report` roda no controlador, `become: false`, com a mesma validação
+do writer: usuário efetivo/owner/mode, canonicalidade, acesso e saída exclusiva
+do run_id gerado no controlador. Não cria laudo ou placeholder. O runner usa esse
+run_id; `write_report` repete a validação e confere o mesmo usuário e dir dev/ino
+antes de gravar `<run_id>.json` por O_EXCL, modo 0600 e fsync. Não sobrescreve runs anteriores.
 Manter esse diretório fora do Git. Request/resultados vão por stdin e `no_log`.
 A saída humana contém somente estado/status/escopo. Erro operacional é persistido
 quando há laudo e depois falha a role; falha de preflight não executa a prova.

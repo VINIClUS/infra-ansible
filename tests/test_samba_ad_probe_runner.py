@@ -25,6 +25,7 @@ def module(monkeypatch):
 def payload():
     return {"enabled": True, "apply": True, "check": False, "limit": "pve-test", "inventory_host": "pve-test",
             "node_hostname": "node-b", "hosts_count": 1, "tags": ["samba_ad_compatibility"], "request": request(),
+            "run_id": "a" * 32,
             "provenance": {"public_revision": "a" * 40, "private_revision": "b" * 40,
                            "s1_audit_sha256": "c" * 64, "filesystem": "ext4",
                            "policy_sha256": sha(request()["firewall"])}}
@@ -82,6 +83,7 @@ def test_manual_gate_rejects_broad_invocation_before_api(monkeypatch, field, val
 def test_s2_check_mode_never_executes_mutating_probe(monkeypatch, field):
     m = module(monkeypatch); api = cluster(); data = prepared(); transport = Transport()
     data[field] = field == "check"
+    data["run_id"] = None  # The controller does not prepare output for readonly execution.
     assert m.run(data, api, transport, "fixed source")["state"] == "preflight"
     assert transport.executions == 0 and transport.snapshots == 0
     assert all(method in ["get", "firewall", "enforce", "link"] for method, _, _ in api.calls)
@@ -205,3 +207,41 @@ def test_real_pct_capture_separates_host_and_guest_cgroup_views(monkeypatch):
 def test_real_pct_capture_rejects_wrong_namespace_or_init_identity(monkeypatch, change):
     m, transport = pct_capture(monkeypatch, change)
     with pytest.raises(ValueError): transport.capture(request(), "static helper", "ext4")
+
+
+@pytest.mark.parametrize("change", ["ancestor_symlink", "uid_mismatch", "existing_run"])
+def test_controller_directory_preflight_stops_before_mutating_transport(monkeypatch, tmp_path, change):
+    m = module(monkeypatch); controller = sys.modules["s2_compatibility"]; transport = Transport()
+    directory = tmp_path; directory.chmod(0o700)
+    if change == "ancestor_symlink":
+        actual = tmp_path / "actual"; actual.mkdir(mode=0o700)
+        (actual / "evidence").mkdir(mode=0o700)
+        alias = tmp_path / "alias"; alias.symlink_to(actual, target_is_directory=True)
+        directory = alias / "evidence"
+    if change == "uid_mismatch":
+        real_os = controller.os
+        class OtherUID:
+            def __getattr__(self, name): return getattr(real_os, name)
+            def geteuid(self): return real_os.geteuid() + 1
+        monkeypatch.setattr(controller, "os", OtherUID())
+    existing = directory / ("a" * 32 + ".json")
+    if change == "existing_run": existing.write_text("preserve previous evidence")
+    with pytest.raises(FileExistsError if change == "existing_run" else ValueError):
+        prepared_record = controller.prepare_report(str(directory), "a" * 32)
+        operation = prepared(); operation["run_id"] = prepared_record["run_id"]
+        m.run(operation, cluster(), transport, "static helper")
+    assert transport.executions == 0 and transport.snapshots == 0
+    if change == "existing_run": assert existing.read_text() == "preserve previous evidence"
+    else: assert not list(directory.glob("*.json"))
+
+
+def test_controller_preflight_run_id_is_used_by_probe_and_writer(monkeypatch, tmp_path):
+    m = module(monkeypatch); controller = sys.modules["s2_compatibility"]; transport = Transport()
+    tmp_path.chmod(0o700)
+    prepared_record = controller.prepare_report(str(tmp_path), "d" * 32)
+    assert list(tmp_path.iterdir()) == []  # A preflight is not a fabricated report.
+    operation = prepared(); operation["run_id"] = prepared_record["run_id"]
+    result = m.run(operation, cluster(), transport, "static helper")
+    assert result["report"]["run_id"] == "d" * 32 and transport.executions == 1
+    controller.write_report(str(tmp_path), result["report"], prepared_record)
+    assert (tmp_path / ("d" * 32 + ".json")).is_file()

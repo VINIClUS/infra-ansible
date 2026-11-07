@@ -13,6 +13,14 @@ S1 aplicado e parecer independente de estado são precondições de execução.
 2. Preparar configuração privada S2 fora de group_vars/host_vars: flags de opt-in,
    request S1 atual, provenance e router exatos; usar diretório protegido fora do
    Git para laudos. Nenhum exemplo público comprova estado ou autoriza aplicação.
+   Antes da prova, o controlador executa `prepare_report(directory)` sem become,
+   com a mesma função de validação usada por `write_report(directory, report, prepared)`.
+   Confere canonicalidade/ancestrais sem symlink, owner igual ao usuário efetivo,
+   modo 0700, acesso e ausência de saída daquele run_id. O run_id nasce nesse
+   preflight e é o mesmo enviado ao probe e ao writer, ambos vinculados ao mesmo
+   usuário e dir dev/ino. Não há reserva/placeholder que pareça um laudo medido.
+   O writer revalida tudo após a prova; mudança concorrente ou falha de I/O ainda
+   pode impedir persistência e interrompe o fluxo sem autorizar cleanup/avanço.
 3. Executar primeiro preflight, limitado ao nó atual do probe, e somente depois
    a prova explícita. Exemplo de forma de comando, com paths substituíveis:
 
