@@ -14,7 +14,9 @@ executável também retorna digest do guest para o operador privado.
 O script stdlib `tools/samba_ad/guest.py` usa pvesh local no nó de origem e seu
 proxy de cluster. Revalida quorum, nós, VMID/nome/MAC/IP (incluindo cloud-init),
 capacidades conservadoras de RAM e storage em origem/destino (reserva >=2 GiB),
-config/digest do template local, isolamento e ausência de devices/hooks extras.
+config/digest do template local, isolamento e ausência de devices/hooks extras
+(incluindo passthrough/virtiofs). VMs fixam sockets=1 e balloon=0 para manter o
+dimensionamento declarado.
 Faz full clone local parado, remove features do clone LXC, configura endereço
 estático e firewall, cresce somente o disco próprio e migra offline. Confere
 identidade, storage e tamanho no destino antes do boot. Nunca altera templates.

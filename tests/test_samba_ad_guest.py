@@ -188,7 +188,7 @@ def test_qemu_fallback_uses_offline_local_disks_and_numeric_api_strings():
     m = module(); api = Fake(); api.kind = "qemu"; r = request()
     r["resource"]["kind"] = "qemu"; r["template"]["disk"] = "scsi0"
     api.template = {"template": 1, "digest": "a" * 40, "name": "tpl-debian", "ostype": "l26",
-                    "scsi0": "local-lvm:base-7900-disk-0,size=16G", "memory": "2048",
+                    "scsi0": "local-lvm:base-7900-disk-0,size=16G", "memory": "2048", "sockets": 2, "balloon": 1024,
                     "net0": "virtio=02:00:5E:00:00:01,bridge=vnold", "ide2": "local-lvm:vm-7900-cloudinit,media=cdrom"}
     original = api.mutate
     def strings(method, path, **params):
@@ -200,9 +200,10 @@ def test_qemu_fallback_uses_offline_local_disks_and_numeric_api_strings():
     migration = next(a for _, p, a in api.calls if p.endswith("/migrate"))
     assert migration["online"] == 0 and migration["with-local-disks"] == 1
     assert migration["targetstorage"] == "local-lvm"
+    assert api.guests[800080]["sockets"] == 1 and api.guests[800080]["balloon"] == 0
 
 
-@pytest.mark.parametrize("device", ["scsi1", "hostpci2", "usb3", "unused0", "efidisk0"])
+@pytest.mark.parametrize("device", ["scsi1", "hostpci2", "usb3", "unused0", "efidisk0", "dev0", "virtiofs0", "parallel0", "serial0"])
 def test_templates_with_extra_disks_or_passthrough_are_not_cloned(device):
     m = module(); api = Fake(); api.template[device] = "foreign:volume"
     with pytest.raises(ValueError): m.reconcile(request(), api)
@@ -261,3 +262,13 @@ def test_start_of_absent_guest_never_clones():
     m = module(); api = Fake(); r = request(); r["action"] = "start"
     with pytest.raises(ValueError): m.reconcile(r, api)
     assert not api.guests
+
+
+def test_api_normalization_of_tag_order_does_not_look_like_identity_drift():
+    m = module(); api = Fake(); original = api.mutate
+    def normalize(method, path, **params):
+        original(method, path, **params)
+        if path.endswith("/config") and 800080 in api.guests:
+            api.guests[800080]["tags"] = ";".join(sorted(api.guests[800080]["tags"].split(";")))
+    api.mutate = normalize
+    assert m.reconcile(request(), api)["state"] == "created"

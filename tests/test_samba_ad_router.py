@@ -113,3 +113,11 @@ def test_restricted_identity_zone_has_no_dnsmasq_listener():
     text = env.get_template("dnsmasq.conf.j2").render(**values)
     assert "interface=eth2" in text
     assert "interface=eth4" not in text
+
+
+def test_recovery_can_remove_exact_own_pending_nic_but_refuses_foreign_pending():
+    m = module(); r = request(); c = config(); c["net4"] = m.nic_text(r)
+    pending = [{"key": "net4", "pending": c["net4"]}]
+    assert m.plan(r, c, pending, reverting=True)["action"] == "verify"
+    with pytest.raises(ValueError): m.plan(r, c, pending)
+    with pytest.raises(ValueError): m.plan(r, c, pending + [{"key": "memory", "pending": 2048}], reverting=True)

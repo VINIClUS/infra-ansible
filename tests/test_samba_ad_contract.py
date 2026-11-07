@@ -188,4 +188,3 @@ def test_pilot_names_are_valid_dns_labels(name):
     data["split_dns"]["pilot_public_names"] = [name]
     with pytest.raises(ValueError):
         validator().validate_manifest(data)
-

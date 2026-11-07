@@ -107,7 +107,7 @@ def desired_config(r, isolated=False):
     if c["kind"] == "lxc":
         return dict(common, hostname=c["name"], swap=0,
                     net0=f'name=eth0,bridge={c["bridge"]},hwaddr={c["mac"]},ip={c["address"]},gw={c["gateway"]},mtu={c["mtu"]},firewall=1,type=veth,link_down={link}')
-    return dict(common, name=c["name"], ipconfig0=f'ip={c["address"]},gw={c["gateway"]}',
+    return dict(common, sockets=1, balloon=0, name=c["name"], ipconfig0=f'ip={c["address"]},gw={c["gateway"]}',
                 net0=f'virtio={c["mac"]},bridge={c["bridge"]},firewall=1,mtu={c["mtu"]},link_down={link}')
 
 
@@ -117,9 +117,11 @@ def pairs(value):
 
 def safe_devices(config, disk):
     for key, value in config.items():
-        require(not (re.fullmatch(r"(?:hostpci|usb|unused|efidisk|tpmstate)[0-9]+", key)
+        require(not (re.fullmatch(r"(?:hostpci|usb|unused|efidisk|tpmstate|dev|virtiofs|parallel)[0-9]+", key)
                      or key.startswith("lxc.") or re.fullmatch(r"mp[0-9]+", key)
                      or key in ["hookscript", "cicustom", "args"]), "unmanaged devices/hooks")
+        if re.fullmatch(r"serial[0-9]+", key):
+            require(value == "socket", "host serial device")
         if re.fullmatch(r"(?:scsi|sata|virtio|ide)[0-9]+", key) and key != disk:
             require(key == "ide2" and "cloudinit" in value and "media=cdrom" in value, "additional disk")
 
@@ -132,8 +134,10 @@ def verify_config(r, config, configured=True, isolated=False):
     if configured:
         for k, value in desired_config(r, isolated=isolated).items():
             got = config.get(k)
-            if k in ["cores", "memory", "onboot", "swap"]:
+            if k in ["cores", "memory", "onboot", "swap", "sockets", "balloon"]:
                 require(str(got if got is not None else 0) == str(value), "configured sizing")
+            elif k == "tags":
+                require(set((got or "").split(";")) == set(value.split(";")), "project tags")
             else:
                 require(pairs(got or "") == pairs(value) if k in ["net0", "ipconfig0"] else got == value,
                         "configured identity")
@@ -149,7 +153,7 @@ def capacity(api, r, guests):
     c, t = r["resource"], r["template"]
     for node in {c["node"], t["node"]}:
         memory = api.get(f"/nodes/{node}/status")["memory"]
-        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"]]
+        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"] and not g.get("template")]
         require(all(type(g.get("maxmem")) is int for g in allocations), "capacity reservations known")
         free = min(memory["total"] - memory["used"], memory["total"] - sum(g["maxmem"] for g in allocations))
         require(free - c["memory_mib"] * 1024**2 >= 2 * GIB, "2 GiB host reserve")
@@ -176,7 +180,7 @@ def reconcile(r, api, check=False):
         allowed_nodes = {c["node"], t["node"]} if r["action"] == "absent" else {c["node"]}
         require(live[0].get("node") in allowed_nodes and live[0].get("type") == c["kind"], "placement/type")
         if r["action"] == "absent":
-            path = f'/nodes/{live[0]["node"]}/{c["kind"]}/{c["vmid"]}' 
+            path = f'/nodes/{live[0]["node"]}/{c["kind"]}/{c["vmid"]}'
         cfg = api.get(path + "/config")
         require(digest(r["expected_digest"]) and cfg.get("digest") == r["expected_digest"], "guest digest")
         verify_config(r, cfg, configured=r["action"] != "absent", isolated=not r["boot"] or r["action"] == "start")

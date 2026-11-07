@@ -20,8 +20,9 @@ preserva configs de rede em diretórios root-only fora do Git.
 Antes da mudança arma timers independentes no PVE (`proxmox_change_guard`) e no
 guest. Eles retiram somente a NIC/arquivo próprios com identidade/readback atual;
 não restauram cegamente arquivos de outras interfaces. Timer pendente bloqueia
-nova operação. Uma nova conexão SSH estrita, sem multiplexação, valida rota
-padrão, MAC, IP e MTU antes de desarmar ambos. Falha mantém timers e instrução
+nova operação. Recovery cancela somente pending da NIC própria com valor exato;
+pending alheio impede a reversão automática. Uma nova conexão SSH estrita, sem multiplexação, valida rota
+padrão, MAC, IP e MTU; novo readback PVE valida NICs/pending antes de desarmar ambos. Falha mantém timers e instrução
 de console; rescue tenta a mesma recuperação mínima.
 
 Reexecução com NIC/arquivo idênticos verifica; estado parcial ou arquivo ocupado

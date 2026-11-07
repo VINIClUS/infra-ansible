@@ -42,12 +42,17 @@ def plan(r, config, pending, reverting=False):
             and config.get("ostype") == "l26" and not config.get("template") and not config.get("lock"), "router identity")
     require(isinstance(r["expected_digest"], str) and re.fullmatch(r"[a-f0-9]{40}", r["expected_digest"]), "expected digest")
     require(reverting or config.get("digest") == r["expected_digest"], "stale digest")
-    require(not any("pending" in x or x.get("delete") for x in pending), "pending changes")
+    changes = [x for x in pending if "pending" in x or x.get("delete")]
+    require(not changes or (reverting and all(x.get("key") == r["nic"]
+            and isinstance(x.get("pending"), str) and pairs(x["pending"]) == pairs(nic_text(r))
+            and not x.get("delete") for x in changes)), "pending changes")
     existing = {k: v for k, v in config.items() if re.fullmatch(r"net[0-9]+", k) and k != r["nic"]}
     require(existing == r["existing_nics"] and "net0" in existing and r["nic"] not in r["existing_nics"], "existing interfaces")
     for value in existing.values():
         require(r["mac"].lower() not in value.lower() and pairs(value).get("bridge") != r["bridge"], "duplicate network")
     current = config.get(r["nic"])
+    if reverting and current is None and changes:
+        current = changes[0]["pending"]
     require(current is None or pairs(current) == pairs(nic_text(r)), "occupied NIC slot")
     return {"action": "verify" if current else "add",
             "params": {"digest": config["digest"], r["nic"]: nic_text(r)}, "network": network_text(r)}

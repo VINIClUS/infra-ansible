@@ -197,6 +197,27 @@
             (iface.addr_info | selectattr('local', 'equalto', wanted[0]) | first).prefixlen | int == wanted[1] | int
       no_log: true
 
+    - name: Read current PVE digest after guest verification
+      ansible.builtin.command:
+        argv:
+          - pvesh
+          - get
+          - "/nodes/{{ samba_ad_router_nic_request.node }}/qemu/{{ samba_ad_router_nic_request.vmid }}/config"
+          - --output-format
+          - json
+      register: samba_ad_router_nic_final_config
+      changed_when: false
+      no_log: true
+
+    - name: Verify all QEMU interfaces and pending state before disarming recovery
+      ansible.builtin.command:
+        argv: [python3, /root/samba-ad-s1-router/router_nic.py, --plan]
+        stdin: >-
+          {{ samba_ad_router_nic_request
+             | combine({'expected_digest': (samba_ad_router_nic_final_config.stdout | from_json).digest}) | to_json }}
+      changed_when: false
+      no_log: true
+
     - name: Disarm guest recovery only after fresh connection readback
       ansible.builtin.command:
         argv:
