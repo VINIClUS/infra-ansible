@@ -3,6 +3,7 @@
 samba_ad_router_nic_enabled: false
 samba_ad_router_nic_apply: false
 samba_ad_router_nic_console_verified: false
+samba_ad_router_nic_qga_recovery: false
 samba_ad_router_nic_guest_host: router-test
 samba_ad_router_nic_request:
   node: node-a

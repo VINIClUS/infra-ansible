@@ -76,9 +76,27 @@ def host_nic_present(r):
                for link in json.loads(result.stdout))
 
 
+def qga_preflight(r):
+    """Prove the existing local PVE -> QGA root channel without guest IP access."""
+    require(socket.gethostname().split(".")[0] == r["node"], "local PVE node identity")
+    ping = subprocess.run(["qm", "guest", "cmd", str(r["vmid"]), "ping"],
+                          capture_output=True, text=True, check=False, timeout=15)
+    require(ping.returncode == 0, "existing QGA ping failed")
+    execution = subprocess.run(["qm", "guest", "exec", str(r["vmid"]), "--timeout", "10", "--", "/usr/bin/id", "-u"],
+                               capture_output=True, text=True, check=False, timeout=20)
+    require(execution.returncode == 0, "existing QGA root execution failed")
+    result = json.loads(execution.stdout)
+    require(isinstance(result, dict) and result.get("exited") == 1
+            and type(result.get("exitcode")) is int and result["exitcode"] == 0
+            and isinstance(result.get("out-data"), str) and result["out-data"].strip() == "0"
+            and not result.get("out-truncated") and not result.get("err-data"), "QGA root proof incomplete")
+
+
 def main():
     try:
         r = json.load(sys.stdin)
+        qga = "--qga-preflight" in sys.argv
+        require(not qga or ("--plan" in sys.argv and "--revert" not in sys.argv), "QGA preflight is readonly")
         # Validate node/VMID before using them in an API path.
         require(type(r.get("vmid")) is int and isinstance(r.get("node"), str)
                 and re.fullmatch(r"[a-z0-9-]+", r["node"]), "identity")
@@ -86,13 +104,15 @@ def main():
         config = api("get", path + "/config", current=1)
         result = plan(r, config, api("get", path + "/pending"), reverting="--revert" in sys.argv)
         require(api("get", path + "/status/current").get("status") == "running", "running router")
+        if qga:
+            qga_preflight(r)
         if "--revert" in sys.argv:
             if result["action"] == "verify":
                 api("set", path + "/config", digest=config["digest"], delete=r["nic"])
             pending = api("get", path + "/pending")
-            require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; console required")
+            require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; reviewed recovery required")
             require(r["nic"] not in api("get", path + "/config", current=1), "active remove readback")
-            require(not host_nic_present(r), "effective host NIC remains; console required")
+            require(not host_nic_present(r), "effective host NIC remains; reviewed recovery required")
             print(json.dumps({"changed": result["action"] == "verify"}))
             return 0
         changed = result["action"] == "add"
@@ -101,7 +121,7 @@ def main():
             after = api("get", path + "/config", current=1)
             r["expected_digest"] = after["digest"]
             require(plan(r, after, api("get", path + "/pending"))["action"] == "verify", "NIC readback")
-        print(json.dumps({"changed": changed, "action": result["action"], "network": result["network"]}))
+        print(json.dumps({"changed": changed, "action": result["action"], "network": result["network"], "qga_management_verified": qga}))
         return 0
     except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
         print("S1 router failed; values suppressed; dead-man/recovery remain required", file=sys.stderr)
