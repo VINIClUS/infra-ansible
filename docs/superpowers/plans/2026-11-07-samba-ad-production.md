@@ -10,7 +10,7 @@
 ## Global Constraints
 
 - O usuário autorizou implementação, criação de chats, multiagentes, SSH, PRs, merges e alterações de infraestrutura dentro deste escopo. Não repetir pedidos de autorização já concedida.
-- Criar uma floresta nova no namespace institucional autorizado, com NetBIOS PEPITACIO após verificar colisões. O nome DNS, a topologia e os endereços reais ficam exclusivamente no inventário privado.
+- Criar uma floresta nova no namespace institucional autorizado, com NetBIOS definido no campo domain.netbios do inventário privado após verificar colisões. O nome DNS, a topologia e os endereços reais ficam exclusivamente no inventário privado.
 - LXC deve ser não privilegiado, com AppArmor ativo e sem nesting desnecessário. Não usar user.NTACL, capacidades do host ou AppArmor unconfined para contornar falhas. A alternativa VM está autorizada.
 - FFL/DFL 2016; esquema 2019/v88 é um conceito distinto. Validar opções na versão instalada, sem elevação repetida ou dbcheck --fix automático.
 - Samba 4.25.1 e dependências compatíveis de repositório assinado, com origem, assinatura, fingerprint e advisories verificados. Não presumir que o pacote nativo da distribuição atende ao requisito.
