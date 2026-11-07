@@ -39,6 +39,10 @@ Este repositorio contem codigo Ansible generico para operar a infraestrutura:
 
 ## Validacao
 
+Os [testes nativos de bootstrap](docs/ci-native-bootstrap.md) usam contexto
+publico explicito na CI e exigem um gate separado e estrito no consumidor
+privado antes de promover uma revisao publica.
+
 Sempre que criar ou alterar Ansible:
 
 - rodar `yamllint` se disponivel;

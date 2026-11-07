@@ -153,3 +153,18 @@ def test_deploy_verifies_same_workflow_manifest_then_invokes_only_fixed_wrapper(
     assert sudo_commands == [
         'sudo /usr/local/sbin/infra-ansible-deploy "$GITHUB_SHA"'
     ]
+
+
+def test_userns_permission_preparation_is_only_in_hosted_validation_before_native_tools():
+    workflow = load_workflow()
+    validate = workflow["jobs"]["validate"]
+    assert validate["runs-on"] == "ubuntu-latest"
+    commands = [(index, step.get("run", "")) for index, step in enumerate(validate["steps"])]
+    permission = [(index, command) for index, command in commands if "prepare-hosted-userns.sh" in command]
+    assert len(permission) == 1
+    assert permission[0][1] == "bash tools/ci/prepare-hosted-userns.sh"
+    native = [index for index, command in commands if "python -m tools.ci.native_bootstrap" in command]
+    assert len(native) == 1 and permission[0][0] < native[0]
+    assert all("prepare-hosted-userns.sh" not in step.get("run", "")
+               for name, job in workflow["jobs"].items() if name != "validate"
+               for step in job["steps"])

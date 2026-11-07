@@ -36,9 +36,23 @@ jobs:
             yamllint
           ansible-galaxy collection install --requirements-file requirements.yml
 
-      - name: Run Python tests
+      - name: Permit isolated native user namespaces on hosted validation
         shell: bash
-        run: python -m pytest -q
+        run: bash tools/ci/prepare-hosted-userns.sh
+
+      - name: Prepare pinned offline native-test toolchain
+        shell: bash
+        run: >-
+          python -m tools.ci.native_bootstrap
+          --destination "${RUNNER_TEMP}/cnesdata-native"
+          --github-env "${GITHUB_ENV}"
+          --github-path "${GITHUB_PATH}"
+
+      - name: Run Python tests (public context; external targets reported)
+        shell: bash
+        env:
+          CNESDATA_NATIVE_CONTEXT: public-ci
+        run: python -m pytest -q -ra
 
       - name: Validate repository scaffolds
         shell: bash
