@@ -1,0 +1,155 @@
+---
+- name: Validate S2 activation flags
+  ansible.builtin.assert:
+    that:
+      - samba_ad_compatibility_enabled is boolean
+      - samba_ad_compatibility_apply is boolean
+
+- name: Stop the disabled first proof
+  ansible.builtin.meta: end_role
+  when: not samba_ad_compatibility_enabled
+
+- name: Require exact manual destination node and dedicated tag
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_compatibility']
+      - samba_ad_compatibility_request is mapping
+      - samba_ad_compatibility_request.resource.node == ansible_facts.hostname
+      - samba_ad_compatibility_router.host in hostvars
+      - samba_ad_compatibility_router.zone is match('^[a-z][a-z0-9]{0,15}$')
+      - samba_ad_compatibility_router.ruleset_sha256 is match('^[a-f0-9]{64}$')
+      - samba_ad_compatibility_router.runtime_sha256 is match('^[a-f0-9]{64}$')
+      - samba_ad_compatibility_router.contract is mapping
+    fail_msg: S2 requires private S1 state evidence, one destination node and the dedicated tag.
+
+- name: Read new router runtime over a strict independent connection
+  ansible.builtin.command:
+    argv: [nft, -j, list, ruleset]
+  vars:
+    ansible_ssh_args: -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
+  delegate_to: "{{ samba_ad_compatibility_router.host }}"
+  register: samba_ad_compatibility_router_runtime
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read the persistent router digest
+  ansible.builtin.stat:
+    path: /etc/nftables.conf
+    checksum_algorithm: sha256
+  delegate_to: "{{ samba_ad_compatibility_router.host }}"
+  register: samba_ad_compatibility_router_disk
+
+- name: Refuse changed persistent policy
+  ansible.builtin.assert:
+    that:
+      - samba_ad_compatibility_router_disk.stat.checksum == samba_ad_compatibility_router.ruleset_sha256
+
+- name: Verify exact loaded matrix and jump precedence
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_guard.py') }}"
+    stdin: >-
+      {{ {'runtime': samba_ad_compatibility_router_runtime.stdout | from_json,
+          'contract': samba_ad_compatibility_router.contract,
+          'sha256': samba_ad_compatibility_router.runtime_sha256,
+          'zone': samba_ad_compatibility_router.zone} | to_json }}
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Preflight the evidence directory and output name as the controller writer user
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}
+        import sys
+        payload = json.load(sys.stdin)
+        print(json.dumps(prepare_report(payload['directory'])))
+    stdin: "{{ {'directory': samba_ad_compatibility_evidence_directory} | to_json }}"
+  delegate_to: localhost
+  become: false
+  register: samba_ad_compatibility_prepared
+  changed_when: false
+  check_mode: false
+  when: samba_ad_compatibility_apply and not ansible_check_mode
+  no_log: true
+
+- name: Run only the explicit guest first proof or read-only preflight
+  vars:
+    samba_ad_compatibility_modules:
+      - name: s2_compatibility
+        source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}"
+      - name: s2_guest
+        source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') }}"
+      - name: s2_probe_runner
+        source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/probe_runner.py') }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sys, types
+        for item in {{ samba_ad_compatibility_modules | to_json }}:
+            module = types.ModuleType(item['name'])
+            exec(item['source'], module.__dict__)
+            sys.modules[module.__name__] = module
+        sys.exit(sys.modules['s2_probe_runner'].main())
+    stdin: >-
+      {{ {'operation': {'enabled': samba_ad_compatibility_enabled, 'apply': samba_ad_compatibility_apply,
+            'check': ansible_check_mode, 'limit': ansible_limit, 'inventory_host': inventory_hostname,
+            'node_hostname': ansible_facts.hostname, 'hosts_count': ansible_play_hosts_all | length,
+            'tags': ansible_run_tags | list | sort, 'request': samba_ad_compatibility_request,
+            'provenance': samba_ad_compatibility_provenance,
+            'run_id': ((samba_ad_compatibility_prepared.stdout | default('{}') | from_json).run_id | default(none))},
+          'probe_source': lookup('ansible.builtin.file',
+            playbook_dir ~ '/../tools/samba_ad/guest_probe.py')} | to_json }}
+  register: samba_ad_compatibility_result
+  changed_when: (samba_ad_compatibility_result.stdout | from_json).state == 'measured'
+  failed_when: >-
+    samba_ad_compatibility_result.rc not in [0, 2, 3] or
+    samba_ad_compatibility_result.stdout | trim | length == 0
+  check_mode: false
+  no_log: true
+
+- name: Persist the report exclusively on the controller before any lifecycle cleanup
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}
+        import sys
+        payload = json.load(sys.stdin)
+        print(json.dumps(write_report(payload['directory'], payload['report'], payload['prepared'])))
+    stdin: >-
+      {{ {'directory': samba_ad_compatibility_evidence_directory,
+          'report': (samba_ad_compatibility_result.stdout | from_json).report,
+          'prepared': samba_ad_compatibility_prepared.stdout | from_json} | to_json }}
+  delegate_to: localhost
+  become: false
+  changed_when: true
+  when: (samba_ad_compatibility_result.stdout | from_json).state == 'measured'
+  no_log: true
+
+- name: Report outcome and scope only
+  ansible.builtin.debug:
+    msg: >-
+      S2 state={{ (samba_ad_compatibility_result.stdout | from_json).state }};
+      status={{ (samba_ad_compatibility_result.stdout | from_json).status | default('preflight') }};
+      first proof only; qualification=pending; no final guests.
+
+- name: Refuse operational failure after preserving its report
+  ansible.builtin.assert:
+    that:
+      - samba_ad_compatibility_result.rc != 2
+    fail_msg: S2 operational error; inspect private evidence. No incompatibility or platform qualification asserted.

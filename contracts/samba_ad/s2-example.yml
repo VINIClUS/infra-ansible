@@ -1,0 +1,23 @@
+---
+# Inert. Copy the separate S1 fictional lab request only after live readback.
+# No real choice, approved pin, state audit or production authorization exists here.
+samba_ad_compatibility_enabled: false
+samba_ad_compatibility_apply: false
+samba_ad_compatibility_request: {}
+samba_ad_compatibility_evidence_directory: ""
+samba_ad_compatibility_provenance:
+  public_revision: ""
+  private_revision: ""
+  s1_audit_sha256: ""
+  filesystem: ext4
+  policy_sha256: ""
+samba_ad_compatibility_router:
+  host: router-test
+  zone: identity
+  ruleset_sha256: ""
+  runtime_sha256: ""
+  contract: {}
+# Shape of request.compatibility; deliberately rejected by the consumer.
+samba_ad_s2_bundle_example:
+  sha256: ""
+  data: null

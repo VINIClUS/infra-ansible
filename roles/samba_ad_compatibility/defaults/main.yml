@@ -1,0 +1,12 @@
+---
+samba_ad_compatibility_enabled: false
+samba_ad_compatibility_apply: false
+samba_ad_compatibility_request: {}
+samba_ad_compatibility_provenance: {}
+samba_ad_compatibility_evidence_directory: ""
+samba_ad_compatibility_router:
+  host: ""
+  zone: identity
+  ruleset_sha256: ""
+  runtime_sha256: ""
+  contract: {}

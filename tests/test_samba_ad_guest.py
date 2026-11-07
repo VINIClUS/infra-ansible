@@ -96,6 +96,15 @@ class Fake:
     def assert_firewall_absent(self, r):
         assert r["resource"]["vmid"] not in self.fw
 
+    def assert_lab_firewall(self, r):
+        content = self.fw.get(r["resource"]["vmid"])
+        if content is not None and content != module().firewall_text(r):
+            raise ValueError("foreign firewall")
+
+    def cleanup_readback(self, r, volumes):
+        if r["resource"]["vmid"] in self.guests:
+            raise ValueError("guest remains")
+
     def link_ready(self, r, connected):
         self.calls.append(("link", "runtime", {"connected": connected}))
         return True
