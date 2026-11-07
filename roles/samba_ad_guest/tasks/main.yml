@@ -69,7 +69,14 @@
     argv:
       - python3
       - -c
-      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') }}"
+      - |
+        import sys, types
+        evidence = types.ModuleType('s2_compatibility')
+        exec({{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') | to_json }},
+             evidence.__dict__)
+        sys.modules[evidence.__name__] = evidence
+        exec({{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') | to_json }},
+             {'__name__': '__main__'})
       - "{{ '--check' if ansible_check_mode or not samba_ad_guest_apply else '--execute' }}"
     stdin: "{{ samba_ad_guest_request | combine({'enabled': true, 'apply': samba_ad_guest_apply}) | to_json }}"
   register: samba_ad_guest_result

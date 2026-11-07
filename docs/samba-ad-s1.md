@@ -1,5 +1,10 @@
 # Samba AD — S1 manual, rede e substrato
 
+Extensão code-only S2: `stop` lab explícito e cleanup/readbacks seguros; consumidor
+de bundle privado auditado, sem pin público. [S2](samba-ad-s2.md) descreve a primeira
+prova e os limites. Production segue recusado sem toda evidência específica;
+este documento conserva abaixo o registro histórico de preparação S1.
+
 S1 entrega código, exemplos inertes e testes simulados. Nesta sessão não foi
 aplicada infraestrutura. S0 precisa ser alinhada com main antes de PRs/revisões
 pela coordenação. Não há floresta, pacote Samba instalado ou DC final criado.

@@ -37,10 +37,19 @@ recuperação. `action: absent` remove exclusivamente laboratório parado, com m
 marcador/hash, nome, VMID, tipo e digest atual, na origem ou destino declarados.
 Não para guest automaticamente. Arquivos de firewall preexistentes bloqueiam criação.
 
-S1 aceita somente `scope: lab` e nomes sob `lab.ad.test`. `scope: production`
-é bloqueado no código até a integração revisada de S2, sem override booleano.
+Laboratório usa `scope: lab` e nomes sob `lab.ad.test`. `scope: production`
+é recusado sem bundle operacional privado S2 completo, qualificado e vinculado
+ao alvo, pin e auditoria de estado específicos; sem override booleano.
+O consumidor é reutilizável; não há pin público preenchido ou escolha real.
 VM Debian de laboratório usa o mesmo lifecycle para fallback; não cria outro LXC
 quando a primeira prova protegida já falha. Consultar [runbook](../../docs/samba-ad-s1.md).
+
+S2 acrescenta `action: stop`, exclusivamente lab, com identidade/digest atuais,
+configuração própria conectada ou isolada, firewall próprio e pending vazio.
+Shutdown limitado a 60 s sem forceStop; timeout não faz kill ou delete. Já parado
+é no-op e check-mode só lê. `absent` confere firewall próprio e readback de VMID,
+firewall e volumes; resíduos bloqueiam sucesso e nunca são apagados por glob.
+Persistir laudo antes da limpeza. Ver [contrato S2](../../docs/samba-ad-s2.md).
 
 ## Readback após revisão S1 round 1
 

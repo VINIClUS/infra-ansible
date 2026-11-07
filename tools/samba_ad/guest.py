@@ -52,7 +52,8 @@ def validate(r):
                        "resource", "template", "expected_digest", "firewall"}, "request fields")
     require(type(r["schema"]) is int and r["schema"] == 1 and r["owner"] == "samba-ad", "schema/owner")
     require(r["enabled"] is True and type(r["apply"]) is bool and type(r["boot"]) is bool, "activation")
-    require(r["scope"] in ["lab", "production"] and r["action"] in ["present", "start", "absent"], "scope/action")
+    require(r["scope"] in ["lab", "production"] and r["action"] in ["present", "start", "stop", "absent"], "scope/action")
+    require(r["action"] != "stop" or r["scope"] == "lab", "stop only lab")
     require(r["action"] != "start" or r["boot"], "explicit start boot flag")
     c, t = r["resource"], r["template"]
     require(set(c) == {"vmid", "node", "kind", "name", "address", "gateway", "bridge", "mac", "storage",
@@ -79,8 +80,15 @@ def validate(r):
     if r["scope"] == "lab":
         require(c["name"].endswith(".lab.ad.test") and r["compatibility"] is None, "disposable lab identity")
     else:
-        # Only a new S2-reviewed revision may implement production acceptance. No boolean bypass.
-        require(False, "production lifecycle awaits S2 reviewed compatibility integration")
+        require(isinstance(r["compatibility"], dict), "production requires private S2 bundle")
+        try:
+            from s2_compatibility import validate_bundle
+        except ImportError:
+            try:
+                from compatibility import validate_bundle
+            except ImportError:
+                raise ValueError("S2 evidence validator unavailable") from None
+        validate_bundle(r["compatibility"], r)
     require(r["scope"] == "lab" or r["action"] != "absent", "cleanup only lab")
     f = r["firewall"]
     require(set(f) == {"admin_sources", "flows"} and f["admin_sources"] and f["flows"], "firewall")
@@ -115,7 +123,8 @@ def size_gib(config, disk):
 
 def desired_config(r, isolated=False):
     c = r["resource"]
-    common = {"cores": c["cores"], "memory": c["memory_mib"], "onboot": 0, "description": marker(r), "tags": "samba-ad;s1;lab"}
+    common = {"cores": c["cores"], "memory": c["memory_mib"], "onboot": 0,
+              "description": marker(r), "tags": "samba-ad;s1;" + r["scope"]}
     link = "1" if isolated else "0"
     if c["kind"] == "lxc":
         return dict(common, hostname=c["name"], swap=0,
@@ -200,6 +209,26 @@ def pending_empty(api, path):
     require(not any("pending" in x or x.get("delete") for x in api.get(path + "/pending")), "pending changes")
 
 
+def is_owned_volume(r, volume):
+    if not isinstance(volume, str):
+        return False
+    vmid = str(r["resource"]["vmid"])
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+:(?:" + vmid + r"/)?(?:vm|subvol)-" + vmid
+                             + r"-(?:disk-[0-9]+|cloudinit)(?:\.(?:raw|qcow2))?", volume))
+
+
+def owned_volumes(r, config):
+    volumes = []
+    for key in [r["template"]["disk"], "ide2"]:
+        if key not in config:
+            continue
+        volume = config[key].split(",")[0]
+        require(is_owned_volume(r, volume), "owned volume identity")
+        require(volume.split(":")[0] in [r["resource"]["storage"], r["template"]["storage"]], "owned volume storage")
+        volumes.append(volume)
+    return volumes
+
+
 def reconcile(r, api, check=False):
     validate(r)
     c, t = r["resource"], r["template"]
@@ -209,6 +238,12 @@ def reconcile(r, api, check=False):
     nodes = {x["name"] for x in cluster if x.get("type") == "node" and x.get("online") == 1}
     require({c["node"], t["node"]} <= nodes and not any(x.get("type") == "node" and x.get("online") != 1
                                                                      for x in cluster), "online nodes")
+    if r["scope"] == "production":
+        fingerprint = r["compatibility"]["data"]["report"]["platform_fingerprint"]
+        for node in {c["node"], t["node"]}:
+            status = api.get(f"/nodes/{node}/status")
+            require(fingerprint["nodes"].get(node) == {"kernel": status.get("kversion"), "pve": status.get("pveversion")},
+                    "S2 live platform fingerprint")
     guests = api.get("/cluster/resources")
     live = [g for g in guests if g.get("vmid") == c["vmid"]]
     require(len(live) <= 1, "unique cluster VMID")
@@ -220,13 +255,38 @@ def reconcile(r, api, check=False):
             path = f'/nodes/{live[0]["node"]}/{c["kind"]}/{c["vmid"]}'
         cfg = api.get(path + "/config", current=1)
         require(digest(r["expected_digest"]) and cfg.get("digest") == r["expected_digest"], "guest digest")
-        verify_config(r, cfg, configured=r["action"] != "absent", isolated=not r["boot"] or r["action"] == "start")
+        if r["action"] == "stop":
+            try:
+                verify_config(r, cfg)
+            except ValueError:
+                verify_config(r, cfg, isolated=True)
+        else:
+            verify_config(r, cfg, configured=r["action"] != "absent", isolated=not r["boot"] or r["action"] == "start")
         require(not any("pending" in x or x.get("delete") for x in api.get(path + "/pending")), "pending changes")
         power = api.get(path + "/status/current")["status"]
+        if r["action"] == "stop":
+            api.assert_lab_firewall(r)
+            require(power in ["running", "stopped"], "known lab power state")
+            if power == "stopped":
+                return {"changed": False, "state": "stopped", "digest": cfg["digest"]}
+            if check:
+                return {"changed": True, "state": "planned_stop"}
+            require(api.get(path + "/config", current=1).get("digest") == cfg["digest"], "preshutdown digest")
+            pending_empty(api, path)
+            api.mutate("create", path + "/status/shutdown", timeout=60, forceStop=0)
+            require(api.get(path + "/status/current")["status"] == "stopped", "shutdown incomplete; no force or delete")
+            after = api.get(path + "/config", current=1)
+            verify_config(r, after, isolated=pairs(after["net0"]).get("link_down") == "1")
+            return {"changed": True, "state": "stopped", "digest": after["digest"]}
         if r["action"] == "absent":
             require(power == "stopped", "recovery requires stopped lab; never stop a guest implicitly")
+            api.assert_lab_firewall(r)
+            volumes = owned_volumes(r, cfg)
             if not check:
+                require(api.get(path + "/config", current=1).get("digest") == cfg["digest"], "predelete digest")
+                pending_empty(api, path)
                 api.mutate("delete", path)
+                api.cleanup_readback(r, volumes)
             return {"changed": True, "state": "absent"}
         require(api.firewall(c["node"], c["kind"], c["vmid"], firewall_text(r), False), "firewall drift")
         if r["action"] == "start":
@@ -238,7 +298,9 @@ def reconcile(r, api, check=False):
         require(not r["boot"] or api.enforce(r), "runtime firewall")
         return {"changed": False, "state": "verified", "digest": cfg["digest"]}
     if r["action"] == "absent":
+        api.cleanup_readback(r, [])
         return {"changed": False, "state": "absent"}
+    require(r["action"] != "stop", "cannot stop absent guest")
     require(r["action"] != "start", "cannot start absent guest")
     require(r["expected_digest"] is None, "new guest absence")
     require(c["node"] != t["node"] or c["storage"] == t["storage"], "local clone storage")
@@ -541,7 +603,23 @@ class Pvesh:
                 {"UP", "LOWER_UP"} <= set(matches[0].get("flags", []))))
 
     def assert_firewall_absent(self, r):
-        require(not Path(f"/etc/pve/firewall/{r['resource']['vmid']}.fw").exists(), "orphan firewall policy")
+        path = Path(f"/etc/pve/firewall/{r['resource']['vmid']}.fw")
+        require(not path.exists() and not path.is_symlink(), "orphan firewall policy")
+
+    def assert_lab_firewall(self, r):
+        path = Path(f"/etc/pve/firewall/{r['resource']['vmid']}.fw")
+        require(not path.is_symlink(), "firewall symlink")
+        require(not path.exists() or path.read_text() == firewall_text(r), "unowned firewall policy")
+
+    def cleanup_readback(self, r, volumes):
+        c, t = r["resource"], r["template"]
+        require(not any(g.get("vmid") == c["vmid"] for g in self.get("/cluster/resources")), "guest remains")
+        self.assert_firewall_absent(r)
+        for node, storage in {(c["node"], c["storage"]), (t["node"], t["storage"])}:
+            entries = self.get(f"/nodes/{node}/storage/{storage}/content")
+            require(all(str(e.get("vmid")) != str(c["vmid"]) and e.get("volid") not in volumes
+                        and not is_owned_volume(r, e.get("volid")) for e in entries),
+                    "owned volume remains; explicit recovery required")
 
     def probe_address(self, r):
         c = r["resource"]
