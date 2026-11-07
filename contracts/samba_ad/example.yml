@@ -1,5 +1,4 @@
 ---
-# Fictional documentation addresses only; never load as production inventory.
 schema: 1
 stage: S0
 enabled: false

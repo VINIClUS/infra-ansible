@@ -6,6 +6,7 @@ import ipaddress
 from pathlib import Path
 import re
 import sys
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -50,6 +51,12 @@ def subnet(value):
         raise ContractError("invalid S0 contract: IPv4 subnet") from None
     require(network.version == 4 and network.prefixlen >= 24, "IPv4 subnet")
     return network
+
+
+def dns_name(value):
+    return (isinstance(value, str) and len(value) <= 253 and bool(re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", value
+    )) and all(len(label) <= 63 for label in value.split(".")))
 
 
 def validate_manifest(data):
@@ -140,6 +147,16 @@ def validate_manifest(data):
     fields(software, "os samba_version functional_level schema_version source_candidate suite signature_status advisory_status fingerprint_ref", "software fields")
     require(software.get("samba_version") == "4.25.1" and software.get("functional_level") == "2016" and software.get("schema_version") == 88, "Samba version/levels")
     require(software.get("signature_status") == "pending" and software.get("advisory_status") == "pending", "S0 source verification status")
+    require(isinstance(software["os"], str) and bool(software["os"].strip()), "software OS")
+    source = software["source_candidate"]
+    require(isinstance(source, str) and source.startswith("https://"), "software source")
+    url = urlsplit(source)
+    require(bool(url.hostname) and url.username is None and url.password is None
+            and not url.query and not url.fragment and not any(c.isspace() for c in source), "software source")
+    require(isinstance(software["suite"], str) and re.fullmatch(r"[a-z][a-z0-9-]*", software["suite"]), "software suite")
+    fingerprint = software["fingerprint_ref"]
+    require(fingerprint is None or (isinstance(fingerprint, str) and bool(re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_./:-]*", fingerprint))), "software fingerprint reference")
     refs = mapping(data["secret_refs"], "secret references")
     require(set(refs) == {"domain_admin", "dsrm", "ca_provisioner", "sysvol", "telemetry"}, "secret profiles")
     for ref in refs.values():
@@ -162,7 +179,7 @@ def validate_manifest(data):
     fields(split, "strategy municipal_cutover pilot_public_names", "split DNS fields")
     require(split.get("strategy") == "explicit_records" and split.get("municipal_cutover") is False, "split DNS scope")
     require(isinstance(split.get("pilot_public_names"), list) and split["pilot_public_names"], "pilot DNS tests")
-    require(all(isinstance(n, str) and re.fullmatch(r"[a-z0-9.-]+", n) and "." in n and "*" not in n for n in split["pilot_public_names"]), "pilot DNS names")
+    require(all(dns_name(n) for n in split["pilot_public_names"]), "pilot DNS names")
     return {"resources": len(resources), "secret_refs": len(refs)}
 
 
