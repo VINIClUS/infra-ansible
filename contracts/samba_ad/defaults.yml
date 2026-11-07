@@ -1,5 +1,6 @@
 ---
 # Contract defaults only. No role or playbook loads this file in S0.
+# Current scope: two DCs, CA and new Windows/Linux pilots.
 schema: 1
 stage: S0
 enabled: false

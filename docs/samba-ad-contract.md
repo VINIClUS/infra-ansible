@@ -33,9 +33,9 @@ autorização operacional, capacidade livre, origem de pacote ou saúde de servi
 | Bloco | Contrato entregue | Consumidor futuro |
 | --- | --- | --- |
 | `domain` | DNS, realm maiúsculo, NetBIOS, floresta nova confirmada, SID nulo | S4 registra SID observado; S5 exige o mesmo SID |
-| `resources` | seis identidades candidatas, tipo, nó, MAC, IP, FQDN, template e tamanho | S1 revalida identidade/ausência e aplica proteção por digest |
+| `resources` | cinco identidades candidatas, tipo, nó, MAC, IP, FQDN, template e tamanho | S1 revalida identidade/ausência e aplica proteção por digest |
 | `network` | VNet exclusiva, CIDR sem sobreposição, MTU, gateway, DNS/tempo e administradores exatos | S1 implementa caminho de rede e controles efetivos |
-| `secret_refs` | seis perfis independentes por arquivo vault e nome de variável | etapas que precisam dos segredos, com `no_log` |
+| `secret_refs` | cinco perfis independentes por arquivo vault e nome de variável | etapas que precisam dos segredos, com `no_log` |
 | `certificate_profiles` | SAN exato por serviço/emissor, EKU e validade/rotação | S3/S7 implementam e comprovam emissão/rotação |
 | `software` | versões requeridas, fonte candidata e verificação ainda pendente na instalação | S2/S4 verificam stack assinada e advisories atuais |
 | `split_dns` | lista dos nomes públicos necessários ao piloto | S4/S6 verificam resolução interna e externa |
@@ -50,16 +50,15 @@ não há SID fabricado ou fixo no exemplo S0.
 Cada fluxo mutante futuro exigirá opt-in explícito, `--limit` com uma identidade
 exata, uma tag dedicada e readback das precondições. Os nomes reservados de tags
 incluem `samba_ad_provision`, `samba_ad_pki`, `samba_ad_domain`,
-`samba_ad_replica`, `samba_ad_pilot`, `samba_ad_observability` e
-`samba_ad_backup`; ainda não existem entrypoints para executá-las. Não adicionar
+`samba_ad_replica`, `samba_ad_pilot` e `samba_ad_observability`;
+ainda não existem entrypoints para executá-las. Não adicionar
 Samba a `playbooks/site.yml`, ao workflow ou à allowlist `FIXED_RUNS` de
 `tools/deploy/infra_ansible_deploy.py`. Merge de código não provisiona floresta.
 
 ## Plataforma e rede
 
 Dois DCs em hosts físicos distintos: 2 vCPU, 4 GiB e 64 GiB cada. A CA
-intermediária usa VM própria, 2 vCPU, 2 GiB e 20 GiB; receptor de backup em rede
-de operações usa 1 GiB e 100 GiB. Windows e Linux piloto são clones novos,
+intermediária usa VM própria, 2 vCPU, 2 GiB e 20 GiB. Windows e Linux piloto são clones novos,
 sem ingresso de estações existentes. A edição, licença e suporte do Windows
 serão verificados antes do piloto; o nome do template não é comprovação.
 
@@ -84,7 +83,7 @@ exige interfaces já endereçadas e com MTU correto. S1 precisa de extensão ou
 role dedicada, com precondições e rollback, para NIC QEMU do roteador e
 endereçamento persistente; essa capacidade não está implementada por S0.
 
-`network-policy.yml` declara origens e destinos simbólicos; S1/S7/S8 expandem
+`network-policy.yml` declara origens e destinos simbólicos; S1/S7 expandem
 cada grupo para IPs exatos do manifesto privado. Há controle no roteador e
 `guest_default_drop`: tráfego na mesma VNet não passa pelo roteador. As atuais
 permissões amplas de LAN e operações não comprovam isolamento dos novos guests;
@@ -93,12 +92,11 @@ conexões permitidas e negadas, inclusive de LAN/ops não administrativas, e
 retorno `established/related`. Sem exposição de AD à Internet ou regras `any`.
 
 `resource_groups` lista exatamente as chaves de recursos de cada grupo; não
-corresponde a grupos Ansible existentes. `identity_guests` inclui os seis
-guests deste projeto, inclusive backup em outra rede. `ssh_targets` exclui
-Windows; `backup_senders` contém somente DC01, DC02 e CA, nunca pilotos.
+corresponde a grupos Ansible existentes. `identity_guests` inclui os cinco
+guests deste projeto: DC01, DC02, CA e os dois pilotos. `ssh_targets` exclui Windows.
 Administradores vêm de `network.admin_sources`; DNS e tempo vêm das listas
 exatas correspondentes. O coletor é um endpoint existente, a ser fixado por
-identidade e porta em S7, sem ampliar o grupo dos seis guests do projeto.
+identidade e porta em S7, sem ampliar o grupo dos cinco guests do projeto.
 
 | Origem → destino | TCP | UDP |
 | --- | --- | --- |
@@ -110,7 +108,6 @@ identidade e porta em S7, sem ampliar o grupo dos seis guests do projeto.
 | DCs → forwarders exatos | 53 | 53 |
 | Guests de identidade → fontes de tempo exatas | — | 123 |
 | Emissores de telemetria → endpoint autenticado do coletor | 443 planejado, ainda sem listener comprovado | — |
-| Emissores de backup → receptor independente do AD | 22 com credencial restrita | — |
 
 NetBIOS 137/138/139, SMB1 e RDP não têm autorização nesta matriz. As portas
 49152–65535 são o intervalo RPC padrão documentado, limitado aos pares
@@ -153,9 +150,9 @@ com o operador, fora do Git e dos servidores; intermediária online separada.
 
 O mecanismo aprovado é ansible-vault: valores somente em `vault.yml`
 integralmente cifrado no inventário privado. Perfis de administrador inicial,
-DSRM, provisioner da CA, SYSVOL, backup e telemetria são referências, não
-credenciais já criadas. Chaves privadas, backups AD, bancos PKI, tickets e
-material de recuperação não entram no Git, mesmo cifrados; variáveis com
+DSRM, provisioner da CA, SYSVOL e telemetria são referências, não
+credenciais já criadas. Chaves privadas, bancos PKI, tickets e
+outros materiais sensíveis não entram no Git, mesmo cifrados; variáveis com
 sufixo `_ref` apontarão para material protegido fora do Git. Nunca fornecer
 senhas por argumentos ou imprimir valores na validação.
 
@@ -168,15 +165,14 @@ remota. S7 deve entregar transporte autenticado com identidade exata e testes
 de fila/falha/retomada, sem modificar retenção de outros projetos ou notificações.
 
 S5 entregará SYSVOL unidirecional, com DC01 autor de GPO, preservação ACL/xattr/SID
-e alertas de defasagem; não afirmar DFS-R nativo. S8 entregará backups locais
-cifrados, monitorados e com credenciais independentes, antes do aceite de
-produção. Não usar snapshot como único backup, copiar `sam.ldb` aberto ou
-declarar restauração comprovada sem ensaio.
-
-Recuperação externa, restauração integral e DR ficam em S10, pós-produção.
-RTO/RPO continuam metas sem comprovação. Nem recuperação/custódia externa nem
-inventário municipal completo são gates de prontidão. Não reativar Infisical,
+e alertas de defasagem; não afirmar DFS-R nativo. S8 é produção e aceite dos
+dois DCs, PKI, pilotos e observabilidade. Proteção das chaves PKI e reversão
+técnica das alterações próprias de rede/certificados continuam obrigatórias.
+Inventário municipal completo não é gate de prontidão. Não reativar Infisical,
 MinIO descomissionado ou serviços de e-SUS PEC/SIHA para cumprir estes contratos.
+
+Backup e recuperação/DR ficam para um trabalho futuro separado após a aplicação
+em produção, sem componente, validação ou gate nesta entrega.
 
 ## Fontes consultadas
 

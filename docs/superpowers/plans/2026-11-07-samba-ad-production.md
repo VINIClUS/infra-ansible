@@ -2,9 +2,9 @@
 
 > Para agentes: executar uma etapa por chat novo, com revisão independente do diff antes do merge e auditoria independente após aplicações. A coordenação acompanha todas as etapas até a conclusão.
 
-**Goal:** entregar dois DCs Samba seguros no Proxmox, com PKI, clientes piloto, observabilidade e backup local.
+**Goal:** entregar dois DCs Samba seguros no Proxmox, com PKI, clientes piloto e observabilidade.
 **Architecture:** primeiro homologar LXC não privilegiado; usar VMs quando ACLs protegidas, SYSVOL, tempo, auditoria ou isolamento forem incompatíveis. Separar os DCs em hosts físicos distintos e a CA intermediária em uma VM própria.
-**Tech Stack:** Proxmox VE, Debian 13, Samba 4.25.1, Ansible, ansible-vault, step-ca, rsync, age, Loki/Prometheus/Alloy existentes.
+**Tech Stack:** Proxmox VE, Debian 13, Samba 4.25.1, Ansible, ansible-vault, step-ca, rsync, Loki/Prometheus/Alloy existentes.
 **Spec:** este documento registra o desenho aprovado. A SPEC-AD-001 fornecida pelo usuário é referência técnica; as decisões explícitas do usuário abaixo prevalecem sobre o anexo.
 
 ## Global Constraints
@@ -15,14 +15,13 @@
 - FFL/DFL 2016; esquema 2019/v88 é um conceito distinto. Validar opções na versão instalada, sem elevação repetida ou dbcheck --fix automático.
 - Samba 4.25.1 e dependências compatíveis de repositório assinado, com origem, assinatura, fingerprint e advisories verificados. Não presumir que o pacote nativo da distribuição atende ao requisito.
 - ansible-vault é o mecanismo aprovado. Valores só no inventário privado em arquivos vault.yml integralmente cifrados; não imprimir valores nem passar segredos em argumentos.
-- Não armazenar chaves privadas, backups de AD, bancos de PKI, tickets ou material de recuperação no Git, mesmo cifrados. A chave da raiz fica offline fora dos servidores.
+- Não armazenar chaves privadas, bancos de PKI, tickets ou outros materiais sensíveis no Git, mesmo cifrados. A chave da raiz fica offline fora dos servidores.
 - Código reutilizável neste repositório; topologia e variáveis reais em infra-ansible-inventory. Exemplos públicos fictícios e inertes.
 - Roles novas desabilitadas por padrão, com --limit exato e uma tag dedicada por fluxo mutante. Identidade e precondições verificadas antes de cada alteração.
 - Preservar checkouts e alterações de terceiros. Usar worktrees e branches codex/. Não enfraquecer os contratos das roles existentes.
 - Não adicionar provisionamento de floresta ao deploy automático de main. Merges continuam sujeitos aos checks e à revisão independente; acompanhar o pipeline existente após merge.
 - Implantar o serviço em produção e usar somente clientes piloto novos. A migração municipal contará com uma etapa própria; não alterar DHCP/DNS da LAN nem ingressar estações existentes nesta entrega.
-- Recuperação externa, restauração integral e exercícios de DR serão posteriores à implantação em produção. O usuário retirou esses itens e o inventário municipal completo dos gates de prontidão. Não reintroduzir esses requisitos como bloqueadores.
-- Manter backups locais cifrados e monitorados antes do aceite de produção. RTO/RPO são metas sem comprovação até os ensaios posteriores.
+- A entrega vigente compreende dois DCs, PKI, clientes piloto novos e observabilidade. Inventário municipal completo não é gate de prontidão.
 - Não alterar serviços de e-SUS PEC, SIHA ou outros projetos. Não enviar mensagens externas ou notificações sem autorização específica.
 - Prefixar comandos shell com rtk; documentação humana usa comandos normais. Registrar evidências sem segredos ou dados pessoais.
 
@@ -31,8 +30,8 @@
 - Nenhum fluxo deve aceitar VMID, SID, node, endereço ou tipo conflitante, nem substituir recursos existentes silenciosamente.
 - Reexecuções não recriam florestas, repetem ingresso, elevam esquema ou ampliam regras de firewall.
 - Certificados precisam validar SAN, cadeia, EKU e correspondência da chave; rotação cria novo par de chaves.
-- Uma falha de coletor, backup ou timer deve gerar estado observável, sem imprimir material sensível.
-- Os auditores devem distinguir pendências de recuperação explicitamente adiadas de falhas reais dos controles que precisam funcionar em produção.
+- Uma falha de coletor ou timer de certificados deve gerar estado observável, sem imprimir material sensível.
+- Os auditores devem avaliar os controles da entrega vigente conforme a última decisão de escopo do usuário.
 
 ## Protocolo por etapa
 
@@ -65,8 +64,8 @@
 - [ ] Implementar uma role de provisionamento dedicada, sem generalizar proxmox_lxc_guest do controlador.
 - [ ] Clonar integralmente os templates locais, migrar os clones desligados e iniciar somente após validar identidade/rede no destino.
 - [ ] Validar capacidade e reserva mínima de 2 GiB por host antes de cada criação; falhar sem interromper guests de terceiros.
-- [ ] Aplicar rede/roteador/firewall com backup, dead-man, acesso por console Proxmox e readback por nova conexão. Preservar políticas das demais zonas.
-- [ ] Adotar 2 vCPU/4 GiB/64 GiB por DC; CA separada 2 vCPU/2 GiB/20 GiB; receptor de backup 1 GiB/100 GiB. Placement e identidades reais são privados.
+- [ ] Aplicar rede/roteador/firewall com estado anterior verificado para reversão técnica, dead-man, acesso por console Proxmox e readback por nova conexão. Preservar políticas das demais zonas.
+- [ ] Adotar 2 vCPU/4 GiB/64 GiB por DC; CA separada 2 vCPU/2 GiB/20 GiB. Placement e identidades reais são privados.
 - [ ] Cobrir colisões, digest obsoleto, falha parcial, reexecução, rede e regressões; auditar antes e depois da aplicação.
 
 ## Task 3: S2 — Compatibilidade LXC
@@ -77,7 +76,6 @@
 - [ ] Usar lab.ad.test em dois hosts e comprovar security.NTACL, ACL/xattr, SYSVOL, Samba/systemd, relógio, auditoria e replicação.
 - [ ] Não conceder CAP_SYS_TIME, capacidades de auditoria do host, modo privilegiado ou AppArmor unconfined para aprovar o teste.
 - [ ] Em incompatibilidade, preservar o laudo e adotar VMs automaticamente, conforme autorização. Limpeza alcança somente recursos descartáveis desta etapa.
-- [ ] Ensaios de restauração integral não são gate pré-produção; serão executados em S10.
 
 ## Task 4: S3 — PKI
 
@@ -125,35 +123,19 @@
 **Produces:** logs, métricas e alertas de AD sem afetar projetos vizinhos.
 
 - [ ] Coletar JSON auth/dsdb, Linux/SSH/auditoria, PKI e Windows piloto com transporte autenticado, filas locais e escopo exclusivo do AD.
-- [ ] Demonstrar alertas de grupos privilegiados, políticas, SYSVOL, replicação, validade/rotação de certificados e falhas de backup/timers.
+- [ ] Demonstrar alertas de grupos privilegiados, políticas, SYSVOL, replicação, validade/rotação de certificados e falhas de coleta/timers de certificados.
 - [ ] Não alterar retenção global de outros projetos nem enviar mensagens externas. Verificar perda e retomada do coletor.
 
-## Task 9: S8 — Backup local
-
-**Consumes:** domínio e CA operacionais, receptor local com credenciais independentes do AD.
-**Produces:** backup nativo cifrado, agendado, íntegro como arquivo e monitorado.
-
-- [ ] Automatizar backup nativo diário e offline periódico do AD/SYSVOL/DNS, mais configuração, ACLs, inventário de GPO e PKI intermediária. Raiz fica em bundle offline separado.
-- [ ] Cifrar antes da transferência; não passar senha na CLI, não copiar sam.ldb aberto, não usar snapshot como único backup.
-- [ ] Verificar execução, hashes, permissões, presença de artefatos, limpeza protegida e alertas. Não declarar restauração comprovada antes de S10.
-- [ ] Adotar 14 diários, oito semanais e 12 mensais somente quando projeção medida e staging preservarem 20% livres. Não reduzir retenção silenciosamente.
-
-## Task 10: S9 — Produção e aceite
+## Task 9: S8 — Produção e aceite
 
 **Consumes:** código/inventário auditados, checks e controles pré-produção aprovados.
 **Produces:** serviço em produção para o piloto, relatório de prontidão e runbooks.
 
 - [ ] Realizar auditorias novas de segurança, especificação e estado observado, vinculadas a SHAs, pacotes e evidências.
-- [ ] Corrigir falhas críticas/altas dos controles exigidos; não transformar recuperação adiada em bloqueador de produção.
-- [ ] Validar saúde de ambos os DCs, DNS/Kerberos/LDAP/SMB, GPO, certificados, alertas e execução de backups locais.
+- [ ] Corrigir falhas críticas/altas dos controles da entrega vigente.
+- [ ] Validar saúde de ambos os DCs, DNS/Kerberos/LDAP/SMB, GPO, certificados e alertas.
 - [ ] Declarar prontidão de produção conforme o aceite do usuário. A migração municipal contará com uma etapa própria.
 
-## Task 11: S10 — Recuperação pós-produção
+## Trabalho futuro separado após produção
 
-**Consumes:** implantação em produção concluída e backups locais disponíveis.
-**Produces:** cópia externa definida, restauração ensaiada e RTO/RPO medidos.
-
-- [ ] Definir e implementar cópia externa sem escolher fornecedor pago ou adquirir serviço sem autorização específica.
-- [ ] Restaurar em rede sem uplink ou acesso à floresta ativa, verificar usuários/GPO/ACLs e autenticação nova; reconstrução usa templates e IaC, sem reverter snapshots de DC ativo.
-- [ ] Simular perda de DC em recursos isolados, sem desligar hosts compartilhados. Medir metas RTO <=4 h e RPO <=24 h.
-- [ ] A disponibilidade de um destino externo será tratada nesta etapa, sem retroagir ao aceite de produção.
+Backup e exercícios de recuperação/DR serão tratados em trabalho futuro separado, após a aplicação em produção, fora desta entrega e sem requisito, validação ou gate para homologação ou aceite de produção. Recursos existentes de terceiros permanecem preservados.

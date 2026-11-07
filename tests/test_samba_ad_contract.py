@@ -24,7 +24,8 @@ def validator():
 def test_example_is_valid_but_cannot_authorize_execution():
     data = contract()
     assert data["enabled"] is False and data["apply"] is False
-    assert validator().validate_manifest(data) == {"resources": 6, "secret_refs": 6}
+    assert set(data["resources"]) == {"dc01", "dc02", "ca", "windows_pilot", "linux_pilot"}
+    assert validator().validate_manifest(data) == {"resources": 5, "secret_refs": 5}
 
 
 @pytest.mark.parametrize("field,value", [
@@ -100,7 +101,7 @@ def test_undeclared_secret_fields_are_rejected_at_every_boundary(section):
 
 def test_telemetry_certificates_are_individual_client_identities():
     data = contract()
-    for role in ["dc01", "dc02", "ca", "backup"]:
+    for role in ["dc01", "dc02", "ca"]:
         profile = data["certificate_profiles"].get("telemetry_" + role)
         assert profile, "each telemetry sender needs its own restricted profile"
         assert profile["sans"] == [data["resources"][role]["fqdn"]]
@@ -149,10 +150,10 @@ def test_port_contract_has_only_scoped_origins_and_modern_ad_protocols():
     assert policy["enforcement"] == ["router", "guest_default_drop"]
     for flow in policy["flows"]:
         assert flow["source"] in {
-            "pilots", "dcs", "dc01", "administrators", "identity_guests", "backup_senders"
+            "pilots", "dcs", "dc01", "administrators", "identity_guests"
         }
         assert flow["destination"] in {
-            "dcs", "dc02", "ca", "ssh_targets", "dns_forwarders", "time_sources", "collector", "backup_receiver"
+            "dcs", "dc02", "ca", "ssh_targets", "dns_forwarders", "time_sources", "collector"
         }
         assert flow["protocol"] in {"tcp", "udp"}
         assert not ({"137", "138", "139", "all", "any"} & set(flow["ports"]))
@@ -160,12 +161,9 @@ def test_port_contract_has_only_scoped_origins_and_modern_ad_protocols():
                           if f["source"] == "dcs" and f["destination"] == "dcs" and f["protocol"] == "tcp"))
     assert {"53", "88", "135", "389", "445", "464", "636", "3268", "3269", "49152-65535"} <= dc_tcp
     assert {"source": "dc01", "destination": "dc02", "protocol": "tcp", "ports": ["22"]} in policy["flows"]
-    backup_flows = [f for f in policy["flows"] if f["destination"] == "backup_receiver"]
-    assert backup_flows == [{"source": "backup_senders", "destination": "backup_receiver", "protocol": "tcp", "ports": ["22"]}]
     assert policy["resource_groups"] == {
         "dcs": ["dc01", "dc02"], "pilots": ["windows_pilot", "linux_pilot"],
-        "identity_guests": ["dc01", "dc02", "ca", "backup", "windows_pilot", "linux_pilot"],
-        "ssh_targets": ["dc01", "dc02", "ca", "backup", "linux_pilot"],
-        "backup_senders": ["dc01", "dc02", "ca"], "backup_receiver": ["backup"],
+        "identity_guests": ["dc01", "dc02", "ca", "windows_pilot", "linux_pilot"],
+        "ssh_targets": ["dc01", "dc02", "ca", "linux_pilot"],
         "ca": ["ca"], "dc01": ["dc01"], "dc02": ["dc02"],
     }

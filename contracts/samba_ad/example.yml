@@ -104,28 +104,6 @@ resources:
     cores: 2
     memory_mib: 2048
     disk_gib: 20
-  backup:
-    vmid: 800004
-    node: node-a
-    kind: qemu
-    fqdn: backup.ad.example.invalid
-    owner: samba-ad
-    state: candidate
-    mac: 02:00:5E:70:00:04
-    address: 203.0.113.10
-    cidr: 203.0.113.0/25
-    bridge: vnbackup
-    storage: local-lvm
-    template:
-      vmid: 7901
-      node: node-c
-      kind: qemu
-      storage: local-lvm
-    full_clone: true
-    first_boot_after_migration: true
-    cores: 1
-    memory_mib: 1024
-    disk_gib: 100
   windows_pilot:
     vmid: 800005
     node: node-a
@@ -193,9 +171,6 @@ secret_refs:
   sysvol:
     vault_file: inventories/prod/group_vars/samba_ad/vault.yml
     variable: vault_samba_ad_sysvol_key_ref
-  backup:
-    vault_file: inventories/prod/group_vars/samba_ad/vault.yml
-    variable: vault_samba_ad_backup_credential_ref
   telemetry:
     vault_file: inventories/prod/group_vars/samba_ad/vault.yml
     variable: vault_samba_ad_telemetry_credential_ref
@@ -238,13 +213,6 @@ certificate_profiles:
   telemetry_ca:
     sans:
       - ca.ad.example.invalid
-    eku:
-      - clientAuth
-    validity_hours: 168
-    rotate_before_fraction: 0.66
-  telemetry_backup:
-    sans:
-      - backup.ad.example.invalid
     eku:
       - clientAuth
     validity_hours: 168

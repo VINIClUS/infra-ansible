@@ -138,3 +138,5 @@ O [contrato S0](samba-ad-contract.md) mantém exemplos fictícios em
 Nenhum playbook existente ou deploy automático consome o manifesto Samba.
 Rede, provisionamento, compatibilidade, PKI e domínio serão implementados nas
 etapas próprias do plano, com auditoria independente.
+O catálogo vigente contém dois DCs, uma CA e os dois clientes piloto novos;
+o coletor de observabilidade existente permanece como dependência externa.

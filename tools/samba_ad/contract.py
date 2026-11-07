@@ -95,7 +95,7 @@ def validate_manifest(data):
         for address in network[field]:
             ipv4(address)
     resources = mapping(data["resources"], "resources")
-    require(set(resources) == {"dc01", "dc02", "ca", "backup", "windows_pilot", "linux_pilot"}, "resource roles")
+    require(set(resources) == {"dc01", "dc02", "ca", "windows_pilot", "linux_pilot"}, "resource roles")
     seen = {k: set() for k in ["vmid", "mac", "address", "fqdn"]}
     for role, resource in resources.items():
         resource = mapping(resource, "resource")
@@ -116,10 +116,7 @@ def validate_manifest(data):
         address = ipv4(resource.get("address"))
         resource_net = subnet(resource.get("cidr"))
         require(address in resource_net and address not in [resource_net.network_address, resource_net.broadcast_address, gateway], "guest address")
-        if role != "backup":
-            require(resource_net == identity and resource.get("bridge") == network["vnet"], "identity network")
-        else:
-            require(not resource_net.overlaps(identity), "backup isolation")
+        require(resource_net == identity and resource.get("bridge") == network["vnet"], "identity network")
         for field in seen:
             require(resource[field] not in seen[field], "duplicate resource identity")
             seen[field].add(resource[field])
@@ -144,7 +141,7 @@ def validate_manifest(data):
     require(software.get("samba_version") == "4.25.1" and software.get("functional_level") == "2016" and software.get("schema_version") == 88, "Samba version/levels")
     require(software.get("signature_status") == "pending" and software.get("advisory_status") == "pending", "S0 source verification status")
     refs = mapping(data["secret_refs"], "secret references")
-    require(set(refs) == {"domain_admin", "dsrm", "ca_provisioner", "sysvol", "backup", "telemetry"}, "secret profiles")
+    require(set(refs) == {"domain_admin", "dsrm", "ca_provisioner", "sysvol", "telemetry"}, "secret profiles")
     for ref in refs.values():
         ref = mapping(ref, "secret reference")
         require(set(ref) == {"vault_file", "variable"}, "secret reference fields")
@@ -153,7 +150,7 @@ def validate_manifest(data):
         require(isinstance(ref["variable"], str) and re.fullmatch(r"vault_samba_ad_[a-z0-9_]+", ref["variable"]), "vault variable reference")
     require(len({r["variable"] for r in refs.values()}) == len(refs), "distinct secret profiles")
     profiles = mapping(data["certificate_profiles"], "certificate profiles")
-    require(set(profiles) == {"dc01", "dc02", "ca", "telemetry_dc01", "telemetry_dc02", "telemetry_ca", "telemetry_backup"}, "certificate roles")
+    require(set(profiles) == {"dc01", "dc02", "ca", "telemetry_dc01", "telemetry_dc02", "telemetry_ca"}, "certificate roles")
     for role, profile in profiles.items():
         profile = mapping(profile, "certificate profile")
         fields(profile, "sans eku validity_hours rotate_before_fraction", "certificate fields")

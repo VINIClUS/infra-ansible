@@ -141,5 +141,6 @@ guest stanza again if the add fails.
 O [contrato S0](samba-ad-contract.md) exige `enabled: false`, `apply: false`,
 origens administrativas exatas e identidades candidatas. Validação local não
 autoriza mutações. Futuras etapas exigem limite exato, tag dedicada, identidade
-e digest revalidados, com readback. Recuperação externa/restauração/DR são
-pós-produção; backups locais cifrados e monitorados precedem o aceite.
+e digest revalidados, com readback e reversão técnica das próprias alterações.
+Chaves PKI continuam protegidas. Backup e recuperação/DR pertencem somente a
+trabalho futuro separado após produção, sem requisito de homologação ou aceite.

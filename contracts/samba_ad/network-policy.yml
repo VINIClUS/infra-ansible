@@ -6,10 +6,8 @@ enforcement: [router, guest_default_drop]
 resource_groups:
   dcs: [dc01, dc02]
   pilots: [windows_pilot, linux_pilot]
-  identity_guests: [dc01, dc02, ca, backup, windows_pilot, linux_pilot]
-  ssh_targets: [dc01, dc02, ca, backup, linux_pilot]
-  backup_senders: [dc01, dc02, ca]
-  backup_receiver: [backup]
+  identity_guests: [dc01, dc02, ca, windows_pilot, linux_pilot]
+  ssh_targets: [dc01, dc02, ca, linux_pilot]
   ca: [ca]
   dc01: [dc01]
   dc02: [dc02]
@@ -66,7 +64,3 @@ flows:
     destination: collector
     protocol: tcp
     ports: ["443"]
-  - source: backup_senders
-    destination: backup_receiver
-    protocol: tcp
-    ports: ["22"]
