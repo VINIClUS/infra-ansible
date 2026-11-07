@@ -130,3 +130,11 @@ through `pct exec`), as `proxmox_node_routes` does on the nodes.
 `proxmox_guest_nic` hot-plugs a secondary NIC without a gateway into a
 running guest (the edge proxy's leg on the services VNet) and keeps its VNet
 MTU in the guest across reboots.
+
+## Contrato de identidade Samba AD
+
+O [contrato S0](samba-ad-contract.md) mantém exemplos fictícios em
+`contracts/samba_ad/` e topologia real somente no inventário privado.
+Nenhum playbook existente ou deploy automático consome o manifesto Samba.
+Rede, provisionamento, compatibilidade, PKI e domínio serão implementados nas
+etapas próprias do plano, com auditoria independente.

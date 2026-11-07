@@ -1,0 +1,12 @@
+---
+# Contract defaults only. No role or playbook loads this file in S0.
+schema: 1
+stage: S0
+enabled: false
+apply: false
+execution:
+  mode: manual
+  exact_limit_required: true
+  dedicated_tag_required: true
+  identity_readback_required: true
+  digest_required: true

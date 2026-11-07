@@ -135,3 +135,11 @@ guest, limited to its node. It never stops the guest, refuses a gateway on the
 new NIC, a NIC it did not declare and an address in use, verifies from inside
 the guest that the default route stays elsewhere, and removes the NIC and its
 guest stanza again if the add fails.
+
+## Samba AD: fronteira S0
+
+O [contrato S0](samba-ad-contract.md) exige `enabled: false`, `apply: false`,
+origens administrativas exatas e identidades candidatas. Validação local não
+autoriza mutações. Futuras etapas exigem limite exato, tag dedicada, identidade
+e digest revalidados, com readback. Recuperação externa/restauração/DR são
+pós-produção; backups locais cifrados e monitorados precedem o aceite.

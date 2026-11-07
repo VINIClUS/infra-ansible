@@ -1,0 +1,19 @@
+{
+  "verified_on": "2026-11-07",
+  "verification_scope": "Public repository metadata only; no package installed or infrastructure changed",
+  "vendor_instructions": "https://samba.tranquil.it/doc/en/samba_config_server/debian/server_install_samba_debian.html",
+  "key_url": "https://samba.tranquil.it/tissamba-pubkey.gpg",
+  "key_sha256": "95ab9a408a3e94564f5a9bfb6e82c9dc371f32e92004ee98acbf64b431c93e81",
+  "primary_fingerprint": "46C910D6BFCA32BC87DE5173EE5618DB12523D4B",
+  "subkey_fingerprint": "D79060F27E24F72DB98898A7DE15089C324AE79B",
+  "repository": "https://samba.tranquil.it/debian/samba-4.25/",
+  "suite": "trixie",
+  "component": "main",
+  "architecture": "amd64",
+  "inrelease_signature_verified_by_gpgv": true,
+  "packages_gzip_sha256": "92d7b1583a2ac62379e94fafdaa71f84b0eb3a8777f2d9f919ede4fcf0628cb5",
+  "packages_hash_matched_signed_inrelease": true,
+  "samba_package_version": "2:4.25.1+dfsg-1-1trixie1",
+  "ldb_package_version": "2:2.11.0+samba4.25.1+dfsg-1-1trixie1",
+  "next_gate": "Reverify key, fresh signed metadata, package hashes and advisories before installation; do not treat this metadata check as installed-package evidence"
+}
