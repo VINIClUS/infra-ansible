@@ -81,14 +81,22 @@ def validate(r):
         require(c["name"].endswith(".lab.ad.test") and r["compatibility"] is None, "disposable lab identity")
     else:
         require(isinstance(r["compatibility"], dict), "production requires private S2 bundle")
-        try:
-            from s2_compatibility import validate_bundle
-        except ImportError:
+        data = r["compatibility"].get("data")
+        if isinstance(data, dict) and data.get("schema") == "samba-ad-ca-substrate-bundle/v1":
             try:
-                from compatibility import validate_bundle
+                from s3_ca_substrate import validate_ca_bundle
             except ImportError:
-                raise ValueError("S2 evidence validator unavailable") from None
-        validate_bundle(r["compatibility"], r)
+                from tools.samba_ad.ca_substrate import validate_ca_bundle
+            validate_ca_bundle(r["compatibility"], r)
+        else:
+            try:
+                from s2_compatibility import validate_bundle
+            except ImportError:
+                try:
+                    from compatibility import validate_bundle
+                except ImportError:
+                    raise ValueError("S2 evidence validator unavailable") from None
+            validate_bundle(r["compatibility"], r)
     require(r["scope"] == "lab" or r["action"] != "absent", "cleanup only lab")
     f = r["firewall"]
     require(set(f) == {"admin_sources", "flows"} and f["admin_sources"] and f["flows"], "firewall")
