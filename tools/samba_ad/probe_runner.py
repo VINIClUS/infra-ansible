@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
 import os
@@ -19,6 +20,65 @@ import s2_guest as guest
 import s2_compatibility as evidence
 
 
+def checked_snapshot(value):
+    evidence.fields(value, "hostname euid namespaces uid_map apparmor filesystem parent_dev parent_ino boot_id cgroup")
+    evidence.fields(value["namespaces"], "user mnt pid cgroup")
+    for key in ["hostname", "uid_map", "apparmor", "filesystem", "boot_id", "cgroup"]:
+        evidence.require(isinstance(value[key], str) and bool(value[key]))
+    evidence.require(all(type(value[key]) is int and value[key] >= 0 for key in ["euid", "parent_dev", "parent_ino"]))
+    for ns, identity in value["namespaces"].items():
+        evidence.require(isinstance(identity, str) and re.fullmatch(ns + r":\[[0-9]+\]", identity))
+    return copy.deepcopy(value)
+
+
+def checked_capture(value):
+    evidence.fields(value, "guest host_namespaces host_anchor")
+    checked_snapshot(value["guest"])
+    evidence.fields(value["host_namespaces"], "user mnt pid cgroup")
+    for ns, identity in value["host_namespaces"].items():
+        evidence.require(isinstance(identity, str) and re.fullmatch(ns + r":\[[0-9]+\]", identity))
+    anchor = value["host_anchor"]
+    evidence.fields(anchor, "vmid init_pid starttime nspid cgroup")
+    evidence.require(type(anchor["vmid"]) is int and 100 <= anchor["vmid"] <= 999999999)
+    evidence.require(type(anchor["init_pid"]) is int and anchor["init_pid"] > 1)
+    evidence.require(isinstance(anchor["starttime"], str) and anchor["starttime"].isdigit())
+    evidence.require(isinstance(anchor["nspid"], list) and len(anchor["nspid"]) >= 2
+                     and all(type(pid) is int and pid > 0 for pid in anchor["nspid"])
+                     and anchor["nspid"][0] == anchor["init_pid"] and anchor["nspid"][-1] == 1)
+    evidence.require(isinstance(anchor["cgroup"], str) and bool(anchor["cgroup"]))
+    return copy.deepcopy(value)
+
+
+def checked_result(report, rc, value):
+    """Do not attach wire data until the complete first-proof protocol is valid."""
+    evidence.fields(value, "schema run_id status checks cleanup")
+    evidence.require(type(rc) is int and rc in [0, 2, 3])
+    status = {0: "passed", 2: "operational_error", 3: "incompatible"}[rc]
+    evidence.require(value["schema"] == "samba-ad-s2-probe/v1" and value["run_id"] == report["run_id"])
+    evidence.require(value["status"] == status and (rc == 2 or value["cleanup"] == "complete"))
+    evidence.require(isinstance(value["checks"], list) and len(value["checks"]) <= 2)
+    error_names = set(errno.errorcode.values()) | {"UNKNOWN", "ENOTSUP"}
+    for check in value["checks"]:
+        evidence.fields(check, "name status attempts")
+        evidence.require(check["name"] in ["security_ntacl", "posix_acl"])
+        evidence.require(check["status"] in ["passed", "incompatible", "operational_error"])
+        evidence.require(isinstance(check["attempts"], list) and
+                         all(isinstance(v, str) and v in error_names for v in check["attempts"]))
+    names = [c["name"] for c in value["checks"]]
+    evidence.require(names == ["security_ntacl", "posix_acl"][:len(names)])
+    candidate = copy.deepcopy(report)
+    candidate["checks"] = [dict(c, subject="probe") for c in value["checks"]]
+    candidate["cleanup"]["probe"]["file"] = value["cleanup"]
+    evidence.validate_report(candidate)  # Validates checks/cleanup without storing the response in observations.
+    if rc == 0:
+        evidence.require(len(names) == 2 and all(c["status"] == "passed" for c in value["checks"]))
+    if rc == 3:
+        evidence.require(bool(names) and value["checks"][-1]["status"] == "incompatible"
+                         and all(c["status"] == "passed" for c in value["checks"][:-1]))
+    return {"schema": "samba-ad-s2-probe/v1", "run_id": report["run_id"], "status": status,
+            "checks": copy.deepcopy(value["checks"]), "cleanup": value["cleanup"]}
+
+
 class PctTransport:
     def __init__(self, api):
         self.api = api
@@ -27,7 +87,9 @@ class PctTransport:
         result = subprocess.run(["pct", "exec", str(r["resource"]["vmid"]), "--", "python3", "-c", source],
                                 input=json.dumps(data) if data is not None else "", capture_output=True,
                                 text=True, timeout=45, check=False)
-        return result.returncode, json.loads(result.stdout)
+        decoded = json.loads(result.stdout)
+        evidence.require(isinstance(decoded, dict))
+        return result.returncode, decoded
 
     def init_anchor(self, vmid, expected_pid=None):
         """Host-view membership belongs to the PID authoritatively resolved by pct."""
@@ -63,6 +125,7 @@ class PctTransport:
         program = "import json; ns={'__name__':'snapshot'}; exec(" + repr(source) + ",ns); print(json.dumps(ns['identity']()))"
         rc, observed = self.command(r, program)
         evidence.require(rc == 0)
+        observed = checked_snapshot(observed)
         parent = (proc / "root/var/lib").stat()
         expected = dict(observed, hostname=r["resource"]["name"], euid=0, namespaces=namespaces,
                         uid_map=" ".join((proc / "uid_map").read_text().split()),
@@ -115,7 +178,7 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
         state = api.get(f"/nodes/{node}/status")
         evidence.require(state["memory"]["total"] - state["memory"]["used"] >= 2 * guest.GIB)
         fingerprint["nodes"][node] = {"kernel": state["kversion"], "pve": state["pveversion"]}
-    expectation = transport.capture(r, probe_source, provenance["filesystem"])
+    expectation = checked_capture(transport.capture(r, probe_source, provenance["filesystem"]))
     expectation["run_id"] = payload["run_id"]
     report = {"schema": "samba-ad-s2/v1", "run_id": expectation["run_id"],
               "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -134,24 +197,15 @@ def run(payload: dict, api, transport, probe_source: str) -> dict:
     evidence.validate_report(report)  # Validate provenance before any mutating guest command.
     status = "operational_error"
     try:
-        rc, result = transport.execute(r, probe_source, expectation)
+        rc, response = transport.execute(r, probe_source, expectation)
+        result = checked_result(report, rc, response)
         report["observations"]["probe"]["result"] = result
-        evidence.fields(result, "schema run_id status checks cleanup")
-        evidence.require(result["schema"] == "samba-ad-s2-probe/v1" and result["run_id"] == expectation["run_id"])
-        evidence.require(rc in [0, 2, 3] and result["status"] == {0: "passed", 2: "operational_error", 3: "incompatible"}[rc])
-        evidence.require(rc == 2 or result["cleanup"] == "complete")
         report["cleanup"]["probe"]["file"] = result["cleanup"]
         report["checks"] = [dict(check, subject="probe") for check in result["checks"]]
-        evidence.validate_report(report)
-        if rc == 0:
-            evidence.require([c["name"] for c in report["checks"]] == ["security_ntacl", "posix_acl"])
-            evidence.require(all(c["status"] == "passed" for c in report["checks"]))
-        if rc == 3:
-            evidence.require(any(c["status"] == "incompatible" for c in report["checks"]))
-        after = transport.capture(r, probe_source, provenance["filesystem"])
-        report["observations"]["probe"]["after"] = after
+        after = checked_capture(transport.capture(r, probe_source, provenance["filesystem"]))
         evidence.require(after["guest"] == expectation["guest"] and after["host_namespaces"] == expectation["host_namespaces"])
         evidence.require(after["host_anchor"] == expectation["host_anchor"])
+        report["observations"]["probe"]["after"] = after
         evidence.require(guest.reconcile(r, api, check=True)["state"] == "verified")
         status = result["status"]
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):

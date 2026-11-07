@@ -87,6 +87,13 @@ NSpid terminando em 1 e membership host-side, revalidados durante a captura e
 após a prova. O namespace cgroup é conferido por inode junto a user/mnt/pid.
 O path `guest.cgroup` é observado dentro do CT e comparado somente nessa mesma
 representação; nunca com o path host-side do init lido pelo processo do PVE.
+O decoder exige objeto JSON; formato de resultado e snapshots são validados
+antes de incorporar qualquer observação. Se uma resposta pós-tentativa é
+rejeitada, o laudo conserva run_id/âncora, erro operacional e selection nula,
+com result/after nulos quando não validados e cleanup desconhecido/incompleto
+quando a resposta da prova não permite afirmá-lo. Sem stdout bruto ou prova
+inventada. Resultado/cleanup já validados são preservados em falha posterior de
+API/readback; a confirmação posterior rejeitada não é registrada como válida.
 
 `select_platform(report)` distingue erro operacional e incompatibilidade
 reproduzida. `qualification(report)` exige dois nós distintos e todos os checks:

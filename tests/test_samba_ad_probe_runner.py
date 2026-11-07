@@ -37,6 +37,7 @@ class Transport:
     def capture(self, r, source, filesystem):
         self.snapshots += 1
         value = expected()
+        value.pop("run_id")  # Capture returns an identity frame; the controller supplies the run_id.
         if self.drift and self.snapshots > 1: value["guest"]["boot_id"] = "c" * 32
         return value
 
@@ -130,6 +131,7 @@ def test_postprobe_api_error_preserves_operational_report(monkeypatch):
     result = m.run(prepared(), api, transport, "fixed source")
     assert result["status"] == "operational_error" and result["report"]["selection"] is None
     assert result["report"]["cleanup"]["probe"]["file"] == "complete"
+    assert result["report"]["observations"]["probe"]["result"]["status"] == "incompatible"
     assert "sensitive" not in str(result)
 
 

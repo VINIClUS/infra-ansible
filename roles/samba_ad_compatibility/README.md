@@ -50,6 +50,11 @@ quando há laudo e depois falha a role; falha de preflight não executa a prova.
 
 Exit 0 significa primeira prova aprovada; 3 é incompatibilidade reproduzida;
 2 é erro operacional. Nenhum deles qualifica sozinho LXC ou VM para produção.
+Respostas e snapshots exigem objetos/protocolo válidos antes de entrar nas
+observations. Após uma tentativa, formato rejeitado mantém result nulo, cleanup
+desconhecido/incompleto, erro operacional e selection nula, com laudo persistível;
+não se conserva stdout bruto. Um pós-readback inválido mantém after nulo e
+preserva o resultado da prova que já foi validado, sem inventar confirmação.
 Timeout, ferramenta ausente, EINVAL, ENOSPC, identidade errada, drift ou cleanup
 incompleto não escolhem plataforma. Não há fallback para execução no host.
 
