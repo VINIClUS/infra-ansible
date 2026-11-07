@@ -2,7 +2,8 @@
 
 Extensão QEMU dedicada, desabilitada por padrão (`enabled: false`, `apply: false`).
 Exige `--limit` exato do nó PVE, tag única `samba_ad_router_nic`, request privado,
-console Proxmox verificado e host SSH do roteador com chave/host key existentes.
+console Proxmox verificado ou canal independente PVE→QGA selecionado e comprovado,
+e host SSH do roteador com chave/host key existentes.
 O exemplo fictício está em `contracts/samba_ad/s1-router-nic-example.yml`.
 
 Confere VMID/nó/nome/SMBIOS, digest, estado running, pending vazio e mapa completo
@@ -23,7 +24,7 @@ não restauram cegamente arquivos de outras interfaces. Timer pendente bloqueia
 nova operação. Recovery cancela somente pending da NIC própria com valor exato;
 pending alheio impede a reversão automática. Uma nova conexão SSH estrita, sem multiplexação, valida rota
 padrão, MAC, IP e MTU; novo readback PVE valida NICs/pending antes de desarmar ambos. Falha mantém timers e instrução
-de console; rescue tenta a mesma recuperação mínima.
+do caminho de recuperação verificado; rescue tenta a mesma recuperação mínima.
 
 Reexecução com NIC/arquivo idênticos verifica; estado parcial ou arquivo ocupado
 falha fechado para recuperação. A política de zona é uma operação manual separada
@@ -53,3 +54,36 @@ mutação feita. Um tap residual ou erro de leitura continua falhando na repeti�
 Verify exige também a rota conectada unicast kernel/link, na tabela main, para
 o prefixo e device exatos. Rotas local/broadcast e endereço configurado não
 substituem essa rota. Nenhum desses desvios é reparado silenciosamente.
+
+## Recuperação de rede por PVE→QGA
+
+`samba_ad_router_nic_qga_recovery: false` é uma opção separada, desabilitada por
+padrão. Ela não define nem altera `samba_ad_router_nic_console_verified`. Selecionar
+a opção exige inventário PVE com acesso de gerenciamento independente da rede
+do guest e associação de host key já confiável. Antes de qualquer mutação, uma
+conexão PVE nova, estrita e sem multiplexação executa `router_nic.py --plan
+--qga-preflight`: revalida nó/VMID/nome/SMBIOS/digest/pending/running, exige o nó
+local exato, faz `qm guest cmd VMID ping` e `qm guest exec VMID --timeout 10 --
+/usr/bin/id -u`. A resposta deve ser concluída, íntegra, com exitcode=0 e uid=0.
+Agente ausente, uid diferente, timeout ou identidade divergente interrompem antes
+de arquivos/timers/hotplug. Não habilita agente, cria credenciais ou relaxa SSH.
+
+Console verificado continua sendo alternativa. Se a opção QGA for selecionada,
+a prova é exigida mesmo se console_verified também for true. O canal QGA depende
+do PVE/QEMU e de kernel/userspace/agente vivos; não comprova console interativo,
+bootloader ou recuperação de VM travada. Serve apenas à reversão técnica desta
+mudança de rede. Os dois dead-man timers e todos os readbacks continuam obrigatórios.
+
+Se a rede do guest impedir SSH, o operador pode, pelo mesmo PVE independente,
+invocar o revert próprio já instalado pela role: `qm guest exec VMID --timeout 30
+-- /bin/sh /root/samba-ad-s1-network/revert.sh`. Revalidar identidade e hashes antes;
+o programa só remove arquivo/interface próprios. A reversão PVE usa o helper
+com digest e deve provar NIC ativa/pending/tap ausentes. O rescue existente não
+transforma falha SSH em sucesso automático. Reobservar endereços/rotas/política
+antigos por QGA e provar SSH novo antes de desarmar proteção. Nenhuma destas
+reversões foi executada pelos testes simulados.
+
+A política completa `network_router` é uma etapa separada: além do nft, pode
+alterar o override netplan, executar netplan generate/networkctl reload e conferir
+ou alterar pacotes/sysctl/DNS/serviços. Revisar o footprint inteiro e a reversão
+exata de cada delta; não autorizar apenas nft e executar a role inteira.

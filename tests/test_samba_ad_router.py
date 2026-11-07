@@ -165,3 +165,92 @@ def test_revert_retry_after_delete_still_refuses_a_residual_tap(monkeypatch):
         monkeypatch.setattr(m.sys, "stdin", io.StringIO(json.dumps(r)))
         assert m.main() == 2
     assert len(deletes) == 1 and len(checks) == 2
+
+
+def qga_plan(monkeypatch, *, output=None, ping_rc=0, exec_rc=0, drift=None, argv=None):
+    """Exercise the real CLI preflight with only PVE/QGA boundaries replaced."""
+    import io, json, types
+    m = module(); r = request(); c = config(); pending = []; calls = []; gets = []
+    if drift == "digest": c["digest"] = "b" * 40
+    if drift == "name": c["name"] = "foreign"
+    if drift == "smbios": c["smbios1"] = "uuid=foreign"
+    if drift == "pending": pending = [{"key": "memory", "pending": 2048}]
+    if output is None: output = {"exitcode": 0, "exited": 1, "out-data": "0\n"}
+    def api(method, path, **params):
+        assert method == "get", "QGA preflight must not mutate PVE"
+        assert path.startswith("/nodes/node-a/qemu/800040/")
+        gets.append(path)
+        if path.endswith("/config"): return c.copy()
+        if path.endswith("/pending"): return pending
+        if path.endswith("/status/current"): return {"status": "running"}
+        raise AssertionError(path)
+    def run(args, **kwargs):
+        calls.append(args)
+        assert args[:3] in [["qm", "guest", "cmd"], ["qm", "guest", "exec"]]
+        assert args[3] == str(r["vmid"])
+        assert kwargs.get("timeout") and kwargs.get("capture_output")
+        ping = args[2] == "cmd"
+        return types.SimpleNamespace(returncode=ping_rc if ping else exec_rc,
+            stdout="" if ping else json.dumps(output), stderr="suppressed failure detail")
+    monkeypatch.setattr(m, "api", api); monkeypatch.setattr(m.subprocess, "run", run)
+    monkeypatch.setattr(m.socket, "gethostname", lambda: "foreign" if drift == "node" else "node-a")
+    monkeypatch.setattr(m.sys, "stdin", io.StringIO(json.dumps(r)))
+    monkeypatch.setattr(m.sys, "argv", argv or ["router_nic.py", "--plan", "--qga-preflight"])
+    return m.main(), calls, gets
+
+
+def test_qga_preflight_pings_then_proves_root_on_exact_vm_without_mutation(monkeypatch):
+    result, calls, gets = qga_plan(monkeypatch)
+    assert result == 0
+    assert calls == [["qm", "guest", "cmd", "800040", "ping"],
+                     ["qm", "guest", "exec", "800040", "--timeout", "10", "--", "/usr/bin/id", "-u"]]
+    assert gets
+
+
+@pytest.mark.parametrize("output", [{"exitcode": 0, "exited": 1, "out-data": "1000\n"},
+    {"exitcode": 1, "exited": 1, "out-data": "0\n"},
+    {"exitcode": 0, "exited": 0, "out-data": "0\n"},
+    {"exitcode": 0, "exited": 1, "out-data": "0\n", "out-truncated": 1},
+    {"exitcode": 0, "exited": 1, "out-data": 0}, {}])
+def test_qga_preflight_refuses_nonroot_incomplete_or_ambiguous_exec(monkeypatch, output):
+    result, calls, _ = qga_plan(monkeypatch, output=output)
+    assert result == 2 and len(calls) == 2
+
+
+@pytest.mark.parametrize("phase", ["ping", "exec"])
+def test_qga_preflight_does_not_enable_or_repair_unavailable_agent(monkeypatch, phase):
+    result, calls, _ = qga_plan(monkeypatch, ping_rc=1 if phase == "ping" else 0,
+                               exec_rc=1 if phase == "exec" else 0)
+    assert result == 2 and len(calls) == (1 if phase == "ping" else 2)
+
+
+@pytest.mark.parametrize("drift", ["node", "digest", "name", "smbios", "pending"])
+def test_qga_preflight_cannot_bypass_router_identity_or_pending_guards(monkeypatch, drift):
+    result, calls, _ = qga_plan(monkeypatch, drift=drift)
+    assert result == 2 and not calls
+
+
+@pytest.mark.parametrize("argv", [["router_nic.py", "--qga-preflight"],
+    ["router_nic.py", "--plan", "--qga-preflight", "--revert"]])
+def test_qga_preflight_cannot_be_combined_with_mutation(monkeypatch, argv):
+    result, calls, _ = qga_plan(monkeypatch, argv=argv)
+    assert result == 2 and not calls
+
+
+def test_qga_recovery_is_separate_false_default_and_precedes_all_mutations():
+    import yaml
+    defaults = yaml.safe_load((ROOT / "roles/samba_ad_router_nic/defaults/main.yml").read_text())
+    example = yaml.safe_load((ROOT / "contracts/samba_ad/s1-router-nic-example.yml").read_text())
+    flag = "samba_ad_router_nic_qga_recovery"
+    assert defaults.get(flag) is False and example.get(flag) is False
+    assert defaults["samba_ad_router_nic_console_verified"] is False
+    tasks = yaml.safe_load((ROOT / "roles/samba_ad_router_nic/tasks/main.yml").read_text())
+    qga = next((i, t) for i, t in enumerate(tasks)
+               if "--qga-preflight" in t.get("ansible.builtin.command", {}).get("argv", []))
+    apply = next(i for i, t in enumerate(tasks) if t.get("ansible.builtin.include_tasks") == "apply.yml")
+    assert qga[0] < apply and qga[1]["when"] == flag
+    assert "StrictHostKeyChecking=yes" in qga[1]["vars"]["ansible_ssh_args"]
+    assert "UpdateHostKeys=no" in qga[1]["vars"]["ansible_ssh_args"]
+    assert qga[1]["no_log"] and qga[1]["changed_when"] is False
+    conditions = [condition for t in tasks for condition in t.get("ansible.builtin.assert", {}).get("that", [])]
+    assert "samba_ad_router_nic_console_verified or " + flag in conditions

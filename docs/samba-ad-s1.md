@@ -9,7 +9,8 @@ segredo ou gate para homologação/produção nesta entrega.
 ## Interfaces e gates
 
 - `playbooks/samba-ad-router-nic.yml` / tag `samba_ad_router_nic`: uma NIC QEMU e
-  arquivo networkd próprio; defaults enabled/apply falsos e console obrigatório.
+  arquivo networkd próprio; defaults enabled/apply falsos e recuperação verificada
+  por console ou PVE→QGA independente explicitamente selecionado.
 - `playbooks/samba-ad-guest.yml` / tag `samba_ad_guest`: um clone por execução,
   operado do nó do template, em laboratório descartável. Defaults falsos.
 - `tools/samba_ad/network_policy.py`: `expand(manifest, policy, collector)` devolve
@@ -30,8 +31,14 @@ segredo ou gate para homologação/produção nesta entrega.
    configs/pending/tasks, templates e digests, firewall efetivo, storage e memória.
    Provar ausência de VMID/nome/MAC/IP, inclusive ipconfig/cloud-init, DHCP/vizinhos
    e ARP-DAD no segmento correto. Nenhum snapshot S0 vale como precondição atual.
-3. Validar consoles e cópias técnicas root-only de configurações de rede; testar
-   os comandos de recuperação antes da alteração. Nenhuma chave privada entra no Git.
+3. Validar console ou o canal independente PVE→QGA de recuperação de rede e
+   cópias técnicas root-only das configurações alteradas. QGA é opção separada
+   `samba_ad_router_nic_qga_recovery: false`; quando selecionada, exige ping e
+   exec uid=0 no VMID/nó exatos, por PVE autenticado com SSH estrito, antes de
+   qualquer mutação. Não declara console interativo nem habilita agente.
+   Revisar os comandos de recuperação antes da alteração; uma prova que exige
+   escrita fica para a janela aprovada, sem fingir que foi executada no preflight.
+   Nenhuma chave privada entra no Git.
 4. Planejar a VNet de identidade e a rede descartável separada. Validar CIDR/tag/bridge
    e colisões ao vivo. Usar `proxmox_sdn` com mapa completo preservado, tag própria,
    limite exato, snapshot/dead-man/readback existentes. Não alterar a zona antiga,
@@ -39,14 +46,19 @@ segredo ou gate para homologação/produção nesta entrega.
 5. Com request privado de NIC e digest frescos, verificar com apply=false/check.
    Em execução explícita, adicionar só NIC/arquivo próprios do roteador, sob dois
    timers; readback por SSH nova antes de desarmar. `network_router` depois recebe
-   todo o mapa antigo acrescido da zona identity restrita e regras /32. Seu nft
+   todo o mapa antigo acrescido da zona identity restrita e regras /32. Revisar
+   seu footprint completo: override netplan e handlers generate/reload, além de
+   pacotes/sysctl/DNS/serviços; não executar a role inteira sob aprovação nft-only. Seu nft
    --check, timer e nova conexão continuam obrigatórios. Registrar hash persistente
    e readback efetivo da cadeia/jumps. Rede descartável começa sem uplink/serviços.
 6. Preparar somente o primeiro probe LXC na rede descartável, com budget sequencial.
    Criar inicialmente parado (`boot: false`), full clone local, configuração estática,
    offline migrate e readback no destino. Capturar digest privado. Para iniciar, usar
    `action: start`, `boot: true` e o digest atual do clone parado; uma reexecução
-   `present` não muda power state. O boot revalida a reserva de RAM no destino. Alternativamente declarar `boot: true` na criação após todos os gates;
+   `present` não muda power state. A origem mantém piso vivo >=2 GiB sem alocar RAM do clone parado; o destino
+   usa memória viva livre e máximos configurados dos running, desconta o request
+   e mantém >=2 GiB. Stopped de terceiros não entram na soma, e dados desconhecidos
+   falham fechados. O boot revalida a reserva de RAM no destino. Alternativamente declarar `boot: true` na criação após todos os gates;
    o primeiro boot será com link desconectado até verificar o firewall efetivo.
 7. S2 executa a prova protegida via console/pct/agent na rede sem uplink. Se ACL/auditoria/
    isolamento falhar, registrar laudo e limpar somente probe próprio parado/digest
@@ -86,7 +98,9 @@ do clone e o template deve permanecer congelado durante a janela. Capacidade é
 observação conservadora, não reserva transacional; readback por criação é obrigatório.
 Backend nft PVE, Windows, outros devices/discos e produção são recusados neste escopo.
 Testes locais não provam hotplug/firewall/migração em hosts reais; a aplicação e a
-nova auditoria devem produzir essa evidência, com recuperação por console disponível.
+nova auditoria devem produzir essa evidência, com console verificado ou canal
+PVE→QGA independente comprovado para reversão estreita da rede. QGA não recupera
+VM/kernel/agente travados e não muda console_verified para true.
 
 ## Fontes
 

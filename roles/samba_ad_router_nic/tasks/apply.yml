@@ -224,4 +224,6 @@
 
     - name: Fail with timers retained for unreachable endpoints
       ansible.builtin.fail:
-        msg: "S1 extension failed; exact-interface recovery attempted; timers remain armed. Use the Proxmox console."
+        msg: >-
+          S1 extension failed; exact-interface recovery attempted; timers remain armed.
+          Use the verified console or independent PVE/QGA management recovery.

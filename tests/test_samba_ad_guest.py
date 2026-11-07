@@ -49,7 +49,8 @@ class Fake:
             return [{"type": "cluster", "quorate": 1}, *[{"type": "node", "name": n, "online": 1}
                     for n in ["node-a", "node-b"]]]
         if path == "/cluster/resources":
-            return [{"type": self.kind, "vmid": i, "node": c["node"], "status": c.get("status", "stopped")}
+            return [{"type": self.kind, "vmid": i, "node": c["node"], "status": c.get("status", "stopped"),
+                     "maxmem": int(c.get("memory", 4096)) * 1024**2}
                     for i, c in self.guests.items()]
         if path.endswith("/7900/config"):
             return copy.deepcopy(self.template)
@@ -324,3 +325,77 @@ def test_rpc_range_is_valid_numeric_pve_grammar_and_compile_warnings_are_fatal(m
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: types.SimpleNamespace(
         returncode=0, stdout="", stderr="warning: invalid port; rule ignored"))
     with pytest.raises(RuntimeError): m.Pvesh().run(["pve-firewall", "compile"])
+
+
+class CapacityAPI:
+    """PVE memory/storage responses; capacity calls remain real and readonly."""
+    def __init__(self):
+        self.memory = {node: {"total": 8 * 1024**3, "used": 1024**3}
+                       for node in ["node-a", "node-b"]}
+        self.storage = {node: {"active": 1, "enabled": 1, "avail": 100 * 1024**3}
+                        for node in self.memory}
+        self.calls = []
+
+    def get(self, path):
+        self.calls.append(path)
+        node = path.split("/")[2]
+        return self.storage[node] if "/storage/" in path else {"memory": self.memory[node]}
+
+
+def test_stopped_source_requires_live_floor_without_allocating_guest_ram():
+    m = module(); api = CapacityAPI(); r = request(); r["boot"] = False
+    api.memory["node-a"]["used"] = 6 * 1024**3
+    m.capacity(api, r, [])
+    assert "/nodes/node-a/storage/local-lvm/status" in api.calls
+    assert "/nodes/node-b/storage/local-lvm/status" in api.calls
+
+
+def test_stopped_unrelated_configurations_do_not_reserve_running_memory():
+    m = module(); api = CapacityAPI(); r = request(); r["boot"] = False
+    stopped = {"node": "node-b", "type": "qemu", "vmid": 800081,
+               "status": "stopped", "maxmem": 32 * 1024**3}
+    before = stopped.copy()
+    m.capacity(api, r, [stopped])
+    assert stopped == before
+
+
+@pytest.mark.parametrize("pressure", ["source_floor", "destination_live", "running_maximum"])
+def test_capacity_preserves_source_floor_and_both_destination_bounds(pressure):
+    m = module(); api = CapacityAPI(); guests = []
+    if pressure == "source_floor": api.memory["node-a"]["used"] = 6 * 1024**3 + 1
+    if pressure == "destination_live": api.memory["node-b"]["used"] = 2 * 1024**3 + 1
+    if pressure == "running_maximum":
+        guests = [{"node": "node-b", "type": "qemu", "vmid": 800081,
+                   "status": "running", "maxmem": 2 * 1024**3 + 1}]
+    with pytest.raises(ValueError): m.capacity(api, request(), guests)
+
+
+@pytest.mark.parametrize("field,value", [("total", None), ("total", "8589934592"),
+    ("total", True), ("total", -1), ("used", None), ("used", False),
+    ("used", -1), ("used", 9 * 1024**3)])
+def test_capacity_rejects_unknown_or_invalid_host_memory(field, value):
+    m = module(); api = CapacityAPI(); api.memory["node-b"][field] = value
+    with pytest.raises(ValueError): m.capacity(api, request(), [])
+
+
+@pytest.mark.parametrize("status,maxmem", [(None, 1024**3), ("unknown", 1024**3),
+    ("running", None), ("running", "1073741824"), ("stopped", False),
+    ("stopped", -1), ("running", 0)])
+def test_capacity_rejects_unknown_status_and_unbounded_or_invalid_guest_memory(status, maxmem):
+    m = module(); api = CapacityAPI()
+    guest = {"node": "node-b", "type": "lxc", "vmid": 800081,
+             "status": status, "maxmem": maxmem}
+    with pytest.raises(ValueError): m.capacity(api, request(), [guest])
+
+
+@pytest.mark.parametrize("node", ["node-a", "node-b"])
+def test_creation_still_requires_full_storage_and_reserve_on_both_nodes(node):
+    m = module(); api = CapacityAPI()
+    api.storage[node]["avail"] = 66 * 1024**3 - 1
+    with pytest.raises(ValueError): m.capacity(api, request(), [])
+
+
+def test_explicit_start_checks_only_destination_and_no_storage_again():
+    m = module(); api = CapacityAPI(); api.memory["node-a"]["used"] = 8 * 1024**3
+    m.capacity(api, request(), [], booting=True)
+    assert api.calls == ["/nodes/node-b/status"]

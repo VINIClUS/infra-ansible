@@ -5,12 +5,13 @@
       - samba_ad_router_nic_enabled is boolean
       - samba_ad_router_nic_apply is boolean
       - samba_ad_router_nic_console_verified is boolean
+      - samba_ad_router_nic_qga_recovery is boolean
 
 - name: Stop the disabled router extension
   ansible.builtin.meta: end_role
   when: not samba_ad_router_nic_enabled
 
-- name: Require one exact manual router node and console recovery
+- name: Require one exact manual router node and selected management recovery
   ansible.builtin.assert:
     that:
       - ansible_limit is defined
@@ -19,11 +20,13 @@
       - ansible_run_tags | list | sort == ['samba_ad_router_nic']
       - samba_ad_router_nic_request.node == ansible_facts.hostname
       - samba_ad_router_nic_guest_host in hostvars
-      - samba_ad_router_nic_console_verified
+      - samba_ad_router_nic_console_verified or samba_ad_router_nic_qga_recovery
       - samba_ad_router_nic_state_root == '/root/samba-ad-s1-router'
       - samba_ad_router_nic_deadman_minutes | int >= 3
       - samba_ad_router_nic_deadman_minutes | int <= 30
-    fail_msg: "Use the exact PVE node, private request, dedicated tag and verified Proxmox console recovery."
+    fail_msg: >-
+      Use the exact PVE node, private request, dedicated tag and verified console
+      or selected PVE/QGA management recovery.
 
 - name: Read and validate QEMU identity digest and all existing NICs
   ansible.builtin.command:
@@ -112,6 +115,24 @@
         or (samba_ad_router_nic_plan.action == 'verify' and samba_ad_router_nic_file.stat.exists
             and samba_ad_router_nic_file.stat.checksum == (samba_ad_router_nic_plan.network | hash('sha256')))
     fail_msg: "Existing or partial network state requires exact technical recovery before reexecution."
+
+- name: Prove the selected independent PVE to QGA root management path before mutation
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_nic.py') }}"
+      - --plan
+      - --qga-preflight
+    stdin: "{{ samba_ad_router_nic_request | to_json }}"
+  vars:
+    ansible_ssh_args: >-
+      -o BatchMode=yes -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
+      -o UpdateHostKeys=no -o IdentityAgent=none -o IdentitiesOnly=yes
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: samba_ad_router_nic_qga_recovery
 
 - name: Apply one additional interface under independent PVE and guest dead-man timers
   ansible.builtin.include_tasks: apply.yml
