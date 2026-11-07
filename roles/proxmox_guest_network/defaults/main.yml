@@ -1,0 +1,31 @@
+---
+proxmox_guest_network_enabled: false
+# Exactly one guest per run: -e proxmox_guest_network_vmid=<id>.
+proxmox_guest_network_vmid: ""
+# false moves the guest to its declared target; true puts back the net0,
+# nameserver and searchdomain saved before the first move.
+proxmox_guest_network_rollback: false
+# LXC guests this role may move, keyed by VMID (string). Example:
+#   "150":
+#     hostname: runner-dev
+#     node: pve-01
+#     from: {bridge: vmbr0, ip: dhcp, address: 192.0.2.127/24, gw: 192.0.2.1, mtu: 1500}
+#     to: {bridge: vnci, ip: 10.10.30.127/24, gw: 10.10.30.1,
+#          nameserver: 10.10.30.1, searchdomain: example.internal}
+#     busy_pattern: Runner.Worker      # pgrep -f regex that must not match before the restart
+#     services: [runner.service]       # systemd units that must be active after the boot
+#     https_probe: https://api.github.com
+# from.address is the address the guest must come back with on a rollback
+# (for ip=dhcp, the address reserved for its MAC on the LAN router).
+proxmox_guest_network_guests: {}
+# VNet MTU (VXLAN overhead on a 1500 underlay).
+proxmox_guest_network_mtu: 1450
+proxmox_guest_network_backup_root: /root/netiso-backup/guest-network
+# Snapshot the stopped guest before the change; drop it once the move is accepted.
+proxmox_guest_network_snapshot: true
+proxmox_guest_network_dns_probe: deb.debian.org
+# Inventory host of the zone router; it ARP-probes the target address before the move.
+proxmox_guest_network_router_host: ""
+proxmox_guest_network_power_timeout: 180
+proxmox_guest_network_verify_retries: 12
+proxmox_guest_network_verify_delay: 5

@@ -1,0 +1,10 @@
+---
+- name: Reconcile the Proxmox datacenter, host and guest firewall
+  hosts: proxmox_nodes
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: proxmox_firewall
+      tags:
+        - proxmox_firewall

@@ -1,0 +1,327 @@
+---
+- name: Validate the router VM enable flag
+  ansible.builtin.assert:
+    that:
+      - proxmox_router_vm_enabled is boolean
+    fail_msg: "proxmox_router_vm_enabled must be boolean."
+
+- name: Stop only the router VM role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_router_vm_enabled | bool
+
+- name: Validate the router VM contract
+  vars:
+    proxmox_router_vm_bridges: "{{ proxmox_router_vm_nics | map(attribute='bridge', default='') | list }}"
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['proxmox_router_vm']
+      - proxmox_router_vm_node == ansible_facts['hostname']
+      - proxmox_router_vm_vmid | string is match('^[1-9][0-9]{2,8}$')
+      - proxmox_router_vm_vmid | int != proxmox_router_vm_template_vmid | int
+      - proxmox_router_vm_name is match('^[a-z][a-z0-9-]{1,62}$')
+      - proxmox_router_vm_template_name | length > 0
+      - proxmox_router_vm_storage is match('^[A-Za-z][A-Za-z0-9_-]*$')
+      - proxmox_router_vm_cores | int >= 1
+      - proxmox_router_vm_cores | int <= 8
+      - proxmox_router_vm_memory_mb | int >= 512
+      - proxmox_router_vm_nics | length >= 2
+      - proxmox_router_vm_nics | length <= 8
+      - proxmox_router_vm_bridges | unique | length == proxmox_router_vm_bridges | length
+      - proxmox_router_vm_nics[0].gateway | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+      - proxmox_router_vm_nics[1:] | selectattr('gateway', 'defined') | list | length == 0
+      - proxmox_router_vm_ssh_public_key is match('^ssh-ed25519 [A-Za-z0-9+/=]+( [^\n]*)?$')
+      - proxmox_router_vm_ciuser is match('^[a-z][a-z0-9_-]{0,31}$')
+      - proxmox_router_vm_replication_target != proxmox_router_vm_node
+      - proxmox_router_vm_ha_nodes | length == 0 or proxmox_router_vm_ha_rule is match('^[a-z][a-z0-9-]{2,63}$')
+    fail_msg: >-
+      Router VM contract is incomplete or unsafe. Use the private inventory, an
+      exact one-node --limit equal to proxmox_router_vm_node, --tags
+      proxmox_router_vm, a new VMID, an uplink NIC with a gateway followed by
+      VNet NICs without one, and an ed25519 public key.
+
+- name: Validate every router NIC
+  ansible.builtin.assert:
+    that:
+      - item.bridge | default('') is match('^[a-z][a-z0-9]{1,14}$')
+      - item.address | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+    fail_msg: "Router NIC {{ item }} needs a bridge and an IPv4 address in CIDR form."
+    quiet: true
+  loop: "{{ proxmox_router_vm_nics }}"
+
+- name: Read cluster guests
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/resources, --type, vm, --output-format, json]
+  register: proxmox_router_vm_resources
+  changed_when: false
+  check_mode: false
+
+- name: Read the applied SDN VNets
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/sdn/vnets, --running, "1", --output-format, json]
+  register: proxmox_router_vm_running_vnets
+  changed_when: false
+  check_mode: false
+
+- name: Derive the target and the expected NIC configuration
+  vars:
+    proxmox_router_vm_guests: "{{ proxmox_router_vm_resources.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    proxmox_router_vm_target: >-
+      {{ proxmox_router_vm_guests | selectattr('vmid', 'equalto', proxmox_router_vm_vmid | int) | first | default({}) }}
+    proxmox_router_vm_template: >-
+      {{ proxmox_router_vm_guests | selectattr('vmid', 'equalto', proxmox_router_vm_template_vmid | int)
+         | first | default({}) }}
+    proxmox_router_vm_vnets: >-
+      {{ proxmox_router_vm_running_vnets.stdout | from_json | map(attribute='vnet') | list }}
+    proxmox_router_vm_ipconfig: >-
+      {%- set out = [] -%}
+      {%- for nic in proxmox_router_vm_nics -%}
+      {%- set _ = out.append('ip=' ~ nic.address ~ (',gw=' ~ nic.gateway if nic.gateway is defined else '')) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Confirm every router bridge exists
+  ansible.builtin.command:
+    argv: [ip, -o, link, show, dev, "{{ item.bridge }}"]
+  loop: "{{ proxmox_router_vm_nics }}"
+  loop_control:
+    label: "{{ item.bridge }}"
+  register: proxmox_router_vm_bridge_check
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    proxmox_router_vm_bridge_check.rc != 0
+    or (item.bridge is not match('^vmbr') and item.bridge not in proxmox_router_vm_vnets)
+
+- name: Read the existing target configuration
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ proxmox_router_vm_target.node }}/qemu/{{ proxmox_router_vm_vmid }}/config"
+      - --output-format
+      - json
+  register: proxmox_router_vm_existing
+  changed_when: false
+  check_mode: false
+  when: proxmox_router_vm_target != {}
+
+- name: Refuse an existing VMID that is not this router
+  vars:
+    proxmox_router_vm_cfg: "{{ proxmox_router_vm_existing.stdout | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - proxmox_router_vm_target.type == 'qemu'
+      - proxmox_router_vm_cfg.name | default('') == proxmox_router_vm_name
+      - proxmox_router_vm_cfg.template | default(0) | int == 0
+      - >-
+        proxmox_router_vm_cfg['net' ~ idx] | default('') is search('bridge=' ~ item.bridge ~ '(,|$)')
+        and proxmox_router_vm_cfg['net' ~ idx] | default('') is search('firewall=0')
+      - proxmox_router_vm_cfg['ipconfig' ~ idx] | default('') == proxmox_router_vm_ipconfig[idx]
+    fail_msg: >-
+      VMID {{ proxmox_router_vm_vmid }} exists but net{{ idx }}/ipconfig{{ idx }}
+      or its identity differ from the router contract. Nothing was changed;
+      investigate manually (the role never replaces a guest).
+    quiet: true
+  loop: "{{ proxmox_router_vm_nics }}"
+  loop_control:
+    index_var: idx
+    label: "net{{ idx }}"
+  when: proxmox_router_vm_target != {}
+
+- name: Create the router VM from the template
+  when: proxmox_router_vm_target == {}
+  block:
+    - name: Read the template configuration
+      ansible.builtin.command:
+        argv:
+          - pvesh
+          - get
+          - "/nodes/{{ proxmox_router_vm_node }}/qemu/{{ proxmox_router_vm_template_vmid }}/config"
+          - --output-format
+          - json
+      register: proxmox_router_vm_template_cfg
+      changed_when: false
+      check_mode: false
+
+    - name: Confirm the source is the approved template on this node
+      vars:
+        proxmox_router_vm_tcfg: "{{ proxmox_router_vm_template_cfg.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - proxmox_router_vm_template.node | default('') == proxmox_router_vm_node
+          - proxmox_router_vm_tcfg.template | default(0) | int == 1
+          - proxmox_router_vm_tcfg.name | default('') == proxmox_router_vm_template_name
+          - proxmox_router_vm_tcfg.ostype | default('') == 'l26'
+        fail_msg: >-
+          VMID {{ proxmox_router_vm_template_vmid }} is not the approved
+          {{ proxmox_router_vm_template_name }} template on {{ proxmox_router_vm_node }}.
+
+    - name: Full-clone the template onto replicable storage
+      ansible.builtin.command:
+        argv:
+          - qm
+          - clone
+          - "{{ proxmox_router_vm_template_vmid }}"
+          - "{{ proxmox_router_vm_vmid }}"
+          - --name
+          - "{{ proxmox_router_vm_name }}"
+          - --full
+          - "1"
+          - --storage
+          - "{{ proxmox_router_vm_storage }}"
+      changed_when: true
+
+    - name: Stage the router SSH public key for cloud-init
+      ansible.builtin.copy:
+        dest: "/root/{{ proxmox_router_vm_name }}-cloudinit.pub"
+        content: "{{ proxmox_router_vm_ssh_public_key }}\n"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Configure CPU, memory, cloud-init and NICs
+      vars:
+        proxmox_router_vm_nic_args: >-
+          {%- set out = [] -%}
+          {%- for nic in proxmox_router_vm_nics -%}
+          {%- set i = loop.index0 -%}
+          {%- set _ = out.extend(['--net' ~ i,
+                'virtio,bridge=' ~ nic.bridge ~ ',firewall=0' ~ (',mtu=1' if i > 0 else ''),
+                '--ipconfig' ~ i, proxmox_router_vm_ipconfig[i]]) -%}
+          {%- endfor -%}
+          {{ out }}
+      ansible.builtin.command:
+        argv: >-
+          {{ ['qm', 'set', proxmox_router_vm_vmid | string,
+              '--cores', proxmox_router_vm_cores | string,
+              '--memory', proxmox_router_vm_memory_mb | string,
+              '--tags', proxmox_router_vm_tags,
+              '--description', 'Managed by infra-ansible proxmox_router_vm (network isolation router).',
+              '--ciuser', proxmox_router_vm_ciuser,
+              '--sshkeys', '/root/' ~ proxmox_router_vm_name ~ '-cloudinit.pub']
+             + (['--nameserver', proxmox_router_vm_nameserver] if proxmox_router_vm_nameserver | length > 0 else [])
+             + (['--searchdomain', proxmox_router_vm_searchdomain]
+                if proxmox_router_vm_searchdomain | length > 0 else [])
+             + proxmox_router_vm_nic_args }}
+      changed_when: true
+
+    - name: Remove the staged public key
+      ansible.builtin.file:
+        path: "/root/{{ proxmox_router_vm_name }}-cloudinit.pub"
+        state: absent
+
+    - name: Start the router VM
+      ansible.builtin.command:
+        argv: [qm, start, "{{ proxmox_router_vm_vmid }}"]
+      changed_when: true
+
+- name: Wait for the router SSH service on the uplink address
+  ansible.builtin.wait_for:
+    host: "{{ proxmox_router_vm_nics[0].address | regex_replace('/.*$', '') }}"
+    port: 22
+    search_regex: OpenSSH
+    timeout: "{{ proxmox_router_vm_ssh_wait_seconds | int }}"
+  when: not ansible_check_mode
+
+- name: Read replication jobs
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/replication, --output-format, json]
+  register: proxmox_router_vm_replication
+  changed_when: false
+  check_mode: false
+  when: proxmox_router_vm_replication_target | length > 0
+
+- name: Create the storage replication job
+  vars:
+    proxmox_router_vm_jobs: >-
+      {{ proxmox_router_vm_replication.stdout | from_json
+         | selectattr('guest', 'equalto', proxmox_router_vm_vmid | int) | list }}
+  ansible.builtin.command:
+    argv:
+      - pvesr
+      - create-local-job
+      - "{{ proxmox_router_vm_vmid }}-0"
+      - "{{ proxmox_router_vm_replication_target }}"
+      - --schedule
+      - "{{ proxmox_router_vm_replication_schedule }}"
+  changed_when: true
+  when:
+    - proxmox_router_vm_replication_target | length > 0
+    - proxmox_router_vm_jobs | length == 0
+
+- name: Read HA resources and rules
+  ansible.builtin.command:
+    argv: [pvesh, get, "/cluster/ha/{{ item }}", --output-format, json]
+  loop: [resources, rules]
+  register: proxmox_router_vm_ha
+  changed_when: false
+  check_mode: false
+  when: proxmox_router_vm_ha_nodes | length > 0
+
+- name: Add the router to HA
+  ansible.builtin.command:
+    argv:
+      - ha-manager
+      - add
+      - "vm:{{ proxmox_router_vm_vmid }}"
+      - --state
+      - started
+      - --max_restart
+      - "{{ proxmox_router_vm_ha_max_restart }}"
+      - --max_relocate
+      - "{{ proxmox_router_vm_ha_max_relocate }}"
+      - --comment
+      - "{{ proxmox_router_vm_name }} (network isolation router)"
+  changed_when: true
+  when:
+    - proxmox_router_vm_ha_nodes | length > 0
+    - >-
+      proxmox_router_vm_ha.results[0].stdout | from_json
+      | selectattr('sid', 'equalto', 'vm:' ~ proxmox_router_vm_vmid) | list | length == 0
+
+- name: Pin the router to its replicated nodes with a strict node-affinity rule
+  vars:
+    proxmox_router_vm_rule: >-
+      {{ proxmox_router_vm_ha.results[1].stdout | from_json
+         | selectattr('rule', 'equalto', proxmox_router_vm_ha_rule) | first | default({}) }}
+  ansible.builtin.command:
+    argv:
+      - ha-manager
+      - rules
+      - "{{ 'add' if proxmox_router_vm_rule == {} else 'set' }}"
+      - node-affinity
+      - "{{ proxmox_router_vm_ha_rule }}"
+      - --resources
+      - "vm:{{ proxmox_router_vm_vmid }}"
+      - --nodes
+      - "{{ proxmox_router_vm_ha_nodes }}"
+      - --strict
+      - "1"
+  changed_when: true
+  when:
+    - proxmox_router_vm_ha_nodes | length > 0
+    - >-
+      proxmox_router_vm_rule == {}
+      or proxmox_router_vm_rule.nodes | default('') != proxmox_router_vm_ha_nodes
+      or proxmox_router_vm_rule.resources | default('') != 'vm:' ~ proxmox_router_vm_vmid
+      or proxmox_router_vm_rule.strict | default(0) | int != 1
+
+- name: Read the router state back
+  ansible.builtin.command:
+    argv: [qm, status, "{{ proxmox_router_vm_vmid }}"]
+  register: proxmox_router_vm_status
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Report the router VM outcome
+  ansible.builtin.debug:
+    msg: >-
+      {{ proxmox_router_vm_name }} (VMID {{ proxmox_router_vm_vmid }}) on
+      {{ proxmox_router_vm_node }}: {{ proxmox_router_vm_status.stdout | default('absent (check mode)') }};
+      replication to {{ proxmox_router_vm_replication_target | default('none', true) }},
+      HA nodes {{ proxmox_router_vm_ha_nodes | default('none', true) }}.

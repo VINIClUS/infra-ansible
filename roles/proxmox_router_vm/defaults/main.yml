@@ -1,0 +1,42 @@
+---
+proxmox_router_vm_enabled: false
+
+# Node that owns the clone; must be the single --limit host.
+proxmox_router_vm_node: ""
+proxmox_router_vm_vmid: 0
+proxmox_router_vm_name: ""
+proxmox_router_vm_template_vmid: 9200
+proxmox_router_vm_template_name: tpl-debian-13-cloudinit
+# Replicable (ZFS) storage present on the node and the replication target.
+proxmox_router_vm_storage: rpool
+proxmox_router_vm_cores: 1
+proxmox_router_vm_memory_mb: 1024
+proxmox_router_vm_tags: router;netiso
+
+# One entry per NIC, in netN order. The first NIC is the uplink and is the only
+# one with a gateway; VNet NICs inherit the bridge MTU (virtio mtu=1). The PVE
+# firewall is off on every router NIC: ipfilter and policy_in would drop routed
+# traffic, so filtering lives in the guest (nftables).
+#   - {bridge: vmbr0, address: 192.0.2.240/24, gateway: 192.0.2.1}
+#   - {bridge: vnsvc, address: 10.10.10.1/24}
+proxmox_router_vm_nics: []
+
+proxmox_router_vm_ciuser: debian
+# Public key only (not a secret).
+proxmox_router_vm_ssh_public_key: ""
+proxmox_router_vm_nameserver: ""
+proxmox_router_vm_searchdomain: ""
+
+# Storage replication (empty target disables it).
+proxmox_router_vm_replication_target: ""
+proxmox_router_vm_replication_schedule: "*/15"
+
+# HA resource plus a strict node-affinity rule (empty nodes disables HA).
+# Equal priorities avoid automatic failback, which depends on replication
+# working in both directions.
+proxmox_router_vm_ha_nodes: ""
+proxmox_router_vm_ha_rule: ""
+proxmox_router_vm_ha_max_restart: 2
+proxmox_router_vm_ha_max_relocate: 2
+
+proxmox_router_vm_ssh_wait_seconds: 600

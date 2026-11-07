@@ -1,0 +1,55 @@
+---
+# Applies proxmox_guest_network_apply ({net0, nameserver, searchdomain}; a
+# null nameserver/searchdomain is deleted) to the stopped guest and reads it back.
+- name: Read the guest configuration before setting it
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ inventory_hostname }}/lxc/{{ proxmox_guest_network_id }}/config"
+      - --output-format
+      - json
+  register: proxmox_guest_network_live_raw
+  changed_when: false
+
+- name: Set the guest network settings
+  vars:
+    live: "{{ proxmox_guest_network_live_raw.stdout | from_json }}"
+    apply: "{{ proxmox_guest_network_apply }}"
+    to_delete: >-
+      {{ ['nameserver', 'searchdomain']
+         | select('in', live)
+         | reject('in', apply | dict2items | rejectattr('value', 'none') | map(attribute='key') | list)
+         | list }}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['pct', 'set', proxmox_guest_network_id, '--net0', apply.net0]
+         + (['--nameserver', apply.nameserver] if apply.nameserver is not none else [])
+         + (['--searchdomain', apply.searchdomain] if apply.searchdomain is not none else [])
+         + (['--delete', to_delete | join(',')] if to_delete | length > 0 else []) }}
+  changed_when: true
+
+- name: Read the guest configuration back
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ inventory_hostname }}/lxc/{{ proxmox_guest_network_id }}/config"
+      - --output-format
+      - json
+  register: proxmox_guest_network_readback_raw
+  changed_when: false
+
+- name: Check the guest carries exactly the requested settings and its MAC
+  vars:
+    readback: "{{ proxmox_guest_network_readback_raw.stdout | from_json }}"
+    apply: "{{ proxmox_guest_network_apply }}"
+    got_net0: "{{ dict(readback.net0 | split(',') | select('search', '=') | map('split', '=')) }}"
+    want_net0: "{{ dict(apply.net0 | split(',') | select('search', '=') | map('split', '=')) }}"
+  ansible.builtin.assert:
+    that:
+      - got_net0 == want_net0
+      - got_net0.hwaddr == proxmox_guest_network_net0.hwaddr
+      - readback.nameserver | default(none) == apply.nameserver
+      - readback.searchdomain | default(none) == apply.searchdomain
+    fail_msg: "CT {{ proxmox_guest_network_id }} did not keep the requested network settings or changed its MAC."

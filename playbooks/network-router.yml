@@ -1,0 +1,10 @@
+---
+- name: Configure the zone router (nftables, NAT, DNS and DHCP for the VNets)
+  hosts: network_routers
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - role: network_router
+      tags:
+        - network_router

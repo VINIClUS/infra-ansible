@@ -81,3 +81,52 @@ through `pvesm`. Proxmox receives `content backup`, `is_mountpoint=1`, and
 and protected credential-file reference. `ProxmoxMCP` owns only read-only
 contract verification and its existing approval-gated recovery execution. The
 broker never mounts filesystems or changes Proxmox storage configuration.
+
+## Proxmox cluster firewall and network isolation
+
+The `proxmox_firewall` role owns `/etc/pve/firewall/cluster.fw`, each node's
+`host.fw`, and the `.fw` files of guests declared in the private inventory. It
+is the first step of isolating the cluster: host and guest policy on the
+existing `vmbr0`, plus a guard that admits VXLAN (UDP 4789) only from the
+cluster nodes, before any SDN VXLAN zone is created. Later steps (SDN zone and
+VNets, the `rtr-01` router guest, node routes, guest re-addressing) are
+separate roles with their own tags.
+
+`infra-ansible-inventory` owns every IPset, alias, security group and rule.
+`ProxmoxMCP` keeps using the API and never changes firewall or SDN state.
+
+## Proxmox private network (SDN VXLAN, zone router, node routes)
+
+The private network is built by four roles, each with its own playbook and
+tag, applied in this order after the firewall guard is active:
+
+1. `proxmox_sdn` reconciles one SDN VXLAN zone (peers equal to the node
+   addresses, explicit `vxlan-port`) and its VNets, then applies them under the
+   shared `proxmox_change_guard` (HA watchdogs released, dead-man timer that
+   restores each node's `/etc/network/interfaces.d/sdn`). VXLAN zones are layer
+   2: no subnet, gateway or IPAM is configured on the nodes.
+2. `proxmox_router_vm` full-clones the cloud-init template into the router VM
+   (uplink NIC plus one NIC per VNet, PVE firewall off on every router NIC),
+   adds storage replication and an HA resource pinned by a strict
+   node-affinity rule to the nodes that hold the replicated storage.
+3. `network_router` configures that guest: IPv6 off, IPv4 forwarding, an
+   nftables zone policy (forward default drop, MSS clamping, masquerade except
+   towards the cluster nodes) and dnsmasq bound to the VNet interfaces only.
+4. `proxmox_node_routes` routes the private range from every node through the
+   router with an ifupdown2 `if-up.d` hook, without reloading the network.
+
+Zone data (VNet ids and tags, router addresses, forward allowances, routes)
+lives only in `infra-ansible-inventory`.
+
+Guests move into the VNets one at a time with `proxmox_guest_network`: a cold
+change (stop, snapshot, set, single start) that keeps the guest MAC, writes the
+VNet MTU into the guest itself (ifupdown2 would reset it to 1500), verifies the
+guest from inside and from its node, and puts the previous settings back on
+any failure. A LAN host reaches the VNets dependably only through its own
+route to the zone router; through the LAN gateway's static route the path is
+asymmetric and bulk traffic into the VNets stalls. `proxmox_guest_routes`
+installs that route in a LAN guest (an ifupdown2 `if-up.d` hook written
+through `pct exec`), as `proxmox_node_routes` does on the nodes.
+`proxmox_guest_nic` hot-plugs a secondary NIC without a gateway into a
+running guest (the edge proxy's leg on the services VNet) and keeps its VNet
+MTU in the guest across reboots.

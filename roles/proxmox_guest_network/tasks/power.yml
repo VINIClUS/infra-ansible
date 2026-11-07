@@ -1,0 +1,53 @@
+---
+# Brings the guest to proxmox_guest_network_power (stopped|running). HA guests
+# go through ha-manager, because a plain pct stop/start would be undone by HA.
+- name: Read the guest power state before changing it
+  ansible.builtin.command:
+    argv: [pct, status, "{{ proxmox_guest_network_id }}"]
+  register: proxmox_guest_network_power_now
+  changed_when: false
+
+- name: Request the guest state through HA
+  ansible.builtin.command:
+    argv:
+      - ha-manager
+      - set
+      - "ct:{{ proxmox_guest_network_id }}"
+      - --state
+      - "{{ 'stopped' if proxmox_guest_network_power == 'stopped' else 'started' }}"
+  changed_when: true
+  when: proxmox_guest_network_ha | length > 0
+
+- name: Shut the guest down
+  ansible.builtin.command:
+    argv:
+      - pct
+      - shutdown
+      - "{{ proxmox_guest_network_id }}"
+      - --timeout
+      - "{{ proxmox_guest_network_power_timeout | string }}"
+      - --forceStop
+      - "1"
+  changed_when: true
+  when:
+    - proxmox_guest_network_ha | length == 0
+    - proxmox_guest_network_power == 'stopped'
+    - "proxmox_guest_network_power_now.stdout | trim != 'status: stopped'"
+
+- name: Start the guest
+  ansible.builtin.command:
+    argv: [pct, start, "{{ proxmox_guest_network_id }}"]
+  changed_when: true
+  when:
+    - proxmox_guest_network_ha | length == 0
+    - proxmox_guest_network_power == 'running'
+    - "proxmox_guest_network_power_now.stdout | trim != 'status: running'"
+
+- name: Wait for the guest power state
+  ansible.builtin.command:
+    argv: [pct, status, "{{ proxmox_guest_network_id }}"]
+  register: proxmox_guest_network_power_wait
+  changed_when: false
+  until: "proxmox_guest_network_power_wait.stdout | trim == 'status: ' ~ proxmox_guest_network_power"
+  retries: "{{ (proxmox_guest_network_power_timeout | int // 5) + 6 }}"
+  delay: 5

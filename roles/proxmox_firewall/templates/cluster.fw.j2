@@ -1,0 +1,34 @@
+{% import '_rule.j2' as fw %}
+# {{ ansible_managed }} (role proxmox_firewall)
+[OPTIONS]
+
+enable: {{ 1 if proxmox_firewall_render_enable | bool else 0 }}
+policy_in: {{ proxmox_firewall_policy_in }}
+policy_out: {{ proxmox_firewall_policy_out }}
+log_ratelimit: {{ proxmox_firewall_log_ratelimit }}
+
+[ALIASES]
+
+{% for name, a in proxmox_firewall_aliases | dictsort %}
+{{ name }} {{ a.cidr }}{% if a.comment is defined %} # {{ a.comment }}{% endif %}
+
+{% endfor %}
+
+{% for name, entries in proxmox_firewall_ipsets | dictsort %}
+{{ fw.ipset(name, entries) }}
+{% endfor %}
+[RULES]
+
+IN ACCEPT -source +{{ proxmox_firewall_vxlan_guard_ipset }} -p udp -dport {{ proxmox_firewall_vxlan_port }} -log nolog # VXLAN only between cluster peers (managed)
+{% for r in proxmox_firewall_cluster_rules %}
+{{ fw.render(r) }}
+{% endfor %}
+
+{% for name, g in proxmox_firewall_security_groups | dictsort %}
+[group {{ name }}]{% if g.comment is defined %} # {{ g.comment }}{% endif %}
+
+{% for r in g.rules %}
+{{ fw.render(r) }}
+{% endfor %}
+
+{% endfor %}

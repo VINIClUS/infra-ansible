@@ -1,0 +1,456 @@
+---
+- name: Validate Proxmox firewall enable flags
+  ansible.builtin.assert:
+    that:
+      - proxmox_firewall_enabled is boolean
+      - proxmox_firewall_activate is boolean
+    fail_msg: "proxmox_firewall_enabled and proxmox_firewall_activate must be booleans."
+
+- name: Stop only the Proxmox firewall role when it is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_firewall_enabled | bool
+
+- name: Collect every declared firewall rule
+  ansible.builtin.set_fact:
+    proxmox_firewall_plain_rules: >-
+      {{ proxmox_firewall_cluster_rules
+         + (proxmox_firewall_host_rules.values() | list | flatten(levels=1))
+         + (proxmox_firewall_guests.values() | map(attribute='rules', default=[]) | list | flatten(levels=1)) }}
+    proxmox_firewall_group_rules: >-
+      {{ proxmox_firewall_security_groups.values() | map(attribute='rules', default=[]) | list | flatten(levels=1) }}
+    proxmox_firewall_guard_entries: >-
+      {{ proxmox_firewall_ipsets.get(proxmox_firewall_vxlan_guard_ipset, [])
+         | map(attribute='cidr') | map('regex_replace', '/32$', '') | list | sort }}
+
+- name: Validate Proxmox firewall contract
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_play_hosts_all[0] == inventory_hostname
+      - ansible_run_tags | list | sort == ['proxmox_firewall']
+      - proxmox_firewall_nodes is mapping
+      - proxmox_firewall_nodes | length >= 1
+      - ansible_facts['hostname'] in proxmox_firewall_nodes
+      - proxmox_firewall_policy_in in ['ACCEPT', 'DROP', 'REJECT']
+      - proxmox_firewall_policy_out in ['ACCEPT', 'DROP', 'REJECT']
+      - proxmox_firewall_deadman_minutes | int >= 3
+      - proxmox_firewall_deadman_minutes | int <= 30
+      - proxmox_firewall_vxlan_guard_ipset in proxmox_firewall_ipsets
+      - proxmox_firewall_guard_entries == (proxmox_firewall_nodes.values() | list | sort)
+      - proxmox_firewall_host_rules.keys() | difference(proxmox_firewall_nodes.keys()) | length == 0
+      - >-
+        proxmox_firewall_guests.keys() | map('string') | reject('match', '^[1-9][0-9]{2,8}$')
+        | list | length == 0
+      - >-
+        proxmox_firewall_ipsets.keys() | reject('match', '^[A-Za-z][A-Za-z0-9_-]{1,63}$')
+        | list | length == 0
+      - >-
+        proxmox_firewall_security_groups.keys() | reject('match', '^[A-Za-z][A-Za-z0-9_-]{1,17}$')
+        | list | length == 0
+    fail_msg: >-
+      Firewall contract is incomplete or unsafe. Use the private inventory, an
+      exact one-node --limit, --tags proxmox_firewall, a node map that includes
+      this host, and a VXLAN guard IPset equal to the node addresses.
+
+- name: Validate every firewall rule shape
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.group is defined and item.group in proxmox_firewall_security_groups) or
+        (item.group is not defined and item.direction | default('') | upper in ['IN', 'OUT']
+         and item.action | default('') | upper in ['ACCEPT', 'DROP', 'REJECT'])
+      - item.comment is not defined or '#' not in item.comment
+    fail_msg: "Invalid firewall rule: {{ item }}"
+    quiet: true
+  loop: "{{ proxmox_firewall_plain_rules }}"
+
+- name: Validate security group rules do not nest groups
+  ansible.builtin.assert:
+    that:
+      - item.group is not defined
+      - item.direction | default('') | upper in ['IN', 'OUT']
+      - item.action | default('') | upper in ['ACCEPT', 'DROP', 'REJECT']
+    fail_msg: "Invalid security group rule: {{ item }}"
+    quiet: true
+  loop: "{{ proxmox_firewall_group_rules }}"
+
+- name: Read live cluster status
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/status, --output-format, json]
+  register: proxmox_firewall_cluster_status
+  changed_when: false
+  check_mode: false
+
+- name: Read live datacenter firewall options
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/firewall/options, --output-format, json]
+  register: proxmox_firewall_live_options
+  changed_when: false
+  check_mode: false
+
+- name: Read the auto-detected local_network
+  ansible.builtin.command:
+    argv: [pve-firewall, localnet]
+  register: proxmox_firewall_localnet
+  changed_when: false
+  check_mode: false
+
+- name: Derive live cluster facts
+  vars:
+    proxmox_firewall_status_items: "{{ proxmox_firewall_cluster_status.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    proxmox_firewall_quorate: >-
+      {{ (proxmox_firewall_status_items | selectattr('type', 'equalto', 'cluster') | first).quorate
+         | default(0) | int == 1 }}
+    proxmox_firewall_live_nodes: >-
+      {{ proxmox_firewall_status_items | selectattr('type', 'equalto', 'node')
+         | items2dict(key_name='name', value_name='ip') }}
+    proxmox_firewall_offline_nodes: >-
+      {{ proxmox_firewall_status_items | selectattr('type', 'equalto', 'node')
+         | rejectattr('online', 'equalto', 1) | map(attribute='name') | list }}
+    proxmox_firewall_currently_enabled: >-
+      {{ (proxmox_firewall_live_options.stdout | from_json).enable | default(0) | int == 1 }}
+
+- name: Decide the rendered datacenter enable state
+  ansible.builtin.set_fact:
+    proxmox_firewall_render_enable: >-
+      {{ proxmox_firewall_activate | bool or proxmox_firewall_currently_enabled | bool }}
+
+- name: Confirm the declared node map matches the live quorate cluster
+  ansible.builtin.assert:
+    that:
+      - proxmox_firewall_quorate | bool
+      - proxmox_firewall_offline_nodes | length == 0
+      - proxmox_firewall_live_nodes == proxmox_firewall_nodes
+    fail_msg: >-
+      Cluster is not quorate, a node is offline, or proxmox_firewall_nodes
+      differs from the live cluster ({{ proxmox_firewall_live_nodes }}).
+      No firewall file was changed.
+
+- name: Report the effective local_network used by management rules
+  ansible.builtin.debug:
+    msg: "{{ proxmox_firewall_localnet.stdout_lines }}"
+
+- name: Create the root-only backup directory
+  ansible.builtin.file:
+    path: "{{ proxmox_firewall_backup_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Ensure the datacenter firewall directory exists  # noqa: risky-file-permissions pmxcfs fixes owner/mode
+  ansible.builtin.file:
+    path: /etc/pve/firewall
+    state: directory
+
+- name: Find which configuration paths exist for the backup
+  ansible.builtin.stat:
+    path: "/{{ item }}"
+  loop: "{{ proxmox_firewall_backup_paths }}"
+  register: proxmox_firewall_backup_stat
+
+- name: Back up firewall, SDN, node and network configuration
+  ansible.builtin.command:
+    argv: >-
+      {{ ['tar', '--create', '--gzip',
+          '--file', proxmox_firewall_backup_root ~ '/pve-config-'
+                    ~ ansible_facts['date_time']['iso8601_basic_short'] ~ '.tar.gz',
+          '--exclude=*.key', '--exclude=*.pem', '--directory=/']
+         + (proxmox_firewall_backup_stat.results | selectattr('stat.exists') | map(attribute='item') | list) }}
+  register: proxmox_firewall_backup
+  changed_when: true
+
+- name: Refuse to enforce guest firewalls in the same run that enables the datacenter
+  vars:
+    proxmox_firewall_enabled_guests: >-
+      {{ proxmox_firewall_guests | dict2items
+         | selectattr('value.options.enable', 'defined')
+         | selectattr('value.options.enable') | map(attribute='key') | list }}
+  ansible.builtin.assert:
+    that:
+      - proxmox_firewall_currently_enabled | bool or proxmox_firewall_enabled_guests | length == 0
+    fail_msg: >-
+      Guests {{ proxmox_firewall_enabled_guests }} declare options.enable while
+      the datacenter firewall is still disabled. Activate the datacenter and
+      host layer first, then enable guests in a later run.
+
+- name: Release HA watchdogs before a live firewall change
+  when: proxmox_firewall_render_enable | bool and proxmox_firewall_ha_guard | bool
+  block:
+    - name: Disarm HA and wait for every LRM watchdog to be released
+      ansible.builtin.include_tasks: ha_guard.yml
+      vars:
+        proxmox_firewall_ha_action: disarm
+  rescue:
+    # No firewall file has been written yet: restore HA exactly as it was.
+    - name: Restore HA after a failed or timed-out disarm
+      ansible.builtin.include_tasks: ha_guard.yml
+      vars:
+        proxmox_firewall_ha_action: rearm
+
+    - name: Stop after restoring HA
+      ansible.builtin.fail:
+        msg: >-
+          HA watchdogs were not released in time
+          ({{ proxmox_firewall_ha_wait_seconds }} s); HA states were restored and
+          no firewall file was changed.
+
+- name: Arm the dead-man timer on every node before a live firewall change
+  ansible.builtin.include_tasks: deadman.yml
+  vars:
+    proxmox_firewall_deadman_action: arm
+  when: proxmox_firewall_render_enable | bool
+
+- name: Apply and verify the firewall configuration
+  block:
+    - name: Reset the local staging tree
+      ansible.builtin.file:
+        path: "{{ proxmox_firewall_staging_root }}"
+        state: absent
+      check_mode: false
+      changed_when: false
+
+    - name: Stage node host firewall files
+      ansible.builtin.include_tasks: stage_file.yml
+      loop: "{{ proxmox_firewall_nodes.keys() | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        proxmox_firewall_write:
+          template: host.fw.j2
+          node: "{{ item }}"
+          dest: "/etc/pve/nodes/{{ item }}/host.fw"
+
+    - name: Stage declared guest firewall files
+      ansible.builtin.include_tasks: stage_file.yml
+      loop: "{{ proxmox_firewall_guests.keys() | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        proxmox_firewall_write:
+          template: guest.fw.j2
+          vmid: "{{ item }}"
+          dest: "/etc/pve/firewall/{{ item }}.fw"
+
+    - name: Stage the datacenter firewall file
+      ansible.builtin.include_tasks: stage_file.yml
+      vars:
+        proxmox_firewall_write:
+          template: cluster.fw.j2
+          dest: /etc/pve/firewall/cluster.fw
+
+    - name: Install the offline candidate validator
+      ansible.builtin.copy:
+        src: fw-candidate-check.pl
+        dest: "{{ proxmox_firewall_backup_root }}/fw-candidate-check.pl"
+        owner: root
+        group: root
+        mode: "0700"
+      # Local root-only helper; needed so --check also validates candidates.
+      check_mode: false
+
+    - name: Validate staged candidates offline before any pmxcfs write
+      vars:
+        proxmox_firewall_stage: "{{ proxmox_firewall_staging_root }}"
+        proxmox_firewall_candidate: "{{ proxmox_firewall_staging_root }}/candidate"
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - >-
+            set -e; rm -rf "$2"; mkdir -p "$2";
+            sed 's/^enable: 0$/enable: 1/' "$1/etc/pve/firewall/cluster.fw" > "$2/cluster.fw";
+            for f in "$1"/etc/pve/nodes/*/host.fw; do
+            n=$(basename "$(dirname "$f")");
+            if [ "$n" = "$3" ]; then cp "$f" "$2/host.fw"; else cp "$f" "$2/host-$n.fw"; fi; done;
+            for f in "$1"/etc/pve/firewall/[0-9]*.fw; do [ -f "$f" ] && cp "$f" "$2/"; done;
+            "$4" "$2"
+          - candidate
+          - "{{ proxmox_firewall_stage }}"
+          - "{{ proxmox_firewall_candidate }}"
+          - "{{ ansible_facts['hostname'] }}"
+          - "{{ proxmox_firewall_backup_root }}/fw-candidate-check.pl"
+      register: proxmox_firewall_candidate_check
+      changed_when: false
+      check_mode: false
+      failed_when: proxmox_firewall_candidate_check.rc != 0
+
+    - name: Report the offline validation summary
+      ansible.builtin.debug:
+        msg: "{{ proxmox_firewall_candidate_check.stdout_lines }}"
+
+    # Order matters: host and guest files first, cluster.fw (holds enable) last.
+    - name: Commit node host firewall files
+      ansible.builtin.include_tasks: commit_file.yml
+      loop: "{{ proxmox_firewall_nodes.keys() | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        proxmox_firewall_write:
+          dest: "/etc/pve/nodes/{{ item }}/host.fw"
+
+    - name: Commit declared guest firewall files
+      ansible.builtin.include_tasks: commit_file.yml
+      loop: "{{ proxmox_firewall_guests.keys() | list }}"
+      loop_control:
+        label: "{{ item }}"
+      vars:
+        proxmox_firewall_write:
+          dest: "/etc/pve/firewall/{{ item }}.fw"
+
+    - name: Commit the datacenter firewall file last
+      ansible.builtin.include_tasks: commit_file.yml
+      vars:
+        proxmox_firewall_write:
+          dest: /etc/pve/firewall/cluster.fw
+
+    - name: Compile the rendered ruleset
+      ansible.builtin.command:
+        argv: [pve-firewall, compile]
+      register: proxmox_firewall_compile
+      changed_when: false
+      check_mode: false
+      # Retry absorbs transient pmxcfs state right after a write; the assert
+      # below stays the gate.
+      until: >-
+        proxmox_firewall_compile.rc == 0
+        and proxmox_firewall_compile.stderr | trim | length == 0
+        and not (proxmox_firewall_compile.stdout is search('(?i)\\(line [0-9]+\\)|errors? in|unable to'))
+      retries: 3
+      delay: 5
+      failed_when: false
+
+    - name: Reject parser warnings in the compiled ruleset
+      ansible.builtin.assert:
+        that:
+          - proxmox_firewall_compile.rc == 0
+          - proxmox_firewall_compile.stderr | trim | length == 0
+          - not (proxmox_firewall_compile.stdout is search('(?i)\(line [0-9]+\)|errors? in|unable to'))
+        fail_msg: >-
+          pve-firewall compile reported problems:
+          {{ proxmox_firewall_compile.stderr_lines + proxmox_firewall_compile.stdout_lines
+             | select('search', '(?i)line [0-9]+|error|unable|warn') | list }}
+
+    - name: Let every node load the new ruleset
+      ansible.builtin.wait_for:
+        timeout: "{{ proxmox_firewall_settle_seconds | int }}"
+      when: proxmox_firewall_render_enable | bool
+
+    - name: Drop the persistent SSH connection so the next task opens a new one
+      ansible.builtin.meta: reset_connection
+
+    - name: Prove new management connections from the controller still work
+      # Lookups run on the controller without delegation, so no inventory
+      # host (and no vault-encrypted group) is loaded for this check.
+      ansible.builtin.assert:
+        that:
+          - >-
+            lookup('ansible.builtin.pipe',
+                   'ssh-keyscan -T 10 -t ed25519 ' ~ proxmox_firewall_item.value ~ ' 2>/dev/null')
+            is search('ssh-ed25519')
+          - >-
+            lookup('ansible.builtin.url', 'https://' ~ proxmox_firewall_item.value ~ ':8006/',
+                   validate_certs=false, timeout=10, split_lines=false)
+            is search('(?i)proxmox')
+        fail_msg: "{{ proxmox_firewall_item.key }}: SSH or 8006 unreachable from the controller."
+        quiet: true
+      loop: "{{ proxmox_firewall_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_firewall_item
+        label: "{{ proxmox_firewall_item.key }}"
+      when: proxmox_firewall_render_enable | bool
+
+    - name: Read firewall status on every node
+      ansible.builtin.command:
+        argv: >-
+          {{ ['pve-firewall', 'status']
+             if proxmox_firewall_item.key == ansible_facts['hostname']
+             else (proxmox_firewall_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_firewall_item.key,
+                   '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_firewall_item.key ~ '/ssh_known_hosts',
+                   'root@' ~ proxmox_firewall_item.value, 'pve-firewall', 'status']) }}
+      loop: "{{ proxmox_firewall_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_firewall_item
+        label: "{{ proxmox_firewall_item.key }}"
+      register: proxmox_firewall_status
+      changed_when: false
+      check_mode: false
+
+    - name: Confirm every node reports the expected firewall state
+      ansible.builtin.assert:
+        that:
+          - >-
+            (proxmox_firewall_render_enable | bool and 'enabled/running' in item.stdout) or
+            (not proxmox_firewall_render_enable | bool and 'disabled' in item.stdout)
+        fail_msg: "{{ item.proxmox_firewall_item.key }}: {{ item.stdout }}"
+        quiet: true
+      loop: "{{ proxmox_firewall_status.results }}"
+      loop_control:
+        label: "{{ item.proxmox_firewall_item.key }}"
+
+    - name: Re-read cluster quorum through the active firewall
+      ansible.builtin.command:
+        argv: [pvesh, get, /cluster/status, --output-format, json]
+      register: proxmox_firewall_cluster_status_after
+      changed_when: false
+      check_mode: false
+
+    - name: Confirm quorum and all nodes survived the change
+      vars:
+        proxmox_firewall_after: "{{ proxmox_firewall_cluster_status_after.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - (proxmox_firewall_after | selectattr('type', 'equalto', 'cluster') | first).quorate | int == 1
+          - >-
+            proxmox_firewall_after | selectattr('type', 'equalto', 'node')
+            | rejectattr('online', 'equalto', 1) | list | length == 0
+        fail_msg: "Quorum or node membership degraded after the firewall change."
+
+  rescue:
+    - name: Persistently revert the firewall on every node after a failed verification
+      ansible.builtin.command:
+        argv: >-
+          {{ ['sh', '-c', proxmox_firewall_revert_command]
+             if proxmox_firewall_item.key == ansible_facts['hostname']
+             else (proxmox_firewall_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_firewall_item.key,
+                   '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_firewall_item.key ~ '/ssh_known_hosts',
+                   'root@' ~ proxmox_firewall_item.value, proxmox_firewall_revert_command]) }}
+      loop: "{{ proxmox_firewall_nodes | dict2items }}"
+      loop_control:
+        loop_var: proxmox_firewall_item
+        label: "{{ proxmox_firewall_item.key }}"
+      changed_when: true
+      failed_when: false
+      when: proxmox_firewall_render_enable | bool
+
+    - name: Fail with the restore path
+      ansible.builtin.fail:
+        msg: >-
+          [{{ ansible_failed_task.name | default('unknown task') }}:
+          {{ (ansible_failed_result.msg | default(''))[:600] }}
+          {{ (ansible_failed_result.stderr | default(''))[:600] }}]
+          {% if proxmox_firewall_render_enable | bool %}Firewall verification failed. The
+          datacenter firewall was set to enable 0 and pve-firewall was stopped
+          where reachable; the dead-man timer stays armed for unreachable nodes.
+          HA is left disarmed on purpose (previous states in
+          {{ proxmox_firewall_backup_root }}/ha-states.json); re-arm it manually
+          once quorum is healthy. Restore the firewall files from
+          {{ proxmox_firewall_backup_root }} before running pve-firewall start.{% else %}Firewall
+          files could not be rendered or verified while the datacenter firewall
+          stays disabled; nothing is enforced. Previous files are in
+          {{ proxmox_firewall_backup_root }}.{% endif %}
+
+- name: Disarm the dead-man timer after successful verification
+  ansible.builtin.include_tasks: deadman.yml
+  vars:
+    proxmox_firewall_deadman_action: disarm
+  when: proxmox_firewall_render_enable | bool
+
+- name: Restore HA after successful verification
+  ansible.builtin.include_tasks: ha_guard.yml
+  vars:
+    proxmox_firewall_ha_action: rearm
+  when: proxmox_firewall_render_enable | bool and proxmox_firewall_ha_guard | bool

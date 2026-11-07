@@ -1,0 +1,92 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+# Zone router for the cluster network isolation plan (IPv4 only).
+{% macro addr(value) -%}
+{%- if value is string or value is number -%}{{ value }}{%- else -%}{ {{ value | join(', ') }} }{%- endif -%}
+{%- endmacro %}
+{% macro ifname(zone) -%}
+"{{ network_router_wan_interface if zone == 'wan' else network_router_zones[zone].interface }}"
+{%- endmacro %}
+{% set zone_ifaces = network_router_zones.values() | map(attribute='interface') | list %}
+{% set zone_list = '{ "' ~ (zone_ifaces | join('", "')) ~ '" }' %}
+{% set private_cidrs = network_router_zones.values() | map(attribute='cidr') | list %}
+
+flush ruleset
+
+table inet filter {
+	set lan {
+		type ipv4_addr
+		flags interval
+		elements = { {{ network_router_lan_cidr }} }
+	}
+
+	set non_internet {
+		type ipv4_addr
+		flags interval
+		elements = { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8,
+			     169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16,
+			     224.0.0.0/4, 240.0.0.0/4 }
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif "lo" accept
+		ct state invalid drop
+		ct state established,related accept
+		meta nfproto ipv6 drop
+		# DNS and DHCP are served to the VNets only, never to the LAN.
+		iifname "{{ network_router_wan_interface }}" udp dport { 53, 67 } drop
+		iifname "{{ network_router_wan_interface }}" tcp dport 53 drop
+		iifname "{{ network_router_wan_interface }}" ip saddr @lan icmp type echo-request accept
+		iifname {{ zone_list }} icmp type echo-request accept
+{% if network_router_admin_sources | length > 0 %}
+		iifname "{{ network_router_wan_interface }}" ip saddr {{ addr(network_router_admin_sources) }} tcp dport 22 accept
+{% endif %}
+		iifname {{ zone_list }} udp dport { 53, 67 } accept
+		iifname {{ zone_list }} tcp dport 53 accept
+{% for name, zone in network_router_zones.items() if zone.ssh_to_router | default(false) %}
+		iifname "{{ zone.interface }}" tcp dport 22 accept comment "{{ name }} administers the router"
+{% endfor %}
+		counter comment "input drop"
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		# Every forwarded flow has one end in a VNet (MTU {{ network_router_mtu }}). Lower the
+		# MSS of both SYNs to fit it: a guest's Docker bridge still announces 1460.
+		tcp flags & (syn | rst) == syn tcp option maxseg size > {{ network_router_mtu | int - 40 }} tcp option maxseg size set {{ network_router_mtu | int - 40 }}
+		ct state invalid drop
+		ct state established,related accept
+		meta nfproto ipv6 drop
+{% for name, zone in network_router_zones.items() if zone.full_access | default(false) %}
+		iifname "{{ zone.interface }}" accept comment "{{ name }} reaches every zone and the LAN"
+{% endfor %}
+{% if network_router_lan_to_private | bool %}
+		iifname "{{ network_router_wan_interface }}" ip saddr @lan oifname {{ zone_list }} accept comment "trusted LAN into the VNets"
+{% endif %}
+{% for name, zone in network_router_zones.items() if zone.internet | default(false) %}
+		iifname "{{ zone.interface }}" oifname "{{ network_router_wan_interface }}" ip daddr != @non_internet accept comment "{{ name }} to the internet"
+{% endfor %}
+{% for rule in network_router_forward_rules %}
+		iifname {{ ifname(rule.from) }} oifname {{ ifname(rule.to) }}
+{%- if rule.saddr is defined %} ip saddr {{ addr(rule.saddr) }}{% endif %}
+{%- if rule.daddr is defined %} ip daddr {{ addr(rule.daddr) }}{% endif %}
+{%- if rule.proto is defined %} {{ rule.proto }} dport {{ addr(rule.dport) }}{% endif %}
+ accept comment "{{ rule.comment }}"
+{% endfor %}
+		limit rate 5/second burst 10 packets log prefix "rtr-fwd-drop " level info
+		counter comment "forward drop"
+	}
+
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+
+table ip nat {
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "{{ network_router_wan_interface }}" ip saddr {{ addr(private_cidrs) }}
+{%- if network_router_pve_nodes | length > 0 %} ip daddr != {{ addr(network_router_pve_nodes) }}{% endif %} masquerade
+	}
+}

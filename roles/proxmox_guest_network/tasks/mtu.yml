@@ -1,0 +1,18 @@
+---
+# Writes proxmox_guest_network_mtu_value into the guest eth0 stanza (and, in
+# post mode, the live link); see files/guest-mtu.sh for why PVE alone is not enough.
+- name: Align the guest eth0 MTU ({{ proxmox_guest_network_mtu_mode }})
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ proxmox_guest_network_id }}"
+      - "--"
+      - sh
+      - -s
+      - "--"
+      - "{{ proxmox_guest_network_mtu_mode }}"
+      - "{{ proxmox_guest_network_mtu_value | string }}"
+    stdin: "{{ lookup('ansible.builtin.file', 'guest-mtu.sh') }}"
+  register: proxmox_guest_network_mtu_result
+  changed_when: proxmox_guest_network_mtu_result.stdout | length > 0

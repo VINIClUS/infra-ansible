@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# DNS and DHCP for the private VNets only; never bound to the uplink.
+port=53
+{% for zone in network_router_zones.values() %}
+interface={{ zone.interface }}
+{% endfor %}
+except-interface=lo
+no-dhcp-interface={{ network_router_wan_interface }}
+bind-interfaces
+no-resolv
+{% for server in network_router_dns_forwarders %}
+server={{ server }}
+{% endfor %}
+domain-needed
+bogus-priv
+cache-size=1000
+{% if network_router_dns_domain | length > 0 %}
+domain={{ network_router_dns_domain }}
+{% endif %}
+{% for name, zone in network_router_zones.items() if zone.dhcp is defined %}
+{% set gateway = zone.address | regex_replace('/.*$', '') %}
+
+# {{ name }}
+dhcp-range=set:{{ name }},{{ zone.dhcp.start }},{{ zone.dhcp.end }},{{ zone.dhcp.netmask | default('255.255.255.0') }},{{ zone.dhcp.lease | default('12h') }}
+dhcp-option=tag:{{ name }},option:router,{{ gateway }}
+dhcp-option=tag:{{ name }},option:dns-server,{{ gateway }}
+dhcp-option=tag:{{ name }},option:mtu,{{ network_router_mtu }}
+{% for host in zone.dhcp.reservations | default([]) %}
+dhcp-host={{ host.mac }},{{ host.ip }},{{ host.name }}
+{% endfor %}
+{% endfor %}

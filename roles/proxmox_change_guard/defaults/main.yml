@@ -1,0 +1,21 @@
+---
+# Shared guard for live Proxmox network changes. Callers include it with
+# include_role + tasks_from (ha.yml or deadman.yml); main.yml refuses direct use.
+proxmox_change_guard_nodes: {}
+proxmox_change_guard_backup_root: /root/netiso-backup
+# Previous HA states are written here before any resource is set to ignored.
+proxmox_change_guard_state_file: "{{ proxmox_change_guard_backup_root }}/ha-states-guard.json"
+proxmox_change_guard_ha_wait_seconds: 1200
+proxmox_change_guard_deadman_unit: pve-change-deadman
+proxmox_change_guard_deadman_minutes: 10
+proxmox_change_guard_deadman_description: Revert a Proxmox network change unless confirmed
+# Runs on each node right before the timer is armed (for example to snapshot
+# the file the revert restores). Neither command may contain a double quote.
+proxmox_change_guard_prepare_command: ""
+proxmox_change_guard_revert_command: ""
+proxmox_change_guard_peer_ssh_base:
+  - ssh
+  - -o
+  - BatchMode=yes
+  - -o
+  - ConnectTimeout=10

@@ -1,0 +1,342 @@
+---
+- name: Validate guest NIC flags
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_nic_enabled is boolean
+      - proxmox_guest_nic_remove is boolean
+    fail_msg: "proxmox_guest_nic_enabled and proxmox_guest_nic_remove must be booleans."
+
+- name: Stop when the guest NIC role is disabled
+  ansible.builtin.meta: end_role
+  when: not proxmox_guest_nic_enabled | bool
+
+- name: Validate the guest NIC run contract
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - (ansible_limit | split(',') | map('trim') | list) == [inventory_hostname]
+      - ansible_run_tags | list | sort == ['proxmox_guest_nic']
+      - (proxmox_guest_nic_vmid | string) is match('^[1-9][0-9]{2,8}$')
+      - (proxmox_guest_nic_vmid | string) in proxmox_guest_nic_guests
+      - proxmox_guest_nic_router_host in hostvars
+      - proxmox_guest_nic_mtu | int >= 1280 and proxmox_guest_nic_mtu | int <= 9000
+    fail_msg: >-
+      Guest NIC contract incomplete. Limit the run to exactly the node that
+      hosts the guest, use --tags proxmox_guest_nic, pass
+      -e proxmox_guest_nic_vmid=<declared VMID> and declare
+      proxmox_guest_nic_router_host.
+
+- name: Select the declared guest
+  ansible.builtin.set_fact:
+    proxmox_guest_nic_id: "{{ proxmox_guest_nic_vmid | string }}"
+    proxmox_guest_nic_spec: "{{ proxmox_guest_nic_guests[proxmox_guest_nic_vmid | string] }}"
+
+- name: Validate the declared guest
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_nic_spec.node == inventory_hostname
+      - proxmox_guest_nic_spec.hostname is match('^[A-Za-z0-9][A-Za-z0-9-]{0,62}$')
+      - proxmox_guest_nic_spec.nic is match('^net[1-9]$')
+      - proxmox_guest_nic_spec.name == 'eth' ~ proxmox_guest_nic_spec.nic[3:]
+      - proxmox_guest_nic_spec.bridge is match('^[a-z][a-z0-9]{1,7}$')
+      - proxmox_guest_nic_spec.ip | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$')
+      - proxmox_guest_nic_spec.probe | default('') is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}$')
+      - proxmox_guest_nic_spec.gw is not defined
+    fail_msg: >-
+      Guest {{ proxmox_guest_nic_id }} declaration is incomplete, targets another
+      node, or declares a gateway (a secondary NIC never carries the default route).
+
+- name: Read the guest configuration
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ inventory_hostname }}/lxc/{{ proxmox_guest_nic_id }}/config"
+      - --output-format
+      - json
+  register: proxmox_guest_nic_config_raw
+  changed_when: false
+  check_mode: false
+
+- name: Read pending guest changes
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/nodes/{{ inventory_hostname }}/lxc/{{ proxmox_guest_nic_id }}/pending"
+      - --output-format
+      - json
+  register: proxmox_guest_nic_pending_raw
+  changed_when: false
+  check_mode: false
+
+- name: Read the guest power state
+  ansible.builtin.command:
+    argv: [pct, status, "{{ proxmox_guest_nic_id }}"]
+  register: proxmox_guest_nic_status
+  changed_when: false
+  check_mode: false
+
+- name: Parse the live guest state
+  vars:
+    config: "{{ proxmox_guest_nic_config_raw.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    proxmox_guest_nic_config: "{{ config }}"
+    proxmox_guest_nic_pending: >-
+      {{ proxmox_guest_nic_pending_raw.stdout | from_json
+         | selectattr('pending', 'defined') | list
+         + (proxmox_guest_nic_pending_raw.stdout | from_json | selectattr('delete', 'defined') | list) }}
+    proxmox_guest_nic_live: >-
+      {{ dict((config[proxmox_guest_nic_spec.nic] | default('')) | split(',')
+         | select('search', '=') | map('split', '=')) }}
+    proxmox_guest_nic_other_names: >-
+      {%- set out = [] -%}
+      {%- for key, value in config.items() if key is match('^net[0-9]+$') and key != proxmox_guest_nic_spec.nic -%}
+      {%- set nic = dict(value | split(',') | select('search', '=') | map('split', '=')) -%}
+      {%- set _ = out.append(nic.name | default('')) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Refuse a guest that is not the declared running guest
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_nic_config.hostname | default('') == proxmox_guest_nic_spec.hostname
+      - proxmox_guest_nic_config.ostype | default('') == 'debian'
+      - "proxmox_guest_nic_status.stdout | trim == 'status: running'"
+      - proxmox_guest_nic_pending | length == 0
+      - proxmox_guest_nic_spec.name not in proxmox_guest_nic_other_names
+    fail_msg: >-
+      CT {{ proxmox_guest_nic_id }} is not the running Debian guest
+      {{ proxmox_guest_nic_spec.hostname }}, has pending changes, or already uses
+      {{ proxmox_guest_nic_spec.name }} on another NIC.
+
+- name: Build the NIC this run declares
+  ansible.builtin.set_fact:
+    proxmox_guest_nic_desired: >-
+      {{ {'name': proxmox_guest_nic_spec.name, 'bridge': proxmox_guest_nic_spec.bridge,
+          'firewall': '1', 'ip': proxmox_guest_nic_spec.ip,
+          'mtu': proxmox_guest_nic_mtu | string, 'type': 'veth'} }}
+
+- name: Decide what this run does
+  vars:
+    live: "{{ proxmox_guest_nic_live | dict2items | rejectattr('key', 'equalto', 'hwaddr') | items2dict }}"
+    present: "{{ proxmox_guest_nic_live | length > 0 }}"
+    matches: "{{ live == proxmox_guest_nic_desired and proxmox_guest_nic_live.hwaddr | default('') | length > 0 }}"
+  ansible.builtin.set_fact:
+    proxmox_guest_nic_action: >-
+      {{ ('add' if not proxmox_guest_nic_remove else 'absent') if not present
+         else (('remove' if proxmox_guest_nic_remove else 'verify') if matches else 'unknown') }}
+
+- name: Refuse a NIC this role did not declare
+  ansible.builtin.assert:
+    that:
+      - proxmox_guest_nic_action != 'unknown'
+    fail_msg: >-
+      CT {{ proxmox_guest_nic_id }} already has {{ proxmox_guest_nic_spec.nic }} with
+      settings other than the declared ones; it is left untouched.
+
+- name: Check the guest has the tools the probe needs
+  ansible.builtin.command:
+    argv:
+      - pct
+      - exec
+      - "{{ proxmox_guest_nic_id }}"
+      - "--"
+      - sh
+      - -c
+      - 'for t in ip ping awk grep; do command -v "$t" >/dev/null || exit 1; done'
+  changed_when: false
+  check_mode: false
+  when: proxmox_guest_nic_action in ['add', 'verify']
+
+- name: Find other guests that declare the address
+  ansible.builtin.command:
+    argv:
+      - find
+      - /etc/pve/nodes
+      - -name
+      - "*.conf"
+      - (
+      - -path
+      - "*/lxc/*"
+      - -o
+      - -path
+      - "*/qemu-server/*"
+      - )
+      - -exec
+      - grep
+      - -lE
+      - "(^|[ ,])ip={{ proxmox_guest_nic_spec.ip.split('/')[0] | regex_escape }}/"
+      - "{}"
+      - +
+  register: proxmox_guest_nic_claims
+  changed_when: false
+  check_mode: false
+  failed_when: proxmox_guest_nic_claims.rc not in [0, 1]
+  when: proxmox_guest_nic_action == 'add'
+
+- name: Refuse an address another guest declares
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_guest_nic_claims.stdout_lines
+        | reject('search', '/lxc/' ~ proxmox_guest_nic_id ~ '\.conf$') | list | length == 0
+    fail_msg: "Another guest already declares the address meant for CT {{ proxmox_guest_nic_id }}."
+  when: proxmox_guest_nic_action == 'add'
+
+- name: ARP-probe the address from the zone router
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      # Flush first: a STALE entry left by an earlier holder still shows a
+      # lladdr for a while; after the flush only a live answer fills it in.
+      - 'ip -4 neigh flush to "$1"; ping -c 2 -W 1 "$1" >/dev/null 2>&1; ip -4 neigh show to "$1"'
+      - sh
+      - "{{ proxmox_guest_nic_spec.ip.split('/')[0] }}"
+  delegate_to: "{{ proxmox_guest_nic_router_host }}"
+  become: true
+  register: proxmox_guest_nic_arp
+  changed_when: false
+  check_mode: false
+  failed_when: >-
+    proxmox_guest_nic_arp.rc != 0
+    or proxmox_guest_nic_arp.stdout is search('lladdr')
+  when: proxmox_guest_nic_action == 'add'
+
+- name: Report the planned change
+  ansible.builtin.debug:
+    msg: >-
+      CT {{ proxmox_guest_nic_id }} ({{ proxmox_guest_nic_spec.hostname }}):
+      {{ proxmox_guest_nic_action }} {{ proxmox_guest_nic_spec.nic }}
+      ({{ proxmox_guest_nic_spec.name }} on {{ proxmox_guest_nic_spec.bridge }}, no gateway,
+      MTU {{ proxmox_guest_nic_mtu }}){{ ' (check mode, nothing changes)' if ansible_check_mode else '' }}
+
+- name: Hot-plug the declared NIC
+  when:
+    - not ansible_check_mode
+    - proxmox_guest_nic_action == 'add'
+  block:
+    - name: Create the guest NIC backup directory
+      ansible.builtin.file:
+        path: "{{ proxmox_guest_nic_backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Keep the configuration read before this change
+      ansible.builtin.copy:
+        content: "{{ proxmox_guest_nic_config | to_nice_json }}\n"
+        dest: >-
+          {{ proxmox_guest_nic_backup_root }}/{{ proxmox_guest_nic_id }}-{{
+          lookup('ansible.builtin.pipe', 'date +%Y%m%d-%H%M%S') }}.json
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Mark the guest as touched by this run
+      ansible.builtin.set_fact:
+        proxmox_guest_nic_touched: true
+
+    - name: Hot-plug the NIC (PVE writes its stanza inside the guest)
+      ansible.builtin.command:
+        argv:
+          - pct
+          - set
+          - "{{ proxmox_guest_nic_id }}"
+          - "--{{ proxmox_guest_nic_spec.nic }}"
+          - "{{ proxmox_guest_nic_desired.items() | map('join', '=') | join(',') }}"
+      changed_when: true
+
+    - name: Read the NIC back
+      ansible.builtin.include_tasks: readback.yml
+      vars:
+        proxmox_guest_nic_expect_present: true
+
+    - name: Verify the NIC
+      ansible.builtin.include_tasks: verify.yml
+
+  rescue:
+    - name: Report the failed change
+      ansible.builtin.debug:
+        msg: "CT {{ proxmox_guest_nic_id }} hot-plug failed; removing {{ proxmox_guest_nic_spec.nic }} again"
+
+    - name: Remove the NIC this run added
+      ansible.builtin.command:
+        argv: [pct, set, "{{ proxmox_guest_nic_id }}", --delete, "{{ proxmox_guest_nic_spec.nic }}"]
+      changed_when: true
+      when: proxmox_guest_nic_touched | default(false)
+
+    - name: Drop the stanza of the NIC this run added
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_guest_nic_id }}"
+          - "--"
+          - sh
+          - -s
+          - "--"
+          - "{{ proxmox_guest_nic_spec.name }}"
+        stdin: "{{ lookup('ansible.builtin.file', 'guest-nic-forget.sh') }}"
+      changed_when: true
+      when: proxmox_guest_nic_touched | default(false)
+
+    - name: Fail after removing the NIC again
+      ansible.builtin.fail:
+        msg: >-
+          CT {{ proxmox_guest_nic_id }}: adding {{ proxmox_guest_nic_spec.nic }} failed
+          and the NIC was removed again. Check the tasks above.
+
+- name: Verify the NIC already in place
+  ansible.builtin.include_tasks: verify.yml
+  when:
+    - not ansible_check_mode
+    - proxmox_guest_nic_action == 'verify'
+
+- name: Hot-remove the declared NIC
+  when:
+    - not ansible_check_mode
+    - proxmox_guest_nic_action == 'remove'
+  block:
+    - name: Remove the NIC
+      ansible.builtin.command:
+        argv: [pct, set, "{{ proxmox_guest_nic_id }}", --delete, "{{ proxmox_guest_nic_spec.nic }}"]
+      changed_when: true
+
+    - name: Read the guest configuration back
+      ansible.builtin.include_tasks: readback.yml
+      vars:
+        proxmox_guest_nic_expect_present: false
+
+    - name: Drop the NIC stanza PVE leaves behind in the guest
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_guest_nic_id }}"
+          - "--"
+          - sh
+          - -s
+          - "--"
+          - "{{ proxmox_guest_nic_spec.name }}"
+        stdin: "{{ lookup('ansible.builtin.file', 'guest-nic-forget.sh') }}"
+      register: proxmox_guest_nic_forget
+      changed_when: proxmox_guest_nic_forget.stdout | trim | length > 0
+
+    - name: Confirm the interface left the guest
+      ansible.builtin.command:
+        argv:
+          - pct
+          - exec
+          - "{{ proxmox_guest_nic_id }}"
+          - "--"
+          - sh
+          - -c
+          - >-
+            ! test -e "/sys/class/net/$1" &&
+            ! grep -qE "^[[:space:]]*iface[[:space:]]+$1[[:space:]]" /etc/network/interfaces
+          - sh
+          - "{{ proxmox_guest_nic_spec.name }}"
+      changed_when: false

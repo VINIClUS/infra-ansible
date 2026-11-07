@@ -1,0 +1,48 @@
+---
+proxmox_sdn_enabled: false
+# false: reconcile the pending SDN configuration (zones.cfg/vnets.cfg) and
+# report it; nothing reaches the nodes. true: also apply it (ifreload on every
+# node) under the HA guard and the dead-man timer.
+proxmox_sdn_apply: false
+
+# Node name -> address. Must equal the live, quorate cluster membership and is
+# the peer list of every VXLAN zone.
+proxmox_sdn_nodes: {}
+
+# Only VXLAN zones are supported. Example:
+#   privnet: {mtu: 1450}
+proxmox_sdn_zones: {}
+# Example:
+#   vnsvc: {zone: privnet, tag: 10010, alias: services}
+proxmox_sdn_vnets: {}
+
+# Must match the host firewall VXLAN guard rule (checked live on every node).
+proxmox_sdn_vxlan_port: 4789
+
+proxmox_sdn_backup_root: /root/netiso-backup
+proxmox_sdn_ha_guard: true
+proxmox_sdn_ha_wait_seconds: 1200
+proxmox_sdn_deadman_minutes: 10
+# Retries (10 s apart) while each node finishes its asynchronous reload.
+proxmox_sdn_verify_retries: 18
+proxmox_sdn_peer_ssh_base:
+  - ssh
+  - -o
+  - BatchMode=yes
+  - -o
+  - ConnectTimeout=10
+
+# Dead-man and rescue commands (run on each node; no double quotes allowed).
+# The snapshot runs when the timer is armed; the revert restores that snapshot
+# (or removes the file when it did not exist) and reloads the node network.
+proxmox_sdn_snapshot_command: >-
+  mkdir -p {{ proxmox_sdn_backup_root }} &&
+  if [ -f /etc/network/interfaces.d/sdn ]; then
+  cp -p /etc/network/interfaces.d/sdn {{ proxmox_sdn_backup_root }}/sdn.prev &&
+  rm -f {{ proxmox_sdn_backup_root }}/sdn.absent;
+  else rm -f {{ proxmox_sdn_backup_root }}/sdn.prev &&
+  : > {{ proxmox_sdn_backup_root }}/sdn.absent; fi
+proxmox_sdn_revert_command: >-
+  if [ -f {{ proxmox_sdn_backup_root }}/sdn.prev ]; then
+  cp -p {{ proxmox_sdn_backup_root }}/sdn.prev /etc/network/interfaces.d/sdn;
+  else rm -f /etc/network/interfaces.d/sdn; fi; ifreload -a

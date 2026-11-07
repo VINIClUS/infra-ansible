@@ -1,0 +1,71 @@
+---
+# Releases (disarm) or restores (rearm) every HA watchdog around a live
+# network change. HA self-fencing resets a node about 60 s after quorum loss,
+# faster than any dead-man timer. Per-resource mode only: every non-ignored HA
+# resource is set to `ignored` until no LRM is active, then restored. The
+# cluster-wide `disarm-ha` command is not used: while ha-manager versions
+# differ across nodes the CRM master may not understand it.
+- name: Validate the HA guard request
+  ansible.builtin.assert:
+    that:
+      - proxmox_change_guard_action in ['disarm', 'rearm']
+      - proxmox_change_guard_state_file | length > 0
+    fail_msg: "proxmox_change_guard_action must be disarm or rearm."
+    quiet: true
+
+- name: Read HA resources
+  ansible.builtin.command:
+    argv: [pvesh, get, /cluster/ha/resources, --output-format, json]
+  register: proxmox_change_guard_ha_resources
+  changed_when: false
+  check_mode: false
+  when: proxmox_change_guard_action == 'disarm'
+
+- name: Plan the HA guard
+  vars:
+    proxmox_change_guard_resources: "{{ proxmox_change_guard_ha_resources.stdout | from_json }}"
+  ansible.builtin.set_fact:
+    proxmox_change_guard_ha_saved: >-
+      {%- set saved = {} -%}
+      {%- for r in proxmox_change_guard_resources -%}
+      {%- if (r.state | default('started')) != 'ignored' -%}
+      {%- set _ = saved.update({r.sid: r.state | default('started')}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ saved }}
+  when: proxmox_change_guard_action == 'disarm'
+
+- name: Record previous HA resource states for manual recovery
+  ansible.builtin.copy:
+    dest: "{{ proxmox_change_guard_state_file }}"
+    content: "{{ {'mode': 'resource', 'states': proxmox_change_guard_ha_saved} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: proxmox_change_guard_action == 'disarm' and proxmox_change_guard_ha_saved | length > 0
+
+- name: Set each HA resource to ignored
+  ansible.builtin.command:
+    argv: [ha-manager, set, "{{ item.key }}", --state, ignored]
+  loop: "{{ proxmox_change_guard_ha_saved | dict2items }}"
+  changed_when: true
+  when: proxmox_change_guard_action == 'disarm'
+
+- name: Wait until no LRM holds an active watchdog
+  ansible.builtin.command:
+    argv: [ha-manager, status]
+  register: proxmox_change_guard_ha_status
+  changed_when: false
+  check_mode: false
+  until: >-
+    proxmox_change_guard_ha_status.stdout_lines | select('match', '^lrm \S+ \(active') | list | length == 0
+  retries: "{{ (proxmox_change_guard_ha_wait_seconds | int / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  when: proxmox_change_guard_action == 'disarm' and proxmox_change_guard_ha_saved | length > 0
+
+- name: Restore each HA resource state
+  ansible.builtin.command:
+    argv: [ha-manager, set, "{{ item.key }}", --state, "{{ item.value }}"]
+  loop: "{{ proxmox_change_guard_ha_saved | default({}) | dict2items }}"
+  changed_when: true
+  when: proxmox_change_guard_action == 'rearm'

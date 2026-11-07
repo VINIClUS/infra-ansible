@@ -1,0 +1,24 @@
+---
+proxmox_guest_nic_enabled: false
+# Exactly one guest per run: -e proxmox_guest_nic_vmid=<id>.
+proxmox_guest_nic_vmid: ""
+# true hot-removes the declared NIC instead of adding it.
+proxmox_guest_nic_remove: false
+# Secondary NICs hot-plugged into running LXC guests, without a gateway (the
+# default route stays on net0). Keyed by VMID (string):
+#   "110":
+#     hostname: edge-proxy
+#     node: pve-01
+#     nic: net1
+#     name: eth1
+#     bridge: vnsvc
+#     ip: 10.10.10.139/24
+#     probe: 10.10.10.1   # full-size DF ping target on that segment
+proxmox_guest_nic_guests: {}
+# VNet MTU, written into the NIC config and into the guest's stanza.
+proxmox_guest_nic_mtu: 1450
+# Inventory host of the zone router: ARP-probes a new address before use.
+proxmox_guest_nic_router_host: ""
+proxmox_guest_nic_backup_root: /root/netiso-backup/guest-nic
+proxmox_guest_nic_verify_retries: 6
+proxmox_guest_nic_verify_delay: 3

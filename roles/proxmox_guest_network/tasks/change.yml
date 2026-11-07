@@ -1,0 +1,143 @@
+---
+# Cold change: stop, snapshot, set, start, verify. The guest boots exactly
+# once with the final settings, so PVE rewrites its network files and
+# resolv.conf on that boot. Any failure puts back the settings read before
+# this run and fails the play.
+- name: Move the guest network or put the previous settings back
+  block:
+    - name: Create the guest network backup directory
+      ansible.builtin.file:
+        path: "{{ proxmox_guest_network_backup_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Keep the configuration read before this change
+      ansible.builtin.copy:
+        content: "{{ proxmox_guest_network_config_raw.stdout }}\n"
+        dest: >-
+          {{ proxmox_guest_network_backup_root }}/{{ proxmox_guest_network_id }}-{{ proxmox_guest_network_ts }}.json
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Record the original network settings once
+      ansible.builtin.copy:
+        content: "{{ proxmox_guest_network_before | to_nice_json }}\n"
+        dest: "{{ proxmox_guest_network_backup_root }}/{{ proxmox_guest_network_id }}-original.json"
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+      when: proxmox_guest_network_action == 'migrate'
+
+    - name: Mark the guest as touched by this run
+      ansible.builtin.set_fact:
+        proxmox_guest_network_touched: true
+
+    - name: Write the target MTU into the guest eth0 stanza before the stop
+      ansible.builtin.include_tasks: mtu.yml
+      vars:
+        proxmox_guest_network_mtu_mode: pre
+        proxmox_guest_network_mtu_value: >-
+          {{ (proxmox_guest_network_expect_to if proxmox_guest_network_action == 'migrate'
+              else proxmox_guest_network_expect_from).mtu }}
+
+    - name: Stop the guest
+      ansible.builtin.include_tasks: power.yml
+      vars:
+        proxmox_guest_network_power: stopped
+
+    - name: Snapshot the stopped guest
+      ansible.builtin.command:
+        argv:
+          - pct
+          - snapshot
+          - "{{ proxmox_guest_network_id }}"
+          - "netiso-{{ proxmox_guest_network_ts }}"
+          - --description
+          - "before guest network {{ proxmox_guest_network_action }}"
+      changed_when: true
+      when: proxmox_guest_network_snapshot | bool
+
+    - name: Apply the new network settings
+      ansible.builtin.include_tasks: set.yml
+      vars:
+        proxmox_guest_network_apply: "{{ proxmox_guest_network_desired }}"
+
+    - name: Start the guest
+      ansible.builtin.include_tasks: power.yml
+      vars:
+        proxmox_guest_network_power: running
+
+    - name: Keep the guest MTU in step with its new net0
+      ansible.builtin.include_tasks: mtu.yml
+      vars:
+        proxmox_guest_network_mtu_mode: post
+        proxmox_guest_network_mtu_value: >-
+          {{ (proxmox_guest_network_expect_to if proxmox_guest_network_action == 'migrate'
+              else proxmox_guest_network_expect_from).mtu }}
+
+    - name: Verify the guest at its new place
+      ansible.builtin.include_tasks: verify.yml
+      vars:
+        proxmox_guest_network_expect: >-
+          {{ proxmox_guest_network_expect_to if proxmox_guest_network_action == 'migrate'
+             else proxmox_guest_network_expect_from }}
+
+    - name: Report the finished change
+      ansible.builtin.debug:
+        msg: >-
+          CT {{ proxmox_guest_network_id }} {{ proxmox_guest_network_action }} done.
+          Snapshot: {{ ('netiso-' ~ proxmox_guest_network_ts) if proxmox_guest_network_snapshot | bool else 'none' }}.
+          Backups: {{ proxmox_guest_network_backup_root }}/{{ proxmox_guest_network_id }}-*.json.
+
+  rescue:
+    - name: Report the failed change
+      ansible.builtin.debug:
+        msg: >-
+          CT {{ proxmox_guest_network_id }} {{ proxmox_guest_network_action }} failed at
+          "{{ ansible_failed_task.name | default('unknown task') }}"; putting back the settings read before this run.
+
+    - name: Put the guest back to the settings read before this run
+      when: proxmox_guest_network_touched | default(false) | bool
+      block:
+        - name: Stop the guest before putting the settings back
+          ansible.builtin.include_tasks: power.yml
+          vars:
+            proxmox_guest_network_power: stopped
+
+        - name: Put back the settings read before this run
+          ansible.builtin.include_tasks: set.yml
+          vars:
+            proxmox_guest_network_apply: "{{ proxmox_guest_network_before }}"
+
+        - name: Start the guest with its previous settings
+          ansible.builtin.include_tasks: power.yml
+          vars:
+            proxmox_guest_network_power: running
+
+        - name: Keep the guest MTU in step with its previous net0
+          ansible.builtin.include_tasks: mtu.yml
+          vars:
+            proxmox_guest_network_mtu_mode: post
+            proxmox_guest_network_mtu_value: >-
+              {{ (proxmox_guest_network_expect_from if proxmox_guest_network_action == 'migrate'
+                  else proxmox_guest_network_expect_to).mtu }}
+
+        - name: Verify the guest at its previous place
+          ansible.builtin.include_tasks: verify.yml
+          vars:
+            proxmox_guest_network_expect: >-
+              {{ proxmox_guest_network_expect_from if proxmox_guest_network_action == 'migrate'
+                 else proxmox_guest_network_expect_to }}
+
+    - name: Fail after putting the previous settings back
+      ansible.builtin.fail:
+        msg: >-
+          CT {{ proxmox_guest_network_id }} {{ proxmox_guest_network_action }} failed
+          {{ 'and was put back to its previous network settings (verified)'
+             if proxmox_guest_network_touched | default(false) | bool else 'before the guest was stopped' }}.
+          Backups are in
+          {{ proxmox_guest_network_backup_root }}; inspect the probe output above.

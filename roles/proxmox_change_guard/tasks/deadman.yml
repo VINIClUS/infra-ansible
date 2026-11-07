@@ -1,0 +1,51 @@
+---
+# Arms or disarms a transient systemd timer on every cluster node. When it
+# fires it runs proxmox_change_guard_revert_command locally, so a node that
+# lost its network or quorum still reverts on its own. Peers are reached
+# through the cluster's own root SSH trust (PVE 9 per-node known_hosts).
+- name: Validate the dead-man request
+  ansible.builtin.assert:
+    that:
+      - proxmox_change_guard_action in ['arm', 'disarm']
+      - proxmox_change_guard_nodes is mapping
+      - proxmox_change_guard_nodes | length >= 1
+      - proxmox_change_guard_deadman_unit is match('^[a-z][a-z0-9-]{2,62}$')
+      - proxmox_change_guard_deadman_minutes | int >= 3
+      - proxmox_change_guard_deadman_minutes | int <= 30
+      - proxmox_change_guard_action == 'disarm' or proxmox_change_guard_revert_command | length > 0
+      - '"\"" not in proxmox_change_guard_revert_command'
+      - '"\"" not in proxmox_change_guard_prepare_command'
+    fail_msg: >-
+      Dead-man request is invalid: action arm|disarm, a node map, a unit name,
+      3-30 minutes and a revert command without double quotes are required.
+    quiet: true
+
+- name: "Dead-man timer: {{ proxmox_change_guard_action }}"
+  vars:
+    proxmox_change_guard_unit: "{{ proxmox_change_guard_deadman_unit }}"
+    proxmox_change_guard_script: >-
+      {%- if proxmox_change_guard_action == 'arm' -%}
+      {{ proxmox_change_guard_prepare_command ~ ';' if proxmox_change_guard_prepare_command | length > 0 else '' }}
+      systemctl stop {{ proxmox_change_guard_unit }}.timer 2>/dev/null;
+      systemctl reset-failed {{ proxmox_change_guard_unit }}.service 2>/dev/null;
+      systemd-run --unit={{ proxmox_change_guard_unit }}
+      --on-active={{ proxmox_change_guard_deadman_minutes | int }}min
+      --description='{{ proxmox_change_guard_deadman_description }}'
+      /bin/sh -c "{{ proxmox_change_guard_revert_command }}" &&
+      systemctl is-active --quiet {{ proxmox_change_guard_unit }}.timer
+      {%- else -%}
+      systemctl stop {{ proxmox_change_guard_unit }}.timer &&
+      ! systemctl is-active --quiet {{ proxmox_change_guard_unit }}.timer
+      {%- endif -%}
+  ansible.builtin.command:
+    argv: >-
+      {{ ['sh', '-c', proxmox_change_guard_script]
+         if proxmox_change_guard_item.key == ansible_facts['hostname']
+         else (proxmox_change_guard_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_change_guard_item.key,
+               '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_change_guard_item.key ~ '/ssh_known_hosts',
+               'root@' ~ proxmox_change_guard_item.value, proxmox_change_guard_script]) }}
+  loop: "{{ proxmox_change_guard_nodes | dict2items }}"
+  loop_control:
+    loop_var: proxmox_change_guard_item
+    label: "{{ proxmox_change_guard_item.key }}"
+  changed_when: true

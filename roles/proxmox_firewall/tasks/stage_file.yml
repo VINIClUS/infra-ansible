@@ -1,0 +1,30 @@
+---
+# pmxcfs (/etc/pve) accepts create/write but rejects chmod/chown with EPERM,
+# so the template/copy modules cannot write there. Render into a root-only
+# staging copy on local disk (seeded with the live content so --diff shows the
+# real change). commit_file.yml streams it into pmxcfs with cat.
+- name: "Seed staging copy from live: {{ proxmox_firewall_write.dest }}"
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - 'umask 077; mkdir -p "$(dirname "$2")" && if [ -f "$1" ]; then cat "$1" > "$2"; else : > "$2"; fi'
+      - seed
+      - "{{ proxmox_firewall_write.dest }}"
+      - "{{ proxmox_firewall_staging_root }}{{ proxmox_firewall_write.dest }}"
+  changed_when: false
+  check_mode: false
+
+- name: "Render {{ proxmox_firewall_write.dest }}"
+  ansible.builtin.template:
+    src: "{{ proxmox_firewall_write.template }}"
+    dest: "{{ proxmox_firewall_staging_root }}{{ proxmox_firewall_write.dest }}"
+    owner: root
+    group: root
+    mode: "0600"
+  # Local root-only staging, never pmxcfs: --check must validate the
+  # candidates, not the live files the seed copied in.
+  check_mode: false
+  vars:
+    proxmox_firewall_item_node: "{{ proxmox_firewall_write.node | default('') }}"
+    proxmox_firewall_item_vmid: "{{ proxmox_firewall_write.vmid | default(0) }}"
