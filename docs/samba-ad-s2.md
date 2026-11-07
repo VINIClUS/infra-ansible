@@ -65,6 +65,10 @@ permanecem fora da entrega e dos gates.
 public_revision/private_revision, hashes do helper transportado e parecer S1,
 subjects com node/kind/spec/config/template/boot, checks por subject, cleanup,
 observations antes/depois/resultado, selection, qualification e fingerprint.
+Cada subject exige `template: {node, kind, vmid, digest}` igual a uma referência
+do fingerprint e com digest/kind coerentes com o subject. Qualificação do alvo
+usa somente subjects que testaram aquele template completo naquele placement;
+um template aparecer na lista global não qualifica seu uso em todos os nós.
 Cleanup separa `file: complete|incomplete|not_created` de
 `guest: complete|pending`: primeira prova nunca declara o guest removido.
 Fingerprint inclui versões de kernel/PVE por nó, templates/digests, filesystem,

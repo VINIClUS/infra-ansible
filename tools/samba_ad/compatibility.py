@@ -46,7 +46,7 @@ def validate_report(report: dict) -> dict:
     require(isinstance(report["subjects"], list) and bool(report["subjects"]))
     subjects = {}
     for subject in report["subjects"]:
-        fields(subject, "key node kind spec_sha256 config_digest boot_id template_digest")
+        fields(subject, "key node kind spec_sha256 config_digest boot_id template_digest template")
         require(isinstance(subject["key"], str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", subject["key"]))
         require(subject["key"] not in subjects and subject["kind"] in ["lxc", "qemu"])
         require(isinstance(subject["node"], str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,63}", subject["node"]))
@@ -92,6 +92,11 @@ def validate_report(report: dict) -> dict:
         require(template["node"] in fingerprint["nodes"] and template["kind"] in ["lxc", "qemu"])
         require(type(template["vmid"]) is int and 100 <= template["vmid"] <= 999999999)
         hex_value(template["digest"], 40)
+    for subject in subjects.values():
+        reference = subject["template"]
+        fields(reference, "node kind vmid digest")
+        require(reference in fingerprint["templates"])
+        require(reference["kind"] == subject["kind"] and reference["digest"] == subject["template_digest"])
     require(fingerprint["filesystem"] in ["ext4", "xfs", "zfs", "btrfs"])
     require(fingerprint["isolation"] in ["lxc-unprivileged-apparmor", "qemu-no-passthrough"])
     hex_value(fingerprint["policy_sha256"], 64)
@@ -100,10 +105,10 @@ def validate_report(report: dict) -> dict:
     return report
 
 
-def qualified_nodes(report, kind, required):
+def qualified_nodes(report, kind, required, template=None):
     nodes = set()
     for subject in report["subjects"]:
-        if subject["kind"] != kind:
+        if subject["kind"] != kind or (template is not None and subject["template"] != template):
             continue
         passed = {c["name"] for c in report["checks"] if c["subject"] == subject["key"] and c["status"] == "passed"}
         cleanup = report["cleanup"][subject["key"]]
@@ -172,10 +177,11 @@ def validate_bundle(envelope: dict, target: dict) -> dict:
     require(choice["target_role"] in ["dc01", "dc02"] and
             target["resource"]["name"].split(".")[0] == choice["target_role"])
     require((target["resource"]["cores"], target["resource"]["memory_mib"], target["resource"]["disk_gib"]) == (2, 4096, 64))
-    require(target["resource"]["node"] in qualified_nodes(report, selected, LXC_FULL if selected == "lxc" else MINIMUM))
     template = dict(target["template"])
     template = {k: template[k] for k in ["node", "vmid", "digest"]} | {"kind": selected}
     require(template in fingerprint["templates"])
+    require(target["resource"]["node"] in qualified_nodes(
+        report, selected, LXC_FULL if selected == "lxc" else MINIMUM, template))
     require(fingerprint["isolation"] == ("lxc-unprivileged-apparmor" if selected == "lxc" else "qemu-no-passthrough"))
     fields(audit, "schema scope decision report_sha256 choice_sha256 public_revision private_revision review_ref")
     require(type(audit["schema"]) is int and audit["schema"] == 1 and audit["scope"] == "S2-state")

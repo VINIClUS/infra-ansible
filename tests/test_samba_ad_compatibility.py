@@ -28,7 +28,8 @@ def report():
             "public_revision": "a" * 40, "private_revision": "b" * 40,
             "helper_sha256": "c" * 64, "s1_audit_sha256": "d" * 64,
             "subjects": [{"key": "probe", "node": "node-b", "kind": "lxc", "spec_sha256": "e" * 64,
-                          "config_digest": "f" * 40, "boot_id": "b" * 32, "template_digest": "a" * 40}],
+                          "config_digest": "f" * 40, "boot_id": "b" * 32, "template_digest": "a" * 40,
+                          "template": {"node": "node-a", "kind": "lxc", "vmid": 7900, "digest": "a" * 40}}],
             "checks": [{"name": "security_ntacl", "subject": "probe", "status": "incompatible",
                         "attempts": ["EPERM", "EPERM"]}],
             "cleanup": {"probe": {"file": "complete", "guest": "complete"}},
@@ -37,7 +38,7 @@ def report():
                                        "after": {"synthetic": "test-only"}, "result": {"synthetic": "test-only"}}},
             "platform_fingerprint": {"nodes": {"node-a": {"kernel": "test-kernel", "pve": "test-pve"},
                                                "node-b": {"kernel": "test-kernel", "pve": "test-pve"}},
-                                     "templates": [{"node": "node-a", "kind": "qemu", "vmid": 7900,
+                                     "templates": [{"node": "node-a", "kind": "lxc", "vmid": 7900,
                                                     "digest": "a" * 40}],
                                      "filesystem": "ext4", "isolation": "qemu-no-passthrough",
                                      "policy_sha256": "e" * 64}}
@@ -46,10 +47,14 @@ def report():
 def bundle():
     r = request(); r["scope"] = "production"; r["resource"]["kind"] = "qemu"
     r["resource"]["name"] = "dc01.ad.example.invalid"; r["template"]["disk"] = "scsi0"
+    r["template"]["vmid"] = 7901
     evidence = report()
+    vm_template = {"node": "node-a", "kind": "qemu", "vmid": 7901, "digest": "a" * 40}
+    evidence["platform_fingerprint"]["templates"].append(vm_template)
     for i, node in enumerate(["node-a", "node-b"]):
         key = "vm" + str(i)
-        evidence["subjects"].append(dict(evidence["subjects"][0], key=key, node=node, kind="qemu"))
+        evidence["subjects"].append(dict(evidence["subjects"][0], key=key, node=node, kind="qemu",
+                                         template=copy.deepcopy(vm_template)))
         evidence["cleanup"][key] = {"file": "complete", "guest": "complete"}
         evidence["observations"][key] = copy.deepcopy(evidence["observations"]["probe"])
         for name in ["security_ntacl", "posix_acl", "systemd", "clock", "audit", "isolation", "network"]:
@@ -180,3 +185,49 @@ def test_lxc_selection_requires_all_checks_on_two_physical_nodes():
     assert m.select_platform(evidence) == "lxc" and m.qualification(evidence) == "lxc_lab_full"
     evidence["checks"].pop()
     assert m.select_platform(evidence) is None and m.qualification(evidence) == "pending"
+
+
+def bind_subject_template(subject, template):
+    subject["template_digest"] = template["digest"]
+    subject["template"] = copy.deepcopy(template)
+
+
+def test_subject_template_digest_outside_fingerprint_is_invalid_even_when_resealed():
+    m = module(); r = bundle(); report_data = r["compatibility"]["data"]["report"]
+    template = {k: r["template"][k] for k in ["node", "vmid", "digest"]} | {"kind": "qemu"}
+    template["digest"] = "c" * 40
+    bind_subject_template(report_data["subjects"][-1], template)
+    reseal(r)
+    with pytest.raises(ValueError): m.validate_report(report_data)
+    with pytest.raises(ValueError): m.validate_bundle(r["compatibility"], r)
+
+
+@pytest.mark.parametrize("difference", ["digest", "vmid", "node"])
+def test_template_list_does_not_qualify_an_untested_placement_template_pair(difference):
+    m = module(); r = bundle(); data = r["compatibility"]["data"]; evidence = data["report"]
+    approved_target = data["choice"]["target_sha256"]
+    template_b = {k: r["template"][k] for k in ["node", "vmid", "digest"]} | {"kind": "qemu"}
+    template_b[difference] = {"digest": "b" * 40, "vmid": 7902, "node": "node-b"}[difference]
+    evidence["platform_fingerprint"]["templates"].append(template_b)
+    bind_subject_template(evidence["subjects"][-1], template_b)
+    reseal(r)
+    assert data["choice"]["target_sha256"] == approved_target
+    with pytest.raises(ValueError): m.validate_bundle(r["compatibility"], r)
+
+
+def test_mixed_templates_require_an_actual_subject_for_the_approved_target_pair():
+    m = module(); r = bundle(); data = r["compatibility"]["data"]; evidence = data["report"]
+    approved_target = data["choice"]["target_sha256"]
+    template_a = {k: r["template"][k] for k in ["node", "vmid", "digest"]} | {"kind": "qemu"}
+    template_b = dict(template_a, vmid=7902, digest="b" * 40)
+    evidence["platform_fingerprint"]["templates"].append(template_b)
+    bind_subject_template(evidence["subjects"][-1], template_b)
+    tested_a = copy.deepcopy(evidence["subjects"][-1]); tested_a["key"] = "vm2"
+    bind_subject_template(tested_a, template_a)
+    evidence["subjects"].append(tested_a)
+    evidence["cleanup"]["vm2"] = {"file": "complete", "guest": "complete"}
+    evidence["observations"]["vm2"] = copy.deepcopy(evidence["observations"]["vm1"])
+    evidence["checks"] += [dict(c, subject="vm2") for c in evidence["checks"] if c["subject"] == "vm1"]
+    reseal(r)
+    assert data["choice"]["target_sha256"] == approved_target
+    assert m.validate_bundle(r["compatibility"], r)["isolation"] == "qemu-no-passthrough"

@@ -41,6 +41,9 @@ Laboratório usa `scope: lab` e nomes sob `lab.ad.test`. `scope: production`
 é recusado sem bundle operacional privado S2 completo, qualificado e vinculado
 ao alvo, pin e auditoria de estado específicos; sem override booleano.
 O consumidor é reutilizável; não há pin público preenchido ou escolha real.
+Cada subject referencia template completo (node/kind/VMID/digest) do fingerprint.
+Somente subjects daquele template efetivamente testado no placement do alvo
+podem qualificá-lo; templates globais não autorizam combinações não testadas.
 VM Debian de laboratório usa o mesmo lifecycle para fallback; não cria outro LXC
 quando a primeira prova protegida já falha. Consultar [runbook](../../docs/samba-ad-s1.md).
 
