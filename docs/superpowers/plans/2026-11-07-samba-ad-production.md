@@ -64,7 +64,7 @@
 - [ ] Implementar uma role de provisionamento dedicada, sem generalizar proxmox_lxc_guest do controlador.
 - [ ] Clonar integralmente os templates locais, migrar os clones desligados e iniciar somente após validar identidade/rede no destino.
 - [ ] Validar capacidade e reserva mínima de 2 GiB por host antes de cada criação; falhar sem interromper guests de terceiros.
-- [ ] Aplicar rede/roteador/firewall com estado anterior verificado para reversão técnica, dead-man, acesso por console Proxmox e readback por nova conexão. Preservar políticas das demais zonas.
+- [ ] Aplicar rede/roteador/firewall com estado anterior verificado para reversão técnica, dead-man, console Proxmox verificado ou canal PVE/QGA autenticado e independente da rede do guest para reversão restrita, SSH estrito e readbacks por nova conexão. Preservar políticas das demais zonas.
 - [ ] Adotar 2 vCPU/4 GiB/64 GiB por DC; CA separada 2 vCPU/2 GiB/20 GiB. Placement e identidades reais são privados.
 - [ ] Cobrir colisões, digest obsoleto, falha parcial, reexecução, rede e regressões; auditar antes e depois da aplicação.
 
