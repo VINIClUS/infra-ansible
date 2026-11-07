@@ -134,6 +134,28 @@ def test_apply_block_compiles_verifies_and_rescues():
     assert "proxmox_firewall_revert_command" in rescue
 
 
+def test_rescue_reverts_only_after_a_pmxcfs_write():
+    tasks = role_tasks()
+    index = task_index("Apply and verify the firewall configuration")
+    assert tasks[index - 1]["ansible.builtin.set_fact"]["proxmox_firewall_pmxcfs_written"] is False
+    block = tasks[index]
+    names = [task["name"] for task in block["block"]]
+    marker = names.index("Record that pmxcfs writes start now")
+    assert names.index("Validate staged candidates offline before any pmxcfs write") < marker
+    assert marker < names.index("Commit node host firewall files")
+    assert block["block"][marker]["ansible.builtin.set_fact"]["proxmox_firewall_pmxcfs_written"] == "{{ not ansible_check_mode }}"
+    rescue = {task["name"]: task for task in block["rescue"]}
+    revert = rescue["Persistently revert the firewall on every node after a failed verification"]
+    assert "proxmox_firewall_pmxcfs_written | bool" in revert["when"]
+    disarm = rescue["Disarm the dead-man timer when nothing reached pmxcfs"]
+    assert disarm["vars"]["proxmox_firewall_deadman_action"] == "disarm"
+    assert "not proxmox_firewall_pmxcfs_written" in disarm["when"]
+    rearm = rescue["Restore HA when nothing reached pmxcfs"]
+    assert rearm["vars"]["proxmox_firewall_ha_action"] == "rearm"
+    assert "not proxmox_firewall_pmxcfs_written" in rearm["when"]
+    assert "live firewall is unchanged" in rescue["Fail with the restore path"]["ansible.builtin.fail"]["msg"]
+
+
 def test_deadman_uses_systemd_run_and_persists_the_rollback():
     deadman = (ROLE / "tasks" / "deadman.yml").read_text(encoding="utf-8")
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text(encoding="utf-8"))

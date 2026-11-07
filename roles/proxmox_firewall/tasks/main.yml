@@ -204,6 +204,13 @@
     proxmox_firewall_deadman_action: arm
   when: proxmox_firewall_render_enable | bool
 
+# The rescue below may only revert what reached pmxcfs: a failure while
+# staging or validating offline leaves the live firewall as it was, and
+# reverting then would switch the datacenter firewall off for nothing.
+- name: Record that nothing has been written to pmxcfs yet
+  ansible.builtin.set_fact:
+    proxmox_firewall_pmxcfs_written: false
+
 - name: Apply and verify the firewall configuration
   block:
     - name: Reset the local staging tree
@@ -281,6 +288,10 @@
     - name: Report the offline validation summary
       ansible.builtin.debug:
         msg: "{{ proxmox_firewall_candidate_check.stdout_lines }}"
+
+    - name: Record that pmxcfs writes start now
+      ansible.builtin.set_fact:
+        proxmox_firewall_pmxcfs_written: "{{ not ansible_check_mode }}"
 
     # Order matters: host and guest files first, cluster.fw (holds enable) last.
     - name: Commit node host firewall files
@@ -424,7 +435,23 @@
         label: "{{ proxmox_firewall_item.key }}"
       changed_when: true
       failed_when: false
-      when: proxmox_firewall_render_enable | bool
+      when: proxmox_firewall_render_enable | bool and proxmox_firewall_pmxcfs_written | bool
+
+    # Nothing reached pmxcfs: the armed dead-man would switch the datacenter
+    # firewall off ten minutes later, so disarm it and give HA back.
+    - name: Disarm the dead-man timer when nothing reached pmxcfs
+      ansible.builtin.include_tasks: deadman.yml
+      vars:
+        proxmox_firewall_deadman_action: disarm
+      when: proxmox_firewall_render_enable | bool and not proxmox_firewall_pmxcfs_written | bool
+
+    - name: Restore HA when nothing reached pmxcfs
+      ansible.builtin.include_tasks: ha_guard.yml
+      vars:
+        proxmox_firewall_ha_action: rearm
+      when: >-
+        proxmox_firewall_render_enable | bool and proxmox_firewall_ha_guard | bool
+        and not proxmox_firewall_pmxcfs_written | bool
 
     - name: Fail with the restore path
       ansible.builtin.fail:
@@ -432,7 +459,10 @@
           [{{ ansible_failed_task.name | default('unknown task') }}:
           {{ (ansible_failed_result.msg | default(''))[:600] }}
           {{ (ansible_failed_result.stderr | default(''))[:600] }}]
-          {% if proxmox_firewall_render_enable | bool %}Firewall verification failed. The
+          {% if proxmox_firewall_render_enable | bool and not proxmox_firewall_pmxcfs_written | bool %}Nothing
+          was written to pmxcfs, so the live firewall is unchanged; the dead-man
+          timer was disarmed and HA restored. Fix the inventory and run again.{%
+          elif proxmox_firewall_render_enable | bool %}Firewall verification failed. The
           datacenter firewall was set to enable 0 and pve-firewall was stopped
           where reachable; the dead-man timer stays armed for unreachable nodes.
           HA is left disarmed on purpose (previous states in

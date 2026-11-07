@@ -43,6 +43,10 @@ modified or removed.
   node reports `enabled/running`, and quorum is intact. A failed verification
   runs the same revert on every reachable node and leaves HA disarmed for a
   manual decision.
+- A failure before the first pmxcfs write (staging or the offline validation)
+  reverts nothing: the live firewall is unchanged, so the role disarms the
+  dead-man timer, restores HA and says so. Reverting there would switch the
+  datacenter firewall off because of a typo in the inventory.
 - `proxmox_firewall_activate: false` (default) renders `enable: 0` and only
   compiles. An already enabled datacenter firewall is never disabled by the
   role.
@@ -90,7 +94,8 @@ ansible-playbook -i <private-inventory> playbooks/proxmox-firewall.yml \
 
 ## Manual recovery
 
-If the dead-man fired or the role failed, the datacenter firewall is already
+If the dead-man fired or the role failed after writing to pmxcfs, the
+datacenter firewall is already
 set to `enable: 0`. Check quorum (`pvecm status`), then re-arm HA with
 `ha-manager crm-command arm-ha` (or restore the states from `ha-states.json`
 with `ha-manager set <sid> --state <state>`). To retry, restore only the firewall files from
