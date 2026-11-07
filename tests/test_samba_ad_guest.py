@@ -272,3 +272,30 @@ def test_api_normalization_of_tag_order_does_not_look_like_identity_drift():
             api.guests[800080]["tags"] = ";".join(sorted(api.guests[800080]["tags"].split(";")))
     api.mutate = normalize
     assert m.reconcile(request(), api)["state"] == "created"
+
+
+def test_explicit_start_rechecks_host_reserve_after_offline_preparation():
+    m = module(); api = Fake(); r = request(); r["boot"] = False; m.reconcile(r, api)
+    api.available = 6 * 1024**3 - 1; api.calls.clear()
+    r.update(action="start", boot=True, expected_digest="b" * 40)
+    with pytest.raises(ValueError): m.reconcile(r, api)
+    assert all(method in ["get", "firewall"] for method, _, _ in api.calls)
+    assert api.guests[800080].get("status", "stopped") == "stopped"
+
+
+def test_start_does_not_count_own_ram_reservation_twice_or_change_foreign_guests():
+    m = module(); api = Fake(); original_get = api.get
+    api.guests[800081] = {"node": "node-b", "hostname": "foreign", "memory": 23 * 1024,
+                         "digest": "f" * 40}
+    foreign = api.guests[800081].copy()
+    def reserved(path):
+        result = original_get(path)
+        if path == "/cluster/resources":
+            for guest in result:
+                guest["maxmem"] = int(api.guests[guest["vmid"]].get("memory", 0)) * 1024**2
+        return result
+    api.get = reserved
+    r = request(); r["boot"] = False; m.reconcile(r, api)
+    r.update(action="start", boot=True, expected_digest="b" * 40)
+    assert m.reconcile(r, api)["state"] == "started"
+    assert api.guests[800081] == foreign

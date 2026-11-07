@@ -30,7 +30,7 @@ A role também exige cadeia restrita do roteador e hash da política persistente
 
 Reexecução requer `expected_digest` atual e configuração/firewall/power state
 idênticos. `action: start` inicia explicitamente um clone próprio parado com digest
-atual e mantém a NIC isolada até verificar firewall. Não adota recursos, não
+atual, revalida RAM/reserva no destino e mantém a NIC isolada até verificar firewall. Não adota recursos, não
 reinicia guest e não corrige drift em silêncio.
 Uma falha parcial fica isolada; consultar tarefas UPID e config antes de qualquer
 recuperação. `action: absent` remove exclusivamente laboratório parado, com mesmo

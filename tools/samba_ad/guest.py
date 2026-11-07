@@ -149,14 +149,17 @@ def verify_config(r, config, configured=True, isolated=False):
     require(not any(re.fullmatch(r"net[1-9][0-9]*", k) for k in config), "additional NIC")
 
 
-def capacity(api, r, guests):
+def capacity(api, r, guests, booting=False):
     c, t = r["resource"], r["template"]
-    for node in {c["node"], t["node"]}:
+    for node in ({c["node"]} if booting else {c["node"], t["node"]}):
         memory = api.get(f"/nodes/{node}/status")["memory"]
-        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"] and not g.get("template")]
+        allocations = [g for g in guests if g.get("node") == node and g.get("type") in ["qemu", "lxc"] and not g.get("template")
+                       and (not booting or g.get("vmid") != c["vmid"])]
         require(all(type(g.get("maxmem")) is int for g in allocations), "capacity reservations known")
         free = min(memory["total"] - memory["used"], memory["total"] - sum(g["maxmem"] for g in allocations))
         require(free - c["memory_mib"] * 1024**2 >= 2 * GIB, "2 GiB host reserve")
+    if booting:
+        return
     for node, storage in {(t["node"], t["storage"]), (c["node"], c["storage"])}:
         status = api.get(f"/nodes/{node}/storage/{storage}/status")
         require(status.get("active") == 1 and status.get("enabled") == 1
@@ -261,6 +264,7 @@ def reconcile(r, api, check=False):
 
 
 def boot_disconnected(r, api, path, cfg):
+    capacity(api, r, api.get("/cluster/resources"), booting=True)
     require(api.get(path + "/config")["digest"] == cfg["digest"], "preboot digest")
     api.mutate("create", path + "/status/start")
     require(api.get(path + "/status/current")["status"] == "running", "boot readback")

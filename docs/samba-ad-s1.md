@@ -46,7 +46,7 @@ segredo ou gate para homologação/produção nesta entrega.
    Criar inicialmente parado (`boot: false`), full clone local, configuração estática,
    offline migrate e readback no destino. Capturar digest privado. Para iniciar, usar
    `action: start`, `boot: true` e o digest atual do clone parado; uma reexecução
-   `present` não muda power state. Alternativamente declarar `boot: true` na criação após todos os gates;
+   `present` não muda power state. O boot revalida a reserva de RAM no destino. Alternativamente declarar `boot: true` na criação após todos os gates;
    o primeiro boot será com link desconectado até verificar o firewall efetivo.
 7. S2 executa a prova protegida via console/pct/agent na rede sem uplink. Se ACL/auditoria/
    isolamento falhar, registrar laudo e limpar somente probe próprio parado/digest
