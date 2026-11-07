@@ -49,6 +49,21 @@ def test_inert_snapshot_binds_host_and_individual_certificate_profile():
     assert p["sans"] == ["dc01.ad.example.invalid"] and p["eku"] == ["serverAuth"]
 
 
+def test_ca_frontend_rotation_requires_pinned_nginx_and_matching_njs_artifacts():
+    from test_samba_ad_pki_ca_config import request as ca_config
+    ca = ca_config()
+    r, manifest = request()
+    c = manifest["resources"]["ca"]
+    r.update(profile="ca", action="rotate", adapter={"kind": "nginx", "port": 443})
+    r["target"].update(role="ca", fqdn=c["fqdn"], kind="qemu", address=c["address"], mac=c["mac"])
+    r["credential"]["auth_key_ref"] = "/var/lib/samba-ad-pki/ca/auth.jwe"
+    r["credential"]["public_jwk"] = ca["registry"]["ca"]
+    for key in ["nginx", "njs"]: r["tools"][key] = ca["tools"][key]
+    assert module().validate_request(r, manifest)["eku"] == ["serverAuth"]
+    del r["tools"]["njs"]
+    with pytest.raises(ValueError): module().validate_request(r, manifest)
+
+
 @pytest.mark.parametrize("case", ["missing", "boolean", "unknown", "host", "profile", "san", "eku", "wildcard",
                                     "argv_secret", "key_path", "trust", "local_bypass", "issuer", "adapter", "review"])
 def test_invalid_operational_contract_is_rejected_before_runtime(case):

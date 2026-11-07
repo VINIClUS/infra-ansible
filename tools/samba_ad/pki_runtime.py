@@ -18,7 +18,6 @@ import re
 import secrets
 import socket
 import ssl
-import stat
 import subprocess
 import sys
 import time
@@ -32,50 +31,8 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509.oid import NameOID
 
 from tools.samba_ad.pki import LIFETIME, require, rotation_due, verify_leaf
-from tools.samba_ad.pki_contract import loads, path, public_jwk, validate_request
-
-
-def secure_directory(directory, exact=False):
-    p = Path(path(str(directory)))
-    require(p.resolve() == p and p.is_dir())
-    for parent in [p, *p.parents]:
-        s = parent.stat()
-        require(s.st_uid in [0, os.geteuid()] and not (parent / ".git").exists())
-        require(not s.st_mode & 0o022 or (parent == Path("/tmp") and s.st_uid == 0 and s.st_mode & stat.S_ISVTX))
-    if exact:
-        require(stat.S_IMODE(p.stat().st_mode) == 0o700 and p.stat().st_uid == os.geteuid())
-    return p
-
-
-def secure_file(filename, secret=False):
-    p = Path(path(str(filename)))
-    secure_directory(p.parent)
-    require(p.resolve() == p)
-    s = p.lstat()
-    require(stat.S_ISREG(s.st_mode) and s.st_uid in [0, os.geteuid()] and not s.st_mode & 0o022)
-    require(not secret or not s.st_mode & 0o077)
-    return p
-
-
-def sync_dir(p):
-    fd = os.open(p, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: os.fsync(fd)
-    finally: os.close(fd)
-
-
-def exclusive_file(p, value):
-    secure_directory(p.parent)
-    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as out:
-        out.write(value); out.flush(); os.fsync(out.fileno())
-    sync_dir(p.parent)
-
-
-def atomic_file(p, value):
-    temp = p.parent / (".write-" + uuid.uuid4().hex)
-    exclusive_file(temp, value)
-    os.replace(temp, p)
-    sync_dir(p.parent)
+from tools.samba_ad.pki_contract import loads, public_jwk, validate_request
+from tools.samba_ad.pki_files import atomic_file, exclusive_file, secure_directory, secure_file, sync_dir
 
 
 def consumer_conf(r, generation):
@@ -303,19 +260,28 @@ def host_snapshot(interface):
 class LocalOps:
     def now(self): return int(time.time())
 
-    def preflight(self, r):
+    def identity_tools(self, r):
         actual = host_snapshot(r["target"]["interface"])
         require(actual["uid"] == 0)
         for field in ["fqdn", "boot_id", "machine_id", "mac"]:
             require(actual[field] == r["target"][field])
         require(r["target"]["address"] in actual["addresses"])
         require(actual["virtualization"] in (["kvm", "qemu"] if r["target"]["kind"] == "qemu" else ["lxc"]))
-        secure_directory(r["state_dir"], exact=True)
+        directory = Path(r["state_dir"])
+        if directory.exists():
+            secure_directory(directory, exact=True)
+        else:
+            require(not directory.is_symlink())
+            secure_directory(directory.parent)
         require(cryptography.__version__ == r["tools"]["cryptography"]["version"])
         for name, artifact in r["tools"].items():
             if name == "cryptography": continue
             binary = secure_file(artifact["path"])
             require(hashlib.sha256(binary.read_bytes()).hexdigest() == artifact["sha256"])
+            require(name == "njs" or binary.stat().st_mode & 0o111)
+
+    def preflight(self, r):
+        self.identity_tools(r)
         for field in ["root_file", "issuer_file"]:
             cert = x509.load_pem_x509_certificate(secure_file(r["trust"][field]).read_bytes())
             require(cert.fingerprint(hashes.SHA256()).hex() == r["trust"][field.replace("_file", "_sha256")])

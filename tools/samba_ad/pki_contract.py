@@ -127,10 +127,15 @@ def _validate(r, manifest):
         require(r["action"] == "rotate")
     elif r["expected_active"] is not None:
         hex_value(r["expected_active"])
-    fields(r["tools"], "step cryptography")
-    fields(r["tools"]["step"], "path sha256 version provenance_ref")
-    path(r["tools"]["step"]["path"]); hex_value(r["tools"]["step"]["sha256"])
+    fields(r["tools"], "step cryptography nginx njs" if adapter["kind"] == "nginx" else "step cryptography")
+    for name, artifact in r["tools"].items():
+        if name == "cryptography": continue
+        fields(artifact, "path sha256 version provenance_ref")
+        path(artifact["path"]); hex_value(artifact["sha256"])
+        require(isinstance(artifact["version"], str) and re.fullmatch(r"[A-Za-z0-9.+:~_-]{1,80}", artifact["version"]))
     require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", r["tools"]["step"]["version"]))
+    if adapter["kind"] == "nginx":
+        require(r["tools"]["njs"]["version"].split("+")[0] == r["tools"]["nginx"]["version"].split("-")[0])
     fields(r["tools"]["cryptography"], "version provenance_ref")
     require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", r["tools"]["cryptography"]["version"]))
     for tool in r["tools"].values(): review(tool["provenance_ref"])
