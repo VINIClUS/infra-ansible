@@ -75,6 +75,31 @@ update the matching fixture/root requirements and committed provider lock as
 needed, and validate on a fresh hosted runner. Never regenerate the lock merely
 to make a mismatch pass.
 
+## Hosted Ubuntu namespace permission
+
+The first hosted repair run, [42392131134](https://github.com/VINIClUS/infra-ansible/actions/runs/42392131134),
+resolved `ubuntu-latest` to Ubuntu 26.04.1, image `20261101.186.1`. The exact
+unprivileged preflight failed while writing `uid_map`, before provider init.
+Ubuntu's AppArmor user-namespace restriction allows namespace creation but
+blocks subsequent capabilities unless the application has an explicit profile;
+[Ubuntu documents the application-specific userns allowance](https://documentation.ubuntu.com/release-notes/24.04/#unprivileged-user-namespace-restrictions).
+The generic upstream [unshare profile is disabled by default](https://gitlab.com/apparmor/apparmor/-/merge_requests/1206).
+
+Before prewarm, `tools/ci/prepare-hosted-userns.sh` loads a named profile attached
+only to `/usr/bin/unshare`, using Ubuntu's `unconfined` profile flag plus the
+`userns` permission. This authorizes the sandbox builder; it does not remove
+its kernel namespaces. The exact preflight and every native test still run as
+the unprivileged runner user. Only the AppArmor parser runs through `sudo`.
+
+The script refuses local execution, self-hosted runners, root callers, other
+repositories/jobs and images other than the observed `ubuntu26`. It logs the
+image version and current AppArmor restriction, requires AppArmor to be active,
+and loads one profile from runner-temporary storage without a persistent policy
+cache. It changes no global sysctl, service or production policy. The VM is
+discarded after validation. A future image change requires review; unavailable
+permission or namespace isolation continues to fail closed. The runner scope
+uses GitHub's documented [RUNNER_ENVIRONMENT variable](https://docs.github.com/en/actions/reference/workflows-and-actions/variables).
+
 ## Required private consumer gate
 
 The private consumer must configure a required integration gate **before
@@ -86,6 +111,10 @@ runner, and an immutable public commit SHA that has completed public validation
 and review. Check out that reviewed public SHA and the reviewed private source
 revision separately. Never run arbitrary public pull-request code with private
 source or credentials, including via `pull_request_target`.
+
+The private consumer must prepare its own reviewed, scoped namespace permission
+when its hosted image requires it. This public permission script intentionally
+refuses other repositories; do not weaken its guard to reuse it on production.
 
 Run this repository's prewarm helper from the reviewed public checkout with
 fresh `RUNNER_TEMP`/GitHub output paths, then in the following step run from that

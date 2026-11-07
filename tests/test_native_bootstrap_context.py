@@ -195,3 +195,46 @@ def test_namespace_preflight_never_retries_without_isolation(monkeypatch, tmp_pa
     with pytest.raises(AssertionError, match="native_namespace_preflight_failed"):
         bootstrap.preflight("/verified/rtk", "/verified/tofu", tmp_path, {})
     assert seen == [["/verified/rtk", "proxy", "/usr/bin/unshare", "--user", "--map-root-user", "--net", "/verified/tofu", "version", "-json"]]
+
+
+@pytest.mark.parametrize("override", [
+    {"GITHUB_ACTIONS": "false"},
+    {"RUNNER_ENVIRONMENT": "self-hosted"},
+    {"RUNNER_OS": "Windows"},
+    {"GITHUB_JOB": "deploy"},
+    {"GITHUB_REPOSITORY": "other/repository"},
+    {"ImageOS": "unreviewed-image"},
+])
+def test_userns_permission_preparation_refuses_other_contexts(tmp_path, override):
+    import os
+    import subprocess
+    env = {
+        "PATH": os.defpath,
+        "GITHUB_ACTIONS": "true",
+        "RUNNER_ENVIRONMENT": "github-hosted",
+        "RUNNER_OS": "Linux",
+        "GITHUB_JOB": "validate",
+        "GITHUB_REPOSITORY": "VINIClUS/infra-ansible",
+        "ImageOS": "ubuntu26",
+        "RUNNER_TEMP": str(tmp_path),
+        **override,
+    }
+    result = subprocess.run(
+        ["bash", str(native.REPO / "tools/ci/prepare-hosted-userns.sh")],
+        env=env, text=True, capture_output=True, timeout=5,
+    )
+    assert result.returncode != 0
+    assert "hosted_userns_scope_refused" in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
+def test_userns_permission_is_application_specific_without_global_policy_change():
+    script = (native.REPO / "tools/ci/prepare-hosted-userns.sh").read_text()
+    assert 'profile cnesdata-ci-unshare /usr/bin/unshare flags=(unconfined)' in script
+    assert 'userns,' in script
+    privileged = [line.strip() for line in script.splitlines() if line.strip().startswith("sudo ")]
+    assert privileged == ['sudo -n /usr/sbin/apparmor_parser --add --skip-cache "$profile"']
+    assert 'sysctl -w' not in script
+    assert 'systemctl' not in script
+    assert '/etc/apparmor.d/' not in script
+    assert 'EUID' in script

@@ -36,6 +36,10 @@ jobs:
             yamllint
           ansible-galaxy collection install --requirements-file requirements.yml
 
+      - name: Permit isolated native user namespaces on hosted validation
+        shell: bash
+        run: bash tools/ci/prepare-hosted-userns.sh
+
       - name: Prepare pinned offline native-test toolchain
         shell: bash
         run: >-
