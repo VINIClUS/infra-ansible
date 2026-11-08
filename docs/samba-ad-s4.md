@@ -124,17 +124,29 @@ mesmo realm/NetBIOS/FQDN e níveis/schema exatos; não lê a senha nem reprovisi
 
 Antes da primeira mutação, verifica LoadState/UnitFileState/ActiveState,
 FragmentPath e DropInPaths das unidades Samba, com identidade dos fragments
-vendor já autenticada pelo payload. Só aceita masks reais /dev/null; recusa
-unidades locais substitutas e drop-ins desconhecidos. O alias legado samba.service
-pode estar ausente: valida smbd canônico e aplica apenas a máscara preventiva,
-sem inventar um fragment vendor para o alias. Em DC novo/próprio/vazio,
-a convergência inicial desabilita e mascara persistentemente samba/smbd/nmbd/
-winbind, remove masks persistentes e runtime do DC pretendido e o habilita para
-boot, ainda sem start. Faz readback completo antes de substituir smb.conf/criar
-DB. O primeiro start ocorre depois da configuração. Readback final exige DC
-active/running/enabled e membros inativos/mascarados. Reexecução somente verifica
-esses estados: não inicia/para serviços nem corrige drift automaticamente.
-Falha parcial na convergência inicial aborta antes da troca de config/API.
+vendor já autenticada pelo payload. `samba.service` é o Alias declarado pela
+unidade DC autenticada; não é daemon membro nem faz fallback para smbd. Aceita
+somente links para o fragment canônico samba-ad-dc validado, ausência ou masks
+/dev/null conhecidos. Recusa unidades locais substitutas e drop-ins desconhecidos.
+
+No guest novo/próprio/vazio, após validar a qualidade da senha, a preparação
+inicial desabilita os boot links e aliases de smbd/nmbd/winbind e os mascara.
+Desabilita também o DC e mantém máscaras **persistentes** no DC e em samba.service,
+com readback e fsync dos diretórios antes de substituir smb.conf/criar DB. Não
+faz unmask/enable do DC nessa fase. Quando disable ignora um unit mascarado,
+remove apenas seus links residuais Alias/WantedBy autenticados, por caminho e
+target exatos; não usa force nem remove links alheios. Falha/interrupção durante provisionamento,
+política, firewall, PKI ou integridade conserva o bloqueio de boot. Floresta
+parcial não é retomada/adotada automaticamente.
+
+Somente ao final de harden, depois da configuração e AIDE prontos, pre_activation
+relê DB/níveis/schema/política, arquivos gerenciados e smb.conf/testparm, firewall
+real e seu serviço/dependência persistentes, geração S3 criptográfica e ponteiro
+ativo, AIDE e timer. Sem recibo/booleano fictício de readiness. Então remove as
+masks de DC/alias, habilita o DC (que cria seu alias real e WantedBy), inicia e
+confere alias/identidade/boot/running. Membros permanecem mascarados. Reexecução
+do DC íntegro com alias correto só verifica; não inicia/para serviços nem corrige
+drift. Um parcial bloqueado é recusado em reexecução, sem liberação automática.
 O SID observado e o config digest ficam em arquivo0600 próprio no guest, para
 registro posterior no inventário privado. Não são fatos persistentes Ansible.
 
@@ -193,3 +205,9 @@ S1 read-only real sobre adapter simulado, segredo somente na API em memória,
 entrada fechada, limites/tags/SSH da role real, loader comprimido, assinatura
 GPGv real de fixture efêmera e recusa de arquivo alterado. Não executam Samba,
 Proxmox, nft, AIDE ou PKI de produção. Lint/syntax não são qualificação nativa.
+
+A fixture tests/fixtures/samba_ad_systemd_units.json preserva os quatro units
+relevantes extraídos dos três pacotes públicos autenticados pela coordenação,
+com SHA/tamanho dos arquivos .deb. Os testes usam Alias/WantedBy reais e
+systemctl --root --no-reload somente em diretórios descartáveis; show/running
+são simulados, sem D-Bus, manager do host ou execução de daemon.

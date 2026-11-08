@@ -359,7 +359,7 @@ class Native:
         from tools.samba_ad.pki_files import atomic_file
         baseline = secure_file("/etc/samba/smb.conf").read_bytes()
         require(hashlib.sha256(baseline).hexdigest() == r["identity"]["config_sha256"])
-        self.services.converge_initial(self.service_snapshot)
+        self.blocked_services = self.services.converge_initial(self.service_snapshot)
         atomic_file(Path("/etc/samba/smb.conf"), b"")
 
     def harden(self, r):
@@ -400,7 +400,6 @@ class Native:
                         self.manifest["network"]["dns_forwarders"])
         atomic_file(Path("/etc/samba/smb.conf"), conf.encode())
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
-        command(["systemctl", "start", "samba-ad-dc.service"])
         integrity = future_directory("/var/lib/samba-ad-integrity")
         require(not integrity.exists())
         integrity.mkdir(mode=0o700)
@@ -408,6 +407,37 @@ class Native:
         secure_file(integrity / "aide.db.new", secret=True).rename(integrity / "aide.db")
         command(["systemctl", "daemon-reload"])
         command(["systemctl", "enable", "--now", "samba-ad-integrity.timer"])
+        self.activate(r)
+
+    def pre_activation(self, r):
+        """Real local readbacks, before removing either persistent DC mask."""
+        import ldb
+        from tools.samba_ad import domain_network
+        self.db = self.database()
+        observed = self.observed()
+        expected = dict(r["target"], sid=r["target"]["sid"] or observed["sid"])
+        require(forest_action(expected, observed, True) == "current")
+        row = self.db.search(base=self.db.domain_dn(), scope=ldb.SCOPE_BASE, attrs=list(PASSWORD_POLICY))[0]
+        require(all(int(row[k][0]) == v for k, v in PASSWORD_POLICY.items()))
+        self.host_guard(r)
+        require(secure_file("/etc/samba/smb.conf").read_text() == smb_conf(
+            r["target"]["realm"], r["target"]["netbios"], "dc01", self.manifest["network"]["dns_forwarders"]))
+        command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
+        require(domain_network.inspect(r))
+        command(["systemctl", "is-active", "--quiet", "samba-ad-firewall.service"])
+        command(["systemctl", "is-enabled", "--quiet", "samba-ad-firewall.service"])
+        self.generation(r)
+        active = Path("/var/lib/samba-ad-pki/dc01/active.conf")
+        require(active.is_symlink() and str(active.readlink()) == "generations/" + r["generation"] + "/consumer.conf")
+        command(["aide", "--config=/etc/samba-ad-integrity.conf", "--check"])
+        command(["systemctl", "is-active", "--quiet", "samba-ad-integrity.timer"])
+        command(["systemctl", "is-enabled", "--quiet", "samba-ad-integrity.timer"])
+
+    def activate(self, r):
+        self.pre_activation(r)
+        self.services.activate(self.blocked_services)
+        command(["systemctl", "start", "samba-ad-dc.service"])
+        self.services.inspect(initial=False)
 
     def verify(self, r):
         import ldb

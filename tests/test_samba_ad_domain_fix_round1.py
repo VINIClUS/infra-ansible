@@ -93,53 +93,6 @@ def test_f5_native_quality_failure_precedes_config_and_database(monkeypatch, cap
     output=capsys.readouterr(); assert "abcdefghijklmn" not in output.out+output.err
 
 
-@pytest.mark.parametrize("mask_scope", ["etc", "run"])
-def test_f3_masks_member_units_and_unmasks_dc_before_database(tmp_path, mask_scope):
-    from tools.samba_ad.domain_services import ServiceOps, MEMBERS, DC
-    units = tmp_path / "usr/lib/systemd/system"; units.mkdir(parents=True)
-    for name in [*MEMBERS, DC]:
-        (units / name).write_text("[Service]\nExecStart=/usr/sbin/samba\n"); (units/name).chmod(0o644)
-    masks=tmp_path / "etc/systemd/system"; masks.mkdir(parents=True)
-    runtime=tmp_path / "run/systemd/system"; runtime.mkdir(parents=True)
-    ((masks if mask_scope=="etc" else runtime)/DC).symlink_to("/dev/null")
-    states = {name: {"LoadState":"loaded", "UnitFileState":"enabled", "ActiveState":"inactive", "SubState":"dead", "FragmentPath":"/usr/lib/systemd/system/"+name, "DropInPaths":""} for name in [*MEMBERS, DC]}
-    states[DC].update(LoadState="masked",UnitFileState="masked" if mask_scope=="etc" else "masked-runtime",FragmentPath="/dev/null")
-    for item in tmp_path.rglob("*"):
-        if item.is_dir(): item.chmod(0o755)
-    calls=[]
-    def run(argv, **kwargs):
-        if argv[1] == "daemon-reload": calls.append(argv); return b""
-        unit=argv[-1]
-        if argv[1] == "show": return "".join(f"{k}={v}\n" for k,v in states[unit].items()).encode()
-        calls.append(argv)
-        action=argv[2] if argv[1]=="--runtime" else argv[1]
-        if action=="disable": states[unit]["UnitFileState"]="disabled"
-        elif action=="mask":
-            (masks/unit).symlink_to("/dev/null"); states[unit].update(LoadState="masked",UnitFileState="masked",FragmentPath="/dev/null")
-        elif action=="unmask":
-            ((runtime if "--runtime" in argv else masks)/unit).unlink(); states[unit].update(LoadState="loaded",UnitFileState="disabled",FragmentPath="/usr/lib/systemd/system/"+unit)
-        elif action=="enable": states[unit]["UnitFileState"]="enabled"
-        else: pytest.fail("unexpected service mutation")
-        return b""
-    ops=ServiceOps(root=tmp_path, run=run)
-    before=ops.inspect(initial=True)
-    ops.converge_initial(before)
-    assert states[DC]["UnitFileState"]=="enabled" and states[DC]["ActiveState"]=="inactive"
-    assert all(states[n]["UnitFileState"]=="masked" for n in MEMBERS)
-    assert not any(any(v in ["start","stop","restart"] for v in c) for c in calls)
-    states[DC].update(ActiveState="active",SubState="running")
-    count=len(calls); ops.inspect(initial=False); assert len(calls)==count
-    states["winbind.service"]["UnitFileState"]="enabled"
-    with pytest.raises(ValueError): ops.inspect(initial=False)
-    assert len(calls)==count
-    states["winbind.service"]["UnitFileState"]="masked"
-    (masks/DC).symlink_to("/dev/null")
-    states[DC].update(LoadState="masked",UnitFileState="masked",FragmentPath="/dev/null",ActiveState="inactive")
-    with pytest.raises(ValueError): ops.inspect(initial=False)
-    assert len(calls)==count
-    (masks/DC).unlink(); states[DC].update(LoadState="loaded",UnitFileState="enabled",ActiveState="active",FragmentPath="/usr/lib/systemd/system/"+DC)
-    states[DC]["FragmentPath"]="/etc/systemd/system/foreign.service"
-    with pytest.raises(ValueError): ops.inspect(initial=False)
 
 
 def test_f1_base_python_bounds_and_libc_are_checked_separately(monkeypatch,tmp_path):
@@ -218,20 +171,3 @@ def test_f2_signed_hardlinked_provision_data_are_verified(monkeypatch,tmp_path):
     monkeypatch.setattr(source,"secure_file",read)
     source.verify_installed({})
     assert set(reads)=={"/usr/share/samba/setup/schema.ldif","/usr/share/samba/setup/schema-alias.ldif"}
-
-
-def test_f3_missing_legacy_alias_is_maskable_without_inventing_a_vendor_unit(monkeypatch,tmp_path):
-    from tools.samba_ad.domain_services import ServiceOps,MEMBERS,DC
-    directory=tmp_path/"usr/lib/systemd/system";directory.mkdir(parents=True)
-    for unit in [*MEMBERS[1:],DC]:
-        path=directory/unit;path.write_text("[Service]\nExecStart=/usr/sbin/samba\n");path.chmod(0o644)
-    for path in tmp_path.rglob("*"):
-        if path.is_dir():path.chmod(0o755)
-    def run(argv,**kwargs):
-        unit=argv[-1];missing=unit=="samba.service"
-        values={"LoadState":"not-found" if missing else "loaded","UnitFileState":"" if missing else "disabled","ActiveState":"inactive","SubState":"dead","FragmentPath":"" if missing else "/usr/lib/systemd/system/"+unit,"DropInPaths":""}
-        return subprocess.CompletedProcess(argv,1 if missing else 0,"".join(f"{k}={v}\n" for k,v in values.items()).encode(),b"")
-    monkeypatch.setattr(domain.subprocess,"run",run)
-    observed=ServiceOps(root=tmp_path).inspect(initial=True)
-    assert observed["samba.service"]["LoadState"]=="not-found"
-    assert observed["smbd.service"]["LoadState"]=="loaded"
