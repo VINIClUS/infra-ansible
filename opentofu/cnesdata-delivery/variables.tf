@@ -7,6 +7,64 @@ variable "account_id" {
   }
 }
 
+variable "github_delivery" {
+  description = "Reviewed catalog configuration; null keeps both gates absent. Provider is shared/external. No caller input controls this object."
+  type = object({
+    provider_arn         = string
+    provider_client_ids  = list(string)
+    provider_thumbprints = list(string)
+    plan_role_name       = string
+    deploy_role_name     = string
+    plan_workflow_sha    = string
+    deploy_workflow_sha  = string
+    enabled_until        = string
+    state_bucket_arn     = string
+    state_kms_arn        = string
+    evidence_bucket_arn  = string
+    evidence_kms_arn     = string
+    evidence_prefix      = string
+    read_resource_arns   = list(string)
+    product_permissions = list(object({
+      actions   = list(string)
+      resources = list(string)
+    }))
+    pass_roles = list(object({ arn = string, service = string }))
+  })
+  default  = null
+  nullable = true
+  validation {
+    condition = var.github_delivery == null ? true : try(
+      var.github_delivery.provider_arn == "arn:aws:iam::${var.account_id}:oidc-provider/token.actions.githubusercontent.com" &&
+      contains(var.github_delivery.provider_client_ids, "sts.amazonaws.com") &&
+      length(var.github_delivery.provider_thumbprints) > 0 &&
+      alltrue([for value in var.github_delivery.provider_thumbprints : can(regex("^[0-9a-f]{40}$", value))]) &&
+      can(regex("^cnesdata-[a-z0-9-]+-plan$", var.github_delivery.plan_role_name)) &&
+      can(regex("^cnesdata-[a-z0-9-]+-deploy$", var.github_delivery.deploy_role_name)) &&
+      alltrue([for value in [var.github_delivery.plan_workflow_sha, var.github_delivery.deploy_workflow_sha] : can(regex("^[0-9a-f]{40}$", value))]) &&
+      can(timecmp(var.github_delivery.enabled_until, "1970-01-01T00:00:00Z")) &&
+      alltrue([for arn in [var.github_delivery.state_bucket_arn, var.github_delivery.evidence_bucket_arn] : can(regex("^arn:aws:s3:::[a-z0-9.-]+$", arn))]) &&
+      alltrue([for arn in [var.github_delivery.state_kms_arn, var.github_delivery.evidence_kms_arn] : can(regex("^arn:aws:kms:us-east-2:${var.account_id}:key/[0-9a-f-]{36}$", arn))]) &&
+      startswith(var.github_delivery.evidence_prefix, "cnesdata/prod/") &&
+      !strcontains(var.github_delivery.evidence_prefix, "..") &&
+      length(regexall("[?*]", var.github_delivery.evidence_prefix)) == 0 &&
+      alltrue([for arn in var.github_delivery.read_resource_arns :
+        length(regexall("[?*]", arn)) == 0 &&
+      (strcontains(arn, ":${var.account_id}:") || startswith(arn, "arn:aws:s3:::cnesdata-"))]) &&
+      alltrue([for statement in var.github_delivery.product_permissions : length(statement.actions) > 0 && length(statement.resources) > 0 &&
+        alltrue([for action in statement.actions : contains(local.delivery_product_writes, action)]) &&
+        alltrue([for arn in statement.resources : startswith(arn, "arn:aws:") &&
+          (strcontains(arn, ":${var.account_id}:") || startswith(arn, "arn:aws:s3:::cnesdata-")) &&
+          length(regexall("[?*]", arn)) == 0 && !strcontains(arn, "cnesdata-delivery") &&
+          !strcontains(arn, "limnopulse") && !strcontains(arn, "bootstrap") &&
+          !contains(["arn:aws:iam::${var.account_id}:role/${var.github_delivery.plan_role_name}", "arn:aws:iam::${var.account_id}:role/${var.github_delivery.deploy_role_name}"], arn) &&
+      (!startswith(arn, "arn:aws:iam:") || can(regex("^arn:aws:iam::${var.account_id}:role/cnesdata-[a-z0-9-]+$", arn)))])]) &&
+      alltrue([for value in var.github_delivery.pass_roles :
+        can(regex("^arn:aws:iam::${var.account_id}:role/cnesdata-[a-z0-9-]+$", value.arn)) &&
+    contains(["ecs-tasks.amazonaws.com", "lambda.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com"], value.service)]), false)
+    error_message = "Exact shared provider, reviewed immutable gates, product-only resources, named actions and bounded trust are required; no wildcard writes or cross-assume."
+  }
+}
+
 variable "region" {
   type     = string
   nullable = false

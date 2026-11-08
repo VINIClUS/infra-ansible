@@ -22,6 +22,10 @@ AWS_VERSION = "6.54.0"
 RTK_VERSION = "1.1.0"
 # Official GitHub release asset SHA-256 digests, recorded 2026-11-07.
 DOWNLOADS = {
+    "actionlint": (
+        "https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz",
+        "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757",
+    ),
     "tofu": (
         "https://github.com/opentofu/opentofu/releases/download/v1.13.2/tofu_1.13.2_linux_amd64.zip",
         "723bebb0df8411daff1e5fc3862e28ff5581fe5634087f4c29a9aa41d78208b5",
