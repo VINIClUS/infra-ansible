@@ -115,13 +115,20 @@ class GitHub:
         digest(reference["source_sha"], 40)
         digest(reference["workflow_sha"], 40)
         require(reference["artifact_digest"] == "sha256:" + digest(reference["artifact_digest"].removeprefix("sha256:")), "artifact digest")
-        self.run(reference, r2=r2)
+        run = self.run(reference, r2=r2)
         prefix = f"repos/{reference['repository']}/actions/artifacts/{reference['artifact_id']}"
         metadata = self.read(prefix)
         require(metadata["id"] == reference["artifact_id"] and metadata.get("digest") == reference["artifact_digest"]
                 and not metadata.get("expired", True) and instant(metadata["expires_at"]) > now
                 and metadata["workflow_run"]["id"] == reference["run_id"]
                 and metadata["workflow_run"]["head_sha"] == (reference["workflow_sha"] if r2 else reference["source_sha"]), "artifact metadata")
+        # REST artifacts have no run_attempt. The attempt-specific run endpoint
+        # retains its own start/completion times after reruns; the run ID/SHA alone
+        # cannot distinguish artifacts from a failed earlier or later attempt.
+        created = metadata.get("created_at")
+        require(isinstance(created, str) and
+                instant(run["run_started_at"]) <= instant(created) <= instant(run["updated_at"]),
+                "artifact creation outside authenticated attempt")
         data = self.read(prefix + "/zip", raw=True)
         require("sha256:" + sha(data) == metadata["digest"], "external artifact byte digest")
         self.expiries[reference["repository"], reference["artifact_id"]] = instant(metadata["expires_at"])

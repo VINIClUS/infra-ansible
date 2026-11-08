@@ -688,6 +688,7 @@ def execute(role):
                 watchdog.check()
                 applied_outputs = outputs.acm(state, aws, governance["account_id"]) if purpose == "acm-certificate" else outputs.bootstrap(state, aws, governance["account_id"])
                 watchdog.check()
+            readbacks_completed_at = c.utc(time.time())
             drift_raw = c.canonical({"drift_report_version": 1, "repository": c.REPOSITORY, "source_sha": source,
                 "purpose": purpose, "run_id": run_id, "run_attempt": attempt,
                 "ecr_before": ecr_before, "post_readbacks": reports})
@@ -719,7 +720,7 @@ def execute(role):
                 "principal": {"kind": "assumed-role", "account_id": governance["account_id"], "region": "us-east-2", "gate": "deploy", "role_arn": governance["roles"]["deploy"],
                               "session_sha256": session, "credential_expires_at": os.environ["AWS_CREDENTIAL_EXPIRATION"], "evidence_sha256": c.sha(c.canonical(aws.identity))},
                 "state_after": after | {"outputs_sha256": c.sha(c.canonical(applied_outputs))},
-                "drift": {"verdict": "clean", "evidence_sha256": c.sha(drift_raw), "readback_sha256": c.sha(drift_raw), "observed_at": c.utc(time.time())},
+                "drift": {"verdict": "clean", "evidence_sha256": c.sha(drift_raw), "readback_sha256": c.sha(drift_raw), "observed_at": readbacks_completed_at},
                 "outputs": applied_outputs}}
         status = envelope["status"]
         raw = c.canonical(envelope)

@@ -1015,3 +1015,136 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
         if reused:
             assert output.read_text().splitlines() == ["evidence_run_id=12", "evidence_artifact_id=100",
                 "evidence_artifact_digest=sha256:" + "b" * 64, "evidence_status=applied"]
+
+
+@pytest.mark.parametrize("r2", [False, True])
+@pytest.mark.parametrize("attempt,created,conclusion,accepted", [
+    (1, "2026-11-08T10:05:00Z", "success", True),
+    (2, "2026-11-08T11:05:00Z", "success", True),
+    (2, "2026-11-08T11:00:00Z", "success", True),
+    (2, "2026-11-08T11:10:00Z", "success", True),
+    (2, "2026-11-08T10:05:00Z", "success", False),
+    (1, "2026-11-08T11:05:00Z", "success", False),
+    (1, "2026-11-08T10:05:00Z", "failure", False),
+    (2, None, "success", False),
+])
+def test_artifact_creation_belongs_to_authenticated_attempt(contract, provenance, r2, attempt, created, conclusion, accepted):
+    import io
+    import zipfile
+
+    archive = io.BytesIO()
+    member = b'{"fact":"same immutable bytes across attempts"}\n'
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("facts.json", member)
+    raw = archive.getvalue()
+    reference = {"repository": contract.REPOSITORY, "run_id": 123, "run_attempt": attempt,
+        "artifact_id": 456, "artifact_digest": "sha256:" + contract.sha(raw),
+        "workflow_path": ".github/workflows/release-candidate.yml" if r2 else ".github/workflows/backend-proof.yml",
+        "workflow_sha": "a" * 40, "source_sha": ("b" if r2 else "a") * 40}
+    # Real REST schema: artifact.workflow_run has no run_attempt. The attempt
+    # endpoint supplies its own start/completion window even after a rerun.
+    runs = {n: {"id": 123, "run_attempt": n, "repository": {"full_name": contract.REPOSITORY},
+        "head_sha": "a" * 40, "path": reference["workflow_path"], "status": "completed",
+        "conclusion": "failure" if n == 1 and attempt == 2 else conclusion,
+        "created_at": f"2026-11-08T{9+n}:00:00Z", "run_started_at": f"2026-11-08T{9+n}:00:00Z",
+        "updated_at": f"2026-11-08T{9+n}:10:00Z"} for n in (1, 2)}
+    metadata = {"id": 456, "digest": reference["artifact_digest"], "expired": False,
+        "expires_at": "2026-11-09T10:00:00Z", "created_at": created,
+        "workflow_run": {"id": 123, "head_sha": "a" * 40}}
+    calls = []
+
+    class Boundary(provenance.GitHub):
+        def __init__(self):
+            self.expiries = {}
+
+        def read(self, path, **kwargs):
+            calls.append(path)
+            if "/attempts/" in path:
+                return runs[int(path.rsplit("/", 1)[1])]
+            if path.endswith("/zip"):
+                return raw
+            return metadata
+
+    api = Boundary()
+    if accepted:
+        assert api.artifact(reference, contract.instant("2026-11-08T12:00:00Z"), r2=r2) == {"facts.json": member}
+    else:
+        with pytest.raises(ValueError, match="artifact (run/attempt/source|creation outside authenticated attempt)"):
+            api.artifact(reference, contract.instant("2026-11-08T12:00:00Z"), r2=r2)
+        assert not any(path.endswith("/zip") for path in calls)
+        assert api.expiries == {}
+
+
+@pytest.mark.parametrize("delay", [0, 2.1])
+def test_execute_preserves_readback_time_through_post_release_latency(monkeypatch, tmp_path, delay):
+    import shutil
+    import time
+    from email.utils import formatdate
+    from types import SimpleNamespace
+    from fixtures.cnesdata_session_chain import OwnerChain
+    from fixtures.cnesdata_outputs import fixture
+    from tools.cnesdata_delivery import contract as c, runtime
+
+    chain = OwnerChain(monkeypatch, tmp_path)
+    state, _, certificate, _, _ = fixture()
+    attrs = state["resources"][0]["instances"][0]["attributes"]
+    address = "aws_acm_certificate.static_web"
+    plan = c.loads(chain.plan_files["plan.json"], state=True)
+    plan["resource_changes"][0]["change"]["after"] = attrs
+    chain.plan_files["plan.json"] = c.canonical(plan)
+    expected = {"Table": attrs}
+    chain.gov["readbacks"] = [{
+        "service": "dynamodb", "operation": "describe_table",
+        "parameters": {"TableName": "fixture"},
+        "expected_sha256": c.sha(c.canonical(expected)),
+    }]
+    chain.gov["drift_matrix"]["after"] = [
+        {"address": address, "attribute": field, "readback": 0,
+         "path": ["Table", field], "encoding": "identity"}
+        for field in attrs
+    ]
+    base_sdk, base_process = chain.sdk, chain.process
+    def sdk(service, operation, parameters):
+        if service == "dynamodb":
+            return expected | {"ResponseMetadata": {
+                "HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)},
+                "RequestId": "independent-drift-boundary",
+            }}
+        if service == "acm":
+            assert operation == "describe_certificate"
+            return {"Certificate": certificate, "ResponseMetadata": {
+                "HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)},
+                "RequestId": "independent-certificate-boundary",
+            }}
+        if service == "s3" and operation == "put_object" and chain.role == "deploy" and parameters["Key"].endswith("/lease.json"):
+            time.sleep(delay)
+        return base_sdk(service, operation, parameters)
+    def process(command, **kwargs):
+        if len(command) > 1 and command[1] == "apply":
+            chain.commands.append(list(command))
+            time.sleep(1.1)
+            chain.objects[chain.gov["state_bucket"], "cnesdata/prod/opentofu.tfstate"] = (c.canonical(state), "applied-state-etag")
+            return SimpleNamespace(pid=1 << 30, returncode=0, poll=lambda: 0)
+        return base_process(command, **kwargs)
+    chain.sdk, chain.process = sdk, process
+    # Chain patched Popen to an earlier bound method; use this witness boundary.
+    monkeypatch.setattr(runtime.subprocess, "Popen", process)
+    chain.configure("plan", 1)
+    runtime.execute("plan")
+    planned = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    chain.configure("deploy", 2, planned)
+
+    runtime.execute("deploy")
+    applied = [c.loads(raw) for (_, key), (raw, _) in chain.objects.items()
+               if "/2/1/applied/" in key and key.endswith("/envelope.json")]
+    assert len(applied) == 1
+    result = applied[0]["apply"]
+    assert c.instant(result["drift"]["observed_at"]) <= c.instant(result["lease"]["released_at"])
+    assert c.instant(result["drift"]["observed_at"]) <= c.instant(result["completed_at"])
+    assert sum(len(cmd) > 1 and cmd[1] == "apply" for cmd in chain.commands) == 1
+    assert sum(len(cmd) > 1 and cmd[1] == "plan" for cmd in chain.commands) == 1
+    receipts = [members for _, metadata, members, _ in chain.artifacts.values()
+                if metadata["name"] == "cnesdata-applied-receipt-2-1"]
+    assert len(receipts) == 1
+    assert c.loads(receipts[0]["receipt.json"])["envelope_sha256"] == c.sha(c.canonical(applied[0]))
