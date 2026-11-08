@@ -66,7 +66,7 @@ def helper():
 
 def test_signed_der_drives_canonical_handoff_without_claiming_activation(helper):
     case = inputs()
-    result = helper.validate_handoff(**case, now=NOW)
+    result = helper.validate_handoff(case, now=NOW)
     manifest = result["crl_handoff"]
     assert manifest["next_update"] == "2030-01-01T00:00:00Z"
     assert manifest["this_update"] == "2026-01-01T00:00:00Z"
@@ -93,7 +93,7 @@ def test_crl_readback_must_bind_enabled_identity_and_exact_bytes(helper, field, 
     case = inputs()
     case["crl_readback"]["crl"][field] = value
     with pytest.raises(ValueError):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 @pytest.mark.parametrize("mutation", ["disabled", "anchor", "source", "ca", "missing"])
@@ -111,7 +111,7 @@ def test_anchor_readback_must_bind_exact_public_ca(helper, mutation):
     else:
         del anchor["source"]
     with pytest.raises(ValueError):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 @pytest.mark.parametrize("mutation", ["account", "region", "ca-hash", "crl-hash", "private", "trailing", "signature"])
@@ -128,7 +128,7 @@ def test_operator_expectations_and_signed_bytes_cannot_be_substituted(helper, mu
         case["expected"]["crl_sha256"] = digest(case["crl_der"])
         case["crl_readback"]["crl"]["crlData"] = base64.b64encode(case["crl_der"]).decode()
     with pytest.raises(ValueError):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 @pytest.mark.parametrize("now", [
@@ -138,19 +138,19 @@ def test_operator_expectations_and_signed_bytes_cannot_be_substituted(helper, mu
 ])
 def test_future_this_update_and_expiry_including_equality_are_rejected(helper, now):
     with pytest.raises(ValueError):
-        helper.validate_handoff(**inputs(), now=now)
+        helper.validate_handoff(inputs(), now=now)
 
 
 def test_renewal_requires_monotonic_number_dates_and_authorized_deadline(helper):
-    previous = helper.validate_handoff(**inputs("previous"), now=NOW)["crl_handoff"]
+    previous = helper.validate_handoff(inputs("previous"), now=NOW)["crl_handoff"]
     case = inputs()
     case["expected"].update(operation="renew", previous_handoff=previous, authorized_deadline=previous["next_update"])
     case["expected"]["previous_handoff_sha256"] = digest(json.dumps(previous, sort_keys=True, separators=(",", ":")).encode())
-    assert helper.validate_handoff(**case, now=NOW)["crl_handoff"]["crl_number"] == "10"
+    assert helper.validate_handoff(case, now=NOW)["crl_handoff"]["crl_number"] == "10"
     for changed in ("replay", "deadline", "previous-anchor", "previous-ca", "shorter"):
         bad = copy.deepcopy(case)
         if changed == "replay":
-            bad["expected"]["previous_handoff"] = helper.validate_handoff(**inputs(), now=NOW)["crl_handoff"]
+            bad["expected"]["previous_handoff"] = helper.validate_handoff(inputs(), now=NOW)["crl_handoff"]
         elif changed == "deadline":
             bad["expected"]["authorized_deadline"] = "2031-01-01T00:00:00Z"
         elif changed == "previous-anchor":
@@ -161,20 +161,20 @@ def test_renewal_requires_monotonic_number_dates_and_authorized_deadline(helper)
             bad = inputs("shorter")
             bad["expected"].update(operation="renew", previous_handoff=previous, authorized_deadline=previous["next_update"])
         with pytest.raises(ValueError):
-            helper.validate_handoff(**bad, now=NOW)
+            helper.validate_handoff(bad, now=NOW)
 
 
 def test_unexplained_prior_authorization_is_not_bootstrap(helper):
     case = inputs()
     case["expected"]["authorized_deadline"] = "2029-01-01T00:00:00Z"
     with pytest.raises(ValueError):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 def test_missing_openssl_is_failure_not_skip(helper, monkeypatch):
     monkeypatch.setattr(helper.shutil, "which", lambda _: None)
     with pytest.raises(ValueError, match="openssl"):
-        helper.validate_handoff(**inputs(), now=NOW)
+        helper.validate_handoff(inputs(), now=NOW)
 
 
 def test_cli_emits_only_public_manifest_and_fails_closed_on_invalid_json(tmp_path):
@@ -215,7 +215,7 @@ def root_inputs(helper, active):
         "activation_enabled": active,
     }
     if active:
-        result.update(helper.validate_handoff(**inputs(), now=NOW))
+        result.update(helper.validate_handoff(inputs(), now=NOW))
     return result
 
 
@@ -379,38 +379,38 @@ def test_native_rejects_root_and_non_session_callers(native, helper, caller):
 
 
 def test_renewal_cannot_drop_revocations_even_with_higher_crl_number(helper):
-    previous = helper.validate_handoff(**inputs(), now=NOW)["crl_handoff"]
+    previous = helper.validate_handoff(inputs(), now=NOW)["crl_handoff"]
     case = inputs("unrevoked")
     case["expected"].update(operation="renew", previous_handoff=previous, authorized_deadline=previous["next_update"])
     case["expected"]["previous_handoff_sha256"] = digest(json.dumps(previous, sort_keys=True, separators=(",", ":")).encode())
     with pytest.raises(ValueError, match="revoked"):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 def test_renewal_requires_history_even_after_closed_trust(helper):
     case = inputs()
     case["expected"]["operation"] = "renew"
     with pytest.raises(ValueError, match="previous"):
-        helper.validate_handoff(**case, now=NOW)
-    previous = helper.validate_handoff(**inputs("previous"), now=NOW)["crl_handoff"]
+        helper.validate_handoff(case, now=NOW)
+    previous = helper.validate_handoff(inputs("previous"), now=NOW)["crl_handoff"]
     del previous["revoked_serials"]
     case["expected"]["previous_handoff"] = previous
     with pytest.raises(ValueError):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 def test_renewal_cannot_replace_accepted_history_with_modified_manifest(helper):
-    accepted = helper.validate_handoff(**inputs(), now=NOW)
+    accepted = helper.validate_handoff(inputs(), now=NOW)
     case = inputs("unrevoked")
     case["expected"].update(operation="renew", previous_handoff=accepted["crl_handoff"],
                             previous_handoff_sha256=accepted["crl_handoff_sha256"],
                             authorized_deadline="2030-01-01T00:00:00Z")
     case["expected"]["previous_handoff"]["revoked_serials"] = []
     with pytest.raises(ValueError, match="previous.*hash"):
-        helper.validate_handoff(**case, now=NOW)
+        helper.validate_handoff(case, now=NOW)
 
 
 @pytest.mark.parametrize("label", ["no-number", "delta", "wrong-issuer"])
 def test_only_full_numbered_direct_crls_are_accepted(helper, label):
     with pytest.raises(ValueError):
-        helper.validate_handoff(**inputs(label), now=NOW)
+        helper.validate_handoff(inputs(label), now=NOW)
