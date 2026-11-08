@@ -19,7 +19,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 
 from tools.samba_ad.ca_substrate import validate_ca_bundle
-from tools.samba_ad.pki import PROFILES, _critical, _issuer, _key, _valid_time, require
+from tools.samba_ad.pki import PROFILES, _critical, _issuer, _key, _valid_time, require, spki
 from tools.samba_ad.pki_contract import dns, fields, hex_value, loads, path, public_jwk, review
 from tools.samba_ad.pki_files import future_directory, secure_file
 
@@ -64,9 +64,9 @@ def validate(r):
     require(r["service_user"] == "samba-ad-ca" and r["frontend_user"] != r["service_user"])
     for key in ["root_sha256", "issuer_sha256"]: hex_value(r[key])
     require(isinstance(r["registry"], dict) and set(r["registry"]) == PROFILES)
-    for value in r["registry"].values(): public_jwk(value)
+    public_keys = [public_jwk(value) for value in r["registry"].values()]
     require(len({v["kid"] for v in r["registry"].values()}) == 6
-            and len({(v["x"], v["y"]) for v in r["registry"].values()}) == 6)
+            and len({spki(key) for key in public_keys}) == 6)
     fields(r["tools"], "step_ca nginx njs")
     for artifact in r["tools"].values():
         fields(artifact, "path version sha256 provenance_ref")

@@ -77,6 +77,34 @@ def test_native_error_paths_cannot_persist_raw_request_and_access_signals_are_sc
     assert "access_log /dev/stdout s3;" in nginx
 
 
+def test_registry_refuses_six_textual_aliases_of_one_actual_p256_key():
+    r = request()
+    public = copy.deepcopy(r["registry"]["dc01"])
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    def alias(value, bits):
+        index = alphabet.index(value[-1])
+        assert index & 3 == 0
+        return value[:-1] + alphabet[index | bits]
+    for index, name in enumerate(r["registry"]):
+        kid = r["registry"][name]["kid"]
+        r["registry"][name] = public | {"kid": kid, "x": alias(public["x"], index % 4),
+                                              "y": alias(public["y"], index // 4)}
+    assert len({(v["x"], v["y"]) for v in r["registry"].values()}) == 6
+    decoded = {(base64.urlsafe_b64decode(v["x"] + "="), base64.urlsafe_b64decode(v["y"] + "="))
+               for v in r["registry"].values()}
+    assert len(decoded) == 1
+    with pytest.raises(ValueError, match="suppressed"):
+        module().render(r)
+
+
+def test_registry_refuses_shared_canonical_material_with_distinct_kids():
+    r = request()
+    other_kid = r["registry"]["telemetry_dc01"]["kid"]
+    r["registry"]["telemetry_dc01"] = r["registry"]["dc01"] | {"kid": other_kid}
+    with pytest.raises(ValueError, match="suppressed"):
+        module().render(r)
+
+
 @pytest.mark.parametrize("case", ["private", "duplicate_key", "missing_profile", "shell_path", "root_online",
                                     "root_user", "wrong_target", "wrong_abi", "wide_bind", "unknown", "wildcard_manifest",
                                     "system_state", "foreign_material"])

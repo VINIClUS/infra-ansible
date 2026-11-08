@@ -35,7 +35,7 @@ class Ops:
         self.auth = ec.generate_private_key(ec.SECP256R1())
         n = self.auth.public_key().public_numbers()
         r["credential"]["public_jwk"] = {"kty": "EC", "crv": "P-256", "x": b64(n.x.to_bytes(32, "big")),
-                                          "y": b64(n.y.to_bytes(32, "big")), "kid": "a" * 43}
+                                          "y": b64(n.y.to_bytes(32, "big")), "kid": b64(hashlib.sha256(b"test-only-id").digest())}
         self.calls = []; self.bad_readback = False; self.bad_eku = False; self.claims = None
 
     def now(self): return NOW + 5
@@ -44,7 +44,7 @@ class Ops:
 
     def authorize(self, r, claims):
         self.calls.append("authorize"); self.claims = claims
-        header = b64(json.dumps({"alg": "ES256", "kid": "a" * 43, "typ": "JWT"}).encode())
+        header = b64(json.dumps({"alg": "ES256", "kid": r["credential"]["public_jwk"]["kid"], "typ": "JWT"}).encode())
         body = b64(json.dumps(claims).encode())
         message = (header + "." + body).encode()
         sig = self.auth.sign(message, ec.ECDSA(hashes.SHA256()))

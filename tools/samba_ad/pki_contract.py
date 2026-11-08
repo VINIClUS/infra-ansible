@@ -58,9 +58,13 @@ def public_jwk(value):
             and set(value) <= {"kty", "crv", "x", "y", "kid", "alg", "use", "key_ops"})
     require(value["kty"] == "EC" and value["crv"] == "P-256" and value.get("alg", "ES256") == "ES256"
             and value.get("use", "sig") == "sig" and value.get("key_ops", ["verify"]) == ["verify"])
+    decoded = {}
     for key in ["kid", "x", "y"]:
         require(isinstance(value[key], str) and re.fullmatch(r"[A-Za-z0-9_-]{43}", value[key]))
-    numbers = [int.from_bytes(base64.urlsafe_b64decode(value[k] + "="), "big") for k in ["x", "y"]]
+        decoded[key] = base64.urlsafe_b64decode(value[key] + "=")
+        require(len(decoded[key]) == 32 and base64.urlsafe_b64encode(decoded[key]).decode().rstrip("=") == value[key])
+    # kid is an opaque canonical 256-bit identifier, not evidence of key independence.
+    numbers = [int.from_bytes(decoded[k], "big") for k in ["x", "y"]]
     return ec.EllipticCurvePublicNumbers(numbers[0], numbers[1], ec.SECP256R1()).public_key()
 
 

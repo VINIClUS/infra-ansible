@@ -1,5 +1,6 @@
 """Inert defaults and host/profile/reference boundaries, synthetic identities."""
 import copy
+import base64
 import importlib.util
 from pathlib import Path
 
@@ -86,3 +87,17 @@ def test_invalid_operational_contract_is_rejected_before_runtime(case):
     with pytest.raises(ValueError, match="suppressed") as error:
         module().validate_request(r, m)
     assert "TEST-SENTINEL" not in str(error.value)
+
+
+@pytest.mark.parametrize("field", ["x", "y", "kid"])
+def test_public_jwk_rejects_noncanonical_base64url_padding_aliases(field):
+    from test_samba_ad_pki_ca_config import request as ca_config
+    jwk = ca_config()["registry"]["dc01"]
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    original = jwk[field]
+    index = alphabet.index(original[-1])
+    assert index & 3 == 0
+    jwk[field] = original[:-1] + alphabet[index | 1]
+    assert base64.urlsafe_b64decode(original + "=") == base64.urlsafe_b64decode(jwk[field] + "=")
+    with pytest.raises(ValueError, match="suppressed"):
+        module().public_jwk(jwk)

@@ -26,6 +26,9 @@ imutável. Não é carregada por site.yml/FIXED_RUNS/deploy automático.
    `auth.public.json` é obtido pelo operador para registro. Não fornecer JWK
    privada/DB/ticket/token em Git, nem cifrado. Passphrase apropriada vem de
    vault/ref em arquivo host protegido previamente disponibilizado.
+   `x`, `y` e `kid` usam base64url canônico de 32 bytes, sem padding; `kid` é
+   identificador opaco. A CA exige seis SPKIs decodificados distintos, sem contar
+   aliases textuais de coordenadas ou um novo `kid` como material independente.
 6. `ca_configure`: registrar seis públicas distintas, aplicar seis templates
    fixos e logger `common`; iniciar somente step-ca loopback. NGINX+njs fica
    configurado e **parado** até obter o leaf externo168h/serverAuth. Binários
