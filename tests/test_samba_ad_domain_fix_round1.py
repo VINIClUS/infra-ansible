@@ -107,7 +107,7 @@ def test_f3_masks_member_units_and_unmasks_dc_before_database(tmp_path, mask_sco
     for item in tmp_path.rglob("*"):
         if item.is_dir(): item.chmod(0o755)
     calls=[]
-    def run(argv):
+    def run(argv, **kwargs):
         if argv[1] == "daemon-reload": calls.append(argv); return b""
         unit=argv[-1]
         if argv[1] == "show": return "".join(f"{k}={v}\n" for k,v in states[unit].items()).encode()
@@ -218,3 +218,20 @@ def test_f2_signed_hardlinked_provision_data_are_verified(monkeypatch,tmp_path):
     monkeypatch.setattr(source,"secure_file",read)
     source.verify_installed({})
     assert set(reads)=={"/usr/share/samba/setup/schema.ldif","/usr/share/samba/setup/schema-alias.ldif"}
+
+
+def test_f3_missing_legacy_alias_is_maskable_without_inventing_a_vendor_unit(monkeypatch,tmp_path):
+    from tools.samba_ad.domain_services import ServiceOps,MEMBERS,DC
+    directory=tmp_path/"usr/lib/systemd/system";directory.mkdir(parents=True)
+    for unit in [*MEMBERS[1:],DC]:
+        path=directory/unit;path.write_text("[Service]\nExecStart=/usr/sbin/samba\n");path.chmod(0o644)
+    for path in tmp_path.rglob("*"):
+        if path.is_dir():path.chmod(0o755)
+    def run(argv,**kwargs):
+        unit=argv[-1];missing=unit=="samba.service"
+        values={"LoadState":"not-found" if missing else "loaded","UnitFileState":"" if missing else "disabled","ActiveState":"inactive","SubState":"dead","FragmentPath":"" if missing else "/usr/lib/systemd/system/"+unit,"DropInPaths":""}
+        return subprocess.CompletedProcess(argv,1 if missing else 0,"".join(f"{k}={v}\n" for k,v in values.items()).encode(),b"")
+    monkeypatch.setattr(domain.subprocess,"run",run)
+    observed=ServiceOps(root=tmp_path).inspect(initial=True)
+    assert observed["samba.service"]["LoadState"]=="not-found"
+    assert observed["smbd.service"]["LoadState"]=="loaded"

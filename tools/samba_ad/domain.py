@@ -192,10 +192,10 @@ def execute(request, adapter):
     return result
 
 
-def command(argv, data=None):
+def command(argv, data=None, allowed=(0,)):
     """Never echo subprocess output: Samba exceptions may contain credentials."""
     result = subprocess.run(argv, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-    require(result.returncode == 0)
+    require(result.returncode in allowed)
     return result.stdout
 
 

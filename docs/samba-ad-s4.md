@@ -125,7 +125,9 @@ mesmo realm/NetBIOS/FQDN e níveis/schema exatos; não lê a senha nem reprovisi
 Antes da primeira mutação, verifica LoadState/UnitFileState/ActiveState,
 FragmentPath e DropInPaths das unidades Samba, com identidade dos fragments
 vendor já autenticada pelo payload. Só aceita masks reais /dev/null; recusa
-unidades locais substitutas e drop-ins desconhecidos. Em DC novo/próprio/vazio,
+unidades locais substitutas e drop-ins desconhecidos. O alias legado samba.service
+pode estar ausente: valida smbd canônico e aplica apenas a máscara preventiva,
+sem inventar um fragment vendor para o alias. Em DC novo/próprio/vazio,
 a convergência inicial desabilita e mascara persistentemente samba/smbd/nmbd/
 winbind, remove masks persistentes e runtime do DC pretendido e o habilita para
 boot, ainda sem start. Faz readback completo antes de substituir smb.conf/criar

@@ -19,7 +19,7 @@ class ServiceOps:
 
     def snapshot(self, unit):
         keys = "LoadState UnitFileState ActiveState SubState FragmentPath DropInPaths".split()
-        raw = self.run(["systemctl", "show", "--no-pager", "--property=" + ",".join(keys), unit]).decode()
+        raw = self.run(["systemctl", "show", "--no-pager", "--property=" + ",".join(keys), unit], allowed=(0, 1, 4)).decode()
         data = dict(line.split("=", 1) for line in raw.splitlines())
         require(set(data) == set(keys))
         require(data["DropInPaths"] == "" or unit == DC and data["DropInPaths"] == DROPIN)
