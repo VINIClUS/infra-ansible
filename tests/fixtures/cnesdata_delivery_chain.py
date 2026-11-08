@@ -117,6 +117,9 @@ class Chain:
         monkeypatch.setitem(__import__("sys").modules, "botocore", types.SimpleNamespace(UNSIGNED="unsigned"))
         monkeypatch.setitem(__import__("sys").modules, "botocore.config", types.SimpleNamespace(Config=lambda **kwargs: kwargs))
         monkeypatch.setattr(__import__("urllib.request", fromlist=["urlopen"]), "urlopen", self.oidc)
+        saved = c.loads(self.plan_files["plan.json"], state=True)
+        saved["variables"] = {f"scheduler_{mode}_task_definition_arn": {"value": None} for mode in ("recovery", "audit")}
+        self.plan_files["plan.json"] = c.canonical(saved)
         self.configure("plan", 1)
 
     def run(self, repository, run_id, path, source="a" * 40, *, terminal=True, role=None):
@@ -258,6 +261,8 @@ class Chain:
             if getattr(self, "corrupt_ecr_readback", False) and parameters["Key"].endswith("/ecr-before.json"):
                 data = b"x" + data[1:]
             result = {"Body": io.BytesIO(data), "ETag": etag, "ContentLength": len(data)}
+            if parameters["Key"] == "cnesdata/prod/opentofu.tfstate":
+                result["VersionId"] = "fixture-version-" + etag
         elif operation == "put_object":
             key = parameters["Bucket"], parameters["Key"]
             before = self.objects.get(key)

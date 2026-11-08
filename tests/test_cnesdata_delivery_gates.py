@@ -990,7 +990,9 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
         lease_reads.append(1)
         return {"status": "released"}, "changed" if mutation == "coordination" and len(lease_reads) > 1 else "etag"
     lease = SimpleNamespace(store=SimpleNamespace(get=get_lease))
-    result = {"envelope": original, "artifact_id": 100, "artifact_digest": "sha256:" + "b" * 64}
+    state_object = {"status": "present", "version_id": "fixture-original", "etag_sha256": contract.sha(b"etag")}
+    result = {"envelope": original, "checkpoint": {"state_after": identity, "state_object": state_object},
+              "artifact_id": 100, "artifact_digest": "sha256:" + "b" * 64}
     monkeypatch.setattr(runtime, "previous_success", lambda *args, **kwargs: result)
     monkeypatch.setattr(contract, "validate_envelope", lambda *args, **kwargs: plan)
     monkeypatch.setattr(contract, "applied_state", lambda *args: None)
@@ -998,13 +1000,14 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
     monkeypatch.setattr(runtime, "_readbacks", lambda *args: [])
     monkeypatch.setattr(outputs, "acm", lambda *args: {"exact": "original"})
     monkeypatch.setattr(runtime.subprocess, "run", lambda *args, **kwargs: pytest.fail("retry cannot launch product child"))
-    aws = SimpleNamespace(get=lambda *args: (raw + b" " if mutation == "state" else raw, None))
+    aws = SimpleNamespace(get_state=lambda: (raw + b" " if mutation == "state" else raw, state_object))
     if mutation == "state":
         original["apply"]["state_after"] = identity | {"serial": 3}
     requested = {"plan": plan, "plan_binding_sha256": "c" * 64 if mutation == "binding" else "a" * 64}
     output = tmp_path / "outputs"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    governance = {"state_bucket": "synthetic", "account_id": "111122223333", "drift_matrix": {}}
+    governance = {"state_bucket": "synthetic", "account_id": "111122223333", "drift_matrix": {},
+                  "roles": {"deploy": "arn:aws:iam::111122223333:role/deploy"}}
     if mutation in {"state", "coordination"}:
         with pytest.raises(ValueError):
             runtime._reuse_completed(aws, None, governance, lease, requested, {"plan.json": b"{}"}, {}, "d" * 40, "acm-certificate")

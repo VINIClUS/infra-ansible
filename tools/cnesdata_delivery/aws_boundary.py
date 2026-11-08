@@ -83,19 +83,30 @@ class AWS:
     def get(self, bucket, key, maximum=128 * 1024**2, *, absent=False):
         return bounded(lambda: self._get(bucket, key, maximum, absent=absent))
 
-    def _get(self, bucket, key, maximum, *, absent):
+    def get_state(self, *, absent=False):
+        """One exact product-state GetObject; retain its actual version privately."""
+        return bounded(lambda: self._get(self.governance["state_bucket"],
+                       "cnesdata/prod/opentofu.tfstate", 128 * 1024**2,
+                       absent=absent, state=True))
+
+    def _get(self, bucket, key, maximum, *, absent, state=False):
         try:
             response = self.call("s3", "get_object", Bucket=bucket, Key=key,
                                  ExpectedBucketOwner=self.governance["account_id"])
         except Exception as error:
             code = getattr(error, "response", {}).get("Error", {}).get("Code")
             if absent and code in {"NoSuchKey", "404"}:
-                return None, None
+                return (None, {"status": "absent", "version_id": None, "etag_sha256": None}) if state else (None, None)
             raise
         require(response.get("ContentLength", maximum + 1) <= maximum, "private object size")
         with response["Body"] as stream:
             data = stream.read(maximum + 1)
         require(len(data) <= maximum, "private body limit")
+        if state:
+            version, etag = response.get("VersionId"), response.get("ETag")
+            require(type(version) is str and bool(version.strip()) and version != "null", "state version unavailable")
+            require(type(etag) is str and bool(etag), "state ETag unavailable")
+            return data, {"status": "present", "version_id": version, "etag_sha256": sha(etag.encode())}
         return data, response["ETag"]
 
     def put(self, bucket, key, data, *, etag=None, key_arn=None):
