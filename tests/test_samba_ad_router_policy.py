@@ -92,14 +92,14 @@ def test_install_write_failure_never_leaves_a_partial_final_file(tmp_path, monke
 def test_install_publish_failure_leaves_only_complete_file_for_standalone_rollback(tmp_path, monkeypatch):
     m = module(tmp_path, monkeypatch)
     r, network = inputs()
-    original_link = m.os.link
+    original_publish = m._publish_noreplace
 
     def fail_second_publish(source, destination, *args, **kwargs):
         if destination == m.LINK:
             raise OSError("simulated publish collision")
-        return original_link(source, destination, *args, **kwargs)
+        return original_publish(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(m.os, "link", fail_second_publish)
+    monkeypatch.setattr(m, "_publish_noreplace", fail_second_publish)
     with pytest.raises(OSError, match="publish collision"):
         m.install(r, network)
     assert m.owned(m.NETWORK, m.expected_files(r, network)[m.NETWORK]) is not None
@@ -111,6 +111,65 @@ def test_install_publish_failure_leaves_only_complete_file_for_standalone_rollba
     m.rollback(r, network)
     assert not m.NETWORK.exists() and not m.LINK.exists()
     assert calls == [["networkctl", "reload"]]
+
+
+@pytest.mark.parametrize("target_name", ["NETWORK", "LINK"])
+def test_abrupt_exit_after_policy_publish_leaves_nlink_one_and_allows_recovery(tmp_path, monkeypatch, target_name):
+    m = module(tmp_path, monkeypatch)
+    r, network = inputs()
+    target = getattr(m, target_name)
+    real_publish = m._publish_noreplace
+
+    def crash_after_publish(source, destination, *args, **kwargs):
+        result = real_publish(source, destination, *args, **kwargs)
+        if destination == target:
+            os._exit(77)
+        return result
+
+    monkeypatch.setattr(m, "_publish_noreplace", crash_after_publish)
+    pid = os.fork()
+    if pid == 0:
+        m.command = lambda argv: None
+        m.install(r, network)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 77
+    assert target.exists() and target.stat().st_nlink == 1
+    calls = []
+    monkeypatch.setattr(m, "command", calls.append)
+    m.rollback(r, network)
+    assert not m.NETWORK.exists() and not m.LINK.exists()
+    assert calls == ([["networkctl", "reload"]] if target_name == "NETWORK" else
+                     [["networkctl", "reload"], ["udevadm", "control", "--reload"]])
+
+
+def test_abrupt_exit_after_initial_pending_publish_leaves_nlink_one_and_allows_recovery(tmp_path, monkeypatch):
+    m = module(tmp_path, monkeypatch)
+    r, network = inputs()
+    m.command = lambda argv: None
+    m.install(r, network)
+    real_publish = m._publish_noreplace
+
+    def crash_after_journal_publish(source, destination, *args, **kwargs):
+        result = real_publish(source, destination, *args, **kwargs)
+        if destination == m.PENDING:
+            os._exit(77)
+        return result
+
+    monkeypatch.setattr(m, "_publish_noreplace", crash_after_journal_publish)
+    pid = os.fork()
+    if pid == 0:
+        m.rollback(r, network)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 77
+    assert m.PENDING.exists() and m.PENDING.stat().st_nlink == 1
+    calls = []
+    monkeypatch.setattr(m, "_publish_noreplace", real_publish)
+    monkeypatch.setattr(m, "command", calls.append)
+    m.rollback(r, network)
+    assert calls == [["networkctl", "reload"], ["udevadm", "control", "--reload"]]
+    assert not m.NETWORK.exists() and not m.LINK.exists() and not m.PENDING.exists()
 
 
 @pytest.mark.parametrize("file", ["NETWORK", "LINK"])

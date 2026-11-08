@@ -5,6 +5,8 @@ No device events are triggered. Only installation/removal reloads udev metadata.
 """
 
 import hashlib
+import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -19,6 +21,13 @@ LINK = Path("/etc/systemd/network/05-samba-ad-identity.link")
 SYS_CLASS_NET = Path("/sys/class/net")
 OWNER = (0, 0)
 PENDING = Path("/root/samba-ad-s1-network/policy-pending.json")
+AT_FDCWD = -100
+RENAME_NOREPLACE = 1
+_LIBC = ctypes.CDLL(None, use_errno=True)
+_RENAMEAT2 = getattr(_LIBC, "renameat2", None)
+if _RENAMEAT2 is not None:
+    _RENAMEAT2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    _RENAMEAT2.restype = ctypes.c_int
 
 
 def require(ok):
@@ -83,6 +92,18 @@ def _stage(path, content, mode=0o644):
         raise
 
 
+def _publish_noreplace(source, destination):
+    """Atomically move a complete inode without replacing a destination."""
+    require(_RENAMEAT2 is not None)
+    result = _RENAMEAT2(AT_FDCWD, os.fsencode(source), AT_FDCWD,
+                        os.fsencode(destination), RENAME_NOREPLACE)
+    if result != 0:
+        error = ctypes.get_errno()
+        if not error:
+            error = errno.EIO
+        raise OSError(error, os.strerror(error), str(destination))
+
+
 def _pending_owned():
     """Read the protected reload journal, refusing foreign or malformed state."""
     try:
@@ -124,8 +145,7 @@ def _write_pending(required, completed):
     staged = _stage(PENDING, payload, mode=0o600)
     try:
         if current is None:
-            os.link(staged, PENDING, follow_symlinks=False)
-            staged.unlink()
+            _publish_noreplace(staged, PENDING)
         else:
             os.replace(staged, PENDING)
         _fsync_directory(PENDING.parent)
@@ -163,10 +183,9 @@ def install(request, network):
         for path, content in expected_files(request, network).items():
             staged.append((path, _stage(path, content)))
         for path, temporary in staged:
-            # Hard-linking a complete, fsynced inode is atomic and no-clobber;
-            # unlike rename it cannot replace a competing destination.
-            os.link(temporary, path, follow_symlinks=False)
-            temporary.unlink()
+            # renameat2(RENAME_NOREPLACE) atomically moves a complete, fsynced
+            # inode and refuses to replace a competing destination.
+            _publish_noreplace(temporary, path)
             _fsync_directory(path.parent)
     finally:
         for _, temporary in staged:
