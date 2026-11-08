@@ -1,0 +1,30 @@
+output "roles_anywhere" {
+  description = "Exact roles_anywhere v2 fragment only; null during closed initialization. Not complete shared_outputs."
+  value = !var.activation_enabled ? null : {
+    api_role_arn     = aws_iam_role.api.arn
+    profile_arn      = aws_rolesanywhere_profile.api.arn
+    trust_anchor_arn = aws_rolesanywhere_trust_anchor.ca.arn
+    crl = {
+      crl_id      = try(var.crl_handoff.crl_id, null)
+      enabled     = try(var.crl_handoff.enabled, false)
+      next_update = try(var.crl_handoff.next_update, null)
+      sha256      = try(var.crl_handoff.sha256, null)
+    }
+  }
+}
+
+output "initialization" {
+  description = "Identifiers for the controlled CRL import/readback only; never a consumer-ready shared_outputs object."
+  value = {
+    account_id       = var.account_id
+    region           = var.region
+    api_role_arn     = aws_iam_role.api.arn
+    profile_arn      = aws_rolesanywhere_profile.api.arn
+    trust_anchor_arn = aws_rolesanywhere_trust_anchor.ca.arn
+  }
+}
+
+output "crl_handoff_sha256" {
+  description = "Reviewed input digest, not proof of live AWS state."
+  value       = var.activation_enabled ? var.crl_handoff_sha256 : null
+}

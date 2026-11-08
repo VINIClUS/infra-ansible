@@ -1,0 +1,5 @@
+# Private catalog/backend handoff supplies these non-secret identities.
+# Never change the exclusive key in backend.tf or provide static credentials.
+bucket     = "REPLACE_FROM_REVIEWED_PRIVATE_CATALOG"
+region     = "us-east-2"
+kms_key_id = "REPLACE_WITH_REVIEWED_EXISTING_CMK_ARN"
