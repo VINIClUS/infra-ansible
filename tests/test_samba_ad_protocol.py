@@ -226,3 +226,45 @@ def test_all_measurements_still_require_independent_acceptance_audit():
     result = d.run(r, manifest, Transport())
     assert result["state"] == "measured" and result["native_protocol_acceptance"] == "pending"
     assert "runner_sha256" in result and result["started_utc"] <= result["finished_utc"]
+
+
+@pytest.mark.parametrize("drift", ["hostname", "machine", "boot", "mac", "ip", "pin"])
+def test_local_guard_never_resolves_before_identity_and_public_pin(monkeypatch, drift):
+    d = api(); r, manifest = request()
+    client = manifest["resources"]["linux_pilot"]
+    monkeypatch.setattr(d.os, "geteuid", lambda: 0)
+    def read(path):
+        return {"/etc/machine-id": "foreign" if drift == "machine" else r["client"]["machine_id"],
+            "/proc/sys/kernel/random/boot_id": "foreign" if drift == "boot" else r["client"]["boot_id"],
+            "/sys/class/net/ens18/address": "foreign" if drift == "mac" else client["mac"]}[str(path)]
+    monkeypatch.setattr(d.Path, "read_text", read)
+    monkeypatch.setattr(d.socket, "gethostname", lambda: "foreign" if drift == "hostname" else client["fqdn"])
+    def forbidden(*_a, **_kw): pytest.fail("resolver/network before identity and public trust pin")
+    for name in ["gethostbyaddr", "gethostbyname", "gethostbyname_ex", "getaddrinfo", "getnameinfo", "socket"]:
+        monkeypatch.setattr(d.socket, name, forbidden)
+    monkeypatch.setattr(d.subprocess, "run", lambda *_a, **_kw: SimpleNamespace(stdout=json.dumps(
+        [{"addr_info": [{"local": "192.0.2.1" if drift == "ip" else client["address"]}]}])))
+    monkeypatch.setattr(d.importlib.metadata, "version", lambda _: "0.12.4")
+    monkeypatch.setattr(d, "bounded", lambda call, _: call())
+    def bad_pin(self, _):
+        if drift != "pin": pytest.fail("identity drift reached TLS guard")
+        raise ValueError("public pin drift")
+    monkeypatch.setattr(d.Native, "tls_identity", bad_pin)
+    with pytest.raises(ValueError): d.Native().guard(r, manifest)
+
+
+@pytest.mark.parametrize("field,value", [("vmid", 12345), ("node", "alternate-node"),
+    ("mac", "02:00:00:00:EE:FE"), ("address", "198.51.100.25"),
+    ("template", {"vmid": 99998, "node": "template-node", "kind": "qemu", "storage": "other-storage"})])
+def test_report_binds_manifest_identity_without_topology(field, value):
+    import copy
+    d = api(); r, manifest = request(); r["execute"] = True
+    changed = copy.deepcopy(manifest); changed["resources"]["linux_pilot"][field] = value
+    class Refuse:
+        def guard(self, *_): raise ValueError()
+    first = d.run(r, manifest, Refuse()); second = d.run(r, changed, Refuse())
+    assert first["request_sha256"] == second["request_sha256"]
+    assert first.get("manifest_sha256") != second.get("manifest_sha256")
+    assert "linux-pilot" not in json.dumps(second) and "alternate-node" not in json.dumps(second)
+    reordered = dict(reversed(list(manifest.items())))
+    assert first["manifest_sha256"] == d.run(r, reordered, Refuse())["manifest_sha256"]

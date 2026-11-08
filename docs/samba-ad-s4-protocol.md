@@ -25,7 +25,10 @@ Habilitado, contém exatamente:
 
 `new_owned_review_ref` também é `git:<SHA40>:<caminho>`. A revisão privada é a
 raiz operacional: comprovar que o clone é novo/próprio e que os campos correspondem
-ao inventário aprovado. O helper relê machine-id, boot-id, FQDN, interface/MAC e
+ao inventário aprovado. O piloto deve ter o FQDN completo do manifest configurado
+como hostname do kernel; o helper lê esse nome local por `gethostname()`, sem
+NSS/DNS, sem completar nomes curtos ou aceitar aliases. O helper relê machine-id,
+boot-id, FQDN, interface/MAC e
 IPv4 do Linux piloto antes de qualquer rede ou credencial. O manifest S0 amarra
 VMID, placement, owner, template e endereços; não descobre ou adota clientes.
 Não executa testes Windows, ingresso ou GPO de S6.
@@ -81,13 +84,13 @@ com somente configuração pública do KDC; o contexto é destruído após medir
 | Caso | Evidência aceita |
 | --- | --- |
 | LDAPS CBT válido | SASL GSS-SPNEGO/NTLMv2 realmente autenticado, TLS e leaf verificadas |
-| CBT ausente/incorreto | novo bind, mesmo principal/senha, LDAP49; exige controle válido anterior |
+| CBT ausente/incorreto | novo bind, mesmo principal/senha, LDAP49 após transmitir NTLM Authenticate (Type3) com a variante; exige controle válido anterior |
 | LDAP sem assinatura | tokens NTLM sem sign/seal sobre389, LDAP8; exige controle válido |
 | TLS1.0 /1.1 | alerta **do peer** protocol_version; exige LDAPS moderno válido |
 | NTLMv2 SMB assinado | SMB2.1, sessão autenticada sem guest/null, TREE_CONNECT NETLOGON e resposta com HMAC-SHA256 válida |
 | SMB sem assinatura | TREE_CONNECT enviado sem flag/signature; erro ACCESS_DENIED/INVALID_SIGNATURE assinado e autenticado |
 | SMB1 | negociação exclusiva NT LM0.12, resposta SMB1 NOT_SUPPORTED/nenhum dialect; exige SMB2 válido |
-| NTLMv1 | token NTLMv1 real, SMB LOGON_FAILURE, após controle NTLMv2 válido |
+| NTLMv1 | NTLMv1 Authenticate (Type3) transmitido, SMB LOGON_FAILURE com corpo ERROR válido, após controle NTLMv2 válido |
 | AES | bind GSS-SPNEGO Kerberos válido; API MIT exporta contexto lúcido com enctype17/18 observado |
 
 pyspnego fornece os tokens/CBT/NTLM; não há implementação criptográfica NTLM
@@ -97,6 +100,12 @@ SHA256 no lugar de assinatura MD5/SHA1). O caso incorreto altera um byte. SMB2.1
 escrita, leitura de arquivo ou alteração de ACL é enviada. O código só faz bind
 e TREE_CONNECT de leitura, sem alteração de diretório/conta.
 
+Rejeição genérica durante negociação (apenas Type1), antes de transmitir
+Authenticate Type3, não mede CBT/NTLMv1 nem LDAP sem assinatura. O parser
+inspeciona os bytes SPNEGO/NTLM efetivamente enviados; uma flag do adapter
+não comprova a fase. Corpo ERROR SMB ausente, truncado ou inconsistente também
+não prova rejeição.
+
 Timeout, reset/EOF, parser inválido, falha de CA/hostname/leaf, cliente incapaz
 de oferecer TLS antigo, GSS sem extensão nativa, erro genérico e assinatura de
 resposta inválida não provam rejeição: são `operational_error`. Samba pode
@@ -105,7 +114,13 @@ nativa adicional, continua pendente e não vira um `passed` por desconexão.
 
 Cada caso é `not_run`, `passed`, `failed` ou `operational_error`. Um controle
 positivo malsucedido impede seus negativos dependentes. O relatório contém
-digests do request/código e horários UTC, sem segredo, token ou topologia. Mesmo
+digests do request (`request_sha256`), manifest completo (`manifest_sha256`)
+e código (`runner_sha256`), além de horários UTC, sem segredo, token ou topologia.
+Request e manifest são digeridos separadamente após validação, usando JSON
+canônico (`sort_keys=True`, separadores `,`/`:`), codificado em UTF-8. A auditoria
+deve preservar privadamente ambos os objetos exatos do wire de execução e a
+versão do runner para recalcular os três digests; a referência Git declarada
+não substitui o digest do manifest efetivamente fornecido. Mesmo
 se todos os casos forem `passed` (`state: measured`),
 `native_protocol_acceptance: pending` permanece até auditoria independente do
 relatório e do estado instalado. `domain.py` continua retornando pending; não há

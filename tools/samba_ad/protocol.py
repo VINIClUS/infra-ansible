@@ -86,6 +86,7 @@ def run(r, manifest, adapter):
         return result
     # Digests bind the report without publishing private addresses/identifiers.
     result["request_sha256"] = domain.sha(r)
+    result["manifest_sha256"] = domain.sha(manifest)
     result["runner_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     result["started_utc"] = datetime.now(timezone.utc).isoformat()
     try:
@@ -201,6 +202,21 @@ def ldap_response(stream, message_id):
     return status[0], token
 
 
+def ntlm_authenticate(token):
+    """Inspect the actual outbound SPNEGO bytes, not a context/adapter claim."""
+    from spnego._spnego import NegTokenResp, unpack_token
+    from spnego._ntlm_raw.messages import Authenticate
+    parsed = unpack_token(token)
+    if not isinstance(parsed, NegTokenResp) or not parsed.response_token:
+        return False
+    raw = parsed.response_token
+    if not raw.startswith(b"NTLMSSP\x00\x03\x00\x00\x00"):
+        return False
+    auth = Authenticate.unpack(raw)
+    # Both v1 (24 bytes) and v2 carry the challenge response in Authenticate.
+    return len(auth.nt_challenge_response or b"") >= 24
+
+
 def ldap_bind(stream, context):
     """Bounded SASL GSS-SPNEGO bind; no simple/anonymous fallback or writes."""
     token = context.step()
@@ -214,7 +230,7 @@ def ldap_bind(stream, context):
             require(context.complete)
             return {"outcome": "accepted", "proof": "authenticated"}
         if status != 14:
-            require(status in {8, 49})
+            require(status in {8, 49} and mid > 1 and ntlm_authenticate(token))
             return {"outcome": "rejected", "proof": "ldap:" + str(status)}
         token = context.step(incoming)
     raise ValueError(ERROR)
@@ -264,6 +280,15 @@ def smb_auth(stream, context, hostname, unsigned=False):
         response = smb_response(smb_exchange(stream, smb_header(1, mid, session) + setup), 1, mid, session or None)
         session = response["session_id"]
         if response["status"] == 0xc000006d:
+            require(mid > 1 and session != 0 and ntlm_authenticate(token))
+            # SMB2.1 ERROR response: fixed header plus ByteCount error data;
+            # even ByteCount=0 requires the one-byte ErrorData placeholder.
+            data = response["body"]
+            require(len(data) >= 9)
+            size, reserved, reserved2, count = struct.unpack_from("<HBBI", data)
+            require(size == 9 and reserved == 0 and reserved2 == 0)
+            require(len(data) == 8 + max(1, count))
+            require(count != 0 or data[8:] == b"\0")
             return {"outcome": "rejected", "proof": "smb:logon_failure"}
         require(response["status"] in {0, 0xc0000016})
         data = response["body"]; require(len(data) >= 8 and struct.unpack_from("<H", data)[0] == 9)
@@ -319,7 +344,9 @@ class Native:
         c = r["client"]; declared = manifest["resources"][c["role"]]
         require(Path("/etc/machine-id").read_text().strip() == c["machine_id"])
         require(Path("/proc/sys/kernel/random/boot_id").read_text().strip() == c["boot_id"])
-        require(socket.getfqdn() == declared["fqdn"])
+        # The reviewed pilot must configure its full FQDN as the kernel hostname.
+        # gethostname is local; getfqdn invokes unscoped NSS/DNS resolution.
+        require(socket.gethostname() == declared["fqdn"])
         require(Path("/sys/class/net", c["interface"], "address").read_text().strip().upper() == declared["mac"])
         addresses = subprocess.run(["ip", "-j", "-4", "addr", "show", "dev", c["interface"]], capture_output=True, timeout=5, check=True)
         require(any(a["local"] == declared["address"] for row in json.loads(addresses.stdout) for a in row["addr_info"]))

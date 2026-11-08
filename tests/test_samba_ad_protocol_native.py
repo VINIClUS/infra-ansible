@@ -32,7 +32,7 @@ CREDS = {"username": "s4-probe@AD.EXAMPLE.INVALID", "password": "SYNTHETIC_PASSW
 class LDAPPeer:
     def __init__(self, server, require_signing=False):
         self.server = server; self.pending = b""; self.require_signing = require_signing
-        self.received = []
+        self.received = []; self.ntlm_tokens = []
     def sendall(self, packet):
         self.received.append(packet)
         tag, value = p.element(p.Bytes(packet)); assert tag == 0x30
@@ -45,6 +45,7 @@ class LDAPPeer:
         sasl = p.Bytes(sasl)
         assert p.element(sasl) == (4, b"GSS-SPNEGO")
         _, token = p.element(sasl)
+        self.ntlm_tokens.append(ntlm_payload(token))
         try:
             out = self.server.step(token)
             status = 0 if self.server.complete else 14
@@ -66,7 +67,11 @@ def test_real_ntlm_cbt_valid_missing_wrong(ntlm_server, binding, expected):
     stream = LDAPPeer(server)
     result = p.ldap_bind(stream, p.Native.ntlm(CREDS, "dc01.example.invalid", "ldap", binding))
     assert result["outcome"] == expected
-    assert len(stream.received) >= 2  # real challenge-response, never a config assertion
+    assert [struct.unpack_from("<I", token, 8)[0] for token in stream.ntlm_tokens] == [1, 3]
+    from spnego._ntlm_raw.messages import Authenticate, NTClientChallengeV2, AvId
+    auth = Authenticate.unpack(stream.ntlm_tokens[-1])
+    av = NTClientChallengeV2.unpack(auth.nt_challenge_response[16:]).av_pairs
+    assert (AvId.channel_bindings in av) == (binding is not None)
 
 
 def test_plain_ldap_unsigned_result_requires_server_strong_auth_response(ntlm_server):
@@ -177,3 +182,101 @@ def test_ca_pin_drift_precedes_any_network(monkeypatch, chain):
     monkeypatch.setattr(p.ssl, "create_default_context", lambda **_kw: actual_context(cadata=File().read_bytes().decode()))
     monkeypatch.setattr(p.Native, "connect", lambda *_: pytest.fail("network after CA pin drift"))
     with pytest.raises(ValueError): p.Native().tls(r)
+
+
+def ntlm_payload(token):
+    from spnego._spnego import unpack_token
+    parsed = unpack_token(token)
+    return getattr(parsed, "mech_token", None) or getattr(parsed, "response_token", None)
+
+
+@pytest.mark.parametrize("status", [49, 8])
+def test_ldap_early_rejection_is_unmeasured_with_real_type1(ntlm_server, status):
+    class Early(LDAPPeer):
+        def sendall(self, packet):
+            super().sendall(packet)
+            self.pending = p.ber(0x30, p.ber(2, b"\x01") + p.ber(0x61,
+                p.ber(10, bytes([status])) + p.ber(4, b"") + p.ber(4, b"")))
+    peer = Early(ntlm_server())
+    with pytest.raises(ValueError):
+        p.ldap_bind(peer, p.Native.ntlm(CREDS, "dc01.example.invalid", "ldap"))
+    assert [struct.unpack_from("<I", token, 8)[0] for token in peer.ntlm_tokens] == [1]
+
+
+class RejectSMB(SMBPeer):
+    def __init__(self, server, stage, error_body):
+        super().__init__(server)
+        self.stage = stage; self.error_body = error_body; self.ntlm_tokens = []
+
+    def sendall(self, packet):
+        raw = packet[4:]
+        if struct.unpack_from("<H", raw, 12)[0] != 1:
+            return super().sendall(packet)
+        offset, length = struct.unpack_from("<HH", raw, 76)
+        token = ntlm_payload(raw[offset:offset + length])
+        self.ntlm_tokens.append(token)
+        if struct.unpack_from("<I", token, 8)[0] != self.stage:
+            return super().sendall(packet)
+        mid = struct.unpack_from("<Q", raw, 24)[0]
+        response = struct.pack("<4sHHIHHIIQIIQ16s", b"\xfeSMB", 64, 1, 0xc000006d,
+            1, 1, 1, 0, mid, 0, 0, 55, b"\0" * 16) + self.error_body
+        self.pending = len(response).to_bytes(4, "big") + response
+
+
+# SMB2.1 ERROR: StructureSize=9, reserved zero, ByteCount=0, required dummy byte.
+SMB_ERROR = bytes.fromhex("090000000000000000")
+
+
+@pytest.mark.parametrize("stage,body", [(1, SMB_ERROR), (1, b""), (3, b""),
+    (3, SMB_ERROR[:8]), (3, bytes.fromhex("0900000001000000")),
+    (3, bytes.fromhex("080000000000000000")), (3, SMB_ERROR + b"extra"),
+    (3, bytes.fromhex("090001000000000000")),
+    (3, bytes.fromhex("0900000000000000ff"))])
+def test_smb_early_or_malformed_rejection_is_unmeasured(ntlm_server, stage, body):
+    client = p.Native.ntlm(CREDS, "dc01.example.invalid", "cifs", version=1)
+    peer = RejectSMB(ntlm_server(), stage, body)
+    with pytest.raises(ValueError):
+        p.smb_auth(peer, client, "dc01.example.invalid")
+    assert [struct.unpack_from("<I", token, 8)[0] for token in peer.ntlm_tokens] == ([1] if stage == 1 else [1, 3])
+
+
+def test_smb_ntlmv1_negative_requires_transmitted_type3_and_valid_error(ntlm_server):
+    from spnego._ntlm_raw.messages import Authenticate
+    client = p.Native.ntlm(CREDS, "dc01.example.invalid", "cifs", version=1)
+    peer = RejectSMB(ntlm_server(), 3, SMB_ERROR)
+    assert p.smb_auth(peer, client, "dc01.example.invalid") == {"outcome": "rejected", "proof": "smb:logon_failure"}
+    assert [struct.unpack_from("<I", token, 8)[0] for token in peer.ntlm_tokens] == [1, 3]
+    assert len(Authenticate.unpack(peer.ntlm_tokens[-1]).nt_challenge_response) == 24
+
+
+class RepeatNegotiate:
+    """Keep a real pinned client, but send its actual Type1 again on round two."""
+    def __init__(self, client): self.client = client; self.first = None
+    def step(self, incoming=None):
+        token = self.client.step(incoming)
+        if self.first is None: self.first = token
+        return self.first
+
+
+def test_ldap_round_two_without_authenticate_is_still_unmeasured(ntlm_server):
+    class LateReject(LDAPPeer):
+        def sendall(self, packet):
+            super().sendall(packet)
+            if len(self.ntlm_tokens) == 2:
+                self.pending = p.ber(0x30, p.ber(2, b"\x02") + p.ber(0x61,
+                    p.ber(10, b"\x31") + p.ber(4, b"") + p.ber(4, b"")))
+    peer = LateReject(ntlm_server())
+    client = RepeatNegotiate(p.Native.ntlm(CREDS, "dc01.example.invalid", "ldap"))
+    with pytest.raises(ValueError): p.ldap_bind(peer, client)
+    assert [struct.unpack_from("<I", token, 8)[0] for token in peer.ntlm_tokens] == [1, 1]
+
+
+def test_smb_round_two_without_authenticate_is_still_unmeasured(ntlm_server):
+    class LateReject(RejectSMB):
+        def sendall(self, packet):
+            if self.ntlm_tokens: self.stage = 1
+            super().sendall(packet)
+    client = RepeatNegotiate(p.Native.ntlm(CREDS, "dc01.example.invalid", "cifs", version=1))
+    peer = LateReject(ntlm_server(), 3, SMB_ERROR)
+    with pytest.raises(ValueError): p.smb_auth(peer, client, "dc01.example.invalid")
+    assert [struct.unpack_from("<I", token, 8)[0] for token in peer.ntlm_tokens] == [1, 1]
