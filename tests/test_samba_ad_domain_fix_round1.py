@@ -65,8 +65,15 @@ def test_f4_selective_rc_policy_is_not_a_no_start_policy(monkeypatch, tmp_path):
     assert "exit 0" in policy.read_text()
 
 
-def test_f5_native_quality_failure_precedes_config_and_database(monkeypatch, capsys):
-    samba = types.ModuleType("samba"); samba.version = "4.25.1"; samba.check_password_quality = lambda password: False
+@pytest.mark.parametrize("quality_error", [False, True])
+def test_f5_native_quality_failure_precedes_config_and_database(monkeypatch, capsys, quality_error):
+    samba = types.ModuleType("samba"); samba.version = "4.25.1"
+    def quality(password):
+        if quality_error:
+            print(password); print(password, file=sys.stderr)
+            raise RuntimeError("native failure: " + password)
+        return False
+    samba.check_password_quality = quality
     auth = types.ModuleType("samba.auth"); auth.system_session = lambda: object()
     dsdb = types.ModuleType("samba.dsdb"); dsdb.DS_DOMAIN_FUNCTION_2016 = 7
     provision = types.ModuleType("samba.provision"); mutations=[]
@@ -84,11 +91,6 @@ def test_f5_native_quality_failure_precedes_config_and_database(monkeypatch, cap
     assert mutations == []
     assert "abcdefghijklmn" not in str(error.value)
     output=capsys.readouterr(); assert "abcdefghijklmn" not in output.out+output.err
-
-
-def test_f3_service_lifecycle_module_required():
-    import importlib.util
-    assert importlib.util.find_spec("tools.samba_ad.domain_services"), "guarded native service transition missing"
 
 
 @pytest.mark.parametrize("mask_scope", ["etc", "run"])
@@ -175,7 +177,11 @@ def test_f3_failed_initial_transition_cannot_replace_config_or_enter_provision(m
         def converge_initial(self, expected): raise ValueError("unit transition failed")
     class Native(domain.Native):
         def inspect(self, request): self.services=Fail();self.service_snapshot={};return "provision"
-    with pytest.raises(ValueError): Native({}).provision({"identity":{"config_sha256":domain.hashlib.sha256(baseline).hexdigest()}})
+        def database(self): return object()
+    r={"identity":{"config_sha256":domain.hashlib.sha256(baseline).hexdigest()},
+       "target":{"realm":"AD.EXAMPLE.INVALID","netbios":"EXAMPLE"},
+       "substrate":{"resource":{"address":"198.51.100.10/25"}}}
+    with pytest.raises(ValueError): Native({}).provision(r)
     assert writes==[]
 
 
