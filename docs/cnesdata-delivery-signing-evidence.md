@@ -27,6 +27,27 @@ Decrypt; GenerateDataKey é necessário ao upload atual, não é acrescentado à
 histórica por generalização de directory buckets. `s3:GetObjectVersion` é permissão
 IAM, `head_object/get_object(VersionId=...)` são APIs; não existe `s3:HeadObject`.
 
+## Carrier e procedência
+
+`ext2_transport.py` confere API de attempt, source SHA/caller/reusable distintos,
+closure pinada de fontes e checks; jobs paginados da tentativa exata e step log
+do publisher completo. Nomes apenas selecionam dentro da fonte auditada: duplicidade,
+step errado, produtor incompleto, script/source divergente e ausência de logs recusam.
+O artifact REST não fornece run_attempt; nenhum campo inventado o substitui.
+
+O ZIP público tem só receipt-ref.json com VersionId/hash/tamanho do receipt privado.
+Recomputar hashes distintos de ZIP, member e receipt, sem self-hash. Nunca publicar
+bucket/key/receipt/payload/tokens/URLs no artifact ou log. Cada objeto privado S3
+permanece sujeito ao mesmo readback estrito. Artifact/log têm retenção independente
+de COMPLIANCE S3: ausência/expiração recusa, sem export local como prova.
+
+GET autenticado usa API GitHub versão 2026-03-10, timeout20s, JSON8MiB, jobs256/4páginas,
+step log64KiB, ZIP1MiB, member4KiB. Download permite um redirect HTTPS somente em
+hosts oficiais; bearer fica só em api.github.com e URL assinada nunca é registrada.
+Run corrente pode estar in_progress após publisher success; histórico exige tentativa
+original completed/success e aceitação no catálogo retido. Nenhuma dessas provas é
+fornecida por channel/issuer JSON/result=success ou artifact name.
+
 Fontes: [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html),
 [PutObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html),
 [override de Bucket Keys por objeto](https://docs.aws.amazon.com/AmazonS3/latest/userguide/configuring-bucket-key-object.html),
