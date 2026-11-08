@@ -68,6 +68,26 @@
   loop_control:
     label: "{{ item.key }}"
 
+- name: Validate the opt-in per-interface bridge hashmax map
+  ansible.builtin.assert:
+    that:
+      - proxmox_sdn_bridge_hashmax is mapping
+    fail_msg: "proxmox_sdn_bridge_hashmax must be a mapping of declared VNets to string 4096."
+
+- name: Validate each fixed per-interface bridge hashmax value
+  ansible.builtin.assert:
+    that:
+      - item.key is string
+      - item.key is match('^[a-z][a-z0-9]{1,7}$')
+      - item.key in proxmox_sdn_vnets
+      - item.value is string
+      - item.value == '4096'
+    fail_msg: "Bridge hashmax requires a safe declared VNet name and the fixed string 4096."
+    quiet: true
+  loop: "{{ proxmox_sdn_bridge_hashmax | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Read live cluster status
   ansible.builtin.command:
     argv: [pvesh, get, /cluster/status, --output-format, json]
@@ -168,6 +188,16 @@
   loop_control:
     label: "{{ item.key }}"
 
+- name: Inspect every node's bridge policy before pending reconciliation
+  ansible.builtin.include_tasks: bridge-policy.yml
+  vars:
+    proxmox_sdn_policy_action: inspect
+  loop: "{{ proxmox_sdn_nodes | dict2items }}"
+  loop_control:
+    loop_var: proxmox_sdn_policy_node
+    label: "{{ proxmox_sdn_policy_node.key }}"
+  when: proxmox_sdn_bridge_hashmax | length > 0
+
 - name: Reconcile declared VXLAN zones in the pending SDN configuration
   vars:
     proxmox_sdn_zone_live: >-
@@ -266,6 +296,16 @@
   ansible.builtin.set_fact:
     proxmox_sdn_live_apply: >-
       {{ proxmox_sdn_apply | bool and proxmox_sdn_pending | length > 0 and not ansible_check_mode }}
+
+- name: Install and verify bridge policy serially without requiring pending SDN
+  ansible.builtin.include_tasks: bridge-policy.yml
+  vars:
+    proxmox_sdn_policy_action: install
+  loop: "{{ proxmox_sdn_nodes | dict2items }}"
+  loop_control:
+    loop_var: proxmox_sdn_policy_node
+    label: "{{ proxmox_sdn_policy_node.key }}"
+  when: proxmox_sdn_apply | bool and not ansible_check_mode and proxmox_sdn_bridge_hashmax | length > 0
 
 - name: Back up SDN and node network configuration before applying
   ansible.builtin.command:

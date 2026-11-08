@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -95,6 +96,76 @@ def test_sdn_apply_is_opt_in_and_never_deletes_or_retags():
     assert "proxmox_sdn_live_nodes == proxmox_sdn_nodes" in tasks
     assert "'--vxlan-port'" in tasks or "--vxlan-port" in tasks
     assert "proxmox_sdn_pending | rejectattr('id', 'in', proxmox_sdn_owned)" in tasks
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("pending", [[], [{"id": "vnold"}]])
+@pytest.mark.parametrize("mapping", [{}, {"vnold": "4096"}])
+def test_sdn_policy_flag_pending_action_trace(enabled, apply, check, pending, mapping):
+    tasks = yaml.safe_load(read("roles/proxmox_sdn/tasks/main.yml"))
+    policy_tasks = [t for t in tasks if t.get("ansible.builtin.include_tasks") == "bridge-policy.yml"]
+    assert len(policy_tasks) == 2, "separate all-node preflight and serial installation required"
+    env = jinja2.Environment()
+    env.filters["bool"] = bool
+    context = dict(proxmox_sdn_enabled=enabled, proxmox_sdn_apply=apply,
+                   ansible_check_mode=check, proxmox_sdn_pending=pending,
+                   proxmox_sdn_bridge_hashmax=mapping)
+    decision = next(t for t in tasks if "proxmox_sdn_live_apply" in t.get("ansible.builtin.set_fact", {}))
+    context["proxmox_sdn_live_apply"] = env.from_string(
+        decision["ansible.builtin.set_fact"]["proxmox_sdn_live_apply"]).render(context).strip() == "True"
+    def allowed(task):
+        return enabled and bool(env.compile_expression(task.get("when", "true"))(**context))
+    trace = [t["vars"]["proxmox_sdn_policy_action"] for t in policy_tasks if allowed(t)]
+    assert ("install" in trace) == (enabled and apply and not check and bool(mapping))
+    guarded = [t for t in tasks if t.get("when", "").startswith("proxmox_sdn_live_apply")]
+    assert guarded
+    assert any(allowed(t) for t in guarded) == (enabled and apply and not check and bool(pending))
+    if not pending and "install" in trace:
+        assert not any(allowed(t) for t in guarded), "file-only path reached reload/HA/dead-man"
+    names = [t["name"] for t in tasks]
+    assert tasks.index(policy_tasks[0]) < names.index("Reconcile declared VXLAN zones in the pending SDN configuration")
+    assert names.index("Refuse to apply pending changes the inventory does not own") < tasks.index(policy_tasks[1])
+    assert tasks.index(policy_tasks[1]) < names.index("Back up SDN and node network configuration before applying")
+    assert all("rescue" not in t for t in policy_tasks)
+
+
+@pytest.mark.parametrize("failure", ["install", "verify"])
+def test_sdn_serial_policy_include_stops_before_next_node_on_failure(failure):
+    main = yaml.safe_load(read("roles/proxmox_sdn/tasks/main.yml"))
+    included = yaml.safe_load(read("roles/proxmox_sdn/tasks/bridge-policy.yml"))
+    install = next(t for t in main if t.get("vars", {}).get("proxmox_sdn_policy_action") == "install")
+    assert install["ansible.builtin.include_tasks"] == "bridge-policy.yml"
+    assert install["loop_control"]["loop_var"] == "proxmox_sdn_policy_node"
+    commands = [t for t in included if "ansible.builtin.command" in t]
+    assert len(commands) == 2
+    assert all("loop" not in t and "with_items" not in t for t in commands)
+    assert all("failed_when" in t and not t.get("ignore_errors") and not t.get("rescue") for t in commands)
+    # Local action trace of the parsed sequential include boundary. Ansible's
+    # failed task ends the host's task stream; no command loop can keep writing.
+    trace = []
+    failed = False
+    for node in ["node-a", "node-b", "node-c"]:
+        for action, task in zip(["install", "verify"], commands):
+            trace.append((node, action))
+            if node == "node-b" and action == failure:
+                failed = bool(task["failed_when"])
+                break
+        if failed: break
+    assert trace[-1] == ("node-b", failure)
+    assert not any(node == "node-c" for node, _ in trace)
+
+
+@pytest.mark.parametrize("action,expected", [("inspect", False), ("install", True)])
+def test_sdn_policy_transport_unknown_is_failed_and_install_is_not_reported_unchanged(action, expected):
+    task = yaml.safe_load(read("roles/proxmox_sdn/tasks/bridge-policy.yml"))[0]
+    env = jinja2.Environment()
+    env.filters.update({"bool": bool, "from_json": json.loads})
+    context = {"proxmox_sdn_policy_action": action,
+               "proxmox_sdn_policy_result": {"rc": 255, "stdout": ""}}
+    assert env.compile_expression(task["changed_when"])(**context) is expected
+    assert env.compile_expression(task["failed_when"])(**context) is True
 
 
 def test_sdn_apply_runs_under_the_shared_guard_and_verifies_every_node():

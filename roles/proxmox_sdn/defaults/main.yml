@@ -4,6 +4,7 @@ proxmox_sdn_enabled: false
 # report it; nothing reaches the nodes. true: also apply it (ifreload on every
 # node) under the HA guard and the dead-man timer.
 proxmox_sdn_apply: false
+proxmox_sdn_bridge_hashmax: {}
 
 # Node name -> address. Must equal the live, quorate cluster membership and is
 # the peer list of every VXLAN zone.

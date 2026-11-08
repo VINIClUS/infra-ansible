@@ -1,0 +1,1 @@
+{"bridge":{"iface_defaults":{{ '{' }}{% for name in proxmox_sdn_bridge_hashmax | sort %}"{{ name }}":{"bridge-hashmax":"4096"}{{ "," if not loop.last else "" }}{% endfor %}}}}

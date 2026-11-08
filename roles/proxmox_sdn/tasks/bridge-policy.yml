@@ -1,0 +1,62 @@
+---
+# Included serially per node. An error aborts before the next node/include,
+# outside the existing network rescue (which itself reloads the network).
+- name: Inspect or install the dedicated bridge hashmax policy on this node
+  vars:
+    proxmox_sdn_policy_content: >-
+      {{ (lookup('ansible.builtin.template', 'bridge-hashmax-policy.json.j2') | trim) ~ '\n' }}
+    proxmox_sdn_policy_baseline: >-
+      {{ proxmox_sdn_policy_preflight[proxmox_sdn_policy_node.key]
+         if proxmox_sdn_policy_action == 'install' else {} }}
+    proxmox_sdn_policy_argv: >-
+      {{ ['python3', '-B', '-', proxmox_sdn_policy_action, proxmox_sdn_policy_content,
+          proxmox_sdn_policy_baseline | to_json] }}
+  ansible.builtin.command:
+    argv: >-
+      {{ proxmox_sdn_policy_argv if proxmox_sdn_policy_node.key == ansible_facts['hostname']
+         else (proxmox_sdn_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_sdn_policy_node.key,
+               '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_sdn_policy_node.key ~ '/ssh_known_hosts',
+               'root@' ~ proxmox_sdn_policy_node.value,
+               proxmox_sdn_policy_argv | map('quote') | join(' ')]) }}
+    stdin: "{{ lookup('ansible.builtin.file', 'sdn-bridge-policy.py') }}"
+  register: proxmox_sdn_policy_result
+  # Empty stdout on transport failure cannot establish that an install did not
+  # publish. Conservatively mark it changed and stop; never retry or roll back.
+  changed_when: >-
+    proxmox_sdn_policy_action == 'install' and
+    ((proxmox_sdn_policy_result.rc != 0 and proxmox_sdn_policy_result.stdout | trim | length == 0)
+     or (proxmox_sdn_policy_result.stdout | from_json).changed | bool)
+  failed_when: >-
+    proxmox_sdn_policy_result.rc != 0 or
+    (proxmox_sdn_policy_result.stdout | from_json).error is not none
+  check_mode: false
+
+- name: Save this node's read-only policy preflight
+  ansible.builtin.set_fact:
+    proxmox_sdn_policy_preflight: >-
+      {{ proxmox_sdn_policy_preflight | default({}) | combine({
+          proxmox_sdn_policy_node.key: proxmox_sdn_policy_result.stdout | from_json}) }}
+  when: proxmox_sdn_policy_action == 'inspect'
+
+- name: Verify this node's installed policy and hash-bound getter before continuing
+  vars:
+    proxmox_sdn_policy_content: >-
+      {{ (lookup('ansible.builtin.template', 'bridge-hashmax-policy.json.j2') | trim) ~ '\n' }}
+    proxmox_sdn_policy_argv: >-
+      {{ ['python3', '-B', '-', 'verify', proxmox_sdn_policy_content,
+          proxmox_sdn_policy_preflight[proxmox_sdn_policy_node.key] | to_json] }}
+  ansible.builtin.command:
+    argv: >-
+      {{ proxmox_sdn_policy_argv if proxmox_sdn_policy_node.key == ansible_facts['hostname']
+         else (proxmox_sdn_peer_ssh_base + ['-o', 'HostKeyAlias=' ~ proxmox_sdn_policy_node.key,
+               '-o', 'UserKnownHostsFile=/etc/pve/nodes/' ~ proxmox_sdn_policy_node.key ~ '/ssh_known_hosts',
+               'root@' ~ proxmox_sdn_policy_node.value,
+               proxmox_sdn_policy_argv | map('quote') | join(' ')]) }}
+    stdin: "{{ lookup('ansible.builtin.file', 'sdn-bridge-policy.py') }}"
+  register: proxmox_sdn_policy_verified
+  changed_when: false
+  failed_when: >-
+    proxmox_sdn_policy_verified.rc != 0 or
+    (proxmox_sdn_policy_verified.stdout | from_json).error is not none
+  check_mode: false
+  when: proxmox_sdn_policy_action == 'install'
