@@ -19,6 +19,7 @@ def module(tmp_path, monkeypatch):
     spec.loader.exec_module(m)
     monkeypatch.setattr(m, "NETWORK", tmp_path / "05-samba-ad-identity.network")
     monkeypatch.setattr(m, "LINK", tmp_path / "05-samba-ad-identity.link")
+    monkeypatch.setattr(m, "PENDING", tmp_path / "policy-pending.json")
     monkeypatch.setattr(m, "SYS_CLASS_NET", tmp_path / "sys-class-net")
     # Ownership is real on production (root); the fixture also works unprivileged.
     monkeypatch.setattr(m, "OWNER", (os.getuid(), os.getgid()))
@@ -67,6 +68,51 @@ def test_install_readbacks_both_files_before_reload_and_verify_is_readonly(tmp_p
     assert len(calls) == 1
 
 
+def test_install_write_failure_never_leaves_a_partial_final_file(tmp_path, monkeypatch):
+    m = module(tmp_path, monkeypatch)
+    r, network = inputs()
+    original_fsync = m.os.fsync
+    calls = 0
+
+    def fail_first_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated ENOSPC")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(m.os, "fsync", fail_first_fsync)
+    with pytest.raises(OSError, match="ENOSPC"):
+        m.install(r, network)
+    assert not m.NETWORK.exists()
+    assert not m.LINK.exists()
+    assert not list(tmp_path.glob(".05-samba-ad-identity.*"))
+
+
+def test_install_publish_failure_leaves_only_complete_file_for_standalone_rollback(tmp_path, monkeypatch):
+    m = module(tmp_path, monkeypatch)
+    r, network = inputs()
+    original_link = m.os.link
+
+    def fail_second_publish(source, destination, *args, **kwargs):
+        if destination == m.LINK:
+            raise OSError("simulated publish collision")
+        return original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(m.os, "link", fail_second_publish)
+    with pytest.raises(OSError, match="publish collision"):
+        m.install(r, network)
+    assert m.owned(m.NETWORK, m.expected_files(r, network)[m.NETWORK]) is not None
+    assert not m.LINK.exists()
+    assert not list(tmp_path.glob(".05-samba-ad-identity.*"))
+
+    calls = []
+    monkeypatch.setattr(m, "command", calls.append)
+    m.rollback(r, network)
+    assert not m.NETWORK.exists() and not m.LINK.exists()
+    assert calls == [["networkctl", "reload"]]
+
+
 @pytest.mark.parametrize("file", ["NETWORK", "LINK"])
 @pytest.mark.parametrize("kind", ["foreign", "symlink", "directory", "mode", "owner", "hardlink"])
 def test_foreign_or_drifted_file_blocks_install_and_verify_before_mutation(tmp_path, monkeypatch, file, kind):
@@ -109,6 +155,61 @@ def test_rollback_handles_partial_presence_and_repeat_without_touching_old_files
     count = len(calls)
     m.rollback(r, network)
     assert len(calls) == count
+
+
+@pytest.mark.parametrize("failed_reload", ["network", "link"])
+def test_rollback_persists_pending_reload_and_retries_only_failed_subsystem(tmp_path, monkeypatch, failed_reload):
+    m = module(tmp_path, monkeypatch)
+    owned(m)
+    r, network = inputs()
+    calls = []
+    failed = {failed_reload: True}
+
+    def command(argv):
+        calls.append(argv)
+        subsystem = "network" if argv[0] == "networkctl" else "link"
+        if subsystem == failed_reload and failed[subsystem]:
+            failed[subsystem] = False
+            raise m.subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(m, "command", command)
+    with pytest.raises(m.subprocess.CalledProcessError):
+        m.rollback(r, network)
+    assert m.PENDING.exists()
+    assert calls == [["networkctl", "reload"], ["udevadm", "control", "--reload"]]
+
+    calls.clear()
+    m.rollback(r, network)
+    assert calls == ([ ["networkctl", "reload"] ] if failed_reload == "network"
+                     else [["udevadm", "control", "--reload"]])
+    assert not m.PENDING.exists()
+
+    calls.clear()
+    m.rollback(r, network)
+    assert calls == []
+
+
+def test_rollback_interruption_retains_pending_state_for_a_later_standalone_retry(tmp_path, monkeypatch):
+    m = module(tmp_path, monkeypatch)
+    owned(m)
+    r, network = inputs()
+    calls = []
+
+    def interrupted(argv):
+        calls.append(argv)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(m, "command", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        m.rollback(r, network)
+    assert not m.NETWORK.exists() and not m.LINK.exists()
+    assert m.PENDING.exists()
+
+    calls.clear()
+    monkeypatch.setattr(m, "command", calls.append)
+    m.rollback(r, network)
+    assert calls == [["networkctl", "reload"], ["udevadm", "control", "--reload"]]
+    assert not m.PENDING.exists()
 
 
 def test_rollback_checks_actual_name_mac_before_down_or_deletion(tmp_path, monkeypatch):
