@@ -38,6 +38,42 @@ disconnect its guests).
   reachable node; HA stays disarmed and the cluster running configuration still
   holds the declared objects for a manual decision.
 
+## Optional bridge hashmax persistence
+
+`proxmox_sdn_bridge_hashmax: {}` is empty by default. An explicitly declared
+VNet may opt into the fixed string value, for example:
+
+```yaml
+proxmox_sdn_bridge_hashmax:
+  vnold: "4096"
+```
+
+The role inspects every declared node before pending reconciliation. Only
+`proxmox_sdn_apply: true` outside check mode installs the dedicated root-owned
+0644 `/etc/network/ifupdown2/policy.d/90-sdn-existing-bridge-hashmax.json`.
+Installation does not depend on pending SDN changes: with no pending changes it
+only writes and verifies this policy file, without backup, HA, dead-man or
+reload tasks. Staging and check mode inspect only; disabling the role skips it.
+An empty map neither installs nor removes a policy.
+
+The streamed Python helper checks the audited installed loader/addon hashes,
+policy metadata, existing policy JSON and fingerprints before writing. It stops
+for any other user `bridge.iface_defaults` subtree, including disjoint names:
+the installed loader merges module dictionaries shallowly in unsorted order.
+It never replaces an unmanaged destination or merges another file. An exact
+already-managed file is unchanged. Publication uses an exclusive temporary and
+an atomic no-replace rename; a competing arrival stops the write. Failures stop
+before the next node and before the guarded network apply path. A published
+file remains in place on a later fsync/readback failure, reported as changed
+with an error; earlier successful nodes are not automatically rolled back.
+
+Getter verification executes only the hash-verified standalone PolicyManager.
+It requires target values to be string `4096`, preserves non-target/global
+fallbacks, other files and generated network file hashes, and imports no bridge
+addon. This proves loader acceptance of a persistent file. It does not prove a
+future reload or live multicast state; those require separately reviewed
+runtime evidence and authorization.
+
 ## Usage
 
 ```bash
