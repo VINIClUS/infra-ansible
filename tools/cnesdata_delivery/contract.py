@@ -368,7 +368,10 @@ def redacted_plan(raw, source_sha, purpose):
         address = item["address"]
         # Instance keys can be private topology. Shape + commitment preserve review
         # utility without publishing any physical key, value, ARN or runtime ID.
-        changes.append({"address_shape": re.sub(r"\[[^]]*\]", "[redacted]", address),
+        shape = re.sub(r'\[(?:"(?:\\.|[^"\\])*"|[0-9]+)\]', "[redacted]", address)
+        require(re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[redacted\][A-Za-z0-9_.-]*)*", shape),
+                "unsafe/unparsed address shape")
+        changes.append({"address_shape": shape,
                         "address_sha256": sha(address.encode()), "type": item["type"],
                         "actions": item["change"]["actions"]})
     changes.sort(key=lambda item: (item["address_shape"], item["address_sha256"]))

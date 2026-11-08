@@ -580,6 +580,15 @@ def test_r2_candidate_preserves_existing_canonical_number_spelling(contract):
         contract.r2_candidate(raw.replace(b"1e-07", b"0.0000001"))
 
 
+def test_redacted_address_hides_brackets_and_escaped_quotes_inside_keys(contract):
+    address = "module.root[" + json.dumps("private]suffix") + "].aws_example.test[" + json.dumps('private"quote]suffix') + "]"
+    raw = contract.canonical({"resource_changes": [{"address": address, "type": "aws_example",
+        "change": {"actions": ["create"]}}]})
+    result = contract.loads(contract.redacted_plan(raw, "a" * 40, "bootstrap"))
+    assert result["changes"][0]["address_shape"] == "module.root[redacted].aws_example.test[redacted]"
+    assert "private" not in contract.canonical(result).decode()
+
+
 @pytest.mark.parametrize("mutation", [None, "state", "coordination", "binding"])
 def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tmp_path, contract, mutation):
     from types import SimpleNamespace
