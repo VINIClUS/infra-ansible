@@ -1,0 +1,26 @@
+{
+  "nmbd.service": {
+    "text": "[Unit]\nDescription=Samba NMB Daemon\nDocumentation=man:nmbd(8) man:samba(7) man:smb.conf(5)\nWants=network-online.target\nAfter=network.target network-online.target\n\n[Service]\nType=notify\nPIDFile=/run/samba/nmbd.pid\nEnvironment=NMBDOPTIONS=\nEnvironmentFile=-/etc/default/samba\nExecStart=/usr/sbin/nmbd --foreground --no-process-group $NMBDOPTIONS\nExecReload=/bin/kill -HUP $MAINPID\nLimitCORE=infinity\nExecCondition=/usr/share/samba/is-configured nmb\n\n[Install]\nWantedBy=multi-user.target\n# Upstream name:\nAlias=nmb.service\n",
+    "package": "samba",
+    "package_sha256": "0f558137cb6c5063e72495fc89332eeafafd124c55cf4645b72c2e32b8678225",
+    "package_size": 1230888
+  },
+  "smbd.service": {
+    "text": "[Unit]\nDescription=Samba SMB Daemon\nDocumentation=man:smbd(8) man:samba(7) man:smb.conf(5)\nWants=network-online.target\nAfter=network.target network-online.target nmb.service winbind.service\n\n[Service]\nType=notify\nPIDFile=/run/samba/smbd.pid\nLimitNOFILE=16384\nEnvironment=SMBDOPTIONS=\nEnvironmentFile=-/etc/default/samba\nExecStartPre=/usr/share/samba/update-apparmor-samba-profile\nExecStart=/usr/sbin/smbd --foreground --no-process-group $SMBDOPTIONS\nExecReload=/bin/kill -HUP $MAINPID\nLimitCORE=infinity\nExecCondition=/usr/share/samba/is-configured smb\n\n[Install]\nWantedBy=multi-user.target\n# Upstream name:\nAlias=smb.service\n",
+    "package": "samba",
+    "package_sha256": "0f558137cb6c5063e72495fc89332eeafafd124c55cf4645b72c2e32b8678225",
+    "package_size": 1230888
+  },
+  "samba-ad-dc.service": {
+    "text": "[Unit]\nDescription=Samba AD Daemon\nDocumentation=man:samba(8) man:samba(7) man:smb.conf(5)\nWants=network-online.target\nAfter=network.target network-online.target\n\n[Service]\nType=notify\nPIDFile=/run/samba/samba.pid\nLimitNOFILE=16384\nEnvironment=SAMBAOPTIONS=\nEnvironmentFile=-/etc/default/samba\nExecStart=/usr/sbin/samba --foreground --no-process-group $SAMBAOPTIONS\nExecReload=/bin/kill -HUP $MAINPID\nExecCondition=/usr/share/samba/is-configured samba\n\n[Install]\nWantedBy=multi-user.target\n# Upstream name:\nAlias=samba.service\n",
+    "package": "samba-ad-dc",
+    "package_sha256": "060b60633778b00cf957d270c4eba8bb1e51efbb2dcc1c74d63c7706f778e77b",
+    "package_size": 81444
+  },
+  "winbind.service": {
+    "text": "[Unit]\nDescription=Samba Winbind Daemon\nDocumentation=man:winbindd(8) man:samba(7) man:smb.conf(5)\nAfter=network.target nmbd.service\nBefore=nss-user-lookup.target\n\n[Service]\nType=notify\nPIDFile=/run/samba/winbindd.pid\nEnvironment=WINBINDOPTIONS=\nEnvironmentFile=-/etc/default/samba\nExecStart=/usr/sbin/winbindd --foreground --no-process-group $WINBINDOPTIONS\nExecReload=/bin/kill -HUP $MAINPID\nLimitCORE=infinity\nExecCondition=/usr/share/samba/is-configured winbind\n\n[Install]\nWantedBy=multi-user.target\n",
+    "package": "winbind",
+    "package_sha256": "49176b0ca78df50cc619c7f2ef4acb681ebe1a68c7475057b7b6535b30bde03d",
+    "package_size": 436452
+  }
+}

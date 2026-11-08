@@ -1,0 +1,173 @@
+"""F1-F5 source regressions. No host install, services, secrets or native Samba."""
+import io
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+import types
+import pytest
+from tools.samba_ad import domain, domain_source as source
+
+FIXTURE = Path(__file__).parent / "fixtures/samba_ad_vendor_runtime.json"
+
+def metadata(): return json.loads(FIXTURE.read_text())
+def pins(): return {r["Package"]: r["Version"] for r in metadata()}
+
+def test_f1_five_packages_do_not_cover_runtime():
+    incomplete = {n: v for n, v in pins().items() if n in ["samba", "samba-ad-dc", "python3-samba", "libldb2", "python3-ldb"]}
+    with pytest.raises(ValueError): source.validate_pins(incomplete)
+
+
+def test_f1_authenticated_edges_and_base_constraints_are_distinct():
+    plan = source.dependency_plan(metadata(), pins())
+    assert set(plan["vendor"]) == set(pins())
+    assert "libngtcp2-16" in plan["vendor"]
+    assert not any(term[0] in ["libndr6", "libsmbldap2"] for group in plan["base"] for term in group)
+    assert any(term[0] == "python3" and term[1:] == ("<<", "3.14") for group in plan["base"] for term in group)
+    changed = pins(); changed["samba-libs"] = "2:4.25.1+dfsg-99"
+    with pytest.raises(ValueError): source.dependency_plan(metadata(), changed)
+    for missing in ["samba-dsdb-modules", "libtalloc2", "python3-tdb"]:
+        changed = pins(); changed.pop(missing)
+        with pytest.raises(ValueError): source.dependency_plan(metadata(), changed)
+
+
+def test_f2_modified_provision_ldif_refused_before_any_write(monkeypatch, tmp_path):
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w") as tar:
+        entry = tarfile.TarInfo("./usr/share/samba/setup/provision_users.ldif")
+        payload = b"signed provisioning input"; entry.size = len(payload)
+        tar.addfile(entry, io.BytesIO(payload))
+    monkeypatch.setattr(source, "verified_archives", lambda _: [("samba-ad-provision", "4.25.1", tmp_path / "test.deb")])
+    monkeypatch.setattr(source, "verify_base_dependencies", lambda _: None, raising=False)
+    def command(argv):
+        if argv[0] == "dpkg-query": return b"installed 4.25.1"
+        assert argv[:2] == ["dpkg-deb", "--fsys-tarfile"]
+        return data.getvalue()
+    monkeypatch.setattr(source, "command", command)
+    class Changed:
+        def read_bytes(self): return b"modified schema/LDIF"
+    monkeypatch.setattr(source, "secure_file", lambda *a, **kw: Changed())
+    with pytest.raises(ValueError): source.verify_installed({})
+
+
+def test_f4_selective_rc_policy_is_not_a_no_start_policy(monkeypatch, tmp_path):
+    policy = tmp_path / "policy-rc.d"
+    policy.write_text('#!/bin/sh\n[ "$1 $2" = "samba-ad-dc start" ] && exit 101\nexit 0\n'); policy.chmod(0o700)
+    monkeypatch.setattr(source, "secure_file", lambda *a, **kw: policy)
+    monkeypatch.setattr(source, "verified_archives", lambda _: [])
+    monkeypatch.setattr(source, "verify_base_dependencies", lambda _: None, raising=False)
+    monkeypatch.setattr(source, "verify_installed", lambda _: None)
+    monkeypatch.setattr(source.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 101, b"", b""))
+    writes=[]; monkeypatch.setattr(source, "command", lambda argv: writes.append(argv))
+    with pytest.raises(ValueError): source.install({"fingerprint": domain.CANDIDATE_PRIMARY, "key_sha256": domain.CANDIDATE_KEY_SHA256})
+    assert writes == []
+    assert "exit 0" in policy.read_text()
+
+
+@pytest.mark.parametrize("quality_error", [False, True])
+def test_f5_native_quality_failure_precedes_config_and_database(monkeypatch, capsys, quality_error):
+    samba = types.ModuleType("samba"); samba.version = "4.25.1"
+    def quality(password):
+        if quality_error:
+            print(password); print(password, file=sys.stderr)
+            raise RuntimeError("native failure: " + password)
+        return False
+    samba.check_password_quality = quality
+    auth = types.ModuleType("samba.auth"); auth.system_session = lambda: object()
+    dsdb = types.ModuleType("samba.dsdb"); dsdb.DS_DOMAIN_FUNCTION_2016 = 7
+    provision = types.ModuleType("samba.provision"); mutations=[]
+    provision.provision = lambda *args, **kwargs: mutations.append("database")
+    for m in [samba, auth, dsdb, provision]: monkeypatch.setitem(sys.modules, m.__name__, m)
+    class Weak:
+        def read_text(self): return "abcdefghijklmn\n"
+    monkeypatch.setattr(domain, "secure_file", lambda *a, **kw: Weak())
+    class Native(domain.Native):
+        def inspect(self, request): return "provision"
+        def prepare_config(self, request): mutations.append("config")
+        def database(self): return object()
+    r={"target":{"realm":"AD.EXAMPLE.INVALID","netbios":"EXAMPLE"},"substrate":{"resource":{"address":"198.51.100.10/25"}}}
+    with pytest.raises(ValueError) as error: Native({}).provision(r)
+    assert mutations == []
+    assert "abcdefghijklmn" not in str(error.value)
+    output=capsys.readouterr(); assert "abcdefghijklmn" not in output.out+output.err
+
+
+
+
+def test_f1_base_python_bounds_and_libc_are_checked_separately(monkeypatch,tmp_path):
+    payload="\n\n".join("\n".join(f"{k}: {v}" for k,v in row.items()) for row in metadata()).encode()
+    path=tmp_path/"Packages"; path.write_bytes(payload);path.chmod(0o600)
+    spec={"directory":str(tmp_path),"packages":pins(),"packages_sha256":source.hashlib.sha256(payload).hexdigest()}
+    versions={"python3":"3.13.5"}; real_run=source.subprocess.run
+    def run(argv,**kwargs):
+        if argv[0]=="dpkg-query": return subprocess.CompletedProcess(argv,0,("installed "+versions.get(argv[-1],"999:999")).encode(),b"")
+        assert argv[:2]==["dpkg","--compare-versions"]
+        return real_run(argv,**kwargs)
+    monkeypatch.setattr(source.subprocess,"run",run)
+    source.verify_base_dependencies(spec)
+    versions["python3"]="3.14.0"
+    with pytest.raises(ValueError): source.verify_base_dependencies(spec)
+    versions["python3"]="3.13.5";versions["libc6"]="2.37"
+    with pytest.raises(ValueError): source.verify_base_dependencies(spec)
+
+
+def test_f3_failed_initial_transition_cannot_replace_config_or_enter_provision(monkeypatch):
+    from tools.samba_ad import pki_files
+    samba = types.ModuleType("samba"); samba.version="4.25.1"; samba.check_password_quality=lambda _: True
+    auth=types.ModuleType("samba.auth");auth.system_session=lambda:object()
+    dsdb=types.ModuleType("samba.dsdb");dsdb.DS_DOMAIN_FUNCTION_2016=7
+    provision=types.ModuleType("samba.provision");writes=[]
+    provision.provision=lambda *a,**kw:writes.append("database")
+    for m in [samba,auth,dsdb,provision]: monkeypatch.setitem(sys.modules,m.__name__,m)
+    baseline=b"reviewed baseline"
+    class Protected:
+        def read_text(self): return "Strong_SYNTHETIC_123!"
+        def read_bytes(self): return baseline
+    monkeypatch.setattr(domain,"secure_file",lambda *a,**kw:Protected())
+    monkeypatch.setattr(pki_files,"atomic_file",lambda *a,**kw:writes.append("config"))
+    class Fail:
+        def converge_initial(self, expected): raise ValueError("unit transition failed")
+    class Native(domain.Native):
+        def inspect(self, request): self.services=Fail();self.service_snapshot={};return "provision"
+        def database(self): return object()
+    r={"identity":{"config_sha256":domain.hashlib.sha256(baseline).hexdigest()},
+       "target":{"realm":"AD.EXAMPLE.INVALID","netbios":"EXAMPLE"},
+       "substrate":{"resource":{"address":"198.51.100.10/25"}}}
+    with pytest.raises(ValueError): Native({}).provision(r)
+    assert writes==[]
+
+
+def test_f4_canonical_deny_all_preserved_and_all_service_actions_denied(monkeypatch,tmp_path):
+    policy=tmp_path/"policy-rc.d";policy.write_bytes(source.DENY_ALL_POLICY);policy.chmod(0o700)
+    monkeypatch.setattr(source,"secure_file",lambda *a,**kw:policy)
+    monkeypatch.setattr(source,"verified_archives",lambda _:[])
+    monkeypatch.setattr(source,"verify_base_dependencies",lambda _:None)
+    monkeypatch.setattr(source,"verify_installed",lambda _:None)
+    probes=[]
+    def run(argv,**kwargs): probes.append(argv[1:]);return subprocess.CompletedProcess(argv,101,b"",b"")
+    monkeypatch.setattr(source.subprocess,"run",run)
+    installs=[];monkeypatch.setattr(source,"command",lambda argv:installs.append(argv))
+    source.install({"fingerprint":domain.CANDIDATE_PRIMARY,"key_sha256":domain.CANDIDATE_KEY_SHA256})
+    assert {tuple(v) for v in probes}=={(s,a) for s in ["samba","samba-ad-dc","smbd","nmbd","winbind"] for a in ["start","stop","restart","reload","force-reload","try-restart","reload-or-restart","try-reload-or-restart"]}
+    assert installs==[["dpkg","--install"]]
+    assert policy.read_bytes()==source.DENY_ALL_POLICY
+
+
+def test_f2_signed_hardlinked_provision_data_are_verified(monkeypatch,tmp_path):
+    data=io.BytesIO();payload=b"immutable shared schema"
+    with tarfile.open(fileobj=data,mode="w") as tar:
+        original=tarfile.TarInfo("./usr/share/samba/setup/schema.ldif");original.size=len(payload)
+        tar.addfile(original,io.BytesIO(payload))
+        alias=tarfile.TarInfo("./usr/share/samba/setup/schema-alias.ldif");alias.type=tarfile.LNKTYPE;alias.linkname=original.name
+        tar.addfile(alias)
+    monkeypatch.setattr(source,"verified_archives",lambda _:[("samba-ad-provision","4.25.1",tmp_path/"test.deb")])
+    monkeypatch.setattr(source,"verify_base_dependencies",lambda _:None)
+    monkeypatch.setattr(source,"command",lambda argv:b"installed 4.25.1" if argv[0]=="dpkg-query" else data.getvalue())
+    reads=[]
+    class Signed:
+        def read_bytes(self):return payload
+    def read(path,**kwargs):reads.append(str(path));return Signed()
+    monkeypatch.setattr(source,"secure_file",read)
+    source.verify_installed({})
+    assert set(reads)=={"/usr/share/samba/setup/schema.ldif","/usr/share/samba/setup/schema-alias.ldif"}
