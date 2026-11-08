@@ -136,8 +136,17 @@
       ansible.builtin.command:
         argv: [python3, /root/samba-ad-s1-router/router_nic.py]
         stdin: "{{ samba_ad_router_nic_request | to_json }}"
-      changed_when: true
+      register: samba_ad_router_nic_apply_result
+      changed_when: >-
+        (samba_ad_router_nic_apply_result | samba_ad_router_nic_result('apply')).mutation_attempted is not sameas false
       no_log: true
+
+    - name: Require verified safe hotplug evidence before continuing
+      ansible.builtin.assert:
+        that:
+          - (samba_ad_router_nic_apply_result | samba_ad_router_nic_result('apply')).success
+        quiet: true
+        fail_msg: "NIC helper evidence is missing or invalid; recovery remains required."
 
     - name: Wait for the new device then prove MAC PCI identity and unchanged old network
       ansible.builtin.include_tasks: readback.yml
@@ -208,8 +217,10 @@
       ansible.builtin.command:
         argv: [sh, /root/samba-ad-s1-network/revert.sh]
       delegate_to: "{{ samba_ad_router_nic_guest_host }}"
-      changed_when: true
+      register: samba_ad_router_nic_guest_recovery_result
+      changed_when: samba_ad_router_nic_guest_recovery_result.rc | default(-1) == 0
       failed_when: false
+      no_log: true
 
     - name: Remove only the exact additional QEMU NIC
       ansible.builtin.command:
@@ -219,11 +230,20 @@
           - >-
             python3 /root/samba-ad-s1-router/router_nic.py --revert
             < /root/samba-ad-s1-router/request.json
-      changed_when: true
+      register: samba_ad_router_nic_recovery_result
+      changed_when: >-
+        (samba_ad_router_nic_recovery_result
+         | samba_ad_router_nic_result('revert')).mutation_attempted is not sameas false
       failed_when: false
+      no_log: true
 
     - name: Fail with timers retained for unreachable endpoints
       ansible.builtin.fail:
         msg: >-
           S1 extension failed; exact-interface recovery attempted; timers remain armed.
+          Hotplug={{ samba_ad_router_nic_apply_result | default({}) | samba_ad_router_nic_result('apply') | to_json }}.
+          Guest recovery={{ samba_ad_router_nic_guest_recovery_result | default({})
+            | samba_ad_router_command_result | to_json }}.
+          NIC recovery={{ samba_ad_router_nic_recovery_result | default({})
+            | samba_ad_router_nic_result('revert') | to_json }}.
           Use the verified console or independent PVE/QGA management recovery.

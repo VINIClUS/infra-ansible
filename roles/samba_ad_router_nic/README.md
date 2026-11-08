@@ -83,6 +83,15 @@ transforma falha SSH em sucesso automático. Reobservar endereços/rotas/políti
 antigos por QGA e provar SSH novo antes de desarmar proteção. Nenhuma destas
 reversões foi executada pelos testes simulados.
 
+O PUT síncrono do helper aceita stdout informacional somente após rc zero e
+exige readback de config current, pending e tap. GET e QGA mantêm JSON estrito.
+Hotplug e rescue preservam `no_log`; o relatório de falha publica apenas um
+schema fechado de fase, categoria, rc, tentativa de escrita e readback. Retorno
+ausente, truncado ou inválido significa estado `unknown` e impede continuar a
+extensão. `state=absent` do rescue NIC comprova somente a ausência verificada da
+NIC; o rc do rescue guest não comprova recuperação da rede. Os timers e a
+verificação independente continuam necessários, mesmo após rescue bem-sucedido.
+
 A política completa `network_router` é uma etapa separada: além do nft, pode
 alterar o override netplan, executar netplan generate/networkctl reload e conferir
 ou alterar pacotes/sysctl/DNS/serviços. Revisar o footprint inteiro e a reversão
