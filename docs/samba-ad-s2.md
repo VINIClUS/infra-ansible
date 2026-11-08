@@ -142,6 +142,25 @@ ordenadas dos hashes originais; não representam um único helper/parecer novo.
 O header registra a revisão da agregação, permitindo que o LXC tenha sido medido
 antes da implementação QEMU. Os originais continuam necessários para auditoria.
 
+Antes de contar um placement, a agregação revalida o protocolo fechado da origem,
+não apenas o envelope genérico. QEMU exige capturas antes/depois coerentes com
+node/VMID/spec/config/template, boot/UUID e filesystem; `before.probe_request`
+registra o request enviado ao helper, incluindo run_id, nonce, identidade e
+resource, separadamente da resposta. O resultado deve corresponder a esse
+request e aos checks/cleanup externos, com resumos tipados de cada medição.
+Laudos QEMU antigos sem esse request gravado são recusados; não completar o
+campo retrospectivamente a partir da resposta. Preservar o original e produzir
+uma nova medição em execução autorizada.
+A primeira prova LXC mantém seu protocolo original: run_id, snapshots e resultado
+são validados pelos validadores LXC, com VMID/init/starttime/NSpid, namespaces,
+hostname, boot, uid_map/AppArmor e filesystem estáveis. Os campos do subject
+node/spec/config/template e a política devem corresponder ao request S1 da
+origem. Não exige nonce/UUID QEMU nem compara namespaces entre kernels.
+Traços ausentes, campos desconhecidos ou contradições são recusados. Resultados
+operacionais coerentes e completos permanecem pending; falhas posteriores que
+invalidam as capturas ou contradizem o resultado também impedem a agregação.
+Nenhum readback atual de ausência reconstrói uma medição histórica, e os hashes
+preservados demonstram integridade/coerência, não atestação externa da origem.
 Só a incompatibilidade LXC preservada permite seleção qemu. Apenas dois nós
 distintos com todos os MINIMUM reais e cleanup completo dão `qemu_substrate`.
 Um nó ou qualquer erro permanece pending. O mesmo writer exclusivo 0600/fsync

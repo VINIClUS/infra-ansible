@@ -20,9 +20,11 @@ import uuid
 try:
     import s2_guest as guest
     import s2_compatibility as evidence
+    import s2_probe_runner as lxc_probe
 except ImportError:
     import guest
     import compatibility as evidence
+    import probe_runner as lxc_probe
 
 CHECKS = ["security_ntacl", "posix_acl", "systemd", "clock", "audit", "isolation", "network"]
 
@@ -201,6 +203,8 @@ def run(payload, api, transport, probe_source):
     try:
         expectation = {"run_id": payload["run_id"], "nonce": secrets.token_hex(16), "guest": before["guest"],
                        "host_boot_id": before["host_boot_id"], "resource": r["resource"]}
+        # Preserve the sent expectation independently of the returned nonce/result.
+        report["observations"]["probe"]["before"]["probe_request"] = copy.deepcopy(expectation)
         rc, response = transport.execute(r, probe_source, expectation)
         result = checked_result(report, expectation["nonce"], rc, response)
         report["observations"]["probe"]["result"] = result
@@ -217,6 +221,96 @@ def run(payload, api, transport, probe_source):
         # Retain measurements in observations; invalidate qualification after any drift/error.
         report["checks"] = [{"name": "isolation", "subject": "probe", "status": "operational_error", "attempts": []}]
     return {"state": "measured", "status": status, "report": evidence.validate_report(report)}
+
+
+def checked_measurements(result, r, before, after):
+    """Validate recorded QEMU summaries without rerunning native measurements."""
+    for name, value in result["measurements"].items():
+        if name == "systemd":
+            evidence.fields(value, "pid1 state")
+            evidence.require(value == {"pid1": "systemd", "state": "running"})
+        elif name == "clock":
+            evidence.fields(value, "ntp_synchronized realtime_ns monotonic_ns")
+            evidence.require(value["ntp_synchronized"] is True)
+            evidence.require(all(type(value[k]) is int and value[k] >= 0
+                                 for k in ["realtime_ns", "monotonic_ns"]))
+            evidence.require(before["clock"]["host_start_ns"] - 2_000_000_000 <= value["realtime_ns"]
+                             <= after["clock"]["host_end_ns"] + 2_000_000_000)
+        elif name == "audit":
+            evidence.fields(value, "enabled failure listener_pid rate_limit backlog_limit lost backlog")
+            evidence.require(all(type(v) is int and v >= 0 for v in value.values()))
+            evidence.require(value["enabled"] in [1, 2] and value["failure"] in [1, 2]
+                             and value["listener_pid"] > 0 and value["backlog_limit"] > 0 and value["lost"] == 0)
+        elif name == "isolation":
+            evidence.fields(value, "vm container kernel")
+            evidence.require(value["vm"] in ["qemu", "kvm"] and value["container"] == "none"
+                             and value["kernel"] == before["guest"]["kernel"])
+        elif name == "network":
+            evidence.fields(value, "interface address mac mtu gateway")
+            evidence.require(isinstance(value["interface"], str) and bool(value["interface"])
+                             and value["interface"] != "lo" and type(value["mtu"]) is int)
+            evidence.require(isinstance(value["mac"], str) and value["mac"].lower() == r["resource"]["mac"].lower())
+            evidence.require(all(value[k] == r["resource"][k] for k in ["address", "mtu", "gateway"]))
+
+
+def checked_source_trace(source, r):
+    """Bind a closed source protocol to its original report and S1 generation."""
+    subject = source["subjects"][0]
+    evidence.require(subject["key"] == "probe")
+    trace = source["observations"]["probe"]
+    before, after, value = trace["before"], trace["after"], trace["result"]
+    evidence.require(isinstance(after, dict) and isinstance(value, dict))
+    fingerprint = source["platform_fingerprint"]
+    kind = subject["kind"]
+    evidence.require(fingerprint["policy_sha256"] == evidence.sha(r["firewall"]))
+    evidence.require(set(fingerprint["nodes"]) == {r["resource"]["node"], r["template"]["node"]})
+    evidence.require(fingerprint["templates"] == [subject["template"]])
+    evidence.require(fingerprint["isolation"] == ("qemu-no-passthrough" if kind == "qemu"
+                                                else "lxc-unprivileged-apparmor"))
+    if kind == "qemu":
+        evidence.fields(before, "guest qga host_boot_id clock probe_request")
+        capture = {k: v for k, v in before.items() if k != "probe_request"}
+        checked_capture(capture, r, fingerprint["filesystem"])
+        checked_capture(after, r, fingerprint["filesystem"])
+        evidence.require(all(before[k] == after[k] for k in ["guest", "qga", "host_boot_id"]))
+        expectation = before["probe_request"]
+        evidence.fields(expectation, "run_id nonce guest host_boot_id resource")
+        evidence.hex_value(expectation["nonce"], 32)
+        evidence.require(expectation == {"run_id": source["run_id"], "nonce": expectation["nonce"],
+                                         "guest": before["guest"], "host_boot_id": before["host_boot_id"],
+                                         "resource": r["resource"]})
+        evidence.require(value.get("status") in ["passed", "operational_error"])
+        result = checked_result(source, expectation["nonce"], 0 if value["status"] == "passed" else 2, value)
+        checked_measurements(result, r, before, after)
+    else:
+        evidence.fields(before, "guest host_namespaces host_anchor run_id")
+        evidence.require(before["run_id"] == source["run_id"])
+        capture = {k: v for k, v in before.items() if k != "run_id"}
+        lxc_probe.checked_capture(capture)
+        lxc_probe.checked_capture(after)
+        evidence.require(capture == after and before["host_anchor"]["vmid"] == r["resource"]["vmid"])
+        current = before["guest"]
+        evidence.require(current["hostname"] == r["resource"]["name"] and current["euid"] == 0
+                         and current["filesystem"] == fingerprint["filesystem"])
+        evidence.require(all(current["namespaces"][n] != before["host_namespaces"][n]
+                             for n in current["namespaces"]))
+        mapping = current["uid_map"].split()
+        evidence.require(len(mapping) == 3 and all(v.isdigit() for v in mapping))
+        evidence.require(int(mapping[0]) == 0 and int(mapping[1]) > 0 and int(mapping[2]) >= 65535)
+        evidence.require("unconfined" not in current["apparmor"] and current["apparmor"].endswith("(enforce)"))
+        evidence.require(value.get("status") in ["passed", "incompatible", "operational_error"])
+        result = lxc_probe.checked_result(source, {"passed": 0, "operational_error": 2, "incompatible": 3}[value["status"]], value)
+    evidence.require(before["guest"]["boot_id"] == subject["boot_id"])
+    evidence.require(result["cleanup"] == source["cleanup"]["probe"]["file"] == "complete")
+    checks = [dict(check, subject="probe") for check in result["checks"]]
+    if result["status"] == "operational_error":
+        evidence.require(all(check["status"] != "incompatible" for check in checks))
+        # The runners invalidate successful partial checks on operational failure.
+        if kind == "qemu" or not any(check["status"] == "operational_error" for check in checks):
+            checks = [{"name": "isolation" if kind == "qemu" else "security_ntacl", "subject": "probe",
+                       "status": "operational_error", "attempts": []}]
+    evidence.require(source["checks"] == checks)
+    return checks
 
 
 def aggregate(reports, requests, api, header):
@@ -239,7 +333,6 @@ def aggregate(reports, requests, api, header):
         evidence.require(source["qualification"] == "pending" and source["selection"] == evidence.select_platform(source))
         evidence.require(source["cleanup"][old_key]["file"] == "complete")
         trace = source["observations"][old_key]
-        evidence.require(trace["after"] is not None and trace["result"] is not None)
         r = copy.deepcopy(request)
         r.update(enabled=True, apply=False, action="absent")
         guest.validate(r)
@@ -248,6 +341,7 @@ def aggregate(reports, requests, api, header):
                          and r["resource"]["kind"] == subject["kind"])
         evidence.require(subject["template"] == dict(node=r["template"]["node"], kind=r["resource"]["kind"],
                                                       vmid=r["template"]["vmid"], digest=r["template"]["digest"]))
+        checks = checked_source_trace(source, r)
         # Readback only: reconcile(absent, check=True) can describe a planned deletion.
         # Use the absence verifier directly so a stopped but still present guest fails.
         api.cleanup_readback(r, [])
@@ -263,7 +357,7 @@ def aggregate(reports, requests, api, header):
             evidence.require(live.get("template") == 1 and live.get("digest") == template["digest"])
             if template not in fingerprint["templates"]: fingerprint["templates"].append(copy.deepcopy(template))
         combined["subjects"].append(dict(subject, key=key))
-        combined["checks"].extend(dict(c, subject=key) for c in source["checks"])
+        combined["checks"].extend(dict(c, subject=key) for c in checks)
         combined["cleanup"][key] = {"file": "complete", "guest": "complete"}
         combined["observations"][key] = {"before": {"source_report": copy.deepcopy(source),
                                                     "source_report_sha256": evidence.sha(source), "absence_readback": True},

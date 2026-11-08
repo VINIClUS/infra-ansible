@@ -15,6 +15,8 @@ def module(monkeypatch, name="qemu_guest_probe"):
     monkeypatch.setitem(sys.modules, "s2_protected", protected_module())
     monkeypatch.setitem(sys.modules, "s2_guest", guest_module())
     monkeypatch.setitem(sys.modules, "s2_compatibility", evidence_module())
+    from test_samba_ad_probe_runner import module as lxc_module
+    monkeypatch.setitem(sys.modules, "s2_probe_runner", lxc_module(monkeypatch))
     path = Path(__file__).resolve().parents[1] / "tools/samba_ad" / (name + ".py")
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -156,10 +158,12 @@ class Api:
 
 
 class Transport:
-    def __init__(self): self.calls = []; self.drift = False; self.nonce_wrong = False
+    def __init__(self):
+        self.calls = []; self.drift = False; self.nonce_wrong = False
+        self.guest = expected()["guest"]
     def capture(self, r, source, filesystem):
         self.calls.append("capture")
-        e = expected(); current = copy.deepcopy(e["guest"])
+        e = expected(); current = copy.deepcopy(self.guest)
         if self.drift and len(self.calls) > 1: current["boot_id"] = "e" * 32
         return {"guest": current, "host_boot_id": e["host_boot_id"],
                 "qga": {"node": r["resource"]["node"], "vmid": r["resource"]["vmid"],
@@ -171,8 +175,15 @@ class Transport:
         result = {"schema": "samba-ad-s2-qemu-probe/v1", "run_id": expectation["run_id"],
                   "nonce": "c" * 32 if self.nonce_wrong else expectation["nonce"], "status": "passed",
                   "checks": [{"name": name, "status": "passed", "attempts": []} for name in evidence_module().MINIMUM],
-                  "cleanup": "complete", "measurements": {name: {"test_only": True}
-                      for name in ["systemd", "clock", "audit", "isolation", "network"]}}
+                  "cleanup": "complete", "measurements": {
+                      "systemd": {"pid1": "systemd", "state": "running"},
+                      "clock": {"ntp_synchronized": True, "realtime_ns": 150, "monotonic_ns": 100},
+                      "audit": {"enabled": 1, "failure": 1, "listener_pid": 100, "rate_limit": 0,
+                                "backlog_limit": 8192, "lost": 0, "backlog": 0},
+                      "isolation": {"vm": "kvm", "container": "none", "kernel": self.guest["kernel"]},
+                      "network": {"interface": "ens18", "address": r["resource"]["address"],
+                                  "mac": r["resource"]["mac"], "mtu": r["resource"]["mtu"],
+                                  "gateway": r["resource"]["gateway"]}}}
         result["checks"].sort(key=lambda c: ["security_ntacl", "posix_acl", "systemd", "clock", "audit", "isolation", "network"].index(c["name"]))
         return 0, result
 
@@ -203,15 +214,19 @@ def test_qemu_measured_report_never_qualifies_one_placement(monkeypatch, drift, 
 def aggregate_sources(monkeypatch):
     m = module(monkeypatch, "qemu_probe_runner")
     monkeypatch.setattr(m.guest, "reconcile", lambda *a, **k: {"state": "verified"})
-    r = qemu_request(); lxc = lxc_report(); lr = request(); lr["expected_digest"] = lxc["subjects"][0]["config_digest"]
-    lxc["subjects"][0].update(spec_sha256=m.guest.spec_hash(lr), template_digest=lr["template"]["digest"])
-    lxc["platform_fingerprint"]["policy_sha256"] = evidence_module().sha(r["firewall"])
+    from test_samba_ad_probe_runner import module as lxc_module, prepared, Transport as LxcTransport
+    lm = lxc_module(monkeypatch)
+    monkeypatch.setattr(lm.guest, "reconcile", lambda *a, **k: {"state": "verified"})
+    lp = prepared()
+    lxc = lm.run(lp, Api(), LxcTransport(), "reviewed-lxc-source")["report"]
+    r = qemu_request()
     one = m.run(operation(), Api(), Transport(), "reviewed-source")["report"]
-    two = copy.deepcopy(one); two["run_id"] = "e" * 32
-    two["subjects"][0]["node"] = "node-a"
-    rr = copy.deepcopy(r); rr["resource"]["node"] = "node-a"
-    two["subjects"][0]["spec_sha256"] = m.guest.spec_hash(rr)
-    return m, [lxc, one, two], [lr, r, rr]
+    second = operation(); second["run_id"] = "e" * 32
+    second["node_hostname"] = second["request"]["resource"]["node"] = "node-a"
+    transport = Transport()
+    transport.guest.update(boot_id="e" * 32, product_uuid="23456789-1234-1234-1234-123456789abc")
+    two = m.run(second, Api(), transport, "reviewed-source")["report"]
+    return m, [lxc, one, two], [lp["request"], r, second["request"]]
 
 
 def aggregate_header():
@@ -233,11 +248,14 @@ def test_aggregation_qualifies_only_two_nodes_and_preserves_originals(monkeypatc
 
 def test_aggregation_cannot_turn_duplicate_placement_or_error_into_qualification(monkeypatch):
     m, sources, requests = aggregate_sources(monkeypatch)
-    sources[2]["subjects"][0]["node"] = "node-b"; requests[2]["resource"]["node"] = "node-b"
-    sources[2]["subjects"][0]["spec_sha256"] = m.guest.spec_hash(requests[2])
+    sources[2] = copy.deepcopy(sources[1]); sources[2]["created_utc"] = "2026-11-08T00:00:00Z"
+    requests[2] = copy.deepcopy(requests[1])
     result = m.aggregate(sources, requests, Api(), aggregate_header())
     assert result["qualification"] == "pending"
-    sources[2]["checks"][0]["status"] = "operational_error"
+    trace = sources[2]["observations"]["probe"]
+    trace["result"].update(status="operational_error", checks=[], measurements={})
+    sources[2]["checks"] = [{"name": "isolation", "subject": "probe", "status": "operational_error", "attempts": []}]
+    # Empty measurement results must remain operational rather than qualify.
     result = m.aggregate(sources, requests, Api(), aggregate_header())
     assert result["selection"] is None and result["qualification"] == "pending"
 
@@ -347,3 +365,68 @@ def test_audit_netlink_refuses_unbound_or_error_reply_without_opening_native_soc
 def test_clock_refuses_skew_or_unbounded_qga_window(monkeypatch, observed, elapsed):
     m = module(monkeypatch, "qemu_probe_runner")
     with pytest.raises(ValueError): m.clock_window(100, 200, elapsed, observed)
+
+
+@pytest.mark.parametrize("kind", ["qemu", "lxc"])
+@pytest.mark.parametrize("fault", ["relabeled_run", "nested_error", "empty_trace", "boot", "hostname",
+                                   "vmid", "filesystem", "after_drift", "cleanup", "unknown_capture",
+                                   "unknown_result", "check_status", "policy", "isolation"])
+def test_aggregate_refuses_unbound_source_trace(monkeypatch, kind, fault):
+    m, sources, requests = aggregate_sources(monkeypatch)
+    source = sources[2 if kind == "qemu" else 0]
+    trace = source["observations"]["probe"]
+    if fault == "relabeled_run": source["run_id"] = "9" * 32
+    if fault == "nested_error": trace["result"]["status"] = "operational_error"
+    if fault == "empty_trace": trace.update(before={"unexpected": True}, after={}, result={})
+    if fault == "boot": source["subjects"][0]["boot_id"] = "9" * 32
+    if fault == "hostname": trace["before"]["guest"]["hostname"] = "foreign.lab.ad.test"
+    if fault == "vmid": trace["before"]["qga" if kind == "qemu" else "host_anchor"]["vmid"] += 1
+    if fault == "filesystem": source["platform_fingerprint"]["filesystem"] = "xfs"
+    if fault == "after_drift": trace["after"]["guest"]["parent_ino"] += 1
+    if fault == "cleanup": trace["result"]["cleanup"] = "incomplete"
+    if fault == "unknown_capture": trace["after"]["unexpected"] = True
+    if fault == "unknown_result": trace["result"]["unexpected"] = True
+    if fault == "check_status": source["checks"] = []
+    if fault == "policy":
+        for item in sources: item["platform_fingerprint"]["policy_sha256"] = "9" * 64
+    if fault == "isolation": source["platform_fingerprint"]["isolation"] = (
+        "lxc-unprivileged-apparmor" if kind == "qemu" else "qemu-no-passthrough")
+    original = copy.deepcopy(sources)
+    with pytest.raises(ValueError): m.aggregate(sources, requests, Api(), aggregate_header())
+    assert sources == original
+
+
+def test_aggregate_refuses_copied_qga_trace_claimed_as_second_placement(monkeypatch):
+    m, sources, requests = aggregate_sources(monkeypatch)
+    sources[2]["observations"] = copy.deepcopy(sources[1]["observations"])
+    with pytest.raises(ValueError): m.aggregate(sources, requests, Api(), aggregate_header())
+
+
+@pytest.mark.parametrize("fault", ["nonce", "missing_request", "request_resource", "measurement_shape",
+                                   "measurement_network", "measurement_kernel", "measurement_clock"])
+def test_aggregate_refuses_unbound_qemu_expectation_or_measurements(monkeypatch, fault):
+    m, sources, requests = aggregate_sources(monkeypatch)
+    trace = sources[2]["observations"]["probe"]
+    if fault == "nonce": trace["result"]["nonce"] = "9" * 32
+    if fault == "missing_request": trace["before"].pop("probe_request", None)
+    if fault == "request_resource":
+        trace["before"].setdefault("probe_request", {})["resource"] = requests[1]["resource"]
+    if fault == "measurement_shape": trace["result"]["measurements"]["audit"] = {"unexpected": True}
+    if fault == "measurement_network": trace["result"]["measurements"]["network"]["address"] = "198.51.100.90/25"
+    if fault == "measurement_kernel": trace["result"]["measurements"]["isolation"]["kernel"] = "wrong"
+    if fault == "measurement_clock": trace["result"]["measurements"]["clock"]["ntp_synchronized"] = False
+    with pytest.raises(ValueError): m.aggregate(sources, requests, Api(), aggregate_header())
+
+
+@pytest.mark.parametrize("kind", ["lxc", "qemu"])
+def test_consistent_operational_source_never_qualifies(monkeypatch, kind):
+    m, sources, requests = aggregate_sources(monkeypatch)
+    source = sources[0 if kind == "lxc" else 2]
+    result = source["observations"]["probe"]["result"]
+    result.update(status="operational_error", checks=[])
+    if kind == "qemu": result["measurements"] = {}
+    source.update(checks=[{"name": "security_ntacl" if kind == "lxc" else "isolation",
+                          "subject": "probe", "status": "operational_error", "attempts": []}], selection=None)
+    aggregated = m.aggregate(sources, requests, Api(), aggregate_header())
+    assert aggregated["selection"] is None and aggregated["qualification"] == "pending"
+    assert aggregated["observations"]["source0" if kind == "lxc" else "source2"]["result"] == result
