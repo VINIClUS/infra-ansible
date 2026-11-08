@@ -367,10 +367,16 @@ autenticado, purpose correto e a reserva medida pelo owner no report original.
 Só essas três chaves e seus hashes são consumidos. A leitura de outros membros
 desse único prefixo não os transforma em inputs. Não há VersionId map/carrier novo.
 
-A SDK continua single PutObject condicional com BucketKeyEnabled=False. O critério
-universal de multipart do draft original permanece ABERTO: Create/UploadPart/Complete
-compartilham a ação IAM s3:PutObject. A proposta R2 de clarificação requer decisão
-explícita do owner; não foi ratificada e não autoriza Code accept/Ready/merge. Os
-Denys de ações reais multipart e a política do SDK não são apresentados como prova
-de bloqueio universal de APIs. Também faltam CI hosted nativa final e handoff real
-do owner antes de qualquer aceite operacional.
+A [ratificação multipart r2 do owner](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6721134447)
+exige Deny explícito de s3:AbortMultipartUpload e s3:ListMultipartUploadParts nos
+objetos evidence aplicáveis, e de s3:ListBucketMultipartUploads no bucket evidence.
+O helper Python governado usa somente put_object condicional, Body em bytes e
+BucketKeyEnabled=False, sem transfer manager ou chamadas multipart.
+CreateMultipartUpload, UploadPart/UploadPartCopy e CompleteMultipartUpload
+compartilham a autorização s3:PutObject: as credenciais ainda permitem essas APIs
+no escopo PutObject. Os três Denys e a seleção single-put do helper não comprovam
+proibição IAM universal nem o comportamento de outros clientes, inclusive
+backend/provider OpenTofu; esse limite deve constar da evidência operacional.
+A ratificação não concede aceite de Código, Ready, merge ou aceite operacional:
+continuam obrigatórios auditoria independente e CI nativa verde no HEAD final,
+além de readbacks e evidências reais do owner para os aceites de Produção.

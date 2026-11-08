@@ -96,10 +96,10 @@ resource "aws_iam_role_policy" "delivery" {
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.evidence_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}*" } } }
       ], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
       { Effect = "Allow", Action = concat(tolist(setsubtract(toset(local.delivery_product_reads), toset(local.delivery_global_reads))), local.delivery_bucket_reads), Resource = var.github_delivery.read_resource_arns }
-      ], each.key == "deploy" ? concat([
+      ], [for statement in concat([
         { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
-      ], [for statement in var.github_delivery.product_permissions : { Effect = "Allow", Action = statement.actions, Resource = statement.resources }],
-      [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }]
-    ) : [])
+        ], [for statement in var.github_delivery.product_permissions : { Effect = "Allow", Action = statement.actions, Resource = statement.resources }],
+        [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }]
+    ) : statement if each.key == "deploy"])
   })
 }

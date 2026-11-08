@@ -6,6 +6,7 @@ import pytest
 
 from test_cnesdata_delivery_oidc import render, variables
 from fixtures.cnesdata_delivery_oidc_native import Native
+from fixtures.cnesdata_iam_evaluation import allowed
 from fixtures.cnesdata_session_cases import assert_matrix, inline
 
 
@@ -80,3 +81,41 @@ def test_colisao_de_listing_produto_e_evidence_sem_prefixos_governados_fecha(nat
     ]
     code, _, diagnostics = native.plan(values, "session-product-evidence-collision")
     assert code != 0 and diagnostics
+
+
+@pytest.mark.parametrize("product_count,pass_count", [(0, 0), (0, 1), (1, 0), (1, 1), (2, 2)])
+def test_permissoes_deploy_heterogeneas_preservam_escopo_e_condicoes(
+    native, product_count, pass_count
+):
+    values = variables()
+    settings = values["github_delivery"]
+    products = [f"arn:aws:s3:::cnesdata-product-{i}" for i in range(2)]
+    roles = [f"arn:aws:iam::111122223333:role/cnesdata-task-{i}" for i in range(2)]
+    settings["product_permissions"] = [
+        {"actions": ["s3:PutBucketObjectLockConfiguration"], "resources": [product]}
+        for product in products[:product_count]
+    ]
+    settings["pass_roles"] = [
+        {"arn": role, "service": "ecs-tasks.amazonaws.com"}
+        for role in roles[:pass_count]
+    ]
+    resources, _ = render(native, values, f"session-deploy-{product_count}-{pass_count}")
+    for role in ("plan", "deploy"):
+        identity = json.loads(resources[f'aws_iam_role_policy.delivery["{role}"]']["policy"])
+        assert allowed(
+            identity, "s3:PutObject", settings["state_bucket_arn"] + "/cnesdata/prod/opentofu.tfstate"
+        ) is (role == "deploy")
+        for index, product in enumerate(products):
+            assert allowed(identity, "s3:PutBucketObjectLockConfiguration", product) is (
+                role == "deploy" and index < product_count
+            )
+        for index, passed_role in enumerate(roles):
+            assert allowed(
+                identity, "iam:PassRole", passed_role,
+                {"iam:PassedToService": "ecs-tasks.amazonaws.com"},
+            ) is (role == "deploy" and index < pass_count)
+            assert not allowed(identity, "iam:PassRole", passed_role)
+            assert not allowed(
+                identity, "iam:PassRole", passed_role,
+                {"iam:PassedToService": "lambda.amazonaws.com"},
+            )
