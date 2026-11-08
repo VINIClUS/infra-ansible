@@ -250,3 +250,159 @@ def test_nginx_runtime_refuses_unsafe_existing_directory_before_commands(tmp_pat
     monkeypatch.setattr(runtime, "_command", forbidden)
     with pytest.raises(ValueError, match="suppressed"):
         runtime.LocalOps().reload(r)
+
+
+def frontend_setup(tmp_path, chain, keys):
+    from test_samba_ad_pki_ca_config import request as ca_request
+    r, manifest, ops = setup(tmp_path, chain, keys)
+    ca = manifest["resources"]["ca"]
+    r.update(profile="ca", adapter={"kind": "nginx", "port": 443})
+    r["target"].update(role="ca", fqdn=ca["fqdn"], kind="qemu", address=ca["address"], mac=ca["mac"])
+    r["credential"]["auth_key_ref"] = str(tmp_path / "ca/auth.jwe")
+    r["issuer"].update(transport="local_loopback", local_port=9443)
+    configured = ca_request()
+    for name in ["nginx", "njs"]: r["tools"][name] = configured["tools"][name]
+    return r, manifest, ops
+
+
+@pytest.mark.parametrize("with_prior", [False, True])
+def test_point_fsync_failure_reconciles_actual_pointer_before_cleanup(tmp_path, chain, keys, monkeypatch, with_prior):
+    r, manifest, ops = frontend_setup(tmp_path, chain, keys); runtime = module()
+    monkeypatch.setattr(runtime.time, "time", lambda: ops.now())
+    active = tmp_path / "ca/active.conf"
+    prior = None
+    if with_prior:
+        runtime.run(r, manifest, ops, check=False)
+        prior = active.readlink(); r["expected_active"] = "managed"
+        ops.now = lambda: NOW + 362886
+    ops.calls.clear()
+    original_sync = runtime.sync_dir; failures = []
+    def fail_once_after_replace(directory):
+        if directory == active.parent and active.is_symlink() and not failures:
+            failures.append(active.readlink())
+            raise OSError("test-only directory fsync failure after replace")
+        return original_sync(directory)
+    monkeypatch.setattr(runtime, "sync_dir", fail_once_after_replace)
+    with pytest.raises(ValueError, match="S3 rotation failed"):
+        runtime.run(r, manifest, ops, check=False)
+    assert len(failures) == 1
+    assert (active.readlink() if active.is_symlink() else None) == prior
+    generations = list((active.parent / "generations").iterdir())
+    assert len(generations) == int(with_prior)
+    assert ops.calls.count("reload") == int(with_prior)
+    assert ops.calls.count("observe") == int(with_prior)
+    assert ops.calls.count("stop") == int(not with_prior)
+    assert "samba_ad_pki_last_attempt_success{profile=\"ca\"} 0" in (active.parent / "status.prom").read_text()
+    if with_prior:
+        assert json.loads((active.parent / "last_rotation.json").read_text())["at"] == NOW + 5
+        assert f'samba_ad_pki_last_rotation_success_seconds{{profile="ca"}} {NOW + 5}' in (active.parent / "status.prom").read_text()
+    else:
+        assert not (active.parent / "last_rotation.json").exists()
+
+
+@pytest.mark.parametrize("with_prior", [False, True])
+def test_point_replace_failure_before_mutation_leaves_service_untouched(tmp_path, chain, keys, monkeypatch, with_prior):
+    r, manifest, ops = frontend_setup(tmp_path, chain, keys); runtime = module()
+    active = tmp_path / "ca/active.conf"; prior = None
+    if with_prior:
+        runtime.run(r, manifest, ops, check=False)
+        prior = active.readlink(); r["expected_active"] = "managed"
+        ops.now = lambda: NOW + 362886
+    ops.calls.clear()
+    original_replace = runtime.os.replace
+    def fail_before_replace(source, destination):
+        if destination == active: raise OSError("test-only pre-replace failure")
+        return original_replace(source, destination)
+    monkeypatch.setattr(runtime.os, "replace", fail_before_replace)
+    with pytest.raises(ValueError, match="S3 rotation failed"):
+        runtime.run(r, manifest, ops, check=False)
+    assert (active.readlink() if active.is_symlink() else None) == prior
+    assert all(name not in ops.calls for name in ["reload", "observe", "stop"])
+    assert len(list((active.parent / "generations").iterdir())) == int(with_prior)
+
+
+@pytest.mark.parametrize("rollback_failure", ["fsync", "replace", "reload", "readback"])
+def test_failed_reversion_is_degraded_and_preserves_all_possibly_active_material(tmp_path, chain, keys, monkeypatch, rollback_failure):
+    r, manifest, ops = frontend_setup(tmp_path, chain, keys); runtime = module()
+    monkeypatch.setattr(runtime.time, "time", lambda: ops.now())
+    runtime.run(r, manifest, ops, check=False)
+    active = tmp_path / "ca/active.conf"; prior = active.readlink()
+    r["expected_active"] = "managed"; ops.now = lambda: NOW + 362886
+    ops.calls.clear(); original_sync = runtime.sync_dir; sync_failures = []
+    def fail_sync(directory):
+        if directory == active.parent and active.is_symlink() and (not sync_failures or rollback_failure == "fsync"):
+            sync_failures.append(active.readlink())
+            raise OSError("test-only fsync failure")
+        return original_sync(directory)
+    monkeypatch.setattr(runtime, "sync_dir", fail_sync)
+    original_replace = runtime.os.replace
+    def fail_rollback_replace(source, destination):
+        if destination == active and sync_failures and rollback_failure == "replace":
+            raise OSError("test-only rollback replace failure")
+        return original_replace(source, destination)
+    monkeypatch.setattr(runtime.os, "replace", fail_rollback_replace)
+    if rollback_failure == "reload":
+        def fail_reload(_):
+            ops.calls.append("reload")
+            raise OSError("test-only rollback reload failure")
+        ops.reload = fail_reload
+    if rollback_failure == "readback": ops.bad_readback = True
+    with pytest.raises(ValueError, match="degraded"):
+        runtime.run(r, manifest, ops, check=False)
+    assert active.is_symlink() and active.resolve().is_file()
+    assert len(list((active.parent / "generations").iterdir())) == 2
+    assert (active.parent / prior).resolve().is_file()
+    if rollback_failure != "replace":
+        assert active.readlink() == prior
+        assert ops.calls.count("reload") == 1
+        assert ops.calls.count("observe") == int(rollback_failure != "reload")
+    else:
+        assert active.readlink() != prior
+        assert "reload" not in ops.calls and "observe" not in ops.calls
+    metrics = (active.parent / "status.prom").read_text()
+    assert 'samba_ad_pki_last_attempt_success{profile="ca"} 0' in metrics
+    assert f'samba_ad_pki_last_rotation_success_seconds{{profile="ca"}} {NOW + 5}' in metrics
+    assert json.loads((active.parent / "last_rotation.json").read_text())["at"] == NOW + 5
+
+
+@pytest.mark.parametrize("failed_file", ["status.prom", "last_rotation.json"])
+def test_status_publication_failure_cannot_revert_a_verified_committed_activation(tmp_path, chain, keys, monkeypatch, failed_file):
+    r, manifest, ops = frontend_setup(tmp_path, chain, keys); runtime = module()
+    monkeypatch.setattr(runtime.time, "time", lambda: ops.now())
+    runtime.run(r, manifest, ops, check=False)
+    active = tmp_path / "ca/active.conf"; prior = active.readlink()
+    r["expected_active"] = "managed"; ops.now = lambda: NOW + 362886; ops.calls.clear()
+    original_atomic = runtime.atomic_file; failures = []
+    def fail_status_once(filename, value):
+        if filename.name == failed_file and not failures:
+            failures.append(filename)
+            raise OSError("test-only status publication failure")
+        return original_atomic(filename, value)
+    monkeypatch.setattr(runtime, "atomic_file", fail_status_once)
+    with pytest.raises(ValueError, match="reporting degraded"):
+        runtime.run(r, manifest, ops, check=False)
+    assert active.readlink() != prior and active.resolve().is_file()
+    assert ops.calls.count("reload") == ops.calls.count("observe") == 1
+    true_stamp = ops.now() if failed_file == "status.prom" else NOW + 5
+    assert json.loads((active.parent / "last_rotation.json").read_text())["at"] == true_stamp
+    metrics = (active.parent / "status.prom").read_text()
+    assert 'samba_ad_pki_last_attempt_success{profile="ca"} 0' in metrics
+    assert f'samba_ad_pki_last_rotation_success_seconds{{profile="ca"}} {true_stamp}' in metrics
+
+
+def test_initial_reversion_with_failed_unlink_fsync_stops_only_own_frontend_and_stays_degraded(tmp_path, chain, keys, monkeypatch):
+    r, manifest, ops = frontend_setup(tmp_path, chain, keys); runtime = module()
+    active = tmp_path / "ca/active.conf"; original_sync = runtime.sync_dir; armed = []
+    def fail_directory_sync(directory):
+        if directory == active.parent and (active.is_symlink() or armed):
+            armed.append(True)
+            raise OSError("test-only pointer directory fsync failure")
+        return original_sync(directory)
+    monkeypatch.setattr(runtime, "sync_dir", fail_directory_sync)
+    with pytest.raises(ValueError, match="degraded"):
+        runtime.run(r, manifest, ops, check=False)
+    assert not active.exists() and not active.is_symlink()
+    assert ops.calls.count("stop") == 1 and "reload" not in ops.calls
+    assert len(list((active.parent / "generations").iterdir())) == 1
+    assert not (active.parent / "last_rotation.json").exists()
+    assert 'samba_ad_pki_last_attempt_success{profile="ca"} 0' in (active.parent / "status.prom").read_text()

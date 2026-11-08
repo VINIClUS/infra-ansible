@@ -133,10 +133,10 @@ class Store:
         if info:
             lines += [f'samba_ad_pki_certificate_not_after_seconds{{profile="{name}"}} {info["not_after"]}',
                       f'samba_ad_pki_rotation_deadline_seconds{{profile="{name}"}} {info["rotation_deadline"]}']
-            if success:
-                stamp = loads(secure_file(last, secret=True).read_bytes())["at"]
-                require(type(stamp) is int and stamp <= now)
-                lines.append(f'samba_ad_pki_last_rotation_success_seconds{{profile="{name}"}} {stamp}')
+        if last.exists() or last.is_symlink():
+            stamp = loads(secure_file(last, secret=True).read_bytes())["at"]
+            require(type(stamp) is int and stamp <= now)
+            lines.append(f'samba_ad_pki_last_rotation_success_seconds{{profile="{name}"}} {stamp}')
         atomic_file(self.directory / "status.prom", ("\n".join(lines) + "\n").encode())
 
 
@@ -176,6 +176,36 @@ def candidate_info(r, generation, now, previous=None):
     return info
 
 
+def failure_signals(store, info):
+    """Best effort only: publishing an error must never conceal transaction state."""
+    try: store.signals(info, success=False)
+    except Exception: pass
+
+
+def revert_activation(r, store, prior, prior_info, generation, ops):
+    """Reconcile the real pointer under the lock, including failed replace/fsync."""
+    current = store.current()
+    if current == prior: return  # A failed replace made no active change.
+    require(current is not None and current["generation"] == generation)
+    durable = True
+    try:
+        if prior:
+            store.point(prior["link"])
+        else:
+            store.active.unlink(); sync_dir(store.directory)
+    except Exception:
+        durable = False
+    restored = store.current() == prior
+    if prior and restored:
+        candidate_info(r, prior["generation"], ops.now())
+        ops.reload(r)
+        require(ops.observe(r, prior_info["certificate_sha256"]) == prior_info["certificate_sha256"])
+    elif not prior:
+        ops.stop(r)
+    # A successful rename with failed fsync still has uncertain durability.
+    require(restored and durable)
+
+
 def run(r: dict, manifest: dict, ops=None, check: bool = True) -> dict:
     validate_request(r, manifest)
     if not r["enabled"]:
@@ -202,7 +232,7 @@ def run(r: dict, manifest: dict, ops=None, check: bool = True) -> dict:
             store.signals(prior_info, success=True)
             return {"state": "current", "changed": False, "profiles": 1}
         generation = store.new()
-        switched = False
+        committed = False
         try:
             key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
             exclusive_file(generation / "key.pem", key.private_bytes(serialization.Encoding.PEM,
@@ -228,11 +258,10 @@ def run(r: dict, manifest: dict, ops=None, check: bool = True) -> dict:
                         "generation_ref": generation.name}
             require(store.current() == prior)
             store.point("generations/" + generation.name + "/consumer.conf")
-            switched = True
             ops.reload(r)
             require(ops.observe(r, info["certificate_sha256"]) == info["certificate_sha256"])
+            committed = True  # Durable pointer and fresh TLS readback, before observability publication.
             store.signals(info, success=True, rotated=True)
-            switched = False  # Commit point: cleanup failure must not roll back to a partly deleted generation.
             if prior:
                 try:
                     store.discard(prior["generation"])
@@ -241,21 +270,20 @@ def run(r: dict, manifest: dict, ops=None, check: bool = True) -> dict:
                     return {"state": "active_cleanup_pending", "changed": True, "profiles": 1}
             return {"state": "active", "changed": True, "profiles": 1}
         except Exception:
-            if switched:
-                if prior:
-                    store.point(prior["link"])
-                    try:
-                        candidate_info(r, prior["generation"], ops.now())
-                        ops.reload(r)
-                        require(ops.observe(r, prior_info["certificate_sha256"]) == prior_info["certificate_sha256"])
-                    except Exception:
-                        store.signals(prior_info, success=False)
-                        raise ValueError("S3 activation/reversion degraded (values suppressed)") from None
-                else:
-                    store.active.unlink(); sync_dir(store.directory)
-                    ops.stop(r)
-            store.discard(generation)
-            store.signals(prior_info, success=False)
+            if committed:
+                failure_signals(store, info)
+                raise ValueError("S3 activation committed; reporting degraded (values suppressed)") from None
+            try:
+                revert_activation(r, store, prior, prior_info, generation, ops)
+            except Exception:
+                failure_signals(store, prior_info)
+                raise ValueError("S3 activation/reversion degraded (values suppressed)") from None
+            try:
+                store.discard(generation)
+            except Exception:
+                failure_signals(store, prior_info)
+                raise ValueError("S3 rotation cleanup degraded (values suppressed)") from None
+            failure_signals(store, prior_info)
             raise ValueError("S3 rotation failed (values suppressed)") from None
 
 

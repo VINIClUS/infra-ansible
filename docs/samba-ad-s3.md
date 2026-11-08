@@ -93,6 +93,16 @@ validado. Falha restaura geração anterior válida e faz readback; erro na
 reversão é estado degradado, nunca sucesso. Depois do sucesso, descarta apenas
 a geração anterior da transação própria, sem política de backup/retention.
 
+Como rename pode ocorrer antes de fsync falhar, qualquer exceção anterior ao
+commit reconcilia o ponteiro efetivo sob lock antes de limpar a geração. Mesmo
+que a reversão renomeie de volta, falha de durabilidade continua degradada;
+quando possível, o serviço é recarregado e observado na geração anterior.
+Material possivelmente ativo não é removido. O commit da ativação é fsync mais
+readback TLS válido, anterior à publicação das métricas. Se essa publicação
+falhar, a ativação comprovada permanece e o helper retorna erro de reporting
+degradado. O último timestamp verdadeiro disponível é conservado também nos
+sinais de falha; nenhum timestamp representa uma ativação revertida.
+
 `expected_active` manual fixa o digest do fragmento anterior. Modo `managed`
 para timer aceita somente ponteiro/fragmento canônico da geração própria,
 verificada criptograficamente, e mantém lock/readback de drift; não adota

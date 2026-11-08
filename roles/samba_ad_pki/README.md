@@ -73,6 +73,14 @@ serviço operacional foi criado por testes/code-only. Defaults falsos encerram
 a role antes de transporte/facts. Depois de boot/machine-id alterados, obter
 nova evidência/contrato antes de retomar timer; não aceitar identidade por nome.
 
+Falha entre rename do ponteiro e fsync é reconciliada sob lock pela configuração
+real. Reversão exige ponteiro, durabilidade, reload e readback corretos; falha
+permanece degradada, sem apagar geração possivelmente ativa. O commit ocorre
+após fsync e readback TLS válidos. Falha posterior de publicação dos sinais
+retorna erro de reporting degradado e preserva a ativação já comprovada; não
+reverte o leaf cujo sucesso já foi registrado. Assim, o timestamp não representa
+uma ativação revertida. Sinais de falha mantêm o último sucesso verdadeiro disponível.
+
 ## Frontend e limites
 
 NGINX+njs expõe somente POST `/1.0/sign`, JSON ASCII fechado csr/ott, rejeita
