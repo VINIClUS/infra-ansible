@@ -1,0 +1,18 @@
+---
+- name: Validate or install both exact owned persistent NIC files
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_policy.py') }}"
+    stdin: >-
+      {{ {'request': samba_ad_router_nic_request, 'network': samba_ad_router_nic_plan.network,
+          'operation': samba_ad_router_nic_policy_operation} | to_json }}
+  vars:
+    ansible_ssh_args: >-
+      -o ControlMaster=no -o ControlPath=none -o StrictHostKeyChecking=yes
+      -o IdentityAgent=none -o IdentitiesOnly=yes
+  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+  changed_when: samba_ad_router_nic_policy_operation == 'install'
+  check_mode: false
+  no_log: true

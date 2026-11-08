@@ -12,8 +12,15 @@ exatos; não movimenta uplink ou altera outra NIC. A NIC do roteador tem firewal
 porque o nftables do próprio roteador filtra tráfego roteado; não usar esta exceção
 nos guests Samba. O programa recusa slot ocupado, MAC/bridge duplicados ou drift.
 
-A rede persistente usa apenas `/etc/systemd/network/05-samba-ad-identity.network`,
+A rede persistente usa `/etc/systemd/network/05-samba-ad-identity.network`,
 com match por MAC e interface, endereço/MTU estáticos, sem gateway/DNS/DHCP/RA.
+A política adicional fixa `/etc/systemd/network/05-samba-ad-identity.link` casa
+somente o MAC solicitado e `Driver=virtio_net`; limpa `NamePolicy=` e define
+`Name=` para a interface declarada (net4 → eth4). Não depende do PCI histórico
+nem aceita um nome previsível alternativo no readback. Depois de armar ambos os
+timers, instala e relê os dois arquivos e executa `udevadm control --reload`
+antes do hotplug. Esse reload atualiza metadados para novos eventos, sem trigger
+nem reconfiguração das interfaces antigas. O backup precede os dois arquivos.
 Exige systemd-networkd ativo e layout netplan existente. Não reescreve netplan,
 cloud-init, arquivos de outras interfaces ou default routes. Recuperação técnica
 preserva configs de rede em diretórios root-only fora do Git.
@@ -26,8 +33,14 @@ pending alheio impede a reversão automática. Uma nova conexão SSH estrita, se
 padrão, MAC, IP e MTU; novo readback PVE valida NICs/pending antes de desarmar ambos. Falha mantém timers e instrução
 do caminho de recuperação verificado; rescue tenta a mesma recuperação mínima.
 
-Reexecução com NIC/arquivo idênticos verifica; estado parcial ou arquivo ocupado
-falha fechado para recuperação. A política de zona é uma operação manual separada
+Reexecução com NIC e ambos os arquivos idênticos verifica sem escrita ou reload;
+estado parcial ou arquivo ocupado falha fechado para recuperação. Os dois arquivos
+exigem conteúdo SHA-256 exato, arquivo regular sem symlink/hardlink, root:root e
+modo 0644. A reversão embutida no mesmo `revert.sh` valida ambos antes de qualquer
+mutação e remove somente os presentes e próprios, inclusive instalação parcial;
+um arquivo alheio ou com drift bloqueia a reversão. Revalida o MAC do nome declarado
+antes de baixá-lo. Reloads de networkd/udev só acompanham a remoção do respectivo
+arquivo; repetição com ambos ausentes não executa comandos. A política de zona é uma operação manual separada
 pela role existente `network_router`, com `restricted: true`, preservando a política
 completa das zonas antigas. SDN continua pela role `proxmox_sdn` existente.
 Ver [runbook S1](../../docs/samba-ad-s1.md). Nada se aplica via main.
@@ -96,3 +109,11 @@ A política completa `network_router` é uma etapa separada: além do nft, pode
 alterar o override netplan, executar netplan generate/networkctl reload e conferir
 ou alterar pacotes/sysctl/DNS/serviços. Revisar o footprint inteiro e a reversão
 exata de cada delta; não autorizar apenas nft e executar a role inteira.
+
+A semântica de `.link` e reload foi conferida na documentação oficial
+[systemd.link v257](https://www.freedesktop.org/software/systemd/man/257/systemd.link.html)
+e [udevadm v257](https://www.freedesktop.org/software/systemd/man/257/udevadm.html).
+O teste nativo opcional usa namespaces de usuário, mount e rede isolados para
+validar o parser instalado em uma interface dummy; não comprova naming/carrier
+virtio em produção. Essa aceitação exige observar a nova eth4 real após uma
+execução futura autorizada.
