@@ -17,6 +17,11 @@ import tarfile
 from tools.samba_ad.domain import CANDIDATE_KEY_SHA256, CANDIDATE_PRIMARY, command, require
 from tools.samba_ad.pki_files import secure_directory, secure_file
 
+SAMBA_RUNTIME = set("samba samba-ad-dc samba-ad-provision samba-common samba-common-bin samba-dsdb-modules samba-libs winbind libwbclient0 python3-samba".split())
+SUPPORT_RUNTIME = set("libldb2 python3-ldb libtalloc2 python3-talloc libtdb1 python3-tdb libtevent0t64".split())
+MANAGED_CONFFILES = {"etc/samba/smb.conf"}
+DENY_ALL_POLICY = b"#!/bin/sh\nexit 101\n"
+
 
 def paragraphs(text):
     result, row, previous = [], {}, None
@@ -36,12 +41,96 @@ def paragraphs(text):
 
 
 def validate_pins(pins):
-    samba = {"samba", "samba-ad-dc", "python3-samba"}
-    ldb = {"libldb2", "python3-ldb"}
-    require(samba | ldb <= set(pins))
-    require(len({pins[p] for p in samba}) == 1 and len({pins[p] for p in ldb}) == 1)
-    require(all("4.25.1" in v for v in pins.values()))
-    require(all("2.11.0+samba4.25.1" in pins[p] for p in ldb))
+    require(isinstance(pins, dict) and SAMBA_RUNTIME | SUPPORT_RUNTIME <= set(pins))
+    require(len({pins[p] for p in SAMBA_RUNTIME}) == 1)
+    require("4.25.1" in pins["samba"])
+    require(pins["libldb2"] == pins["python3-ldb"] and "2.11.0+samba4.25.1" in pins["libldb2"])
+    require(pins["libtalloc2"] == pins["python3-talloc"] and pins["libtdb1"] == pins["python3-tdb"])
+
+
+def terms(value):
+    """Binary Depends grammar; unknown architecture/profile syntax fails closed."""
+    groups = []
+    if not value: return groups
+    for group in value.split(","):
+        choices = []
+        for alternative in group.split("|"):
+            match = re.fullmatch(r"\s*([a-z0-9][a-z0-9+.-]+)(?::(?:any|native|amd64))?(?:\s+\((<<|<=|=|>=|>>)\s+([^\s()]+)\))?\s*", alternative)
+            require(match is not None)
+            choices.append((match[1], match[2], match[3]))
+        groups.append(choices)
+    return groups
+
+
+def version_matches(version, operator, required):
+    if operator is None: return True
+    result = subprocess.run(["dpkg", "--compare-versions", version, operator, required],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    require(result.returncode in [0, 1])
+    return result.returncode == 0
+
+
+def dependency_plan(rows, pins):
+    """Resolve the vendor closure from authenticated Depends/Pre-Depends/Provides.
+
+    Only binary packages in this signed index are vendor candidates. Distribution
+    constraints remain separate and do not inherit Samba's version namespace.
+    """
+    validate_pins(pins)
+    by_name = {}
+    providers = {}
+    for row in rows:
+        if row.get("Architecture") not in ["amd64", "all"]: continue
+        name = row["Package"]
+        require(name not in by_name)
+        by_name[name] = row
+        for group in terms(row.get("Provides", "")):
+            require(len(group) == 1 and group[0][1] in [None, "="])
+            virtual, _, provided = group[0]
+            providers.setdefault(virtual, []).append((name, provided))
+    vendor, base, pending = {}, [], ["samba-ad-dc", "samba-ad-provision"]
+    while pending:
+        name = pending.pop()
+        if name in vendor: continue
+        require(name in pins and name in by_name and by_name[name]["Version"] == pins[name])
+        row = by_name[name]; vendor[name] = row
+        for group in terms(row.get("Pre-Depends", "")) + terms(row.get("Depends", "")):
+            candidates = []
+            vendor_edge = False
+            for dep, operator, required in group:
+                if dep in by_name:
+                    vendor_edge = True
+                    if dep in pins and version_matches(pins[dep], operator, required): candidates.append(dep)
+                for provider, version in providers.get(dep, []):
+                    vendor_edge = True
+                    if provider in pins and (operator is None or version is not None and version_matches(version, operator, required)):
+                        candidates.append(provider)
+            if vendor_edge:
+                require(candidates)
+                pending.append(sorted(set(candidates))[0])
+            else:
+                base.append(group)
+    require(set(vendor) == set(pins))
+    return {"vendor": vendor, "base": base}
+
+
+def verify_base_dependencies(source):
+    packages = secure_file(Path(source["directory"]) / "Packages").read_bytes()
+    require(hashlib.sha256(packages).hexdigest() == source["packages_sha256"])
+    plan = dependency_plan(paragraphs(packages.decode()), source["packages"])
+    installed = {}
+    for group in plan["base"]:
+        satisfied = False
+        for name, operator, required in group:
+            if name not in installed:
+                result = subprocess.run(["dpkg-query", "--show", "--showformat=${db:Status-Status} ${Version}", name],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                require(result.returncode in [0, 1])
+                text = result.stdout.decode()
+                installed[name] = text.removeprefix("installed ") if result.returncode == 0 and text.startswith("installed ") else None
+            version = installed[name]
+            if version is not None and version_matches(version, operator, required): satisfied = True
+        require(satisfied)
 
 
 def release_packages(release, packages):
@@ -81,6 +170,7 @@ def verified_archives(source):
         require(now < email.utils.parsedate_to_datetime(release["Valid-Until"]))
     release_packages(release, data["Packages"])
     rows = paragraphs(data["Packages"].decode())
+    dependency_plan(rows, source["packages"])
     archives = []
     for name, version in sorted(source["packages"].items()):
         found = [row for row in rows if row.get("Package") == name and row.get("Version") == version
@@ -96,8 +186,10 @@ def verified_archives(source):
 
 
 def verify_installed(source):
-    """Check installed versions and package payload, including Samba/LDB .so files."""
-    for name, version, archive in verified_archives(source):
+    """Verify the entire immutable payload, including schema/LDIF provisioning data."""
+    archives = verified_archives(source)
+    verify_base_dependencies(source)
+    for name, version, archive in archives:
         installed = command(["dpkg-query", "--show", "--showformat=${db:Status-Status} ${Version}", name]).decode()
         require(installed == "installed " + version)
         payload = command(["dpkg-deb", "--fsys-tarfile", str(archive)])
@@ -106,13 +198,19 @@ def verify_installed(source):
                 parts = Path(member.name).parts
                 require(".." not in parts and not Path(member.name).is_absolute())
                 relative = member.name.removeprefix("./")
-                # Package conffiles are intentionally managed separately by S4.
-                if not relative.startswith(("usr/bin/", "usr/sbin/", "usr/lib/", "usr/libexec/")): continue
+                if relative in MANAGED_CONFFILES: continue
+                if relative in ["", "."]: continue
+                # Debian's usrmerge aliases are canonical system directories,
+                # not a license to follow arbitrary package-path symlinks.
+                first, separator, rest = relative.partition("/")
+                if first in ["bin", "sbin", "lib", "lib64"]: relative = "usr/" + first + (separator + rest if separator else "")
                 path = Path("/") / relative
-                if member.isfile():
+                if member.isfile() or member.islnk():
+                    if member.islnk(): require(not Path(member.linkname).is_absolute() and ".." not in Path(member.linkname).parts)
                     expected = tar.extractfile(member).read()
                     require(secure_file(path, secret=False).read_bytes() == expected)
                 elif member.issym():
+                    secure_directory(path.parent)
                     require(path.is_symlink() and str(path.readlink()) == member.linkname)
                 else:
                     require(member.isdir())
@@ -126,9 +224,12 @@ def install(source):
     """
     require(source["fingerprint"] == CANDIDATE_PRIMARY and source["key_sha256"] == CANDIDATE_KEY_SHA256)
     archives = verified_archives(source)
+    verify_base_dependencies(source)
     policy = secure_file("/usr/sbin/policy-rc.d", secret=False)
-    require(policy.stat().st_mode & 0o111)
-    result = subprocess.run([str(policy), "samba-ad-dc", "start"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    require(result.returncode == 101)
+    require(policy.stat().st_mode & 0o111 and policy.read_bytes() == DENY_ALL_POLICY)
+    for service in ["samba", "samba-ad-dc", "smbd", "nmbd", "winbind"]:
+        for action in ["start", "stop", "restart", "reload", "force-reload", "try-restart", "reload-or-restart", "try-reload-or-restart"]:
+            result = subprocess.run([str(policy), service, action], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            require(result.returncode == 101)
     command(["dpkg", "--install"] + [str(a) for _, _, a in archives])
     verify_installed(source)

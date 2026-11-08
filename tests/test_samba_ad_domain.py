@@ -101,8 +101,8 @@ def request():
     pki["target"]["kind"] = "qemu"
     pki["target"]["spec_sha256"] = data["choice"]["target_sha256"]
     pki["adapter"] = {"kind": "samba", "port": 636}
-    pins = {n: "2:4.25.1+dfsg-1-1trixie1" for n in ["samba", "samba-ad-dc", "python3-samba"]}
-    pins.update({n: "2:2.11.0+samba4.25.1+dfsg-1-1trixie1" for n in ["libldb2", "python3-ldb"]})
+    import json
+    pins = {row["Package"]: row["Version"] for row in json.loads((Path(__file__).parent / "fixtures/samba_ad_vendor_runtime.json").read_text())}
     r = {"schema": "samba-ad-domain/v1", "enabled": True, "apply": False,
          "target": {"realm": manifest["domain"]["realm"], "netbios": manifest["domain"]["netbios"], "fqdn": c["fqdn"], "sid": None},
          "substrate": substrate, "pki": pki, "generation": "a" * 32,
@@ -129,6 +129,8 @@ def test_provision_secret_stays_in_api_memory_not_argv_or_logs(monkeypatch, caps
     import sys
     import types
     d = api(); calls = []
+    samba = types.ModuleType("samba"); samba.version = "4.25.1"; samba.check_password_quality = lambda password: True
+    monkeypatch.setitem(sys.modules, "samba", samba)
     auth = types.ModuleType("samba.auth"); auth.system_session = lambda: object()
     dsdb = types.ModuleType("samba.dsdb"); dsdb.DS_DOMAIN_FUNCTION_2016 = 7
     provision = types.ModuleType("samba.provision")

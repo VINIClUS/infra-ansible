@@ -58,11 +58,15 @@ operacional privada antes de confirmar a floresta nova; não habilita NBNS.
 
 A role NÃO faz downloads nem resolução apt de dependências. Requer ferramentas
 já instaladas, inclusive Python/PyYAML/cryptography, Samba, dig, nft, OpenSSH,
-AIDE e auditd em QEMU. Samba/LDB/Python são comparados com .debs verificados do
+AIDE e auditd em QEMU. Samba/LDB e bindings Python são comparados com .debs verificados do
 mesmo repositório, não com um booleano installed. `domain_source.install` permite
 uma instalação offline explícita do conjunto staged completo: valida assinatura,
-metadata e hashes antes de dpkg e exige policy-rc.d preexistente que retorne101,
-para não iniciar serviços prematuramente. Não cria ou substitui essa política.
+metadata e hashes antes de dpkg. Exige uma policy-rc.d root/executável já
+existente com conteúdo exato `#!/bin/sh\nexit 101\n`, deny-all incondicional;
+confere também retorno101 para start/stop/restart/reload/force-reload e variantes
+try/reload-or-restart de samba, smbd, nmbd, winbind e samba-ad-dc. Uma policy
+seletiva é recusada mesmo que bloqueie o primeiro start. Não cria, altera ou
+substitui uma policy existente para forçar aprovação.
 A aquisição e egress têm de ter sido revisados previamente em S1; não usa apt
 para buscar dependências de outra origem nem faz source build.
 
@@ -71,6 +75,24 @@ e packages/<basename.deb>. gpgv comprova assinatura pelo primary fixado ou por
 sua subkey certificada; SHA256/size de Packages precisam constar no Release
 assinado e cada arquivo precisa corresponder ao Packages. Conferir key pin e
 primary atuais contra source-provenance.json e a revisão fresca do operador.
+
+O conjunto de pins deve ser a closure exata de Depends/Pre-Depends do índice
+assinado, partindo de samba-ad-dc e samba-ad-provision. Inclui samba-libs,
+DSDB modules, common/common-bin, winbind, libwbclient, LDB, talloc/tdb/tevent e
+bindings Python; resolve também Provides versionados do próprio fornecedor.
+O índice candidato atual requer19 pacotes, incluindo duas bibliotecas ngtcp2
+com versões próprias, sem sufixo4.25.1. Valida cada aresta de versão (inclusive
+igualdade exata), presença e payload de todo o conjunto; omissões e versões
+misturadas são recusadas. As restrições Debian externas ficam separadas e são
+comparadas às versões instaladas, inclusive Python>=3.13~ e <3.14 e os pisos de
+libc. Não exige versão4.25.1 em libc ou em bibliotecas de outro source package.
+
+A verificação do payload cobre **todos os arquivos imutáveis**, incluindo
+/usr/share/samba/setup, schema e LDIF, não somente binários e .so. Somente
+/etc/samba/smb.conf é excluído explicitamente por ser configuração gerenciada
+pela role e protegida pelo digest/readback próprio. A fixture pública de testes
+projeta os19 registros de dependência do Packages autenticado fornecido pela
+coordenação; não contém .debs ou recibo de instalação.
 
 Date do Release é publicação, não expiração. Aceita publicação antiga quando
 Valid-Until não existe; respeita Valid-Until quando presente e recusa publicação
@@ -88,7 +110,10 @@ set_fact, cache, diff ou log; logger/stdout/stderr Python da API são suprimidos
 O caminho fixo deve vir do perfil individual do administrador inicial. O helper
 não lê outros cofres nem cria credenciais. Não fornece domainsid: o SID nasce
 somente no provisionamento real. Parciais exigem inspeção direcionada, nunca
-remoção/recriação automática.
+remoção/recriação automática. Antes de prepare_config ou da API, aplica o piso
+de14 e `samba.check_password_quality` do Samba4.25.1 instalado/verificado em
+memória. Rejeição ou erro nativo tem mensagem sanitizada e não troca config,
+não altera unidades nem entra em provisionamento.
 
 ## Configuração, reexecução e aceitação
 
@@ -96,6 +121,18 @@ A API cria FFL/DFL2016 com base_schema2019/adprep2016; readback exige os níveis
 e objectVersion88. Nunca eleva repetidamente, executa dbcheck --fix, provisiona
 DC02 ou substitui floresta existente. Reexecução exige SID privado já registrado,
 mesmo realm/NetBIOS/FQDN e níveis/schema exatos; não lê a senha nem reprovisiona.
+
+Antes da primeira mutação, verifica LoadState/UnitFileState/ActiveState,
+FragmentPath e DropInPaths das unidades Samba, com identidade dos fragments
+vendor já autenticada pelo payload. Só aceita masks reais /dev/null; recusa
+unidades locais substitutas e drop-ins desconhecidos. Em DC novo/próprio/vazio,
+a convergência inicial desabilita e mascara persistentemente samba/smbd/nmbd/
+winbind, remove masks persistentes e runtime do DC pretendido e o habilita para
+boot, ainda sem start. Faz readback completo antes de substituir smb.conf/criar
+DB. O primeiro start ocorre depois da configuração. Readback final exige DC
+active/running/enabled e membros inativos/mascarados. Reexecução somente verifica
+esses estados: não inicia/para serviços nem corrige drift automaticamente.
+Falha parcial na convergência inicial aborta antes da troca de config/API.
 O SID observado e o config digest ficam em arquivo0600 próprio no guest, para
 registro posterior no inventário privado. Não são fatos persistentes Ansible.
 

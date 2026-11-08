@@ -1,0 +1,140 @@
+[
+  {
+    "Package": "libldb2",
+    "Version": "2:2.11.0+samba4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "libc6 (>= 2.38), libldap2 (>= 2.6.2), liblmdb0 (>= 0.9.9), libtalloc2 (>= 2:2.5.0), libtdb1 (>= 1.3.14), libtevent0t64 (>= 0.15.0)"
+  },
+  {
+    "Package": "libngtcp2-16",
+    "Version": "1.22.1-1~bpo13+11trixie1",
+    "Architecture": "amd64",
+    "Source": "ngtcp2",
+    "Depends": "libc6 (>= 2.25)"
+  },
+  {
+    "Package": "libngtcp2-crypto-gnutls8",
+    "Version": "1.22.1-1~bpo13+11trixie1",
+    "Architecture": "amd64",
+    "Source": "ngtcp2",
+    "Depends": "libc6 (>= 2.14), libgnutls30t64 (>= 3.8.2), libngtcp2-16 (>= 1.1.0)"
+  },
+  {
+    "Package": "libtalloc2",
+    "Version": "2:2.5.0+4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "libc6 (>= 2.38)"
+  },
+  {
+    "Package": "libtdb1",
+    "Version": "2:1.4.15+samba4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "libc6 (>= 2.34)"
+  },
+  {
+    "Package": "libtevent0t64",
+    "Version": "2:0.17.2+4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "libc6 (>= 2.34), libtalloc2 (>= 2.1.0)",
+    "Provides": "libtevent0 (= 2:0.17.2+4.25.1+dfsg-1-1trixie1)"
+  },
+  {
+    "Package": "libwbclient0",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "libbsd0 (>= 0.0), libc6 (>= 2.38)"
+  },
+  {
+    "Package": "python3-ldb",
+    "Version": "2:2.11.0+samba4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "libldb2 (= 2:2.11.0+samba4.25.1+dfsg-1-1trixie1), python3 (<< 3.14), python3 (>= 3.13~), python3:any, libc6 (>= 2.25), libpython3.13 (>= 3.13.0~rc3), libtalloc2 (>= 2.0.4~git20101213)"
+  },
+  {
+    "Package": "python3-samba",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "python3-ldb (= 2:2.11.0+samba4.25.1+dfsg-1-1trixie1), samba-libs (= 2:4.25.1+dfsg-1-1trixie1), python3-tdb, python3-cryptography, python3 (<< 3.14), python3 (>= 3.13~), python3:any, libbsd0 (>= 0.0), libc6 (>= 2.34), libgnutls30t64 (>= 3.7.0), libldb2 (>= 2:2.10.0), libndr6 (>= 2:4.22.0~rc1), libpython3.13 (>= 3.13.0~rc3), libtalloc2 (>= 2.4.0), libtevent0t64 (>= 0.15.0), python3-talloc (>= 2.3.0)"
+  },
+  {
+    "Package": "python3-talloc",
+    "Version": "2:2.5.0+4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "python3 (<< 3.14), python3 (>= 3.13~), libc6 (>= 2.4), libpython3.13 (>= 3.13.0~rc3), libtalloc2 (>= 2.0.4~git20101213)"
+  },
+  {
+    "Package": "python3-tdb",
+    "Version": "2:1.4.15+samba4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba (2:4.25.1+dfsg-1-1trixie1)",
+    "Depends": "python3 (<< 3.14), python3 (>= 3.13~), python3:any, libc6 (>= 2.4), libtdb1 (>= 1.3.11)"
+  },
+  {
+    "Package": "samba",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Depends": "passwd, samba-common, samba-common-bin (= 2:4.25.1+dfsg-1-1trixie1), libbsd0 (>= 0.6.0), libc6 (>= 2.38), libcups2t64 (>= 1.7.0), libdbus-1-3 (>= 1.10), libgnutls30t64 (>= 3.7.0), libldap2 (>= 2.6.2), libldb2 (>= 2:2.10.0), libndr6 (>= 2:4.20.0~rc1), libpopt0 (>= 1.14), libtalloc2 (>= 2:2.4.4), libtdb1 (>= 1.2.7+git20101215), libtevent0t64 (>= 0.15.0), libtirpc3t64 (>= 1.0.2), liburing2 (>= 2.3), samba-libs (= 2:4.25.1+dfsg-1-1trixie1)",
+    "Pre-Depends": "init-system-helpers (>= 1.54~)"
+  },
+  {
+    "Package": "samba-ad-dc",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "samba (= 2:4.25.1+dfsg-1-1trixie1), python3-samba (= 2:4.25.1+dfsg-1-1trixie1), python3-dnspython, samba-dsdb-modules (= 2:4.25.1+dfsg-1-1trixie1), winbind (= 2:4.25.1+dfsg-1-1trixie1), python3:any, libbsd0 (>= 0.6.0), libc6 (>= 2.34), libldb2 (>= 0.9.21), libpopt0 (>= 1.14), libtalloc2 (>= 2.0.4~git20101213), libtevent0t64 (>= 0.9.16), samba-libs (= 2:4.25.1+dfsg-1-1trixie1)",
+    "Pre-Depends": "init-system-helpers (>= 1.54~)"
+  },
+  {
+    "Package": "samba-ad-provision",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "all",
+    "Source": "samba",
+    "Depends": "python3-markdown"
+  },
+  {
+    "Package": "samba-common",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "all",
+    "Source": "samba",
+    "Depends": "ucf"
+  },
+  {
+    "Package": "samba-common-bin",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "samba-common, libbsd0 (>= 0.4.0), libc6 (>= 2.38), libcups2t64 (>= 1.7.0), libgnutls30t64 (>= 3.7.0), libjansson4 (>= 2.14), libldap2 (>= 2.6.2), libncurses6 (>= 6), libndr6 (>= 2:4.20.0~rc1), libpopt0 (>= 1.14), libreadline8t64 (>= 6.0), libsmbldap2 (>= 2:4.16.6), libtalloc2 (>= 2:2.4.4), libtdb1 (>= 1.2.7+git20101215), libtevent0t64 (>= 0.15.0), libtinfo6 (>= 6), libwbclient0 (>= 2:4.0.3+dfsg1), samba-libs (= 2:4.25.1+dfsg-1-1trixie1)",
+    "Provides": "winexe (= 2:4.25.1+dfsg-1-1trixie1)"
+  },
+  {
+    "Package": "samba-dsdb-modules",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "samba-libs (= 2:4.25.1+dfsg-1-1trixie1), libldb2 (= 2:2.11.0+samba4.25.1+dfsg-1-1trixie1), libbsd0 (>= 0.0), libc6 (>= 2.38), libgnutls30t64 (>= 3.8.2), libgpgme11t64 (>= 1.23.2), libndr6 (>= 2:4.20.0~rc1), libtalloc2 (>= 2.0.4~git20101213), libtdb1 (>= 1.3.14), libtevent0t64 (>= 0.15.0)"
+  },
+  {
+    "Package": "samba-libs",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "libacl1 (>= 2.2.23), libavahi-client3 (>= 0.6.16), libavahi-common3 (>= 0.6.16), libbsd0 (>= 0.5.0), libc6 (>= 2.38), libcap2 (>= 1:2.10), libcrypt1 (>= 1:4.1.0), libgnutls30t64 (>= 3.8.2), libicu76 (>= 76.1-1~), libjansson4 (>= 2.14), libldap2 (>= 2.6.2), libldb2 (= 2:2.11.0+samba4.25.1+dfsg-1-1trixie1), libngtcp2-16 (>= 1.12.0~), libngtcp2-crypto-gnutls8 (>= 1.1.0), libpam0g (>= 0.99.7.1), libpopt0 (>= 1.14), libsystemd0, libtalloc2 (>= 2:2.5.0), libtdb1 (>= 1.3.17), libtevent0t64 (>= 2:0.17.1), libtirpc3t64 (>= 1.0.2), libwbclient0 (>= 2:4.5.0+dfsg), zlib1g (>= 1:1.1.4)",
+    "Provides": "libndr5 (= 2:4.25.1+dfsg-1-1trixie1), libndr6 (= 2:4.25.1+dfsg-1-1trixie1), libsmbldap2 (= 2:4.25.1+dfsg-1-1trixie1)"
+  },
+  {
+    "Package": "winbind",
+    "Version": "2:4.25.1+dfsg-1-1trixie1",
+    "Architecture": "amd64",
+    "Source": "samba",
+    "Depends": "samba-common, samba-common-bin (= 2:4.25.1+dfsg-1-1trixie1), libwbclient0 (= 2:4.25.1+dfsg-1-1trixie1), passwd, libbsd0 (>= 0.6.0), libc6 (>= 2.38), libgnutls30t64 (>= 3.7.0), libldap2 (>= 2.6.2), libldb2 (>= 0.9.21), libndr6 (>= 2:4.20.0~rc1), libpopt0 (>= 1.14), libsmbldap2 (>= 2:4.16.6), libtalloc2 (>= 2.4.0), libtdb1 (>= 1.2.7+git20101215), libtevent0t64 (>= 0.15.0), samba-libs (= 2:4.25.1+dfsg-1-1trixie1)",
+    "Pre-Depends": "init-system-helpers (>= 1.54~)"
+  }
+]

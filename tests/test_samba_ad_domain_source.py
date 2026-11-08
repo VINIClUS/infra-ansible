@@ -26,8 +26,10 @@ def test_signed_release_hash_cannot_authorize_other_packages():
 
 def test_pins_require_coherent_samba_ldb_python_stack():
     d = api()
-    pins = {p: "2:4.25.1+dfsg-1-1trixie1" for p in ["samba", "samba-ad-dc", "python3-samba"]}
-    pins.update({p: "2:2.11.0+samba4.25.1+dfsg-1-1trixie1" for p in ["libldb2", "python3-ldb"]})
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(__file__).parent / "fixtures/samba_ad_vendor_runtime.json").read_text())
+    pins = {row["Package"]: row["Version"] for row in rows}
     d.validate_pins(pins)
     with pytest.raises(ValueError): d.validate_pins(dict(pins, **{"python3-ldb": "2:2.10.0"}))
     with pytest.raises(ValueError): d.validate_pins({"samba": pins["samba"]})
@@ -50,13 +52,17 @@ def test_real_gpgv_signature_and_signed_package_hashes(tmp_path):
     gpg("--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "S4 test fixture <fixture@example.invalid>", "ed25519", "sign", "0")
     public = gpg("--export")
     fingerprint = next(line.split(":")[9] for line in gpg("--with-colons", "--list-keys").decode().splitlines() if line.startswith("fpr:"))
-    pins = {p: "2:4.25.1+dfsg-1-1trixie1" for p in ["samba", "samba-ad-dc", "python3-samba"]}
-    pins.update({p: "2:2.11.0+samba4.25.1+dfsg-1-1trixie1" for p in ["libldb2", "python3-ldb"]})
+    import json
+    from pathlib import Path
+    rows = json.loads((Path(__file__).parent / "fixtures/samba_ad_vendor_runtime.json").read_text())
+    pins = {row["Package"]: row["Version"] for row in rows}
     archive = b"synthetic archive contents - no installation"
     paragraphs = []
     for package, version in pins.items():
         filename = package + ".deb"; (root / "packages" / filename).write_bytes(archive)
-        paragraphs.append(f"Package: {package}\nVersion: {version}\nArchitecture: amd64\nFilename: pool/{filename}\nSize: {len(archive)}\nSHA256: {d.hashlib.sha256(archive).hexdigest()}\n")
+        row = next(row for row in rows if row["Package"] == package)
+        headers = "".join(f"{key}: {value}\n" for key, value in row.items())
+        paragraphs.append(headers + f"Filename: pool/{filename}\nSize: {len(archive)}\nSHA256: {d.hashlib.sha256(archive).hexdigest()}\n")
     packages = "\n".join(paragraphs).encode()
     date = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))
     old_date = email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30))
@@ -67,6 +73,6 @@ def test_real_gpgv_signature_and_signed_package_hashes(tmp_path):
         if item.is_file(): item.chmod(0o600)
     source = {"verified_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "directory": str(root), "fingerprint": fingerprint, "packages": pins,
               "inrelease_sha256": d.hashlib.sha256(signed).hexdigest(), "packages_sha256": d.hashlib.sha256(packages).hexdigest(), "key_sha256": d.hashlib.sha256(public).hexdigest()}
-    assert len(d.verified_archives(source)) == 5
+    assert len(d.verified_archives(source)) == len(rows)
     (root / "packages" / "samba.deb").write_bytes(b"tampered archive")
     with pytest.raises(ValueError): d.verified_archives(source)

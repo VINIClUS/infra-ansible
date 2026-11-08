@@ -112,11 +112,11 @@ def validate_request(request, manifest):
         require(re.fullmatch(r"git:[a-f0-9]{40}:[a-zA-Z0-9_./-]+", r["source"]["advisory_review_ref"])
                 and ".." not in r["source"]["advisory_review_ref"])
         require(isinstance(r["source"]["packages"], dict))
-        require({"samba", "python3-samba", "samba-ad-dc", "libldb2", "python3-ldb"} <= set(r["source"]["packages"]))
+        from tools.samba_ad.domain_source import validate_pins
+        validate_pins(r["source"]["packages"])
         for name, version in r["source"]["packages"].items():
             require(re.fullmatch(r"[a-z0-9][a-z0-9+.-]+", name))
             require(isinstance(version, str) and re.fullmatch(r"[a-zA-Z0-9:+.~-]+", version))
-            require("4.25.1" in version)
         fields(r["provenance"], "reviewed_config_revision review_ref")
         hex_value(r["provenance"]["reviewed_config_revision"], 40)
         require(re.fullmatch(r"git:[a-f0-9]{40}:[a-zA-Z0-9_./-]+", r["provenance"]["review_ref"])
@@ -231,13 +231,12 @@ class Native:
                     "generations/" + r["generation"] + "/consumer.conf")
         domain_network.inspect(r)
         self.db = self.database() if Path("/var/lib/samba/private/sam.ldb").exists() else None
+        from tools.samba_ad.domain_services import ServiceOps
+        self.services = ServiceOps()
+        self.service_snapshot = self.services.inspect(initial=self.db is None)
         occupied = any(Path(p).exists() for p in ["/var/lib/samba/private/sam.ldb", "/var/lib/samba/private/secrets.ldb"])
         if self.db is None:
             require(not Path("/etc/krb5.keytab").exists())
-            for service in ["samba-ad-dc", "smbd", "nmbd", "winbind"]:
-                status = subprocess.run(["systemctl", "is-active", "--quiet", service + ".service"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                require(status.returncode in [3, 4])
             for directory in ["/var/lib/samba/private", "/var/lib/samba/sysvol"]:
                 p = Path(directory)
                 require(not p.is_symlink() and (not p.exists() or not any(p.iterdir())))
@@ -327,9 +326,17 @@ class Native:
         from samba.auth import system_session
         from samba.dsdb import DS_DOMAIN_FUNCTION_2016
         from samba.provision import provision
+        import samba
         credential = secure_file("/run/samba-ad-domain-credentials/dc01/administrator", secret=True)
         password = credential.read_text().rstrip("\n")
         require(len(password) >= 14 and "\x00" not in password)
+        try:
+            require(samba.version == "4.25.1")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                require(samba.check_password_quality(password))
+        except Exception:
+            del password
+            raise ValueError(ERROR) from None
         logger = logging.getLogger("samba-ad-domain-null")
         logger.handlers = [logging.NullHandler()]; logger.propagate = False
         try:
@@ -352,6 +359,7 @@ class Native:
         from tools.samba_ad.pki_files import atomic_file
         baseline = secure_file("/etc/samba/smb.conf").read_bytes()
         require(hashlib.sha256(baseline).hexdigest() == r["identity"]["config_sha256"])
+        self.services.converge_initial(self.service_snapshot)
         atomic_file(Path("/etc/samba/smb.conf"), b"")
 
     def harden(self, r):
@@ -392,7 +400,7 @@ class Native:
                         self.manifest["network"]["dns_forwarders"])
         atomic_file(Path("/etc/samba/smb.conf"), conf.encode())
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
-        command(["systemctl", "enable", "--now", "samba-ad-dc.service"])
+        command(["systemctl", "start", "samba-ad-dc.service"])
         integrity = future_directory("/var/lib/samba-ad-integrity")
         require(not integrity.exists())
         integrity.mkdir(mode=0o700)
@@ -415,6 +423,8 @@ class Native:
             r["target"]["realm"], r["target"]["netbios"], "dc01", self.manifest["network"]["dns_forwarders"]))
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
         command(["systemctl", "is-active", "--quiet", "samba-ad-dc.service"])
+        from tools.samba_ad.domain_services import ServiceOps
+        ServiceOps().inspect(initial=False)
         command(["samba-tool", "ntacl", "sysvolcheck"])
         # A fresh TLS connection proves the deployed leaf/chain/identity and TLS floor.
         context = ssl.create_default_context(cafile=r["pki"]["trust"]["root_file"])
