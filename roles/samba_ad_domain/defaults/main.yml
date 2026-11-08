@@ -1,0 +1,5 @@
+---
+samba_ad_domain_enabled: false
+samba_ad_domain_apply: false
+samba_ad_domain_manifest: {}
+samba_ad_domain_request: {}

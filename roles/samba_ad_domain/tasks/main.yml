@@ -1,0 +1,75 @@
+---
+- name: Validate S4 opt-in types
+  ansible.builtin.assert:
+    that:
+      - samba_ad_domain_enabled is boolean
+      - samba_ad_domain_apply is boolean
+
+- name: End disabled S4 before transport
+  ansible.builtin.meta: end_role
+  when: not samba_ad_domain_enabled
+
+- name: Require dedicated manual tag and one exact non-root SSH identity
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_domain']
+      - ansible_user is defined
+      - ansible_user != 'root'
+      - samba_ad_domain_request is mapping
+      - samba_ad_domain_manifest is mapping
+      - samba_ad_domain_request.substrate.resource.node in hostvars
+    fail_msg: S4 requires private reviewed contracts, one exact limit and the domain tag.
+
+- name: Validate closed declarations on the controller before target transport
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --validate
+    stdin: "{{ samba_ad_domain_wire | to_json }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Revalidate the canonical S1 live PVE guards without lifecycle mutations
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --substrate-check
+    stdin: "{{ samba_ad_domain_wire | to_json }}"
+  delegate_to: "{{ samba_ad_domain_request.substrate.resource.node }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read target preconditions or execute the explicitly enabled S4 backend
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - "{{ '--execute' if samba_ad_domain_apply and not ansible_check_mode else '--check' }}"
+    stdin: "{{ samba_ad_domain_wire | to_json }}"
+  register: samba_ad_domain_result
+  changed_when: (samba_ad_domain_result.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+
+- name: Report only sanitized S4 status
+  ansible.builtin.debug:
+    msg: >-
+      S4 state={{ (samba_ad_domain_result.stdout | from_json).state }};
+      native protocol acceptance remains a separate runtime requirement.

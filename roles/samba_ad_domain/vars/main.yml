@@ -1,0 +1,7 @@
+---
+samba_ad_domain_wire:
+  schema: samba-ad-domain-wire/v1
+  request: >-
+    {{ samba_ad_domain_request | combine({'enabled': true,
+       'apply': samba_ad_domain_apply and not ansible_check_mode}) }}
+  manifest: "{{ samba_ad_domain_manifest }}"

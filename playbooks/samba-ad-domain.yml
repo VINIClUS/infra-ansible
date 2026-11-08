@@ -1,0 +1,10 @@
+---
+- name: Manual Samba S4 DC01
+  hosts: samba_ad_hosts
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: samba_ad_domain
+      tags:
+        - samba_ad_domain

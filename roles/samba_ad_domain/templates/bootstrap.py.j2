@@ -1,0 +1,34 @@
+{% set bundle = namespace(sources={}) %}
+{% for name in ['compatibility', 'contract', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network'] %}
+{% set _ = bundle.sources.update({name: lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py')}) %}
+{% endfor %}
+import base64, json, sys, types, zlib
+try:
+    sources = json.loads(zlib.decompress(base64.b64decode({{ bundle.sources | samba_ad_domain_pack_sources | to_json }})))
+    for name in ['tools', 'tools.samba_ad']:
+        package = types.ModuleType(name)
+        package.__path__ = []
+        sys.modules[name] = package
+    sys.modules['tools'].samba_ad = sys.modules['tools.samba_ad']
+    for short, source in sources.items():
+        full = 'tools.samba_ad.' + short
+        module = types.ModuleType(full)
+        module.__package__ = 'tools.samba_ad'
+        sys.modules[full] = module
+        setattr(sys.modules['tools.samba_ad'], short, module)
+        exec(source, module.__dict__)
+    from tools.samba_ad import domain
+    if sys.argv[1:] in [['--validate'], ['--substrate-check']]:
+        data = domain.loads(sys.stdin.read())
+        domain.fields(data, 'schema request manifest')
+        domain.require(data['schema'] == 'samba-ad-domain-wire/v1')
+        domain.validate_request(data['request'], data['manifest'])
+        if sys.argv[1:] == ['--substrate-check']:
+            print(json.dumps(domain.substrate_preflight(data['request']['substrate'])))
+        else:
+            print('{"state":"validated","changed":false}')
+    else:
+        raise SystemExit(domain.main())
+except Exception:
+    print('S4 precondition failed (values suppressed)', file=sys.stderr)
+    raise SystemExit(2)
