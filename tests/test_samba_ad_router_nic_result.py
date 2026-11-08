@@ -213,7 +213,7 @@ def test_role_validates_hotplug_before_continuing_and_reports_both_rescues():
     assert hotplug["no_log"] is True and hotplug["register"] == "samba_ad_router_nic_apply_result"
     verify = next(t for t in block if "ansible.builtin.assert" in t)
     assert "samba_ad_router_nic_result" in yaml.safe_dump(verify)
-    assert block.index(verify) < next(i for i, t in enumerate(block) if "ansible.builtin.include_tasks" in t)
+    assert block.index(verify) < next(i for i, t in enumerate(block) if t.get("ansible.builtin.include_tasks") == "readback.yml")
     rescue = transaction["rescue"]
     commands = [t for t in rescue if "ansible.builtin.command" in t]
     assert len(commands) == 2

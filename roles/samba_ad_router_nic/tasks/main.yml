@@ -100,21 +100,10 @@
   vars:
     samba_ad_router_nic_readback_phase: "{{ 'absent' if samba_ad_router_nic_plan.action == 'add' else 'verify' }}"
 
-- name: Read the dedicated network file
-  ansible.builtin.stat:
-    path: /etc/systemd/network/05-samba-ad-identity.network
-    checksum_algorithm: sha256
-  delegate_to: "{{ samba_ad_router_nic_guest_host }}"
-  register: samba_ad_router_nic_file
-
-- name: Refuse an occupied file or a partial earlier extension
-  ansible.builtin.assert:
-    that:
-      - >-
-        (samba_ad_router_nic_plan.action == 'add' and not samba_ad_router_nic_file.stat.exists)
-        or (samba_ad_router_nic_plan.action == 'verify' and samba_ad_router_nic_file.stat.exists
-            and samba_ad_router_nic_file.stat.checksum == (samba_ad_router_nic_plan.network | hash('sha256')))
-    fail_msg: "Existing or partial network state requires exact technical recovery before reexecution."
+- name: Verify absence or exact ownership of both persistent NIC files
+  ansible.builtin.include_tasks: policy.yml
+  vars:
+    samba_ad_router_nic_policy_operation: "{{ 'absent' if samba_ad_router_nic_plan.action == 'add' else 'verify' }}"
 
 - name: Prove the selected independent PVE to QGA root management path before mutation
   ansible.builtin.command:
