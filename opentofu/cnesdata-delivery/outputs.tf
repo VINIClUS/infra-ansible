@@ -28,3 +28,11 @@ output "crl_handoff_sha256" {
   description = "Reviewed input digest, not proof of live AWS state."
   value       = var.activation_enabled ? var.crl_handoff_sha256 : null
 }
+
+output "github" {
+  description = "Only the two EXT1 v2 leaves; null if closed. Host role and full shared_outputs belong to their owners."
+  value = var.github_delivery == null ? null : {
+    infrastructure_plan_role_arn   = aws_iam_role.delivery["plan"].arn
+    infrastructure_deploy_role_arn = aws_iam_role.delivery["deploy"].arn
+  }
+}

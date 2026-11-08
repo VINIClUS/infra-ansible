@@ -6,6 +6,13 @@ name: Validate and deploy
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_production:
+        description: Explicitly authorize production deployment after validation
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -107,9 +114,10 @@ jobs:
     name: Deploy production
     needs: validate
     if: >-
-      github.event_name == 'push' &&
+      github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      github.repository == 'VINIClUS/infra-ansible'
+      github.repository == 'VINIClUS/infra-ansible' &&
+      inputs.deploy_production == true
     runs-on: [self-hosted, linux, x64, ansible-prod]
     environment: production
     concurrency:

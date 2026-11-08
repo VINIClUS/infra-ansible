@@ -32,14 +32,23 @@ def step_named(job: dict, name: str) -> dict:
     return next(step for step in job["steps"] if step.get("name") == name)
 
 
-def test_workflow_has_only_pr_and_main_push_triggers():
+def test_workflow_has_pr_main_push_and_explicit_manual_triggers():
     workflow = load_workflow()
 
     assert workflow["on"] == {
         "pull_request": {"branches": ["main"]},
         "push": {"branches": ["main"]},
+        "workflow_dispatch": {
+            "inputs": {
+                "deploy_production": {
+                    "description": "Explicitly authorize production deployment after validation",
+                    "type": "boolean",
+                    "required": False,
+                    "default": False,
+                }
+            }
+        },
     }
-    assert "workflow_dispatch" not in read_workflow()
     assert "pull_request_target" not in read_workflow()
 
 
@@ -66,9 +75,10 @@ def test_deploy_requires_the_exact_trusted_main_context():
     condition = " ".join(deploy["if"].split())
 
     assert condition == (
-        "github.event_name == 'push' && "
+        "github.event_name == 'workflow_dispatch' && "
         "github.ref == 'refs/heads/main' && "
-        "github.repository == 'VINIClUS/infra-ansible'"
+        "github.repository == 'VINIClUS/infra-ansible' && "
+        "inputs.deploy_production == true"
     )
     assert deploy["environment"] == "production"
     assert deploy["concurrency"] == {
