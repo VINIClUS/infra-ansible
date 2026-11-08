@@ -79,20 +79,13 @@
     content: |
       #!/bin/sh
       set -eu
-      file=/etc/systemd/network/05-samba-ad-identity.network
-      if [ -f "$file" ]; then
-        expected={{ (samba_ad_router_nic_plan.network | hash('sha256')) | quote }}
-        actual=$(sha256sum "$file" | cut -d ' ' -f 1)
-        [ "$actual" = "$expected" ] || exit 1
-        iface={{ samba_ad_router_nic_request.interface | quote }}
-        if [ -e "/sys/class/net/$iface/address" ]; then
-          wanted_mac={{ (samba_ad_router_nic_request.mac | lower) | quote }}
-          [ "$(cat "/sys/class/net/$iface/address")" = "$wanted_mac" ] || exit 1
-          networkctl down "$iface"
-        fi
-        rm -- "$file"
-        networkctl reload
-      fi
+      # The embedded program checks both hashes and metadata before any mutation.
+      python3 -c \
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/router_policy.py') | quote }} \
+        <<'S1_ROUTER_POLICY'
+      {{ {'request': samba_ad_router_nic_request, 'network': samba_ad_router_nic_plan.network,
+          'operation': 'rollback'} | to_json }}
+      S1_ROUTER_POLICY
   delegate_to: "{{ samba_ad_router_nic_guest_host }}"
 
 - name: Arm guest technical network recovery before adding any NIC
@@ -124,13 +117,10 @@
 
 - name: Extend and verify the router without changing existing interfaces
   block:
-    - name: Install one MAC-matched networkd file without modifying netplan or cloud-init
-      ansible.builtin.copy:
-        content: "{{ samba_ad_router_nic_plan.network }}"
-        dest: /etc/systemd/network/05-samba-ad-identity.network
-        mode: "0644"
-        force: false
-      delegate_to: "{{ samba_ad_router_nic_guest_host }}"
+    - name: Install and read back the MAC-bound naming and network policies before hotplug
+      ansible.builtin.include_tasks: policy.yml
+      vars:
+        samba_ad_router_nic_policy_operation: install
 
     - name: Hotplug only the declared additional QEMU NIC
       ansible.builtin.command:
@@ -168,6 +158,11 @@
 
     - name: Verify live address prefix MAC MTU link and original routes through a fresh connection
       ansible.builtin.include_tasks: readback.yml
+
+    - name: Verify both owned persistent NIC files before disarming recovery
+      ansible.builtin.include_tasks: policy.yml
+      vars:
+        samba_ad_router_nic_policy_operation: verify
 
     - name: Read current PVE digest after guest verification
       ansible.builtin.command:
