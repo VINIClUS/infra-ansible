@@ -1,0 +1,116 @@
+---
+- name: Render validated CA and frontend configuration on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --check
+    stdin: "{{ samba_ad_pki_wire | to_json }}"
+  vars:
+    samba_ad_pki_operation: ca_render
+    ansible_connection: local
+  delegate_to: localhost
+  become: false
+  register: samba_ad_pki_ca_files
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read existing dedicated CA files before any replacement
+  ansible.builtin.stat:
+    path: "{{ item.key }}"
+    follow: false
+    checksum_algorithm: sha256
+  loop: "{{ samba_ad_pki_ca_files.stdout | from_json | dict2items }}"
+  register: samba_ad_pki_ca_existing
+  no_log: true
+
+- name: Refuse foreign or unreviewed existing CA configuration
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (item.stat.isreg and not item.stat.islnk and item.stat.uid == 0 and
+         (item.stat.checksum == (item.item.value | hash('sha256')) or
+          item.stat.checksum == samba_ad_pki_ca_request.expected_files.get(item.item.key, '')))
+    fail_msg: S3 refuses changed or foreign configuration; obtain fresh explicit checksums.
+  loop: "{{ samba_ad_pki_ca_existing.results }}"
+  no_log: true
+
+- name: Create the explicitly configured dedicated CA service group
+  ansible.builtin.group:
+    name: "{{ samba_ad_pki_ca_request.service_user }}"
+    system: true
+    state: present
+
+- name: Create the dedicated non-login CA service user
+  ansible.builtin.user:
+    name: "{{ samba_ad_pki_ca_request.service_user }}"
+    group: "{{ samba_ad_pki_ca_request.service_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ samba_ad_pki_ca_request.paths.ca_state }}"
+    create_home: false
+    state: present
+
+- name: Allow only the dedicated service to traverse its configuration and material
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: "{{ samba_ad_pki_ca_request.service_user }}"
+    mode: "0750"
+  loop:
+    - /etc/samba-ad-pki
+    - /etc/samba-ad-pki/profiles
+    - "{{ samba_ad_pki_ca_request.paths.issuer_key | dirname }}"
+
+- name: Protect the encrypted destination-generated intermediate key for the dedicated service
+  ansible.builtin.file:
+    path: "{{ samba_ad_pki_ca_request.paths.issuer_key }}"
+    owner: root
+    group: "{{ samba_ad_pki_ca_request.service_user }}"
+    mode: "0640"
+  no_log: true
+
+- name: Create protected online database directory outside Git
+  ansible.builtin.file:
+    path: "{{ samba_ad_pki_ca_request.paths.ca_state }}"
+    state: directory
+    owner: "{{ samba_ad_pki_ca_request.service_user }}"
+    group: "{{ samba_ad_pki_ca_request.service_user }}"
+    mode: "0700"
+
+- name: Create the separate root-owned identity state directory
+  ansible.builtin.file:
+    path: "{{ samba_ad_pki_ca_request.paths.identity_state }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install only validated public configuration templates and dedicated service units
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ item.key }}"
+    owner: root
+    group: "{{ 'root' if item.key is match('^/etc/systemd/') else samba_ad_pki_ca_request.service_user }}"
+    mode: "{{ '0644' if item.key is match('^/etc/systemd/') else '0640' }}"
+  loop: "{{ samba_ad_pki_ca_files.stdout | from_json | dict2items }}"
+  notify: Restart dedicated Samba AD loopback CA
+  no_log: true
+
+- name: Load the dedicated units without starting the unbootstrapped frontend
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Start only the qualified loopback issuer
+  ansible.builtin.systemd_service:
+    name: samba-ad-pki-ca.service
+    state: started
+    enabled: "{{ samba_ad_pki_services_enabled }}"
+
+- name: Finish backend configuration before a later explicit leaf bootstrap
+  ansible.builtin.meta: flush_handlers

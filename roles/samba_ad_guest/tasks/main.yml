@@ -75,6 +75,10 @@
         exec({{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') | to_json }},
              evidence.__dict__)
         sys.modules[evidence.__name__] = evidence
+        ca_evidence = types.ModuleType('s3_ca_substrate')
+        exec({{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/ca_substrate.py') | to_json }},
+             ca_evidence.__dict__)
+        sys.modules[ca_evidence.__name__] = ca_evidence
         exec({{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') | to_json }},
              {'__name__': '__main__'})
       - "{{ '--check' if ansible_check_mode or not samba_ad_guest_apply else '--execute' }}"

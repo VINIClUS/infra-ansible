@@ -1,0 +1,8 @@
+---
+# Inert placeholders, not inventory, provenance, package pins or authorization.
+# Populate only in reviewed private contracts after actual substrate gates.
+request:
+  schema: samba-ad-pki/v1
+  enabled: false
+  apply: false
+manifest: {}

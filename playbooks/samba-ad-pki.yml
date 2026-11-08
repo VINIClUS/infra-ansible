@@ -1,0 +1,10 @@
+---
+- name: Manual Samba S3 PKI
+  hosts: samba_ad_hosts
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: samba_ad_pki
+      tags:
+        - samba_ad_pki

@@ -1,0 +1,41 @@
+---
+- name: Create the protected persistent request directory
+  ansible.builtin.file:
+    path: /etc/samba-ad-pki/requests
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Persist only identity references and reviewed public metadata for the managed rotator
+  ansible.builtin.copy:
+    content: >-
+      {{ {'request': samba_ad_pki_wire.request | combine({'action': 'rotate', 'expected_active': 'managed'}),
+          'manifest': samba_ad_pki_manifest} | to_nice_json }}
+    dest: "/etc/samba-ad-pki/requests/{{ samba_ad_pki_request.profile }}.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Install the fixed per-profile timer and oneshot unit
+  ansible.builtin.template:
+    src: "rotate.{{ item }}.j2"
+    dest: "/etc/systemd/system/samba-ad-pki-{{ samba_ad_pki_request.profile }}.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [service, timer]
+
+- name: Enable only the observed identity timer
+  ansible.builtin.systemd_service:
+    name: "samba-ad-pki-{{ samba_ad_pki_request.profile }}.timer"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Set frontend boot policy only after verified CA leaf activation
+  ansible.builtin.systemd_service:
+    name: samba-ad-pki-nginx.service
+    enabled: "{{ samba_ad_pki_services_enabled }}"
+  when: samba_ad_pki_request.profile == 'ca'

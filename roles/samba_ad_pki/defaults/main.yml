@@ -1,0 +1,13 @@
+---
+samba_ad_pki_enabled: false
+samba_ad_pki_apply: false
+samba_ad_pki_flow: identity
+samba_ad_pki_manifest: {}
+samba_ad_pki_request: {}
+samba_ad_pki_ca_request: {}
+samba_ad_pki_material_request: {}
+samba_ad_pki_material_password_ref: ""
+samba_ad_pki_public_root_source: ""
+samba_ad_pki_public_issuer_source: ""
+samba_ad_pki_enable_timer: false
+samba_ad_pki_services_enabled: false
