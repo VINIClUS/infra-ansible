@@ -125,9 +125,11 @@ class GitHub:
         # REST artifacts have no run_attempt. The attempt-specific run endpoint
         # retains its own start/completion times after reruns; the run ID/SHA alone
         # cannot distinguish artifacts from a failed earlier or later attempt.
+        # Whole-second timestamps can coincide across attempts: both boundaries
+        # are ambiguous, so only strictly interior creation times are admissible.
         created = metadata.get("created_at")
         require(isinstance(created, str) and
-                instant(run["run_started_at"]) <= instant(created) <= instant(run["updated_at"]),
+                instant(run["run_started_at"]) < instant(created) < instant(run["updated_at"]),
                 "artifact creation outside authenticated attempt")
         data = self.read(prefix + "/zip", raw=True)
         require("sha256:" + sha(data) == metadata["digest"], "external artifact byte digest")

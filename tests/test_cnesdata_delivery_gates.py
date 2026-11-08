@@ -1021,8 +1021,13 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
 @pytest.mark.parametrize("attempt,created,conclusion,accepted", [
     (1, "2026-11-08T10:05:00Z", "success", True),
     (2, "2026-11-08T11:05:00Z", "success", True),
-    (2, "2026-11-08T11:00:00Z", "success", True),
-    (2, "2026-11-08T11:10:00Z", "success", True),
+    (2, "2026-11-08T11:00:00Z", "success", False),
+    (2, "2026-11-08T11:10:00Z", "success", False),
+    (1, "2026-11-08T11:00:00Z", "success", False),
+    (1, "2026-11-08T11:00:01Z", "success", False),
+    (2, "2026-11-08T10:59:59Z", "success", False),
+    (1, "2026-11-08T10:59:59Z", "success", True),
+    (2, "2026-11-08T11:00:01Z", "success", True),
     (2, "2026-11-08T10:05:00Z", "success", False),
     (1, "2026-11-08T11:05:00Z", "success", False),
     (1, "2026-11-08T10:05:00Z", "failure", False),
@@ -1043,11 +1048,12 @@ def test_artifact_creation_belongs_to_authenticated_attempt(contract, provenance
         "workflow_sha": "a" * 40, "source_sha": ("b" if r2 else "a") * 40}
     # Real REST schema: artifact.workflow_run has no run_attempt. The attempt
     # endpoint supplies its own start/completion window even after a rerun.
+    # Both attempts share a represented second; equality cannot prove origin.
     runs = {n: {"id": 123, "run_attempt": n, "repository": {"full_name": contract.REPOSITORY},
         "head_sha": "a" * 40, "path": reference["workflow_path"], "status": "completed",
         "conclusion": "failure" if n == 1 and attempt == 2 else conclusion,
         "created_at": f"2026-11-08T{9+n}:00:00Z", "run_started_at": f"2026-11-08T{9+n}:00:00Z",
-        "updated_at": f"2026-11-08T{9+n}:10:00Z"} for n in (1, 2)}
+        "updated_at": "2026-11-08T11:00:00Z" if n == 1 else "2026-11-08T11:10:00Z"} for n in (1, 2)}
     metadata = {"id": 456, "digest": reference["artifact_digest"], "expired": False,
         "expires_at": "2026-11-09T10:00:00Z", "created_at": created,
         "workflow_run": {"id": 123, "head_sha": "a" * 40}}
@@ -1148,3 +1154,67 @@ def test_execute_preserves_readback_time_through_post_release_latency(monkeypatc
                 if metadata["name"] == "cnesdata-applied-receipt-2-1"]
     assert len(receipts) == 1
     assert c.loads(receipts[0]["receipt.json"])["envelope_sha256"] == c.sha(c.canonical(applied[0]))
+
+
+@pytest.mark.parametrize("attempt", [1, 2])
+@pytest.mark.parametrize("r2", [False, True])
+@pytest.mark.parametrize("position", ["outside", "boundary", "interior"])
+def test_complete_artifact_inventory_rejects_shared_attempt_second(contract, provenance, attempt, r2, position):
+    """Equal-second origin is ambiguous in both directions, including R2."""
+    import io
+    import zipfile
+
+    edge = contract.instant("2026-11-08T11:00:00Z")
+    offset = {"outside": -1, "boundary": 0, "interior": 1}[position] * (1 if attempt == 2 else -1)
+    target = "r2-candidate" if r2 else "backend"
+    purposes = sorted({"backend", "policy", "cost", "drift", "shared-outputs", "toolchain", target})
+    entries, references, records, calls = [], {}, {}, []
+    for index, purpose in enumerate(purposes):
+        member = contract.canonical({"purpose": purpose})
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("facts.json", member)
+        raw = archive.getvalue()
+        reference = {"repository": contract.REPOSITORY, "run_id": 123 + index, "run_attempt": attempt,
+                     "artifact_id": 600 + index, "artifact_digest": "sha256:" + contract.sha(raw),
+                     "workflow_path": ".github/workflows/release-candidate.yml" if purpose == "r2-candidate" else ".github/workflows/backend-proof.yml",
+                     "workflow_sha": "a" * 40, "source_sha": ("b" if purpose == "r2-candidate" else "a") * 40}
+        metadata = {"id": reference["artifact_id"], "digest": reference["artifact_digest"], "expired": False,
+                    "expires_at": "2026-11-09T10:00:00Z", "workflow_run": {"id": reference["run_id"], "head_sha": "a" * 40},
+                    "created_at": contract.utc(edge + offset) if purpose == target else
+                        ("2026-11-08T10:55:00Z" if attempt == 1 else "2026-11-08T11:05:00Z")}
+        references[purpose] = reference
+        records[reference["artifact_id"]] = metadata, raw
+        content = [{"name": "facts.json", "size": len(member), "sha256": contract.sha(member)}]
+        entries.append({"purpose": purpose, "reference": reference, "content_sha256": contract.sha(contract.canonical(content)),
+                        "expires_at": "2026-11-08T13:00:00Z"})
+
+    class Boundary(provenance.GitHub):
+        def __init__(self):
+            self.expiries = {}
+
+        def read(self, path, **kwargs):
+            calls.append(path)
+            parts = path.split("/")
+            if "/attempts/" in path:
+                run_id, number = int(parts[5]), int(parts[7])
+                reference = next(ref for ref in references.values() if ref["run_id"] == run_id)
+                return {"id": run_id, "run_attempt": number, "repository": {"full_name": contract.REPOSITORY},
+                        "head_sha": "a" * 40, "path": reference["workflow_path"], "status": "completed",
+                        "conclusion": "failure" if number == 1 and attempt == 2 else "success",
+                        "run_started_at": "2026-11-08T10:50:00Z" if number == 1 else "2026-11-08T11:00:00Z",
+                        "updated_at": "2026-11-08T11:00:00Z" if number == 1 else "2026-11-08T11:10:00Z"}
+            metadata, raw = records[int(parts[5])]
+            return raw if path.endswith("/zip") else metadata
+
+    api = Boundary()
+    governance = {"artifact_purposes": purposes, "artifact_references": references}
+    if position == "interior":
+        provenance.validate_artifact_set(entries, governance, api, contract.instant("2026-11-08T12:00:00Z"), "2026-11-08T12:30:00Z")
+        assert len(api.expiries) == len(purposes)
+    else:
+        with pytest.raises(ValueError, match="artifact creation outside authenticated attempt"):
+            provenance.validate_artifact_set(entries, governance, api, contract.instant("2026-11-08T12:00:00Z"), "2026-11-08T12:30:00Z")
+        artifact_id = references[target]["artifact_id"]
+        assert not any(path.endswith(f"/artifacts/{artifact_id}/zip") for path in calls)
+        assert (contract.REPOSITORY, artifact_id) not in api.expiries

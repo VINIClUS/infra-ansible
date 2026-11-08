@@ -122,8 +122,9 @@ class Chain:
     def run(self, repository, run_id, path, source="a" * 40, *, terminal=True, role=None):
         value = {"id": run_id, "run_attempt": 1, "repository": {"full_name": repository}, "head_sha": source, "path": path,
                  "status": "completed" if terminal else "in_progress", "conclusion": "success" if terminal else None,
-                 "event": "workflow_dispatch", "head_branch": "develop", "created_at": c.utc(self.now),
-                 "run_started_at": c.utc(self.now), "updated_at": c.utc(self.now)}
+                 # self.now is one second behind the clock; artifacts are strictly interior.
+                 "event": "workflow_dispatch", "head_branch": "develop", "created_at": c.utc(self.now - 1),
+                 "run_started_at": c.utc(self.now - 1), "updated_at": c.utc(self.now + 1)}
         if role:
             pin = self.gov["gate_shas"][role]
             value["referenced_workflows"] = [{"path": f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml@{pin}", "sha": pin}]

@@ -69,6 +69,17 @@ workflow_sha/source_sha; digest externo tem prefixo `sha256:`. Plan inicial não
 o binário que ainda produzirá; deploy exige o artifact planned exato. Não há input de
 URL, script, tfvars, backend, target, lock, parallelism ou destroy arbitrário.
 
+A criação do artifact deve estar estritamente entre `run_started_at` e `updated_at`
+da tentativa autenticada: `run_started_at < created_at < updated_at`. Igualdade com
+qualquer borda é recusada antes de baixar o ZIP, inclusive em R2. Os timestamps
+aceitos têm precisão de segundos; run ID, SHA e digest não distinguem tentativas
+que compartilhem um segundo. Não há garantia documentada de separação mínima de
+um segundo entre tentativas, nem se afirma uma colisão observada em produção.
+Esta regra conservadora também pode recusar um artifact legítimo criado no mesmo
+segundo de uma borda; uma janela sem segundo estritamente interior não admite
+artifacts. O produtor deve republicar com metadados autenticados inequivocamente
+internos à tentativa, sem ajustar timestamps ou inventar precisão/campos de API.
+
 `github` e checkout padrão pertencem ao caller. Antes de carregar helpers, o bootstrap
 inline consulta o run autenticado e deriva o SHA real de `referenced_workflows` para o
 path exato do reusable em SHA40. Busca somente a lista fixa de helpers naquele SHA.
