@@ -126,6 +126,14 @@ da JWK pública e readback. Não prometer OCSP, CRL efetiva ou revogação insta
 O logger JSON/text do step-ca inclui OTT bruto. Configurar `logger.format: common`,
 cuja whitelist CLF exclui token/certificado/erro arbitrário, e verificar ausência
 de vazamento no runtime. Frontend/helper não logam body/auth/query/PEM privado.
+O NGINX descarta seu error log nativo em `/dev/null`: o formatter pode anexar
+request-line/query em falhas anteriores ao njs, inclusive limite de body.
+Seu access log contém apenas status, bytes e duração numéricos. Não basta
+sanitizar o handler JS. A prova nativa futura deve inserir sentinelas em URI/query
+e provocar body oversized com Content-Length/chunked, erros do parser de
+request-line/headers, rejeições njs e falhas upstream, verificando ausência em
+stdout/stderr/journal e presença dos sinais sanitizados. Essa prova não foi feita
+por renderer/Node nem substituída por reduzir o nível de severidade do logger.
 DB persistente armazena replay tokens e é material sensível fora do Git.
 
 Backup/recovery/DR, custódia externa e inventário municipal completo estão fora

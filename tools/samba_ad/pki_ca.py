@@ -145,7 +145,8 @@ def _render(r):
 user {r['frontend_user']};
 worker_processes 1;
 pid /run/samba-ad-pki-nginx.pid;
-error_log stderr warn;
+# Native errors append request lines even before njs. Never persist that stream.
+error_log /dev/null;
 events {{ worker_connections 128; }}
 http {{
     js_engine njs;
@@ -158,7 +159,7 @@ http {{
     subrequest_output_buffer_size 32k;
     limit_req_zone $binary_remote_addr zone=s3_rate:1m rate=5r/m;
     limit_conn_zone $binary_remote_addr zone=s3_conn:1m;
-    log_format s3 '$status $request_method';
+    log_format s3 's3 status=$status bytes=$body_bytes_sent seconds=$request_time';
     access_log /dev/stdout s3;
     server {{
         listen {r['target']['address']}:443 ssl;

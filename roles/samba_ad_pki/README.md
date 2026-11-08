@@ -78,6 +78,13 @@ Limites de body/buffer/timeout/rate/conn; erro sanitizado, sem body/JWT em logs.
 Upstream HTTPS verifica cadeia e ServerName, sem headers como identidade/mTLS.
 Rotas administrativas/revoke/renew/rekey/SSH/ACME/SCEP não são expostas.
 
+O `error_log` nativo vai a `/dev/null`, pois erros do parser/body-limit podem
+anexar request/query antes de executar njs. O access log persiste somente status,
+bytes e duração numéricos, sem método/URI/query/header/body. Essa redução deliberada
+de diagnóstico bruto preserva sinais sanitizados. A prova na VM deve verificar
+sentinelas em queries/URIs, rejeição por tamanho (Content-Length/chunked), parser
+de request-line/headers e falhas do emissor, conferindo stdout/stderr/journal.
+
 Templates fixam SAN/EKU/CA:false/keyUsage, RSA3072/4096 e claims temporais,
 jti/audience/CSR-binding. Pedido de CA:true/EKU extra pode ser **coagido para
 leaf restrito**, não necessariamente rejeitado por HTTP: aceite exige que

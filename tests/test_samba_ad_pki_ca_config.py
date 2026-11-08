@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 
 from cryptography.hazmat.primitives.asymmetric import ec
 import pytest
@@ -60,6 +61,20 @@ def test_renderer_binds_six_independent_provisioners_to_private_manifest():
     assert {p["claims"]["maxTLSCertDuration"] for p in provisioners} == {"168h"}
     assert "/etc/systemd/system/samba-ad-pki-ca.service" in files
     assert "/etc/systemd/system/samba-ad-pki-nginx.service" in files
+
+
+def test_native_error_paths_cannot_persist_raw_request_and_access_signals_are_scalar_only():
+    files = module().render(request())
+    nginx = files["/etc/samba-ad-pki/nginx.conf"]
+    # One main sink is inherited by all parser/body-limit/njs/upstream error paths.
+    errors = re.findall(r"(?m)^\s*error_log\s+([^;]+);", nginx)
+    assert len(errors) == 1 and errors[0].split()[0] == "/dev/null"
+    formats = re.findall(r"(?m)^\s*log_format\s+s3\s+([^;]+);", nginx)
+    assert len(formats) == 1
+    variables = set(re.findall(r"\$([a-z_]+)", formats[0]))
+    assert "status" in variables
+    assert variables <= {"status", "body_bytes_sent", "request_time"}
+    assert "access_log /dev/stdout s3;" in nginx
 
 
 @pytest.mark.parametrize("case", ["private", "duplicate_key", "missing_profile", "shell_path", "root_online",
