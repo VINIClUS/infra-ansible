@@ -59,33 +59,62 @@ def plan(r, config, pending, reverting=False):
             "params": {"digest": config["digest"], r["nic"]: nic_text(r)}, "network": network_text(r)}
 
 
+class CommandFailure(ValueError):
+    """Only fixed categories and numeric status may escape command boundaries."""
+
+    def __init__(self, category, returncode):
+        super().__init__(category)
+        self.category = category
+        self.returncode = returncode
+
+
+def checked_run(argv, timeout):
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=timeout)
+    if result.returncode != 0:
+        raise CommandFailure("command_failed", result.returncode)
+    return result
+
+
+def response_json(stdout, expected, item_key=None):
+    try:
+        result = json.loads(stdout)
+    except ValueError:
+        raise CommandFailure("invalid_json", 0) from None
+    if type(result) is not expected or (expected is list and any(type(x) is not dict for x in result)):
+        raise CommandFailure("invalid_response", 0)
+    if item_key and any(type(x.get(item_key)) is not str or not x[item_key] for x in result):
+        raise CommandFailure("invalid_response", 0)
+    return result
+
+
 def api(method, path, **params):
+    require(method in ("get", "set"), "API method")
     argv = ["pvesh", method, path, "--output-format", "json"]
     for k, value in params.items():
         argv += ["--" + k, str(value)]
-    result = subprocess.run(argv, capture_output=True, text=True, check=False, timeout=60)
-    require(result.returncode == 0, "PVE command failed; output suppressed")
-    return json.loads(result.stdout) if result.stdout.strip() else None
+    result = checked_run(argv, timeout=60)
+    # Synchronous PUT config returns null but its worker prints informational text.
+    # Its success is established by the subsequent readbacks, never by that text.
+    if method == "set":
+        return None
+    pending = path.endswith("/pending")
+    return response_json(result.stdout, list if pending else dict, "key" if pending else None)
 
 
 def host_nic_present(r):
     require(socket.gethostname().split(".")[0] == r["node"], "local PVE node identity")
-    result = subprocess.run(["ip", "-j", "link", "show"], capture_output=True, text=True, check=False, timeout=15)
-    require(result.returncode == 0, "host link readback")
+    result = checked_run(["ip", "-j", "link", "show"], timeout=15)
     return any(link.get("ifname") == "tap" + str(r["vmid"]) + "i" + r["nic"][3:]
-               for link in json.loads(result.stdout))
+               for link in response_json(result.stdout, list, "ifname"))
 
 
 def qga_preflight(r):
     """Prove the existing local PVE -> QGA root channel without guest IP access."""
     require(socket.gethostname().split(".")[0] == r["node"], "local PVE node identity")
-    ping = subprocess.run(["qm", "guest", "cmd", str(r["vmid"]), "ping"],
-                          capture_output=True, text=True, check=False, timeout=15)
-    require(ping.returncode == 0, "existing QGA ping failed")
-    execution = subprocess.run(["qm", "guest", "exec", str(r["vmid"]), "--timeout", "10", "--", "/usr/bin/id", "-u"],
-                               capture_output=True, text=True, check=False, timeout=20)
-    require(execution.returncode == 0, "existing QGA root execution failed")
-    result = json.loads(execution.stdout)
+    checked_run(["qm", "guest", "cmd", str(r["vmid"]), "ping"], timeout=15)
+    execution = checked_run(["qm", "guest", "exec", str(r["vmid"]), "--timeout", "10", "--", "/usr/bin/id", "-u"],
+                            timeout=20)
+    result = response_json(execution.stdout, dict)
     require(isinstance(result, dict) and result.get("exited") == 1
             and type(result.get("exitcode")) is int and result["exitcode"] == 0
             and isinstance(result.get("out-data"), str) and result["out-data"].strip() == "0"
@@ -93,37 +122,77 @@ def qga_preflight(r):
 
 
 def main():
+    reverting = "--revert" in sys.argv
+    readonly = "--plan" in sys.argv
+    diagnostic = {
+        "schema": 1, "operation": "revert" if reverting else "plan" if readonly else "apply",
+        "success": False, "phase": "request", "category": "unknown", "command_rc": None,
+        "mutation_attempted": False, "readback": "not_started", "state": "unknown",
+    }
     try:
         r = json.load(sys.stdin)
         qga = "--qga-preflight" in sys.argv
         require(not qga or ("--plan" in sys.argv and "--revert" not in sys.argv), "QGA preflight is readonly")
         # Validate node/VMID before using them in an API path.
-        require(type(r.get("vmid")) is int and isinstance(r.get("node"), str)
+        require(isinstance(r, dict) and type(r.get("vmid")) is int and isinstance(r.get("node"), str)
                 and re.fullmatch(r"[a-z0-9-]+", r["node"]), "identity")
         path = f'/nodes/{r["node"]}/qemu/{r["vmid"]}'
+        diagnostic["phase"] = "config"
         config = api("get", path + "/config", current=1)
-        result = plan(r, config, api("get", path + "/pending"), reverting="--revert" in sys.argv)
+        diagnostic["phase"] = "pending"
+        pending = api("get", path + "/pending")
+        diagnostic["phase"] = "preconditions"
+        result = plan(r, config, pending, reverting=reverting)
+        diagnostic["phase"] = "status"
         require(api("get", path + "/status/current").get("status") == "running", "running router")
         if qga:
+            diagnostic["phase"] = "qga"
             qga_preflight(r)
-        if "--revert" in sys.argv:
+        if reverting:
             if result["action"] == "verify":
+                diagnostic.update(phase="write", mutation_attempted=True)
                 api("set", path + "/config", digest=config["digest"], delete=r["nic"])
+            diagnostic.update(phase="readback_pending", readback="incomplete")
             pending = api("get", path + "/pending")
             require(not any("pending" in x or x.get("delete") for x in pending), "remove still pending; reviewed recovery required")
-            require(r["nic"] not in api("get", path + "/config", current=1), "active remove readback")
+            diagnostic["phase"] = "readback_config"
+            after = api("get", path + "/config", current=1)
+            require(r["nic"] not in after, "active remove readback")
+            require(plan(r, after, pending, reverting=True)["action"] == "add", "recovery config readback")
+            diagnostic["phase"] = "readback_tap"
             require(not host_nic_present(r), "effective host NIC remains; reviewed recovery required")
-            print(json.dumps({"changed": result["action"] == "verify"}))
+            diagnostic.update(success=True, phase="complete", category="ok", readback="verified", state="absent")
+            print(json.dumps({"changed": result["action"] == "verify", "diagnostic": diagnostic}))
             return 0
         changed = result["action"] == "add"
-        if "--plan" not in sys.argv and changed:
-            api("set", path + "/config", **result["params"])
+        if not readonly:
+            if changed:
+                diagnostic.update(phase="write", mutation_attempted=True)
+                api("set", path + "/config", **result["params"])
+            diagnostic.update(phase="readback_config", readback="incomplete")
             after = api("get", path + "/config", current=1)
             r["expected_digest"] = after["digest"]
+            diagnostic["phase"] = "readback_pending"
             require(plan(r, after, api("get", path + "/pending"))["action"] == "verify", "NIC readback")
-        print(json.dumps({"changed": changed, "action": result["action"], "network": result["network"], "qga_management_verified": qga}))
+            diagnostic["phase"] = "readback_tap"
+            require(host_nic_present(r), "effective host NIC absent; reviewed recovery required")
+            diagnostic.update(success=True, phase="complete", category="ok", readback="verified", state="present")
+            print(json.dumps({"changed": changed, "diagnostic": diagnostic}))
+        else:
+            print(json.dumps({"changed": changed, "action": result["action"], "network": result["network"], "qga_management_verified": qga}))
         return 0
-    except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
+    except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError) as error:
+        if isinstance(error, CommandFailure):
+            diagnostic.update(category=error.category, command_rc=error.returncode)
+        elif isinstance(error, subprocess.TimeoutExpired):
+            diagnostic["category"] = "timeout"
+        elif isinstance(error, OSError):
+            diagnostic["category"] = "os_error"
+        elif isinstance(error, json.JSONDecodeError):
+            diagnostic["category"] = "invalid_json"
+        else:
+            diagnostic["category"] = "precondition"
+        print(json.dumps({"changed": None if diagnostic["mutation_attempted"] else False, "diagnostic": diagnostic}))
         print("S1 router failed; values suppressed; dead-man/recovery remain required", file=sys.stderr)
         return 2
 
