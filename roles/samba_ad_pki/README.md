@@ -36,6 +36,8 @@ imutável. Não é carregada por site.yml/FIXED_RUNS/deploy automático.
    Ativar NGINX apenas após validação real do candidato e readback do leaf
    externo. O TLS interno24h/dual EKU é somente detalhe loopback e não um
    perfil externo ou credencial compartilhada.
+   O rotador prepara o ancestral runtime protegido antes de `nginx -t`, mesmo
+   no primeiro start ou após limpeza de `/run`; só então solicita start/reload.
 8. Outros perfis: sign novo por CSR/JWT, nunca renew com chave antiga ou
    rekey mTLS por header. `stage` não ativa/declara consumidor íntegro;
    adapters ausentes são integration_pending. Integração Samba/LDAPS é S4/S5,

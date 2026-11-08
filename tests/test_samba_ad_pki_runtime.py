@@ -205,3 +205,48 @@ def test_real_adapter_refuses_system_paths_before_any_host_probe(monkeypatch, fi
     monkeypatch.setattr(runtime, "host_snapshot", forbidden)
     with pytest.raises(ValueError, match="suppressed"):
         runtime.LocalOps().identity_tools(r)
+
+
+@pytest.mark.parametrize("recreated", [False, True])
+@pytest.mark.parametrize("umask", [0o022, 0o077])
+def test_nginx_runtime_exists_before_first_test_and_after_runtime_removal(tmp_path, monkeypatch, recreated, umask):
+    import os
+    import shutil
+    runtime = module(); r, _ = contract_request()
+    r["adapter"] = {"kind": "nginx", "port": 443}
+    r["tools"]["nginx"] = {"path": "/usr/sbin/nginx"}
+    directory = tmp_path / "samba-ad-pki-nginx"
+    if recreated:
+        directory.mkdir(mode=0o755)
+        (directory / "body").mkdir(mode=0o700)
+        shutil.rmtree(directory)  # Synthetic systemd cleanup/reboot, never real /run.
+    monkeypatch.setattr(runtime, "NGINX_RUNTIME", directory, raising=False)
+    calls = []
+    def command(argv, stdin=None, timeout=15):
+        assert directory.is_dir(), "runtime ancestor must exist before nginx -t"
+        assert directory.stat().st_uid == os.geteuid()
+        assert directory.stat().st_mode & 0o777 == 0o755
+        calls.append(argv)
+        return b""
+    monkeypatch.setattr(runtime, "_command", command)
+    previous = os.umask(umask)
+    try: runtime.LocalOps().reload(r)
+    finally: os.umask(previous)
+    assert calls == [["/usr/sbin/nginx", "-t", "-c", "/etc/samba-ad-pki/nginx.conf"],
+                     ["systemctl", "reload-or-restart", "samba-ad-pki-nginx.service"]]
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "writable"])
+def test_nginx_runtime_refuses_unsafe_existing_directory_before_commands(tmp_path, monkeypatch, unsafe):
+    runtime = module(); r, _ = contract_request()
+    r["adapter"] = {"kind": "nginx", "port": 443}
+    r["tools"]["nginx"] = {"path": "/usr/sbin/nginx"}
+    directory = tmp_path / "samba-ad-pki-nginx"
+    actual = tmp_path / "other"; actual.mkdir(mode=0o700)
+    if unsafe == "symlink": directory.symlink_to(actual, target_is_directory=True)
+    else: directory.mkdir(mode=0o777); directory.chmod(0o777)
+    monkeypatch.setattr(runtime, "NGINX_RUNTIME", directory, raising=False)
+    def forbidden(*args, **kwargs): raise AssertionError("unsafe runtime reached a native command")
+    monkeypatch.setattr(runtime, "_command", forbidden)
+    with pytest.raises(ValueError, match="suppressed"):
+        runtime.LocalOps().reload(r)

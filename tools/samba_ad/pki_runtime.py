@@ -34,6 +34,24 @@ from tools.samba_ad.pki import LIFETIME, require, rotation_due, verify_leaf
 from tools.samba_ad.pki_contract import identity_layout, loads, public_jwk, validate_request
 from tools.samba_ad.pki_files import atomic_file, exclusive_file, future_directory, secure_directory, secure_file, sync_dir
 
+NGINX_RUNTIME = Path("/run/samba-ad-pki-nginx")
+
+
+def prepare_nginx_runtime():
+    """Create only our protected ancestor before nginx -t creates temp paths."""
+    directory = future_directory(NGINX_RUNTIME)
+    secure_directory(directory.parent)
+    if not directory.exists():
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o755)  # Set only our newly created path, including under timer UMask=0077.
+    require(directory.stat().st_uid == os.geteuid() and directory.stat().st_mode & 0o7777 == 0o755)
+    # NGINX may own its existing temp dirs; never let its mkdir/chown follow links.
+    for name in ["body", "proxy"]:
+        child = directory / name
+        require(not child.is_symlink())
+        if child.exists():
+            require(child.resolve() == child and child.is_dir() and not child.stat().st_mode & 0o022)
+
 
 def consumer_conf(r, generation):
     cert, key = str(generation / "fullchain.pem"), str(generation / "key.pem")
@@ -343,6 +361,7 @@ class LocalOps:
 
     def reload(self, r):
         if r["adapter"]["kind"] == "nginx":
+            prepare_nginx_runtime()
             _command([r["tools"]["nginx"]["path"], "-t", "-c", "/etc/samba-ad-pki/nginx.conf"])
             _command(["systemctl", "reload-or-restart", "samba-ad-pki-nginx.service"])
         else:
