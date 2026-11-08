@@ -1,0 +1,15 @@
+---
+# Values/references remain in memory only; no set_fact or fact cache.
+samba_ad_pki_wire: "{{ samba_ad_pki_selection.stdout | from_json }}"
+samba_ad_pki_inputs:
+  request: >-
+    {{ samba_ad_pki_request | combine({'enabled': true,
+       'apply': samba_ad_pki_apply and not ansible_check_mode}) }}
+  manifest: "{{ samba_ad_pki_manifest }}"
+  ca_request: >-
+    {{ samba_ad_pki_ca_request | combine({'enabled': true,
+       'apply': samba_ad_pki_apply and not ansible_check_mode}) }}
+  material_request: >-
+    {{ samba_ad_pki_material_request | combine({'enabled': true,
+       'apply': samba_ad_pki_apply and not ansible_check_mode}) }}
+  material_password_ref: "{{ samba_ad_pki_material_password_ref }}"

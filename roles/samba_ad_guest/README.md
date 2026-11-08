@@ -106,3 +106,23 @@ guest duas vezes. Storage continua conferido em ambos os nós antes da criação
 Observação não é reserva transacional; aprovações de múltiplos recursos precisam
 considerar o budget acumulado. O contrato de produção mantém 4 GiB por DC e o
 bloqueio de produção até S2; não reduzir dimensionamento para satisfazer o gate.
+# Consumer específico da CA (S3)
+
+O envelope `samba-ad-ca-substrate-bundle/v1`, purpose `ca`, autoriza somente a
+VM declarada no manifesto privado: QEMU, 2 vCPU, 2048 MiB e 20 GiB. Vincula
+target/ownership, manifesto S0 inerte, template/digest, placement, política,
+versões vivas e parecer privado imutável. Exige referências de auditoria de
+estado S1/S2 e prova do substrato CA no mesmo template/nó, com cleanup do
+candidato. Não produz essas provas ou autentica um parecer apenas por hash.
+
+Reutiliza o motor S1, sem novo clone/migrate/firewall, e conserva limit/tag,
+defaults falsos, capacidade, propriedade e readbacks. O contrato dos DCs e a
+qualificação S2 de dois nós permanecem separados. Provas QEMU já medidas só
+são reaproveitadas se cobrem template e placement da CA; os checks mínimos CA
+são ACL, systemd, relógio, auditoria, isolamento e rede. Não exige uma floresta
+Samba na CA nem converte a prova CA em qualificação DC.
+
+O contrato é código consumidor; não existe pin operacional público nem CA
+criada por este incremento. A execução requer configuração privada revisada
+e despacho com os gates reais satisfeitos. A evidência é carregada antes do
+lifecycle; a CA não é autorizada por um booleano de bypass ou por usar sizing DC.

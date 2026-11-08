@@ -1,0 +1,55 @@
+import json, sys, types
+try:
+    sources = {
+{% for name in ['compatibility', 'ca_substrate', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'pki_material', 'pki_ca'] %}
+        {{ name | to_json }}: {{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py') | to_json }},
+{% endfor %}
+    }
+    for name in ['tools', 'tools.samba_ad']:
+        package = types.ModuleType(name)
+        package.__path__ = []
+        sys.modules[name] = package
+    sys.modules['tools'].samba_ad = sys.modules['tools.samba_ad']
+    for short, source in sources.items():
+        full = 'tools.samba_ad.' + short
+        module = types.ModuleType(full)
+        module.__package__ = 'tools.samba_ad'
+        sys.modules[full] = module
+        setattr(sys.modules['tools.samba_ad'], short, module)
+        exec(source, module.__dict__)
+    from tools.samba_ad import pki_ca, pki_contract, pki_files, pki_material, pki_runtime
+    from tools.samba_ad.pki import require
+    data = pki_contract.loads(sys.stdin.read())
+    operation = {{ samba_ad_pki_operation | to_json }}
+    execute = sys.argv[1:] == ['--execute']
+    if operation in ['identity_guard', 'identity_run', 'material_guard', 'material_run', 'ca_guard']:
+        profile = data['request']['profile'] if 'request' in data else None
+        pki_files.role_paths(profile)
+    if operation in ['identity_guard', 'identity_run', 'public_chain']:
+        pki_contract.validate_request(data['request'], data['manifest'])
+    if operation == 'identity_guard':
+        pki_runtime.LocalOps().identity_tools(data['request'])
+        result = {'state': 'planned', 'changed': False, 'profiles': 1}
+    elif operation == 'identity_run':
+        result = pki_runtime.run(data['request'], data['manifest'], check=not execute)
+    elif operation == 'material_guard':
+        result = pki_material.prepare(data['material_request'], check=True)
+    elif operation == 'material_run':
+        password = None
+        if execute and data['material_request']['apply']:
+            password = pki_files.secure_file(data['material_password_ref'], secret=True).read_bytes().rstrip(b'\r\n')
+        result = pki_material.prepare(data['material_request'], password, check=not execute)
+    elif operation == 'ca_guard':
+        result = pki_ca.inspect(data['ca_request'])
+    elif operation == 'ca_render':
+        result = pki_ca.render(data['ca_request'])
+    elif operation == 'public_chain':
+        trust = data['request']['trust']
+        result = pki_ca.public_chain(data['root_public'].encode(), data['issuer_public'].encode(),
+                                     trust['root_sha256'], trust['issuer_sha256'], int(pki_runtime.time.time()))
+    else:
+        raise ValueError('unknown operation')
+    print(json.dumps(result))
+except Exception:
+    print('{"state":"error","changed":false,"error":"S3 precondition failed (values suppressed)"}')
+    raise SystemExit(2)

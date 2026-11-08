@@ -1,0 +1,233 @@
+---
+- name: Validate S3 opt-in types
+  ansible.builtin.assert:
+    that:
+      - samba_ad_pki_enabled is boolean
+      - samba_ad_pki_apply is boolean
+      - samba_ad_pki_enable_timer is boolean
+      - samba_ad_pki_services_enabled is boolean
+
+- name: End the disabled PKI role before transport
+  ansible.builtin.meta: end_role
+  when: not samba_ad_pki_enabled
+
+- name: Require one exact host and the dedicated manual PKI tag
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_pki']
+      - samba_ad_pki_flow in ['trust', 'ca_csr', 'ca_configure', 'identity']
+      - samba_ad_pki_request is mapping
+      - samba_ad_pki_manifest is mapping
+      - samba_ad_pki_ca_request is mapping
+      - samba_ad_pki_material_request is mapping
+    fail_msg: S3 requires inert-reviewed contracts, one exact limit and the PKI tag.
+
+- name: Validate and select the reference-only payload on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - >-
+        import runpy, sys;
+        sys.path.insert(0, {{ (role_path ~ '/../..') | to_json }});
+        runpy.run_module('tools.samba_ad.pki_wire', run_name='__main__')
+      - "{{ samba_ad_pki_flow }}"
+    stdin: "{{ samba_ad_pki_inputs | to_json }}"
+  vars:
+    ansible_connection: local
+  delegate_to: localhost
+  become: false
+  register: samba_ad_pki_selection
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read the target identity and immutable input preconditions without installing helpers
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --check
+    stdin: "{{ samba_ad_pki_wire | to_json }}"
+  vars:
+    samba_ad_pki_operation: >-
+      {{ {'trust': 'identity_guard', 'identity': 'identity_guard',
+          'ca_csr': 'material_guard', 'ca_configure': 'ca_guard'}[samba_ad_pki_flow] }}
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify and normalize only public certificates on the controller before any transfer
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --check
+    stdin: >-
+      {{ samba_ad_pki_wire | combine({
+          'root_public': lookup('ansible.builtin.file', samba_ad_pki_public_root_source),
+          'issuer_public': lookup('ansible.builtin.file', samba_ad_pki_public_issuer_source)}) | to_json }}
+  vars:
+    samba_ad_pki_operation: public_chain
+    ansible_connection: local
+  delegate_to: localhost
+  become: false
+  register: samba_ad_pki_public_chain
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: samba_ad_pki_flow == 'trust'
+
+- name: Prepare only protected source and state paths after readonly preconditions
+  when:
+    - samba_ad_pki_apply
+    - not ansible_check_mode
+    - samba_ad_pki_flow != 'identity' or samba_ad_pki_request.action != 'preflight'
+  block:
+    - name: Create the dedicated public helper package directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /usr/libexec/samba-ad-pki
+        - /usr/libexec/samba-ad-pki/tools
+        - /usr/libexec/samba-ad-pki/tools/samba_ad
+
+    - name: Read the dedicated configuration directory without following links
+      ansible.builtin.stat:
+        path: /etc/samba-ad-pki
+        follow: false
+      register: samba_ad_pki_config_directory
+
+    - name: Refuse a redirected or foreign configuration directory
+      ansible.builtin.assert:
+        that:
+          - >-
+            not samba_ad_pki_config_directory.stat.exists or
+            (samba_ad_pki_config_directory.stat.isdir and
+             not samba_ad_pki_config_directory.stat.islnk and samba_ad_pki_config_directory.stat.uid == 0)
+
+    - name: Create initial private configuration directory without changing an existing CA service group
+      ansible.builtin.file:
+        path: /etc/samba-ad-pki
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: not samba_ad_pki_config_directory.stat.exists
+
+    - name: Install empty public Python package initializers
+      ansible.builtin.copy:
+        content: ""
+        dest: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - /usr/libexec/samba-ad-pki/tools/__init__.py
+        - /usr/libexec/samba-ad-pki/tools/samba_ad/__init__.py
+
+    - name: Install public online helpers excluding the offline root module
+      ansible.builtin.copy:
+        src: "{{ role_path }}/../../tools/samba_ad/{{ item }}.py"
+        dest: "/usr/libexec/samba-ad-pki/tools/samba_ad/{{ item }}.py"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - compatibility
+        - ca_substrate
+        - pki
+        - pki_contract
+        - pki_files
+        - pki_runtime
+        - pki_material
+        - pki_ca
+
+    - name: Install the sign-only njs source
+      ansible.builtin.copy:
+        src: frontend.js
+        dest: /usr/libexec/samba-ad-pki/frontend.js
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create identity state directory only for the requested consumer
+      ansible.builtin.file:
+        path: "{{ samba_ad_pki_request.state_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: samba_ad_pki_flow in ['identity', 'trust']
+
+    - name: Install only normalized verified public trust material
+      ansible.builtin.copy:
+        content: "{{ (samba_ad_pki_public_chain.stdout | from_json)[item.value] }}"
+        dest: "{{ samba_ad_pki_request.trust[item.key] }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - {key: root_file, value: root}
+        - {key: issuer_file, value: issuer}
+      when: samba_ad_pki_flow == 'trust'
+      no_log: true
+
+    - name: Configure only the qualified CA backend and dormant frontend
+      ansible.builtin.include_tasks: ca.yml
+      when: samba_ad_pki_flow == 'ca_configure'
+
+    - name: Prepare the approved destination for its encrypted intermediate key and public CSR
+      ansible.builtin.file:
+        path: "{{ samba_ad_pki_material_request.directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: samba_ad_pki_flow == 'ca_csr'
+
+- name: Execute or preview only the explicitly requested host-local PKI action
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - "{{ '--execute' if samba_ad_pki_apply and not ansible_check_mode else '--check' }}"
+    stdin: "{{ samba_ad_pki_wire | to_json }}"
+  vars:
+    samba_ad_pki_operation: "{{ 'material_run' if samba_ad_pki_flow == 'ca_csr' else 'identity_run' }}"
+  register: samba_ad_pki_result
+  changed_when: (samba_ad_pki_result.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+  when: samba_ad_pki_flow in ['identity', 'ca_csr']
+
+- name: Install a timer only after an observed active managed generation
+  ansible.builtin.include_tasks: timer.yml
+  when:
+    - samba_ad_pki_flow == 'identity'
+    - samba_ad_pki_apply
+    - not ansible_check_mode
+    - samba_ad_pki_enable_timer
+    - (samba_ad_pki_result.stdout | from_json).state in ['active', 'current']
+
+- name: Report PKI state and counts only
+  ansible.builtin.debug:
+    msg: >-
+      S3 flow={{ samba_ad_pki_flow }};
+      state={{ (samba_ad_pki_result.stdout | from_json).state
+                if samba_ad_pki_flow in ['identity', 'ca_csr'] else 'configuration-only' }};
+      resources=1; no claim of S4/S5/S7 integration.
