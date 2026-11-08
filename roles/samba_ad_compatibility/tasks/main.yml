@@ -4,6 +4,7 @@
     that:
       - samba_ad_compatibility_enabled is boolean
       - samba_ad_compatibility_apply is boolean
+      - samba_ad_compatibility_probe in ['lxc_first', 'qemu_substrate']
 
 - name: Stop the disabled first proof
   ansible.builtin.meta: end_role
@@ -84,8 +85,28 @@
   when: samba_ad_compatibility_apply and not ansible_check_mode
   no_log: true
 
-- name: Run only the explicit guest first proof or read-only preflight
+- name: Run the explicit guest probe or read-only preflight
   vars:
+    samba_ad_compatibility_runner: >-
+      {{ 's2_probe_runner' if samba_ad_compatibility_probe == 'lxc_first' else 's2_qemu_runner' }}
+    samba_ad_compatibility_protected_source: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest_probe.py') }}
+    samba_ad_compatibility_qemu_source: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/qemu_guest_probe.py') }}
+    samba_ad_compatibility_probe_source: |-
+      {% if samba_ad_compatibility_probe == 'qemu_substrate' %}
+      import types, sys
+      protected_module = types.ModuleType('s2_protected')
+      exec({{ samba_ad_compatibility_protected_source | to_json }}, protected_module.__dict__)
+      sys.modules['s2_protected'] = protected_module
+      qemu_module = types.ModuleType('s2_qemu_helper')
+      exec({{ samba_ad_compatibility_qemu_source | to_json }}, qemu_module.__dict__)
+      identity = qemu_module.identity
+      if __name__ == '__main__':
+          raise SystemExit(qemu_module.main())
+      {% else %}
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest_probe.py') }}
+      {% endif %}
     samba_ad_compatibility_modules:
       - name: s2_compatibility
         source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/compatibility.py') }}"
@@ -93,6 +114,8 @@
         source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/guest.py') }}"
       - name: s2_probe_runner
         source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/probe_runner.py') }}"
+      - name: s2_qemu_runner
+        source: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../tools/samba_ad/qemu_probe_runner.py') }}"
   ansible.builtin.command:
     argv:
       - python3
@@ -103,7 +126,7 @@
             module = types.ModuleType(item['name'])
             exec(item['source'], module.__dict__)
             sys.modules[module.__name__] = module
-        sys.exit(sys.modules['s2_probe_runner'].main())
+        sys.exit(sys.modules[{{ samba_ad_compatibility_runner | to_json }}].main())
     stdin: >-
       {{ {'operation': {'enabled': samba_ad_compatibility_enabled, 'apply': samba_ad_compatibility_apply,
             'check': ansible_check_mode, 'limit': ansible_limit, 'inventory_host': inventory_hostname,
@@ -111,8 +134,7 @@
             'tags': ansible_run_tags | list | sort, 'request': samba_ad_compatibility_request,
             'provenance': samba_ad_compatibility_provenance,
             'run_id': ((samba_ad_compatibility_prepared.stdout | default('{}') | from_json).run_id | default(none))},
-          'probe_source': lookup('ansible.builtin.file',
-            playbook_dir ~ '/../tools/samba_ad/guest_probe.py')} | to_json }}
+          'probe_source': samba_ad_compatibility_probe_source} | to_json }}
   register: samba_ad_compatibility_result
   changed_when: (samba_ad_compatibility_result.stdout | from_json).state == 'measured'
   failed_when: >-
@@ -146,7 +168,7 @@
     msg: >-
       S2 state={{ (samba_ad_compatibility_result.stdout | from_json).state }};
       status={{ (samba_ad_compatibility_result.stdout | from_json).status | default('preflight') }};
-      first proof only; qualification=pending; no final guests.
+      probe={{ samba_ad_compatibility_probe }}; qualification=pending; no final guests.
 
 - name: Refuse operational failure after preserving its report
   ansible.builtin.assert:
