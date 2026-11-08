@@ -21,6 +21,41 @@ def require(condition, message):
         raise ValueError(message)
 
 
+def scheduler_preflight(plan, state):
+    """Compare resolved saved-plan inputs to the *previous* applied revisions."""
+    variables = plan.get("variables")
+    require(type(variables) is dict, "scheduler resolved variables absent")
+    inputs = {}
+    for mode in ("recovery", "audit"):
+        value = variables.get(f"scheduler_{mode}_task_definition_arn")
+        require(type(value) is dict and set(value) == {"value"}, "scheduler unresolved input")
+        inputs[mode] = value["value"]
+    outputs = state.get("outputs", {}) if state is not None else {}
+    require(type(outputs) is dict, "scheduler prior outputs malformed")
+    output = outputs.get("processor_task_definition_arns")
+    require("processor_task_definition_arns" not in outputs or type(output) is dict and "value" in output,
+            "scheduler prior output malformed")
+    revisions = output["value"] if output is not None else None
+    if revisions is None or revisions == {}:
+        # Initial bootstrap (including the first Phase A after bootstrap) has
+        # neither applied revisions nor Schedulers. Missing output alone is no proof.
+        resources = state.get("resources", []) if state is not None else []
+        require(not any(resource.get("mode") == "managed"
+                        and resource.get("type") in {"aws_ecs_task_definition", "aws_scheduler_schedule"}
+                        and resource.get("instances") for resource in resources)
+                and all(value is None for value in inputs.values()),
+                "scheduler output absent outside initial bootstrap")
+        return
+    require(type(revisions) is dict and set(revisions) == {"unit", "recovery", "audit"},
+            "scheduler complete prior revision map required")
+    for value in revisions.values():
+        require(type(value) is str and re.fullmatch(
+            r"arn:aws:ecs:us-east-2:[0-9]{12}:task-definition/[A-Za-z0-9_-]+:[1-9][0-9]*", value),
+            "scheduler invalid prior revision")
+    require(all(inputs[mode] == revisions[mode] for mode in inputs),
+            "scheduler input differs from prior applied revision")
+
+
 def applied_state(plan, state):
     """Resolve only saved-plan unknowns; no refreshed or replacement plan."""
     def match(expected, actual, unknown=False):

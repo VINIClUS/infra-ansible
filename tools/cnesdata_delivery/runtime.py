@@ -395,11 +395,14 @@ def previous_success(aws, api, governance, previous, *, details=False):
         c.require(evidence["owner_sha256"] == c.sha(previous["owner"].encode()) and evidence["run_id"] == run_id
                   and evidence["run_attempt"] == attempt and evidence["session_sha256"] == previous["session_sha256"]
                   and evidence["checkpoint_sha256"] == receipt["checkpoint_sha256"], "previous owner/run/session CAS")
+        checkpoint_raw, _ = aws.get(governance["evidence_bucket"], prefix + "checkpoint.json", maximum=262144)
+        c.require(c.sha(checkpoint_raw) == receipt["checkpoint_sha256"], "previous checkpoint bytes")
+        checkpoint = c.loads(checkpoint_raw, canonical=True)
         if status == "applied":
             drift_raw, _ = aws.get(governance["evidence_bucket"], prefix + "drift.json", maximum=262144)
             ecr_raw, _ = aws.get(governance["evidence_bucket"], prefix + "ecr-before.json", maximum=65536) if envelope["plan"]["purpose"] == "phase-a" else (None, None)
             verify_drift_evidence(envelope, drift_raw, ecr_raw)
-        return {"envelope": envelope, "receipt": receipt, "index": index,
+        return {"envelope": envelope, "receipt": receipt, "index": index, "checkpoint": checkpoint,
                 "artifact_id": receipt["index_artifact_id"], "artifact_digest": receipt["index_artifact_digest"]} if details else True
     except Exception:
         return False  # retain coordinator and demand reviewed recovery, never TTL takeover
@@ -417,15 +420,18 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     if envelope["plan_binding_sha256"] != plan_envelope["plan_binding_sha256"]:
         return False
     c.require(envelope["plan"] == plan_envelope["plan"], "retry original plan identity")
-    c.validate_envelope(envelope, files, baseline, time.time(), source, status="applied")
+    c.validate_envelope(envelope, files, baseline | {"deploy_role_arn": governance["roles"]["deploy"]},
+                        time.time(), source, status="applied")
     def guard():
         value, current_etag = lease.store.get()
         c.require(value == previous and current_etag == etag, "retry coordination changed; recovery_required")
     class ReadOnly:
         check = staticmethod(guard)
     guard()
-    state_raw, _ = aws.get(governance["state_bucket"], "cnesdata/prod/opentofu.tfstate")
+    state_raw, state_object = aws.get_state()
+    c.require(state_object == result["checkpoint"]["state_object"], "retry state version/checkpoint changed; recovery_required")
     identity = c.state_identity(state_raw)
+    c.require(identity == result["checkpoint"]["state_after"], "retry checkpoint state changed; recovery_required")
     c.require(identity == {k: envelope["apply"]["state_after"][k] for k in identity}, "retry applied state changed; recovery_required")
     state = c.loads(state_raw, state=True)
     saved = c.loads(files["plan.json"], state=True)
@@ -445,6 +451,28 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
                      f"evidence_artifact_id={result['artifact_id']}\n"
                      f"evidence_artifact_digest={result['artifact_digest']}\nevidence_status=applied\n")
     return True
+
+
+def _planned_checkpoint(aws, api, governance, index, reference, envelope):
+    """Authenticate the original planned receipt before permitting a new apply."""
+    run, status, receipt, published = _published_receipt(api, governance, reference["run_id"], reference["run_attempt"])
+    c.require(status == "planned" and published == index
+              and receipt["index_artifact_id"] == reference["artifact_id"]
+              and receipt["index_artifact_digest"] == reference["artifact_digest"]
+              and receipt["envelope_sha256"] == c.sha(c.canonical(envelope)),
+              "original planned receipt/index binding")
+    prefix = _prefix(governance, run["head_sha"], run["id"], run["run_attempt"], "planned")
+    raw, _ = aws.get(governance["evidence_bucket"], prefix + "checkpoint.json", maximum=262144)
+    c.require(c.sha(raw) == receipt["checkpoint_sha256"], "original planned checkpoint bytes")
+    checkpoint = c.loads(raw, canonical=True)
+    raw, _ = aws.get(governance["evidence_bucket"], prefix + "lease.json", maximum=262144)
+    c.require(c.sha(raw) == receipt["lease_evidence_sha256"], "original planned lease bytes")
+    evidence = c.loads(raw, canonical=True)
+    c.require(evidence["checkpoint_sha256"] == receipt["checkpoint_sha256"]
+              and evidence["run_id"] == run["id"] and evidence["run_attempt"] == run["run_attempt"]
+              and checkpoint["state_after"] == envelope["plan"]["state_before"],
+              "original planned checkpoint/lease/state binding")
+    return checkpoint
 
 
 def execute(role):
@@ -549,13 +577,16 @@ def execute(role):
         watchdog = Watchdog(lease, fixed_deadline=mapped_deadline(expiry, sent, received, server, time.time()),
                             credential_deadline=mapped_deadline(credential_expiry, sent, received, server, time.time()))
         watchdog.admit()
-        state_bytes, _ = aws.get(governance["state_bucket"], "cnesdata/prod/opentofu.tfstate", absent=True)
+        original_checkpoint = _planned_checkpoint(aws, api, governance, index, descriptor["payload_artifact"], envelope) if role == "deploy" else None
+        state_bytes, state_object_before = aws.get_state(absent=True)
         before = c.state_identity(state_bytes)
         if purpose == "bootstrap":
             from tools.cnesdata_delivery.outputs import initial_stage
             initial_stage(state_bytes, governance["bootstrap_checkpoint"], source, aws, governance["account_id"], time.time())
         if role == "deploy":
             c.require(before == plan["state_before"], "state lineage/serial/hash changed")
+            c.require(state_object_before == original_checkpoint["state_object"], "state version differs from original planned checkpoint")
+            c.scheduler_preflight(c.loads(files["plan.json"], state=True), c.loads(state_bytes, state=True) if state_bytes is not None else None)
             if purpose == "bootstrap":
                 from tools.cnesdata_delivery.outputs import initial_admission
                 initial_admission(c.loads(files["plan.json"], state=True), c.loads(files["inputs.tfvars.json"]), state_bytes,
@@ -613,13 +644,17 @@ def execute(role):
                     "source_sha": source, "run_id": run_id, "run_attempt": attempt, "purpose": purpose,
                     "payload_artifact": descriptor["payload_artifact"],
                     "plan_binding_sha256": envelope["plan_binding_sha256"] if role == "deploy" else None,
-                    "state_before": before, "backend_identity_sha256": baseline["backend"]["identity_sha256"],
+                    "state_before": before, "state_object_before": state_object_before, "backend_identity_sha256": baseline["backend"]["identity_sha256"],
                     "owner_sha256": c.sha(lease.token.encode()), "session_sha256": session, "prepared_at": started}
         prepared_raw = c.canonical(prepared)
         aws.put(bucket, attempt_prefix + "attempt.json", prepared_raw)
         prepared_readback, _ = aws.get(bucket, attempt_prefix + "attempt.json", maximum=262144)
         c.require(prepared_readback == prepared_raw, "durable recovery checkpoint before product mutation")
         session_owner.verify_managed(aws, session_authority, session_expires)
+        if role == "deploy":
+            current_state, current_object = aws.get_state(absent=True)
+            c.require(current_object == state_object_before and c.state_identity(current_state) == before,
+                      "state version/checkpoint changed before apply; recovery_required")
         child = watchdog.run(command, cwd=root, env=env, output=temp / "operation.log")
         if role == "plan":
             watchdog.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env,
@@ -668,8 +703,10 @@ def execute(role):
                         "plan_binding_sha256": c.sha(c.canonical(plan))}
             c.validate_envelope(envelope, files, baseline, time.time(), source)
         watchdog.finalization_deadline = min(time.monotonic() + 45, watchdog.fixed_deadline - 120, watchdog.credential_deadline - 120)
-        after_bytes, _ = aws.get(governance["state_bucket"], "cnesdata/prod/opentofu.tfstate", absent=True)
+        after_bytes, state_object_after = aws.get_state(absent=True)
         after = c.state_identity(after_bytes)
+        if role == "plan":
+            c.require(after == before and state_object_after == state_object_before, "state version changed during plan")
         if role == "deploy":
             c.require(after_bytes is not None, "applied state absent; recovery_required")
             c.applied_state(c.loads(files["plan.json"], state=True), c.loads(after_bytes, state=True))
@@ -693,7 +730,7 @@ def execute(role):
                 "purpose": purpose, "run_id": run_id, "run_attempt": attempt,
                 "ecr_before": ecr_before, "post_readbacks": reports})
             aws.put(bucket, attempt_prefix + "drift.json", drift_raw)
-        checkpoint = {"state_after": after, "outputs": applied_outputs, "readbacks": reports,
+        checkpoint = {"state_after": after, "state_object": state_object_after, "outputs": applied_outputs, "readbacks": reports,
                       "drift_sha256": c.sha(drift_raw) if drift_raw is not None else None,
                       "operation_completed_at": c.utc(time.time())}
         checkpoint_hash = c.sha(c.canonical(checkpoint))

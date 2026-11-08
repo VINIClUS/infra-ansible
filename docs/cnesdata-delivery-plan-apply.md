@@ -391,3 +391,46 @@ backend/provider OpenTofu; esse limite deve constar da evidência operacional.
 A ratificação não concede aceite de Código, Ready, merge ou aceite operacional:
 continuam obrigatórios auditoria independente e CI nativa verde no HEAD final,
 além de readbacks e evidências reais do owner para os aceites de Produção.
+
+
+### Preflight de Schedulers e checkpoint de versão do state (P1/P2)
+
+Sob o lease, antes de `apply` do binário salvo, os valores resolvidos de
+`plan.json.variables.scheduler_recovery_task_definition_arn` e
+`scheduler_audit_task_definition_arn` devem coincidir literalmente com recovery/audit
+em `processor_task_definition_arns` do state **anterior**, com mapa unit/recovery/audit
+completo e revisões válidas. Defaults vêm do JSON autenticado do binário; tfvars do
+caller e outputs candidatos não substituem esse check. Saída parcial/desconhecida ou
+divergência fecha antes do child. Ausência, null ou mapa vazio só admitem estágio
+inicial demonstrado sem revisões ECS/Schedulers prévios e ambos inputs null, incluindo
+a primeira Phase A depois do bootstrap. Phase A conserva as rotas anteriores; este
+controle não implementa nem autoriza futuros propósitos B/C.
+
+A leitura específica da única key de state produto conserva, no mesmo GetObject,
+bytes e metadata real: o campo privado `state_object_before` do `attempt.json` e
+`state_object` do `checkpoint.json` têm exatamente `status`, `version_id` e
+`etag_sha256`. Objeto existente exige status `present`, VersionId opaco não vazio,
+diferente de `null`, e SHA-256 do ETag UTF-8; ausência real (NoSuchKey/404) usa
+`{status: absent, version_id: null, etag_sha256: null}` e só permite o estágio inicial
+acima. A identidade A3 lineage/serial/hash permanece como definida no contrato;
+VersionId/ETag não são publicados no A3, index, ABI ou redacted-plan.
+
+Antes de um novo apply, autentica-se o receipt original do run planned, seu index,
+envelope/package/binário, checkpoint e lease; o state atual deve ter a mesma versão
+observada nesse checkpoint além de lineage/serial/hash. Nova leitura imediatamente
+antes do child detecta alterações durante init/preflight. Mesmo bytes/hash/ETag com
+VersionId diferente são divergência. Planejamento também recusa troca de identidade
+ou versão durante sua própria operação. O attempt é escrito e relido antes do child;
+uma falha parcial preserva a versão anterior e o checkpoint planned original, sem
+publicar checkpoint terminal de sucesso. Retry concluído compara o checkpoint
+aplicado original, inclusive a versão, e só devolve o receipt original após readbacks;
+não adquire lease, executa produto nem grava/publica novo resultado.
+
+Em divergência/falha ambígua, conservar os checkpoints privados e a coordenação e
+pedir recovery revisado ao owner do backend. Restore de uma versão identificada é
+operação manual separada: exige permissões, retenção e readback reais do owner;
+o gate não faz restore, import, replan ou liberação automática. Não se adicionam
+GetObjectVersion/ListBucketVersions às roles delivery e não se leem outros states.
+Versões do state compartilhado continuam responsabilidade dos respectivos owners.
+A dispensa de migração/preservação dos dados de aplicação dos protótipos não dispensa
+este controle de state/plan de infraestrutura, identidade e proveniência.
