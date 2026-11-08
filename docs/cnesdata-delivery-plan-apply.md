@@ -15,6 +15,7 @@ Autoridades imutáveis desta implementação:
 - [Closure de conteúdo e purposes](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716699477),
 - [Resolver de fontes do bootstrap](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6718141241),
 - [Capacidade e pin das session policies](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6718506538).
+- [Deploy legado somente manual](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6720657218).
 - [Path actionlint](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6715872832).
 - CnesData `7ebc0e3dc024617b33903577c87dac3ca6fba529`, arquivo
   `docs/superpowers/specs/2026-11-07-phase-a-contract-amendment.md` (A3).
@@ -23,6 +24,33 @@ Autoridades imutáveis desta implementação:
 Os validadores explícitos deste produtor verificam o contrato documental agora, sem
 importar arquivo futuro nem ignorar validação se ele não existe. Compatibilidade do
 schema e pin imutável serão conferidos antes de Produção. Não há schema rival.
+
+## Deploy legado do repositório infra-ansible
+
+O workflow `.github/workflows/pipeline.yml` mantém Validate hospedado em PR,
+push em `main` e chamada manual. Merge/push em `main` somente valida: o job
+`Deploy production` exige `workflow_dispatch`, ref `refs/heads/main`, repositório
+`VINIClUS/infra-ansible` e o booleano `inputs.deploy_production == true`.
+O input é opcional e tem default `false`; uma chamada manual sem opt-in apenas valida.
+PRs, inclusive de forks, nunca habilitam o runner self-hosted desse job.
+
+Para uma execução de Produção autorizada separadamente, abrir Actions →
+Validate and deploy → Run workflow, selecionar a branch `main` e marcar
+`deploy_production`. Validate precisa concluir com sucesso nessa mesma execução
+antes do deploy. A capacidade manual conserva o manifest validado e sua conferência
+contra `GITHUB_SHA`, environment `production`, concurrency `ansible-production`
+sem cancelamento e o comando restrito `sudo /usr/local/sbin/infra-ansible-deploy`.
+O booleano usa o contexto `inputs`, que preserva o tipo, conforme a
+[documentação oficial do GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs).
+
+O aceite de Código verifica essa fronteira no YAML real: PR/fork, push/merge,
+manual sem opt-in ou com `false`, branch/tag ou repositório incorreto são negados;
+somente manual/main/repositório esperado/`true` habilita o job após Validate.
+Aceite de Código e merge não autorizam uma chamada de Produção. O aceite de
+Produção continua dependente das decisões dos owners, auditoria do SHA exato,
+checks obrigatórios e handoffs existentes; este patch não modifica settings do
+environment nem comprova apply. O caller CnesData em `develop` e os reusable
+workflows continuam com suas próprias fronteiras, independentes desse deploy legado.
 
 ## Workflow ABI e fronteiras
 
