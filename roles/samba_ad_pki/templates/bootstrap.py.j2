@@ -22,6 +22,9 @@ try:
     data = pki_contract.loads(sys.stdin.read())
     operation = {{ samba_ad_pki_operation | to_json }}
     execute = sys.argv[1:] == ['--execute']
+    if operation in ['identity_guard', 'identity_run', 'material_guard', 'material_run', 'ca_guard']:
+        profile = data['request']['profile'] if 'request' in data else None
+        pki_files.role_paths(profile)
     if operation in ['identity_guard', 'identity_run', 'public_chain']:
         pki_contract.validate_request(data['request'], data['manifest'])
     if operation == 'identity_guard':

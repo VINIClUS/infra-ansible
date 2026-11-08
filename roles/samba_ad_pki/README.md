@@ -46,6 +46,17 @@ e exemplos de campos estão em [docs/samba-ad-s3.md](../../docs/samba-ad-s3.md)
 e no exemplo inerte `contracts/samba_ad/s3-example.yml`. Configuração operacional
 vai ao inventário privado revisado, fora de autoload; nunca neste exemplo.
 
+Antes de qualquer SSH, o controlador valida o manifesto S0 completo e o contrato
+fechado, selecionando somente os campos do fluxo pedido. Inputs CA não usados
+não são enviados aos DCs. O adapter real fixa estado em `/var/lib/samba-ad-pki`,
+trust público em `/etc/samba-ad-pki/{root,issuer}.pem`, material intermediário
+em `/etc/samba-ad-ca` e DB em `/var/lib/samba-ad-ca`. Credenciais preexistentes
+ficam em `/run/samba-ad-pki-credentials/<perfil>/passphrase`; a passphrase da
+intermediária usa `/run/samba-ad-pki-credentials/ca/issuer-password`.
+Esses arquivos protegidos são precondições, não criados pelo papel. Caminhos
+redirecionados, ancestrais graváveis por terceiros e conta CA compartilhada
+são recusados antes de chmod/copy/user. O preflight CA verifica a cadeia pública.
+
 ```bash
 ansible-playbook -i /caminho/privado/hosts.yml playbooks/samba-ad-pki.yml \
   -e @/caminho/privado/request-s3.yml --limit ca-test --tags samba_ad_pki --check

@@ -25,6 +25,27 @@
       - samba_ad_pki_material_request is mapping
     fail_msg: S3 requires inert-reviewed contracts, one exact limit and the PKI tag.
 
+- name: Validate and select the reference-only payload on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - >-
+        import runpy, sys;
+        sys.path.insert(0, {{ (role_path ~ '/../..') | to_json }});
+        runpy.run_module('tools.samba_ad.pki_wire', run_name='__main__')
+      - "{{ samba_ad_pki_flow }}"
+    stdin: "{{ samba_ad_pki_inputs | to_json }}"
+  vars:
+    ansible_connection: local
+  delegate_to: localhost
+  become: false
+  register: samba_ad_pki_selection
+  changed_when: false
+  check_mode: false
+  no_log: true
+
 - name: Read the target identity and immutable input preconditions without installing helpers
   ansible.builtin.command:
     argv:

@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import grp
 from pathlib import Path
+import pwd
 import re
 import sys
 import uuid
@@ -19,7 +21,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from tools.samba_ad.ca_substrate import validate_ca_bundle
 from tools.samba_ad.pki import PROFILES, _critical, _issuer, _key, _valid_time, require
 from tools.samba_ad.pki_contract import dns, fields, hex_value, loads, path, public_jwk, review
-from tools.samba_ad.pki_files import secure_file
+from tools.samba_ad.pki_files import future_directory, secure_file
 
 CONFIG = "/etc/samba-ad-pki"
 LIBRARY = "/usr/libexec/samba-ad-pki"
@@ -55,8 +57,11 @@ def validate(r):
     fields(r["paths"], "root_cert issuer_cert issuer_key issuer_password_ref ca_state identity_state")
     for p in r["paths"].values(): path(p)
     require(r["paths"]["root_cert"] == CONFIG + "/root.pem" and r["paths"]["issuer_cert"] == CONFIG + "/issuer.pem")
-    require(r["paths"]["issuer_key"].endswith("/intermediate.key.pem"))
-    require(r["paths"]["ca_state"] != r["paths"]["identity_state"])
+    require(r["paths"]["issuer_key"] == "/etc/samba-ad-ca/intermediate.key.pem")
+    require(r["paths"]["issuer_password_ref"] == "/run/samba-ad-pki-credentials/ca/issuer-password")
+    require(r["paths"]["ca_state"] == "/var/lib/samba-ad-ca"
+            and r["paths"]["identity_state"] == "/var/lib/samba-ad-pki")
+    require(r["service_user"] == "samba-ad-ca" and r["frontend_user"] != r["service_user"])
     for key in ["root_sha256", "issuer_sha256"]: hex_value(r[key])
     require(isinstance(r["registry"], dict) and set(r["registry"]) == PROFILES)
     for value in r["registry"].values(): public_jwk(value)
@@ -263,10 +268,35 @@ def public_chain(root_pem, issuer_pem, root_sha256, issuer_sha256, now):
         raise ValueError("S3 public chain refused (values suppressed)") from None
 
 
+def service_account(r):
+    """Refuse shared/pre-existing accounts before Ansible user/group mutations."""
+    name = r["service_user"]
+    try: account = pwd.getpwnam(name)
+    except KeyError: account = None
+    try: group = grp.getgrnam(name)
+    except KeyError: group = None
+    if group is not None:
+        require(group.gr_gid != 0 and set(group.gr_mem) <= {name})
+    if account is not None:
+        require(account.pw_uid != 0 and account.pw_dir == r["paths"]["ca_state"]
+                and account.pw_shell in ["/usr/sbin/nologin", "/sbin/nologin"]
+                and group is not None and account.pw_gid == group.gr_gid)
+    for other in pwd.getpwall():
+        if other.pw_name == name: continue
+        require(account is None or other.pw_uid != account.pw_uid)
+        require(group is None or other.pw_gid != group.gr_gid)
+    return account
+
+
 def inspect(r, ops=None):
     """Readonly host/tools/key-presence check, not a runtime acceptance report."""
     validate(r)
     if not r["enabled"]: return {"state": "disabled", "changed": False}
+    if ops is None:
+        account = service_account(r)
+        future_directory(r["paths"]["ca_state"], account.pw_uid if account else None)
+        future_directory(r["paths"]["identity_state"])
+        future_directory(Path(r["paths"]["issuer_key"]).parent)
     from tools.samba_ad.pki_runtime import host_snapshot
     actual = ops.inspect(r["target"]) if ops else host_snapshot(r["target"]["interface"])
     require(actual["uid"] == 0 and actual["virtualization"] in ["kvm", "qemu"])
@@ -281,6 +311,10 @@ def inspect(r, ops=None):
     key = secure_file(r["paths"]["issuer_key"])
     require(key.stat().st_mode & 0o777 in [0o600, 0o640])
     require(key.read_bytes().startswith(b"-----BEGIN ENCRYPTED PRIVATE KEY-----"))
+    import time
+    public_chain(secure_file(r["paths"]["root_cert"]).read_bytes(),
+                 secure_file(r["paths"]["issuer_cert"]).read_bytes(),
+                 r["root_sha256"], r["issuer_sha256"], int(time.time()))
     return {"state": "planned", "changed": False, "profiles": 6}
 
 

@@ -21,6 +21,9 @@ from tools.samba_ad.pki_files import exclusive_file, secure_directory, secure_fi
 
 
 class Local:
+    def layout(self, r):
+        require(r["directory"] == "/etc/samba-ad-ca")
+
     def inspect(self, target):
         from tools.samba_ad.pki_runtime import host_snapshot
         return host_snapshot(target["interface"])
@@ -33,10 +36,11 @@ def prepare(r, passphrase=None, ops=None, check=True):
         raise ValueError("S3 destination CSR refused (values suppressed)") from None
 
 
-def _prepare(r, passphrase, ops, check):
+def validate(r):
+    """Structural validation only: no fake host measurement or filesystem access."""
     require(isinstance(r, dict) and r.get("schema") == "samba-ad-ca-csr/v1"
             and type(r.get("enabled")) is bool and type(r.get("apply")) is bool)
-    if not r["enabled"]: return {"state": "disabled", "changed": False}
+    if not r["enabled"]: return None
     fields(r, "schema enabled apply guest_request target directory subject key_bits")
     guest = r["guest_request"]
     validate_ca_bundle(guest["compatibility"], guest)
@@ -47,6 +51,18 @@ def _prepare(r, passphrase, ops, check):
     require(str(uuid.UUID(target["boot_id"])) == target["boot_id"])
     hex_value(target["machine_id"], 32)
     require(re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", target["interface"]))
+    from tools.samba_ad.pki_contract import path
+    path(r["directory"])
+    require(type(r["key_bits"]) is int and r["key_bits"] in [3072, 4096])
+    require(isinstance(r["subject"], str) and 1 <= len(r["subject"]) <= 128
+            and all(32 <= ord(c) <= 126 for c in r["subject"]))
+    return target
+
+
+def _prepare(r, passphrase, ops, check):
+    target = validate(r)
+    if target is None: return {"state": "disabled", "changed": False}
+    if isinstance(ops, Local): ops.layout(r)
     actual = ops.inspect(target)
     require(actual["uid"] == 0 and actual["virtualization"] in ["qemu", "kvm"])
     require(all(actual[k] == target[k] for k in ["fqdn", "mac", "boot_id", "machine_id"])
@@ -57,9 +73,6 @@ def _prepare(r, passphrase, ops, check):
     else:
         require(not directory.is_symlink())
         secure_directory(directory.parent)
-    require(type(r["key_bits"]) is int and r["key_bits"] in [3072, 4096])
-    require(isinstance(r["subject"], str) and 1 <= len(r["subject"]) <= 128
-            and all(32 <= ord(c) <= 126 for c in r["subject"]))
     key_file, csr_file = directory / "intermediate.key.pem", directory / "intermediate.csr.pem"
     require(all(not p.exists() and not p.is_symlink() for p in [key_file, csr_file]))
     if check or not r["apply"]: return {"state": "planned", "changed": False}

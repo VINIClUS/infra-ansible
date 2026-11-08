@@ -93,3 +93,7 @@ hosts de producao sem uma revisao dedicada.
 Samba AD S1: os entrypoints manuais dedicados, exemplos inertes, gates e sequência
 de aplicação estão em [docs/samba-ad-s1.md](docs/samba-ad-s1.md). O deploy automático
 não executa esse lifecycle.
+
+Samba AD S3: a [PKI manual](docs/samba-ad-s3.md) mantém raiz offline, emissor
+loopback e seis identidades separadas. Defaults permanecem inertes; integração
+com Samba, telemetria e aceite em runtime dependem das etapas posteriores.

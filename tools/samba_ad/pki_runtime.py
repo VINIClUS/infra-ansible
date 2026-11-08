@@ -31,8 +31,8 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509.oid import NameOID
 
 from tools.samba_ad.pki import LIFETIME, require, rotation_due, verify_leaf
-from tools.samba_ad.pki_contract import loads, public_jwk, validate_request
-from tools.samba_ad.pki_files import atomic_file, exclusive_file, secure_directory, secure_file, sync_dir
+from tools.samba_ad.pki_contract import identity_layout, loads, public_jwk, validate_request
+from tools.samba_ad.pki_files import atomic_file, exclusive_file, future_directory, secure_directory, secure_file, sync_dir
 
 
 def consumer_conf(r, generation):
@@ -261,6 +261,13 @@ class LocalOps:
     def now(self): return int(time.time())
 
     def identity_tools(self, r):
+        identity_layout(r)
+        future_directory(r["state_dir"])
+        future_directory(Path(r["trust"]["root_file"]).parent)
+        for name in ["root_file", "issuer_file"]:
+            filename = Path(r["trust"][name])
+            if filename.exists() or filename.is_symlink():
+                secure_file(filename)
         actual = host_snapshot(r["target"]["interface"])
         require(actual["uid"] == 0)
         for field in ["fqdn", "boot_id", "machine_id", "mac"]:
@@ -268,11 +275,7 @@ class LocalOps:
         require(r["target"]["address"] in actual["addresses"])
         require(actual["virtualization"] in (["kvm", "qemu"] if r["target"]["kind"] == "qemu" else ["lxc"]))
         directory = Path(r["state_dir"])
-        if directory.exists():
-            secure_directory(directory, exact=True)
-        else:
-            require(not directory.is_symlink())
-            secure_directory(directory.parent)
+        if directory.exists(): secure_directory(directory, exact=True)
         require(cryptography.__version__ == r["tools"]["cryptography"]["version"])
         for name, artifact in r["tools"].items():
             if name == "cryptography": continue

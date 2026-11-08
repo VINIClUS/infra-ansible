@@ -8,6 +8,13 @@ nunca valores por argv, logs, facts persistentes ou diff.
 
 ## Fronteiras e contratos
 
+O entrypoint é `playbooks/samba-ad-pki.yml`/role `samba_ad_pki`, com fluxo
+explícito trust, ca_csr, ca_configure ou identity. Cada chamada exige limit/tag
+exatos e uma única identidade. Defaults e exemplo público são inertes. Material
+operacional fica no inventário privado revisado, sem autoload; propostas no SDD
+ignorado não são inventário/aprovação. A role consome executáveis já instalados
+e verificados; aquisição/proveniência/egress são precondições técnicas reais.
+
 `samba-ad-ca-substrate-bundle/v1` aceita somente a CA QEMU 2 vCPU/2048 MiB/20 GiB
 do manifesto privado, com evidência do mesmo template/nó/política e pareceres
 S1/S2 reais. Reusa o lifecycle S1; não amplia consumer DC, sizing ou qualificação
@@ -19,6 +26,19 @@ Validação fecha os campos, vincula perfil/host ao snapshot S0 inerte, máquina
 boot, paths protegidos, trust público fixado, credencial individual e provenance.
 Configuração ausente não ativa nada. Check/apply=false não geram chave, CSR,
 JWT, arquivo, trust, download, timer ou reload; fazem somente preflight de leitura.
+
+O controlador valida o S0 completo e seleciona somente o fluxo solicitado antes
+de qualquer SSH. Contratos fechados recusam campos extras e material PEM bruto;
+inputs CA não usados não seguem para os DCs. O adapter produtivo usa caminhos
+fixos: `/var/lib/samba-ad-pki` para identidades, `/etc/samba-ad-pki/root.pem` e
+`issuer.pem` para trust público, `/etc/samba-ad-ca/intermediate.key.pem` para
+a intermediária cifrada e `/var/lib/samba-ad-ca` para seu DB. Não apontar esses
+campos para diretórios de outros serviços. Referências de credenciais são
+`/run/samba-ad-pki-credentials/<perfil>/passphrase` e
+`/run/samba-ad-pki-credentials/ca/issuer-password`; os arquivos já devem existir
+com proteção apropriada. Guardas de leitura recusam symlinks, ancestrais
+graváveis por terceiros e conta `samba-ad-ca` preexistente com UID0, home/shell
+ou grupo incompatíveis antes dos módulos de arquivo/usuário.
 
 Seis perfis: dc01/dc02/ca têm SAN único e serverAuth; telemetry_dc01,
 telemetry_dc02 e telemetry_ca têm SAN do emissor e somente clientAuth.
@@ -35,6 +55,22 @@ building arbitrário. Algoritmos/validades dos emissores e pins reais são entra
 privadas explícitas, nunca gerados pelo exemplo público.
 
 ## Rotador no destino
+
+O módulo `pki_root` é exclusivamente local e não vai no pacote online. Usa
+expected UID não-root/hostname explícitos, diretório0700 canônico fora do Git,
+raiz cifrada e recusa de sobrescrita. `sign_intermediate` valida CSR sem
+extensions arbitrárias e assina somente a pública com CA:true/pathLen0; a chave
+do emissor não é recebida pelo operador. O helper `pki_material` no guest CA
+gera essa chave cifrada e CSR após validar bundle específico e identidade viva.
+O check não lê passphrase nem gera key/CSR; uma saída parcial exige inspeção
+direcionada, nunca recriação cega. Não prova isolamento físico/offline por flag.
+
+Passphrases apropriadas são resolvidas pelo caminho Vault aprovado e
+disponibilizadas como arquivos protegidos no destino; a role recebe referências,
+não valores. O módulo raiz recebe passphrase por FD herdado apenas no processo
+local. A role só transfere PEMs **públicos normalizados/verificados**, sem slurp
+ou fetch de chave privada. Exportação da pública JWK é etapa administrativa
+direcionada; nenhuma privada do consumidor é registrada em `encryptedKey` na CA.
 
 `python3 -m tools.samba_ad.pki_runtime` recebe JSON `{request,manifest}` por stdin;
 sem `--execute` opera em check. `--request-file` aceita somente arquivo protegido.

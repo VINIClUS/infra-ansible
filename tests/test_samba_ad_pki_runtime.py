@@ -192,3 +192,16 @@ def test_heartbeat_does_not_pretend_a_new_rotation_succeeded(tmp_path, chain, ke
     metrics = (tmp_path / "dc01/status.prom").read_text().splitlines()
     assert next(x for x in metrics if x.startswith("samba_ad_pki_last_rotation_success_seconds")).endswith(" " + str(NOW + 5))
     assert next(x for x in metrics if x.startswith("samba_ad_pki_last_check_seconds")).endswith(" " + str(NOW + 65))
+
+
+@pytest.mark.parametrize("field", ["state", "root", "issuer", "credential"])
+def test_real_adapter_refuses_system_paths_before_any_host_probe(monkeypatch, field):
+    runtime = module(); r, _ = contract_request()
+    if field == "state": r["state_dir"] = "/etc/ssl"
+    if field == "root": r["trust"]["root_file"] = "/etc/ssh/ssh_host_rsa_key"
+    if field == "issuer": r["trust"]["issuer_file"] = "/etc/shadow"
+    if field == "credential": r["credential"]["password_ref"] = "/etc/ssh/ssh_host_ed25519_key"
+    def forbidden(_): raise AssertionError("layout must fail before a host probe")
+    monkeypatch.setattr(runtime, "host_snapshot", forbidden)
+    with pytest.raises(ValueError, match="suppressed"):
+        runtime.LocalOps().identity_tools(r)

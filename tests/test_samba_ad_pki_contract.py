@@ -28,7 +28,7 @@ def request():
          "trust": {"root_file": "/etc/samba-ad-pki/root.pem", "issuer_file": "/etc/samba-ad-pki/issuer.pem",
                    "root_sha256": "a" * 64, "issuer_sha256": "b" * 64},
          "credential": {"auth_key_ref": "/var/lib/samba-ad-pki/dc01/auth.jwe",
-                        "password_ref": "/run/credentials/s3-dc01/passphrase", "public_jwk": None},
+                        "password_ref": "/run/samba-ad-pki-credentials/dc01/passphrase", "public_jwk": None},
          "issuer": {"url": "https://ca.ad.example.invalid/1.0/sign", "transport": "public", "local_port": None},
          "tools": {"step": {"path": "/usr/bin/step", "sha256": "c" * 64, "version": "0.31.0",
                             "provenance_ref": "git:" + "a" * 40 + ":reviews/artifacts.json"},

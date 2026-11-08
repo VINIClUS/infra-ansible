@@ -38,7 +38,7 @@ def request():
                        "interface": "eth0"},
             "paths": {"root_cert": "/etc/samba-ad-pki/root.pem", "issuer_cert": "/etc/samba-ad-pki/issuer.pem",
                       "issuer_key": "/etc/samba-ad-ca/intermediate.key.pem",
-                      "issuer_password_ref": "/run/credentials-protected/s3/issuer-password",
+                      "issuer_password_ref": "/run/samba-ad-pki-credentials/ca/issuer-password",
                       "ca_state": "/var/lib/samba-ad-ca", "identity_state": "/var/lib/samba-ad-pki"},
             "root_sha256": "a" * 64, "issuer_sha256": "b" * 64, "backend_port": 9443,
             "service_user": "samba-ad-ca", "frontend_user": "nginx", "registry": public,
@@ -63,7 +63,8 @@ def test_renderer_binds_six_independent_provisioners_to_private_manifest():
 
 
 @pytest.mark.parametrize("case", ["private", "duplicate_key", "missing_profile", "shell_path", "root_online",
-                                    "root_user", "wrong_target", "wrong_abi", "wide_bind", "unknown", "wildcard_manifest"])
+                                    "root_user", "wrong_target", "wrong_abi", "wide_bind", "unknown", "wildcard_manifest",
+                                    "system_state", "foreign_material"])
 def test_renderer_refuses_unsafe_inputs_before_any_service_or_file_write(case):
     r = request()
     if case == "private": r["registry"]["dc01"]["d"] = "PRIVATE-MUST-NOT-ENTER-CONFIG"
@@ -76,6 +77,8 @@ def test_renderer_refuses_unsafe_inputs_before_any_service_or_file_write(case):
     if case == "wrong_abi": r["tools"]["njs"]["version"] = "1.28.3+1.0.2-1~trixie"
     if case == "wide_bind": r["backend_port"] = "0.0.0.0:9443"
     if case == "unknown": r["proxy_insecure"] = True
+    if case == "system_state": r["paths"]["ca_state"] = "/usr/sbin"
+    if case == "foreign_material": r["paths"]["issuer_key"] = "/other/project/intermediate.key.pem"
     if case == "wildcard_manifest":
         manifest = r["guest_request"]["compatibility"]["data"]["manifest"]
         manifest["resources"]["dc01"]["fqdn"] = "*.example.invalid"

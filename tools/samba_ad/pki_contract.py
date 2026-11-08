@@ -29,6 +29,20 @@ def path(value):
     return value
 
 
+def credential_ref(profile):
+    require(profile in PROFILES)
+    return "/run/samba-ad-pki-credentials/" + profile + "/passphrase"
+
+
+def identity_layout(r):
+    """Production paths only. Generic contract/store APIs remain transport-free."""
+    require(r["state_dir"] == "/var/lib/samba-ad-pki")
+    require(r["trust"]["root_file"] == "/etc/samba-ad-pki/root.pem"
+            and r["trust"]["issuer_file"] == "/etc/samba-ad-pki/issuer.pem")
+    require(r["credential"]["auth_key_ref"] == r["state_dir"] + "/" + r["profile"] + "/auth.jwe")
+    require(r["credential"]["password_ref"] == credential_ref(r["profile"]))
+
+
 def review(value):
     require(isinstance(value, str) and re.fullmatch(r"git:[a-f0-9]{40}:[A-Za-z0-9_./-]+", value)
             and ".." not in value)
