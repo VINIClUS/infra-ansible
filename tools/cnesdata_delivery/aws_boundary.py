@@ -31,20 +31,27 @@ def bounded(function, timeout=20):
 
 
 class AWS:
-    def __init__(self, governance):
+    def __init__(self, governance, *, credentials=None):
         import os
         import boto3
         from botocore.config import Config
-        require(bool(os.environ.get("AWS_SESSION_TOKEN")), "temporary credentials required")
+        credentials = {
+            "AccessKeyId": os.environ.get("AWS_ACCESS_KEY_ID"),
+            "SecretAccessKey": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+            "SessionToken": os.environ.get("AWS_SESSION_TOKEN"),
+        } if credentials is None else credentials
+        require(all(type(credentials.get(field)) is str and credentials[field]
+                    for field in ("AccessKeyId", "SecretAccessKey", "SessionToken")),
+                "explicit temporary credentials required")
         self.governance = governance
         self.clients = {}
         require(not any(name in os.environ for name in ("AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_S3",
                     "AWS_PROFILE", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_DATA_PATH", "AWS_CA_BUNDLE")), "unreviewed AWS override")
         self.config = Config(region_name="us-east-2", connect_timeout=5, read_timeout=10,
                              retries={"total_max_attempts": 1}, ignore_configured_endpoint_urls=True)
-        self.session = boto3.Session(aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
-                                     aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
-                                     aws_session_token=os.environ["AWS_SESSION_TOKEN"], region_name="us-east-2")
+        self.session = boto3.Session(aws_access_key_id=credentials["AccessKeyId"],
+                                     aws_secret_access_key=credentials["SecretAccessKey"],
+                                     aws_session_token=credentials["SessionToken"], region_name="us-east-2")
         self.last_sample = None
         self.request_id = None
         identity = self.call("sts", "get_caller_identity")
@@ -96,7 +103,7 @@ class AWS:
         conditions = {"IfMatch": etag} if etag is not None else {"IfNoneMatch": "*"}
         response = self.call("s3", "put_object", Bucket=bucket, Key=key, Body=data,
                              ExpectedBucketOwner=self.governance["account_id"],
-                             ServerSideEncryption="aws:kms", SSEKMSKeyId=key_arn or self.governance["evidence_kms_key_arn"],
+            ServerSideEncryption="aws:kms", SSEKMSKeyId=key_arn or self.governance["evidence_kms_key_arn"], BucketKeyEnabled=False,
                              ChecksumSHA256=base64.b64encode(bytes.fromhex(sha(data))).decode(), **conditions)
         return response["ETag"]
 

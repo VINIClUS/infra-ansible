@@ -21,6 +21,24 @@ BASE_CHECKS = {"source-develop-checks", "artifact-origin-attempt-expiry", "depen
                "cost-ledger-purpose-scope", "drift-baseline"}
 
 
+def historical_plan_governance(governance, purpose):
+    """The earlier input proof cannot contain the artifact it later produces."""
+    current = set(governance["artifact_purposes"])
+    require("planned" in current, "deploy planned inventory absent")
+    historical = current - {"planned", "phase-inputs"}
+    if purpose == "phase-a":
+        historical.add("phase-inputs")
+    references = governance["artifact_references"]
+    require(historical <= set(references), "independently governed historical plan inputs missing")
+    payload = references["planned"]
+    for name in historical:
+        reference = references[name]
+        require((reference["repository"], reference["artifact_id"]) != (payload["repository"], payload["artifact_id"]),
+                "circular historical plan artifact")
+    return governance | {"artifact_purposes": sorted(historical),
+                         "artifact_references": {name: references[name] for name in historical}}
+
+
 def admit_source(actual, expected, credential_callback):
     require(actual == expected and actual["repository"] == REPOSITORY
             and actual["event"] == "workflow_dispatch" and actual["ref"] == "refs/heads/develop", "source admission")

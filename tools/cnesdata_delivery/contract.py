@@ -452,7 +452,7 @@ def effective_backend(metadata, workspace, expected):
     require(actual.get("workspace_key_prefix") in {None, "", "env:"}, "workspace prefix override")
 
 
-def validate_graph(plan, approved, source_files):
+def validate_graph(plan, approved, source_files, resolver=None):
     """Unknown policy is safe only under an independently approved source/proof graph."""
     closed(approved, "source_files configuration_sha256 unknown_policies known_policies")
     require(type(approved["source_files"]) is list and 0 < len(approved["source_files"]) <= 32, "source proof capacity")
@@ -490,7 +490,11 @@ def validate_graph(plan, approved, source_files):
             require(sorted(set(references)) == witness["references"] and bool(witness["producers"]), "IAM expression references")
             for producer in witness["producers"]:
                 require(producer in changes and "create" in changes[producer]["change"]["actions"], "unknown ARN producer edge")
-            if unknown.get("role") is True:
+            if resolver is not None:
+                require(set(witness["producers"]) == resolver.precheck(address), "source-derived exact producer graph")
+                if unknown.get("role") is True:
+                    require(resolver.role_producer(address) in witness["producers"], "source-derived canonical role producer")
+            elif unknown.get("role") is True:
                 # The whole expression graph has already matched independent governance.
                 # Unknown role.id additionally needs a concrete new role with a KNOWN
                 # name, referenced by the exact role expression, not a generic bypass.
@@ -592,7 +596,7 @@ def validate_envelope(envelope, files, baseline, now, expected_source, status="p
     closed(report, "evaluation_sha256 graph_proof")
     require("policy-evaluation.json" in files and sha(files["policy-evaluation.json"]) == report["evaluation_sha256"], "actual evaluator report")
     if plan["purpose"] == "phase-a":
-        graph = validate_graph(loads(files["plan.json"], state=True), baseline["phase_a_graph"], baseline["actual_source_files"])
+        graph = validate_graph(loads(files["plan.json"], state=True), baseline["phase_a_graph"], baseline["actual_source_files"], baseline.get("iam_resolver"))
         require(report["graph_proof"] == graph, "approved private graph proof")
     else:
         require(report["graph_proof"] is None, "unexpected graph proof")

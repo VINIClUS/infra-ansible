@@ -1,0 +1,731 @@
+{
+  "bootstrap": {
+    "module.runtime_iam.aws_iam_role_policy.execution": {
+      "name": "cnesdata-prod-processor-pull-logs",
+      "role": "cnesdata-prod-processor-execution",
+      "policy": {
+        "Statement": [
+          {
+            "Action": [
+              "ecr:BatchGetImage",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchCheckLayerAvailability"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:ecr:us-east-2:123456789012:repository/cnesdata-prod-processor"
+          },
+          {
+            "Action": "ecr:GetAuthorizationToken",
+            "Effect": "Allow",
+            "Resource": "*"
+          },
+          {
+            "Action": [
+              "logs:CreateLogStream",
+              "logs:PutLogEvents"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:logs:us-east-2:123456789012:log-group:/ecs/cnesdata-prod-processor:log-stream:*"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.runtime[\"unit\"]": {
+      "name": "cnesdata-prod-processor-unit-runtime",
+      "role": "cnesdata-prod-processor-unit",
+      "policy": {
+        "Statement": [
+          {
+            "Action": [
+              "states:DescribeStateMachine",
+              "states:StartExecution"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:states:us-east-2:123456789012:stateMachine:cnesdata-prod"
+          },
+          {
+            "Action": [
+              "states:DescribeExecution",
+              "states:StopExecution"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:states:us-east-2:123456789012:execution:cnesdata-prod:*"
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:Query",
+              "dynamodb:ConditionCheckItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:DeleteItem"
+            ],
+            "Condition": {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#*",
+                  "TENANT#*#RUN#*",
+                  "TENANT#_GLOBAL",
+                  "ENV#prod#FENCE",
+                  "ENV#prod#SEMAPHORE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "dynamodb:UpdateItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ENV#prod#ATTEMPTS"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "s3:GetObject",
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cnesdata-prod-data/raw/*",
+              "arn:aws:s3:::cnesdata-prod-data/tmp/*",
+              "arn:aws:s3:::cnesdata-prod-data/normalized/*",
+              "arn:aws:s3:::cnesdata-prod-data/reconciliation/*",
+              "arn:aws:s3:::cnesdata-prod-data/serving/*"
+            ]
+          },
+          {
+            "Action": "s3:PutObject",
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cnesdata-prod-data/tmp/*",
+              "arn:aws:s3:::cnesdata-prod-data/normalized/*",
+              "arn:aws:s3:::cnesdata-prod-data/reconciliation/*",
+              "arn:aws:s3:::cnesdata-prod-data/serving/*"
+            ]
+          },
+          {
+            "Action": "s3:ListBucket",
+            "Condition": {
+              "StringLike": {
+                "s3:prefix": [
+                  "raw/*",
+                  "tmp/*",
+                  "normalized/*",
+                  "reconciliation/*",
+                  "serving/*"
+                ]
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-data"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.runtime[\"recovery\"]": {
+      "name": "cnesdata-prod-processor-recovery-runtime",
+      "role": "cnesdata-prod-processor-recovery",
+      "policy": {
+        "Statement": [
+          {
+            "Action": [
+              "states:DescribeStateMachine",
+              "states:StartExecution"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:states:us-east-2:123456789012:stateMachine:cnesdata-prod"
+          },
+          {
+            "Action": [
+              "states:DescribeExecution",
+              "states:StopExecution"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:states:us-east-2:123456789012:execution:cnesdata-prod:*"
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:Query",
+              "dynamodb:ConditionCheckItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:DeleteItem"
+            ],
+            "Condition": {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#*",
+                  "TENANT#*#RUN#*",
+                  "TENANT#_GLOBAL",
+                  "ENV#prod#FENCE",
+                  "ENV#prod#SEMAPHORE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "dynamodb:UpdateItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ENV#prod#ATTEMPTS"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "dynamodb:Query",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "RUN_RECOVERABLE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane/index/gsi4"
+          },
+          {
+            "Action": [
+              "s3:GetObject",
+              "s3:PutObject"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cnesdata-prod-data/tmp/*",
+              "arn:aws:s3:::cnesdata-prod-data/normalized/*",
+              "arn:aws:s3:::cnesdata-prod-data/reconciliation/*",
+              "arn:aws:s3:::cnesdata-prod-data/serving/*"
+            ]
+          },
+          {
+            "Action": "s3:ListBucket",
+            "Condition": {
+              "StringLike": {
+                "s3:prefix": [
+                  "tmp/*",
+                  "normalized/*",
+                  "reconciliation/*",
+                  "serving/*"
+                ]
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-data"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.runtime[\"audit\"]": {
+      "name": "cnesdata-prod-processor-audit-runtime",
+      "role": "cnesdata-prod-processor-audit",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:Query",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "OUTBOX#PENDING"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane/index/gsi6"
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:UpdateItem"
+            ],
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#_GLOBAL",
+                  "OUTBOX#CURSOR"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "s3:GetBucketObjectLockConfiguration",
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-audit"
+          },
+          {
+            "Action": [
+              "s3:PutObject",
+              "s3:PutObjectRetention",
+              "s3:GetObject",
+              "s3:GetObjectRetention"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-audit/audit/*"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.api[0]": {
+      "name": "cnesdata-prod-api-runtime",
+      "role": "api",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:Query",
+            "Condition": {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": [
+                  "USER#*"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane/index/gsi1"
+          },
+          {
+            "Action": "dynamodb:GetItem",
+            "Condition": {
+              "ForAllValues:StringLike": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#*"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "s3:GetObject",
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cnesdata-prod-data/reconciliation/*",
+              "arn:aws:s3:::cnesdata-prod-data/serving/*"
+            ]
+          },
+          {
+            "Action": "s3:ListBucket",
+            "Condition": {
+              "StringLike": {
+                "s3:prefix": [
+                  "reconciliation/*",
+                  "serving/*"
+                ]
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-data"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.step_functions[0]": {
+      "name": "cnesdata-prod-step-functions-common",
+      "role": "cnesdata-prod-step-functions",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "iam:PassRole",
+            "Condition": {
+              "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-unit",
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-execution"
+            ]
+          },
+          {
+            "Action": [
+              "events:PutTargets",
+              "events:PutRule",
+              "events:DescribeRule"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:events:us-east-2:123456789012:rule/StepFunctionsGetEventsForECSTaskRule"
+          },
+          {
+            "Action": [
+              "logs:CreateLogDelivery",
+              "logs:GetLogDelivery",
+              "logs:UpdateLogDelivery",
+              "logs:DeleteLogDelivery",
+              "logs:ListLogDeliveries",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+              "logs:PutResourcePolicy",
+              "logs:DescribeResourcePolicies",
+              "logs:DescribeLogGroups"
+            ],
+            "Effect": "Allow",
+            "Resource": "*"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.schedulers.aws_iam_role_policy.run[\"recovery\"]": {
+      "name": "cnesdata-prod-scheduler-recovery-run",
+      "role": "cnesdata-prod-scheduler-recovery",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "iam:PassRole",
+            "Condition": {
+              "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-recovery",
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-execution"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.schedulers.aws_iam_role_policy.run[\"audit\"]": {
+      "name": "cnesdata-prod-scheduler-audit-run",
+      "role": "cnesdata-prod-scheduler-audit",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "iam:PassRole",
+            "Condition": {
+              "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-audit",
+              "arn:aws:iam::123456789012:role/cnesdata-prod-processor-execution"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.athena.aws_iam_role_policy.cutoff": {
+      "name": "cnesdata-prod-athena-cutoff-workgroup",
+      "role": "cnesdata-prod-athena-cutoff",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "athena:UpdateWorkGroup",
+            "Effect": "Allow",
+            "Resource": "arn:aws:athena:us-east-2:123456789012:workgroup/cnesdata-prod-operator"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    }
+  },
+  "phase-a": {
+    "module.runtime_iam.aws_iam_role_policy.canary_task[0]": {
+      "name": "cnesdata-prod-canary-task-runtime",
+      "role": "cnesdata-prod-canary-task",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:Query",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "OUTBOX#PENDING"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-canary/index/gsi6"
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:UpdateItem"
+            ],
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#_GLOBAL",
+                  "OUTBOX#CURSOR"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-canary"
+          },
+          {
+            "Action": "s3:GetBucketObjectLockConfiguration",
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-canary"
+          },
+          {
+            "Action": [
+              "s3:PutObject",
+              "s3:PutObjectRetention",
+              "s3:GetObject",
+              "s3:GetObjectRetention"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:s3:::cnesdata-prod-canary/audit/*"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.canary_execution[0]": {
+      "name": "cnesdata-prod-canary-pull-logs",
+      "role": "cnesdata-prod-canary-execution",
+      "policy": {
+        "Statement": [
+          {
+            "Action": [
+              "ecr:BatchGetImage",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchCheckLayerAvailability"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:ecr:us-east-2:123456789012:repository/cnesdata-prod-processor"
+          },
+          {
+            "Action": "ecr:GetAuthorizationToken",
+            "Effect": "Allow",
+            "Resource": "*"
+          },
+          {
+            "Action": [
+              "logs:CreateLogStream",
+              "logs:PutLogEvents"
+            ],
+            "Effect": "Allow",
+            "Resource": "arn:aws:logs:us-east-2:123456789012:log-group:/ecs/cnesdata-prod-processor:log-stream:*"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.canary_seeder[0]": {
+      "name": "cnesdata-prod-canary-seeder-put",
+      "role": "cnesdata-prod-canary-seeder",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:PutItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#_GLOBAL"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-canary"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.canary_verifier[0]": {
+      "name": "cnesdata-prod-canary-verifier-read",
+      "role": "cnesdata-prod-canary-verifier",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:Query",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "OUTBOX#PENDING"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-canary/index/gsi6"
+          },
+          {
+            "Action": "dynamodb:GetItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "TENANT#_GLOBAL"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-canary"
+          },
+          {
+            "Action": [
+              "s3:GetObject",
+              "s3:GetObjectRetention"
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cnesdata-prod-canary/audit/.event-id/canary-cccccccccccccccccccccccccccccccc.json",
+              "arn:aws:s3:::cnesdata-prod-canary/audit/*/*/*/*/canary-cccccccccccccccccccccccccccccccc.json"
+            ]
+          },
+          {
+            "Action": "iam:PassRole",
+            "Condition": {
+              "StringEquals": {
+                "iam:PassedToService": "ecs-tasks.amazonaws.com"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cnesdata-prod-canary-task",
+              "arn:aws:iam::123456789012:role/cnesdata-prod-canary-execution"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]": {
+      "name": "cnesdata-prod-promotion-fence-operator-gate",
+      "role": "cnesdata-prod-promotion-fence-operator",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "dynamodb:GetItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ENV#prod#FENCE",
+                  "ENV#prod#SEMAPHORE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "dynamodb:UpdateItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ENV#prod#FENCE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.processing.aws_iam_role_policy.step_functions_ecs[0]": {
+      "name": "cnesdata-prod-step-functions-ecs",
+      "role": "cnesdata-prod-step-functions",
+      "policy": {
+        "Statement": [
+          {
+            "Action": [
+              "ecs:DescribeTasks",
+              "ecs:StopTask"
+            ],
+            "Effect": "Allow",
+            "Resource": "*"
+          },
+          {
+            "Action": "ecs:RunTask",
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:ecs:us-east-2:123456789012:task-definition/cnesdata-prod-processor-unit:2"
+            ]
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    },
+    "module.processing.aws_iam_role_policy.canary_verifier_run_task[0]": {
+      "name": "cnesdata-prod-canary-verifier-run-task",
+      "role": "cnesdata-prod-canary-verifier",
+      "policy": {
+        "Statement": [
+          {
+            "Action": "ecs:RunTask",
+            "Condition": {
+              "ArnEquals": {
+                "ecs:cluster": "arn:aws:ecs:us-east-2:123456789012:cluster/cnesdata-prod-processor"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:ecs:us-east-2:123456789012:task-definition/cnesdata-prod-processor-audit:2"
+          }
+        ],
+        "Version": "2012-10-17"
+      }
+    }
+  }
+}

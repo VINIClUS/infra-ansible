@@ -14,7 +14,7 @@ from pathlib import Path
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Lease, Watchdog, mapped_deadline
-from tools.cnesdata_delivery.provenance import GitHub, preflight, validate_proof
+from tools.cnesdata_delivery.provenance import GitHub, historical_plan_governance, preflight, validate_proof
 
 UPLOAD_SHA = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 
@@ -23,7 +23,7 @@ def configuration(role):
     data = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(bool(data), "reviewed protected governance absent; Production closed")
     value = c.loads(data, canonical=True, limit=65536)
-    c.require(value.get("authority") == "infra-ansible#28/6715994616+6716076093+6716241666+6716490764+6716699477" and
+    c.require(value.get("authority") == "infra-ansible#28/6715994616+6716076093+6716241666+6716490764+6716699477+6718141241+6718506538" and
               value.get("activation_enabled") is True, "governance authority/activation")
     c.require(value.get("region") == "us-east-2" and set(value["roles"]) == {"plan", "deploy"}
               and value["roles"]["plan"] != value["roles"]["deploy"], "governed distinct roles")
@@ -96,7 +96,21 @@ def admission(role):
             c.digest(index[field])
         c.public_safe(index)
         c.require(index["cost"] == governance["cost"], "complete index/A3 cost projection")
-        validate_proof(index["admission_proof"], transport, governance, api, time.time(), descriptor["source_sha"], os.environ["PURPOSE"], "plan")
+        historical = validate_proof(index["admission_proof"], transport,
+                                    historical_plan_governance(governance, os.environ["PURPOSE"]),
+                                    api, time.time(), descriptor["source_sha"], os.environ["PURPOSE"], "plan")
+        c.require(historical["plan_binding_sha256"] is None
+                  and proof["plan_binding_sha256"] == index["plan_binding_sha256"],
+                  "historical/current proof binding without self-reference")
+        c.require(c.instant(historical["observed_at"]) <= c.instant(index["created_at"])
+                  and c.instant(index["expires_at"]) <= c.instant(historical["expires_at"]),
+                  "historical plan proof temporal binding")
+        for field in ("candidate_sha256", "promotion_evidence_sha256"):
+            c.require(historical[field] == proof[field], "historical/current release evidence")
+            if os.environ["PURPOSE"] == "phase-a":
+                c.digest(historical[field])
+            else:
+                c.require(historical[field] is None, "initial plan has no release proof")
     else:
         index = None
     return governance, descriptor, api, current, proof, files, index
@@ -124,7 +138,12 @@ def _environment():
     return result
 
 
-def _readbacks(aws, governance, watchdog, raw_state=None):
+def _readbacks(aws, governance, watchdog, raw_state=None, resolver=None):
+    resources = None
+    resolved_policies = set()
+    if raw_state is not None:
+        from tools.cnesdata_delivery.iam_boundary import bind_state
+        resources = bind_state(resolver, c.loads(raw_state, state=True))
     allowed = {"iam": {"get_role", "get_role_policy", "get_policy", "get_policy_version"},
                "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule"},
                "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
@@ -149,22 +168,18 @@ def _readbacks(aws, governance, watchdog, raw_state=None):
             return item
         encoded = c.canonical(dates(value))
         if raw_state is not None and spec["service"] == "iam" and spec["operation"] == "get_role_policy":
-            # Resolve the approved UNKNOWN policy only from the saved-plan applied
-            # state matching saved-plan known values; direct AWS equality below
-            # proves this policy observation, never new grants
-            # from caller hashes or a replacement plan.
-            state = c.loads(raw_state, state=True)
-            matches = [instance["attributes"] for resource in state["resources"] if resource.get("mode") == "managed"
-                       and resource["type"] == "aws_iam_role_policy" for instance in resource["instances"]
-                       if instance["attributes"]["role"] == spec["parameters"]["RoleName"]
-                       and instance["attributes"]["name"] == spec["parameters"]["PolicyName"]]
-            c.require(len(matches) == 1, "resolved policy state singleton")
-            expected = {"RoleName": matches[0]["role"], "PolicyName": matches[0]["name"],
-                        "PolicyDocument": c.loads(matches[0]["policy"].encode())}
-            c.require(value == expected, "resolved exact old/new IAM grants")
+            from tools.cnesdata_delivery.iam_boundary import verify_api
+            address = verify_api(resolver, resources, spec["parameters"], value)
+            if address is None:
+                c.require(c.sha(encoded) == spec["expected_sha256"], "live drift/readback mismatch")
+            else:
+                c.require(address not in resolved_policies, "iam=duplicate_policy_api")
+                resolved_policies.add(address)
         else:
             c.require(c.sha(encoded) == spec["expected_sha256"], "live drift/readback mismatch")
         reports.append({"service": spec["service"], "operation": spec["operation"], "sha256": c.sha(encoded), "observed": dates(value)})
+    if resolver is not None and raw_state is not None:
+        c.require(resolved_policies == set(resolver.traces), "iam=complete_policy_api_inventory")
     return reports
 
 
@@ -239,52 +254,151 @@ def _verify_current_artifact(api, identity, expected_files, run_id):
     c.require("sha256:" + c.sha(raw) == identity["digest"] and unzip(raw) == expected_files, "published artifact exact bytes")
 
 
+def verify_drift_evidence(envelope, raw, ecr_raw=None, promotion=None):
+    """Bind this apply's retained observation and readbacks without changing plan."""
+    plan, applied = envelope["plan"], envelope["apply"]
+    c.require(c.sha(raw) == applied["drift"]["evidence_sha256"] == applied["drift"]["readback_sha256"],
+              "applied private drift report bytes")
+    report = c.loads(raw, canonical=True, limit=262144)
+    c.closed(report, "drift_report_version repository source_sha purpose run_id run_attempt ecr_before post_readbacks")
+    c.require(type(report["drift_report_version"]) is int and report["drift_report_version"] == 1
+              and report["repository"] == plan["repository"] == c.REPOSITORY
+              and all(report[field] == plan[field] for field in ("source_sha", "purpose"))
+              and all(report[field] == applied["producer"][field] for field in ("run_id", "run_attempt")),
+              "applied drift report execution identity")
+    c.integer(report["run_id"])
+    c.integer(report["run_attempt"])
+    c.require(type(report["post_readbacks"]) is list and bool(report["post_readbacks"]), "post-apply readbacks absent")
+    for readback in report["post_readbacks"]:
+        c.closed(readback, "service operation sha256 observed")
+        c.require(c.sha(c.canonical(readback["observed"])) == c.digest(readback["sha256"]), "post readback measured bytes")
+    if plan["purpose"] != "phase-a":
+        c.require(report["ecr_before"] is None and ecr_raw is None, "unexpected ECR observation")
+        return report
+    observed = report["ecr_before"]
+    c.require(type(observed) is dict and ecr_raw is not None and c.canonical(observed) == ecr_raw,
+              "retained ECR observation missing/changed")
+    c.closed(observed, "observation_version repository source_sha purpose run_id run_attempt observed_at report")
+    c.require(type(observed["observation_version"]) is int and observed["observation_version"] == 1
+              and all(observed[field] == report[field] for field in ("repository", "source_sha", "purpose", "run_id", "run_attempt"))
+              and c.instant(plan["created_at"]) <= c.instant(observed["observed_at"]) <= c.instant(applied["started_at"]),
+              "fresh ECR observation before this mutation")
+    value = c.closed(observed["report"], "repository_sha256 image_digest config_digest manifest_sha256 blob_digests")
+    c.digest(value["repository_sha256"])
+    c.require(value["image_digest"] == "sha256:" + c.digest(value["image_digest"].removeprefix("sha256:"))
+              and value["image_digest"] == plan["release"]["image_digest"]
+              and value["manifest_sha256"] == c.digest(value["image_digest"].removeprefix("sha256:")),
+              "fresh ECR image/release binding")
+    c.require(value["config_digest"] == "sha256:" + c.digest(value["config_digest"].removeprefix("sha256:"))
+              and type(value["blob_digests"]) is list and 2 <= len(value["blob_digests"]) <= 129
+              and value["blob_digests"][0] == value["config_digest"], "fresh ECR config/blob binding")
+    for digest in value["blob_digests"]:
+        c.require(digest == "sha256:" + c.digest(digest.removeprefix("sha256:")), "fresh ECR blob digest")
+    if promotion is not None:
+        c.require(all(value[field] == promotion[field] for field in ("image_digest", "manifest_sha256", "config_digest", "blob_digests")),
+                  "fresh ECR original promotion bytes")
+    return report
+
+
+def _published_receipt(api, governance, run_id, attempt):
+    """Public identity needed before minting historically scoped credentials."""
+    c.integer(run_id)
+    c.integer(attempt)
+    run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
+    c.require(run["status"] == "completed" and run["conclusion"] == "success" and run["run_attempt"] == attempt
+              and run["repository"]["full_name"] == c.REPOSITORY and run["event"] == "workflow_dispatch"
+              and run["head_branch"] == "develop", "previous run not terminal success")
+    path = run["path"].split("@")[0]
+    c.require(path in {".github/workflows/infra-plan.yml", ".github/workflows/infra-apply.yml"}, "previous caller")
+    role = "plan" if path.endswith("infra-plan.yml") else "deploy"
+    from tools.cnesdata_delivery.provenance import producer_sha
+    c.require(producer_sha(run, role) == governance["gate_shas"][role], "previous approved reusable")
+    status = "planned" if role == "plan" else "applied"
+    artifacts = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
+    c.require(artifacts["total_count"] <= 100, "bounded history; reviewed recovery required")
+    name = f"cnesdata-{status}-receipt-{run_id}-{attempt}"
+    matches = [item for item in artifacts["artifacts"] if item["name"] == name]
+    c.require(len(matches) == 1, "previous receipt missing/ambiguous")
+    reference = {"repository": c.REPOSITORY, "run_id": run_id, "run_attempt": attempt,
+                 "artifact_id": matches[0]["id"], "artifact_digest": matches[0]["digest"],
+                 "workflow_path": path, "workflow_sha": run["head_sha"], "source_sha": run["head_sha"]}
+    content = api.artifact(reference, time.time())
+    c.require(set(content) == {"receipt.json"}, "external receipt package")
+    receipt = c.loads(content["receipt.json"], canonical=True)
+    c.closed(receipt, "receipt_version repository run_id run_attempt envelope_sha256 index_artifact_id index_artifact_digest lease_evidence_sha256 checkpoint_sha256 verified_at result")
+    c.require(receipt["result"] == "success" and receipt["receipt_version"] == 1 and receipt["repository"] == c.REPOSITORY
+              and receipt["run_id"] == run_id and receipt["run_attempt"] == attempt, "previous receipt binding")
+    index_files = api.artifact(reference | {"artifact_id": receipt["index_artifact_id"],
+                                           "artifact_digest": receipt["index_artifact_digest"]}, time.time())
+    index = c.loads(index_files["index.json"], canonical=True)
+    c.closed(index, "index_version kind status repository source_sha producer purpose created_at expires_at plan_binding_sha256 envelope_sha256 package_aggregate_sha256 private_locator policy cost drift admission_proof")
+    c.require(index["index_version"] == 1 and index["kind"] == "cnesdata-private-plan-transport"
+              and index["repository"] == c.REPOSITORY and index["source_sha"] == run["head_sha"]
+              and index["status"] == status and index["purpose"] in c.PURPOSES
+              and index["envelope_sha256"] == receipt["envelope_sha256"]
+              and index["producer"] == {"workflow_path": path, "workflow_sha": run["head_sha"], "run_id": run_id, "run_attempt": attempt}
+              and index["private_locator"] == {"scope": "cnesdata-prod", "source_sha": run["head_sha"],
+                                              "run_id": run_id, "run_attempt": attempt, "status": status},
+              "previous index identity and locator")
+    c.require(c.instant(receipt["verified_at"]) < c.instant(index["expires_at"]) - 120, "previous R1 publication validity")
+    c.public_safe(index)
+    return run, status, receipt, index
+
+
+def _session_reads(governance, descriptor, api, index, role, purpose, authority=None):
+    """Only governed object keys and API-authenticated complete historical runs."""
+    scopes = []
+    if role == "deploy":
+        locator = index["private_locator"]
+        scopes.append(_prefix(governance, locator["source_sha"], locator["run_id"], locator["run_attempt"], "planned") + "*")
+    elif purpose == "phase-a":
+        c.require(set(governance["phase_input_objects"]) == {"phase-inputs.json", "candidate.json", "promotion.json"}, "exact private Phase A inputs")
+        for spec in governance["phase_input_objects"].values():
+            c.digest(spec["sha256"])
+        from tools.cnesdata_delivery.session_grouping import phase_input_reads
+        scopes += phase_input_reads(governance, descriptor, authority)
+    candidates = []
+    for caller in ("infra-plan.yml", "infra-apply.yml"):
+        response = api.read(f"repos/{c.REPOSITORY}/actions/workflows/{caller}/runs?branch=develop&event=workflow_dispatch&status=success&per_page=1")
+        c.require(type(response["workflow_runs"]) is list and len(response["workflow_runs"]) <= 1, "bounded previous receipt lookup")
+        for run in response["workflow_runs"]:
+            c.integer(run["id"])
+            c.integer(run["run_attempt"])
+            c.instant(run["created_at"])
+            candidates.append(run)
+    if candidates:
+        latest = max(candidates, key=lambda run: (c.instant(run["created_at"]), run["id"], run["run_attempt"]))
+        run, status, _, _ = _published_receipt(api, governance, latest["id"], latest["run_attempt"])
+        scopes.append(_prefix(governance, run["head_sha"], run["id"], run["run_attempt"], status) + "*")
+    return sorted(set(scopes))
+
+
 def previous_success(aws, api, governance, previous, *, details=False):
     """Released is not sufficient: authenticate the prior successful publication."""
     try:
         c.require(previous["status"] == "released" and previous["repository"] == c.REPOSITORY, "terminal lease")
         run_id, attempt = previous["run_id"], previous["run_attempt"]
-        run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
-        c.require(run["status"] == "completed" and run["conclusion"] == "success" and run["run_attempt"] == attempt
-                  and run["repository"]["full_name"] == c.REPOSITORY and run["event"] == "workflow_dispatch"
-                  and run["head_branch"] == "develop", "previous run not terminal success")
-        path = run["path"].split("@")[0]
-        c.require(path in {".github/workflows/infra-plan.yml", ".github/workflows/infra-apply.yml"}, "previous caller")
-        role = "plan" if path.endswith("infra-plan.yml") else "deploy"
-        from tools.cnesdata_delivery.provenance import producer_sha
-        c.require(producer_sha(run, role) == governance["gate_shas"][role], "previous approved reusable")
-        status = "planned" if role == "plan" else "applied"
-        artifacts = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100")
-        c.require(artifacts["total_count"] <= 100, "bounded history; reviewed recovery required")
-        name = f"cnesdata-{status}-receipt-{run_id}-{attempt}"
-        matches = [item for item in artifacts["artifacts"] if item["name"] == name]
-        c.require(len(matches) == 1, "previous receipt missing/ambiguous")
-        reference = {"repository": c.REPOSITORY, "run_id": run_id, "run_attempt": attempt,
-                     "artifact_id": matches[0]["id"], "artifact_digest": matches[0]["digest"],
-                     "workflow_path": path, "workflow_sha": run["head_sha"], "source_sha": run["head_sha"]}
-        content = api.artifact(reference, time.time())
-        c.require(set(content) == {"receipt.json"}, "external receipt package")
-        receipt = c.loads(content["receipt.json"], canonical=True)
-        c.closed(receipt, "receipt_version repository run_id run_attempt envelope_sha256 index_artifact_id index_artifact_digest lease_evidence_sha256 checkpoint_sha256 verified_at result")
-        c.require(receipt["result"] == "success" and receipt["receipt_version"] == 1 and receipt["repository"] == c.REPOSITORY
-                  and receipt["run_id"] == run_id and receipt["run_attempt"] == attempt
-                  and receipt["checkpoint_sha256"] == previous["checkpoint_sha256"], "previous receipt binding")
+        run, status, receipt, index = _published_receipt(api, governance, run_id, attempt)
+        c.require(receipt["checkpoint_sha256"] == previous["checkpoint_sha256"], "previous coordinator receipt binding")
         prefix = _prefix(governance, run["head_sha"], run_id, attempt, status)
         raw, _ = aws.get(governance["evidence_bucket"], prefix + "envelope.json", maximum=262144)
         c.require(c.sha(raw) == receipt["envelope_sha256"], "previous private envelope")
         envelope = c.loads(raw, canonical=True)
         c.require(envelope["status"] == status and envelope["plan"]["source_sha"] == run["head_sha"]
-                  and c.instant(receipt["verified_at"]) < c.instant(envelope["plan"]["expires_at"]) - 120, "previous R1 validity")
+                  and envelope["plan"]["purpose"] == index["purpose"]
+                  and envelope["plan"]["backend"] == governance["baseline"]["backend"]
+                  and c.instant(receipt["verified_at"]) < c.instant(envelope["plan"]["expires_at"]) - 120,
+                  "previous R1 validity/backend/workspace/purpose")
         evidence_raw, _ = aws.get(governance["evidence_bucket"], prefix + "lease.json", maximum=262144)
         c.require(c.sha(evidence_raw) == receipt["lease_evidence_sha256"], "previous lease CAS evidence bytes")
         evidence = c.loads(evidence_raw, canonical=True)
         c.require(evidence["owner_sha256"] == c.sha(previous["owner"].encode()) and evidence["run_id"] == run_id
                   and evidence["run_attempt"] == attempt and evidence["session_sha256"] == previous["session_sha256"]
                   and evidence["checkpoint_sha256"] == receipt["checkpoint_sha256"], "previous owner/run/session CAS")
-        index_files = api.artifact(reference | {"artifact_id": receipt["index_artifact_id"],
-                                               "artifact_digest": receipt["index_artifact_digest"]}, time.time())
-        index = c.loads(index_files["index.json"], canonical=True)
-        c.require(index["envelope_sha256"] == receipt["envelope_sha256"] and index["status"] == status, "previous index external identity")
+        if status == "applied":
+            drift_raw, _ = aws.get(governance["evidence_bucket"], prefix + "drift.json", maximum=262144)
+            ecr_raw, _ = aws.get(governance["evidence_bucket"], prefix + "ecr-before.json", maximum=65536) if envelope["plan"]["purpose"] == "phase-a" else (None, None)
+            verify_drift_evidence(envelope, drift_raw, ecr_raw)
         return {"envelope": envelope, "receipt": receipt, "index": index,
                 "artifact_id": receipt["index_artifact_id"], "artifact_digest": receipt["index_artifact_digest"]} if details else True
     except Exception:
@@ -316,7 +430,7 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     state = c.loads(state_raw, state=True)
     saved = c.loads(files["plan.json"], state=True)
     c.applied_state(saved, state)
-    reports = _readbacks(aws, governance, ReadOnly(), state_raw if purpose == "phase-a" else None)
+    reports = _readbacks(aws, governance, ReadOnly(), state_raw if baseline.get("iam_resolver") is not None else None, baseline.get("iam_resolver"))
     c.drift_coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state)
     if purpose == "phase-a":
         aws.verify_ecr(c.loads(files["promotion.json"], canonical=True), guard=guard)
@@ -336,7 +450,13 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
 def execute(role):
     governance, descriptor, api, current, proof, proof_files, index = admission(role)
     _publisher_ready()
+    from tools.cnesdata_delivery import session_owner
+    session_authority = session_owner.authenticate(governance, descriptor, proof, proof_files, api,
+                                                    time.time(), role, os.environ["PURPOSE"],
+                                                    plan_binding_sha256=index["plan_binding_sha256"] if role == "deploy" else None)
     aws = AWS(governance)  # only after live public admission has independently passed
+    session_expires = c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"])
+    session_owner.verify_managed(aws, session_authority, session_expires)
     source = descriptor["source_sha"]
     run_id, attempt = current["id"], current["run_attempt"]
     session = c.sha(c.canonical({"principal": aws.identity["Arn"], "run_id": run_id, "run_attempt": attempt, "gate": role}))
@@ -356,6 +476,13 @@ def execute(role):
     c.require(tofu and c.sha(Path(tofu).read_bytes()) == toolchain["opentofu"]["binary_sha256"]
               and c.sha((root / ".terraform.lock.hcl").read_bytes()) == toolchain["lock_sha256"], "actual toolchain bytes")
     baseline = governance["baseline"]
+    iam_resolver = None
+    def prepare_iam(files):
+        from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
+        saved = c.loads(files["plan.json"], state=True)
+        changed = any(item["type"] == "aws_iam_role_policy" and item["change"]["actions"] != ["no-op"] for item in saved["resource_changes"])
+        sources = authenticate_sources(product, source) if changed else {}
+        return prepare(saved, c.loads(files["inputs.tfvars.json"]), governance["account_id"], purpose, sources)
     with tempfile.TemporaryDirectory(prefix="cnesdata-private-") as folder:
         temp = Path(folder)
         temp.chmod(0o700)
@@ -377,6 +504,8 @@ def execute(role):
                 data, _ = aws.get(bucket, prefix + entry["name"], maximum=entry["size"])
                 files[entry["name"]] = data
                 (temp / entry["name"]).write_bytes(data)
+            iam_resolver = prepare_iam(files)
+            baseline = baseline | {"iam_resolver": iam_resolver}
             plan = c.validate_envelope(envelope, files, baseline, time.time(), source)
             c.require(index["policy"] == {k: plan["policy"][k] for k in ("verdict", "evidence_sha256")}
                       and index["cost"] == plan["cost"] and index["drift"] == {k: plan["drift"][k] for k in ("verdict", "evidence_sha256")}
@@ -412,6 +541,7 @@ def execute(role):
             (temp / "inputs.tfvars.json").write_bytes(c.canonical(inputs))
         if role == "deploy" and _reuse_completed(aws, api, governance, lease, envelope, files, baseline, source, purpose):
             return
+        session_owner.verify_managed(aws, session_authority, session_expires)
         lease.acquire()
         expiry = min(expiry, c.instant(proof["expires_at"]), *api.expiries.values())
         sent, received, server = aws.last_sample
@@ -443,7 +573,17 @@ def execute(role):
             c.require(c.sha(candidate_raw) == release["candidate_sha256"] and candidate["source_sha"] == source
                       and all(binding[k] == release[k] for k in ("release_id", "canary_id", "binding_sha256", "source_sha"))
                       and promotion["image_digest"] == release["image_digest"], "real candidate/promotion binding")
-            aws.verify_ecr(promotion, guard=watchdog.check)
+            ecr_report = aws.verify_ecr(promotion, guard=watchdog.check)
+            ecr_before = {"observation_version": 1, "repository": c.REPOSITORY, "source_sha": source, "purpose": purpose,
+                          "run_id": run_id, "run_attempt": attempt, "observed_at": c.utc(time.time()),
+                          "report": ecr_report}
+            ecr_key = _prefix(governance, source, run_id, attempt, "planned" if role == "plan" else "applied") + "ecr-before.json"
+            ecr_raw = c.canonical(ecr_before)
+            aws.put(bucket, ecr_key, ecr_raw)
+            retained, _ = aws.get(bucket, ecr_key, maximum=65536)
+            c.require(retained == ecr_raw, "durable ECR observation before product mutation")
+        else:
+            ecr_before = None
         backend = dict(baseline["backend"]["configuration"])
         c.require(backend.pop("workspace") == "default", "workspace")
         backend.pop("type")
@@ -479,6 +619,7 @@ def execute(role):
         aws.put(bucket, attempt_prefix + "attempt.json", prepared_raw)
         prepared_readback, _ = aws.get(bucket, attempt_prefix + "attempt.json", maximum=262144)
         c.require(prepared_readback == prepared_raw, "durable recovery checkpoint before product mutation")
+        session_owner.verify_managed(aws, session_authority, session_expires)
         child = watchdog.run(command, cwd=root, env=env, output=temp / "operation.log")
         if role == "plan":
             watchdog.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env,
@@ -501,11 +642,14 @@ def execute(role):
             watchdog.run([evaluator, "test", str(temp / "plan.json"), "--policy", str(policy_file), "--output", "json"],
                          cwd=product, env=env, output=temp / "policy.json", timeout=20, mutating=False)
             files["policy-evaluation.json"] = (temp / "policy.json").read_bytes()
-            graph = c.validate_graph(c.loads(files["plan.json"], state=True), baseline["phase_a_graph"], baseline["actual_source_files"]) if purpose == "phase-a" else None
+            iam_resolver = prepare_iam(files)
+            baseline = baseline | {"iam_resolver": iam_resolver}
+            graph = c.validate_graph(c.loads(files["plan.json"], state=True), baseline["phase_a_graph"], baseline["actual_source_files"], iam_resolver) if purpose == "phase-a" else None
             files["policy-proof.json"] = c.canonical({"evaluation_sha256": c.sha(files["policy-evaluation.json"]), "graph_proof": graph})
             files["cost-report.json"] = c.canonical(baseline["cost_evidence"])
             files["cost-manifest.json"] = c.canonical(baseline["cost_manifest"])
-            files["drift-before.json"] = c.canonical({"state_before": before, "readbacks": before_reports, "observed_at": started})
+            files["drift-before.json"] = c.canonical({"state_before": before, "readbacks": before_reports,
+                                                      "ecr_before": ecr_before, "observed_at": started})
             entries = [{"name": name, "size": len(data), "sha256": c.sha(data)} for name, data in sorted(files.items())]
             policy = {"verdict": "pass", "evidence_sha256": c.sha(files["policy-proof.json"]),
                       "policy_sha256": governance["policy_sha256"], "evaluator_sha256": governance["policy_evaluator_sha256"],
@@ -529,11 +673,12 @@ def execute(role):
         if role == "deploy":
             c.require(after_bytes is not None, "applied state absent; recovery_required")
             c.applied_state(c.loads(files["plan.json"], state=True), c.loads(after_bytes, state=True))
-        reports = _readbacks(aws, governance, watchdog, after_bytes if role == "deploy" and purpose == "phase-a" else None)
+        reports = _readbacks(aws, governance, watchdog, after_bytes if role == "deploy" and iam_resolver is not None else None, iam_resolver)
         c.drift_coverage(c.loads(files["plan.json"], state=True), reports, governance["drift_matrix"],
                          source, purpose, "after" if role == "deploy" else "before",
                          c.loads(after_bytes, state=True) if role == "deploy" else None)
         applied_outputs = None
+        drift_raw = None
         if role == "deploy":
             if purpose == "phase-a":
                 applied_outputs = _outputs(after_bytes, plan, f"{governance['account_id']}.dkr.ecr.us-east-2.amazonaws.com/{governance['ecr_repository']}")
@@ -543,7 +688,12 @@ def execute(role):
                 watchdog.check()
                 applied_outputs = outputs.acm(state, aws, governance["account_id"]) if purpose == "acm-certificate" else outputs.bootstrap(state, aws, governance["account_id"])
                 watchdog.check()
+            drift_raw = c.canonical({"drift_report_version": 1, "repository": c.REPOSITORY, "source_sha": source,
+                "purpose": purpose, "run_id": run_id, "run_attempt": attempt,
+                "ecr_before": ecr_before, "post_readbacks": reports})
+            aws.put(bucket, attempt_prefix + "drift.json", drift_raw)
         checkpoint = {"state_after": after, "outputs": applied_outputs, "readbacks": reports,
+                      "drift_sha256": c.sha(drift_raw) if drift_raw is not None else None,
                       "operation_completed_at": c.utc(time.time())}
         checkpoint_hash = c.sha(c.canonical(checkpoint))
         prefix = _prefix(governance, source, run_id, attempt, "planned" if role == "plan" else "applied")
@@ -569,7 +719,7 @@ def execute(role):
                 "principal": {"kind": "assumed-role", "account_id": governance["account_id"], "region": "us-east-2", "gate": "deploy", "role_arn": governance["roles"]["deploy"],
                               "session_sha256": session, "credential_expires_at": os.environ["AWS_CREDENTIAL_EXPIRATION"], "evidence_sha256": c.sha(c.canonical(aws.identity))},
                 "state_after": after | {"outputs_sha256": c.sha(c.canonical(applied_outputs))},
-                "drift": {"verdict": "clean", "evidence_sha256": c.sha(c.canonical(reports)), "readback_sha256": c.sha(c.canonical(reports)), "observed_at": c.utc(time.time())},
+                "drift": {"verdict": "clean", "evidence_sha256": c.sha(drift_raw), "readback_sha256": c.sha(drift_raw), "observed_at": c.utc(time.time())},
                 "outputs": applied_outputs}}
         status = envelope["status"]
         raw = c.canonical(envelope)
@@ -577,6 +727,9 @@ def execute(role):
         if role == "deploy":
             c.validate_envelope(envelope, files, baseline | {"deploy_role_arn": governance["roles"]["deploy"]},
                                 time.time(), source, status="applied")
+            observed_drift, _ = aws.get(bucket, prefix + "drift.json", maximum=262144)
+            retained_ecr, _ = aws.get(bucket, prefix + "ecr-before.json", maximum=65536) if purpose == "phase-a" else (None, None)
+            verify_drift_evidence(envelope, observed_drift, retained_ecr, promotion if purpose == "phase-a" else None)
         aws.put(bucket, prefix + "envelope.json", raw)
         for name, data in files.items():
             if role == "plan":
@@ -684,8 +837,14 @@ def main(role):
 
 def credentials(role):
     """Mint OIDC only after independently repeating the complete public gate."""
-    governance, _, _, _, _, _, _ = admission(role)
+    governance, descriptor, api, current, proof, proof_files, index = admission(role)
     _publisher_ready()
+    from tools.cnesdata_delivery import session_owner, session_policy
+    authority = session_owner.authenticate(governance, descriptor, proof, proof_files, api,
+                                           time.time(), role, os.environ["PURPOSE"],
+                                           plan_binding_sha256=index["plan_binding_sha256"] if role == "deploy" else None)
+    session_request = session_policy.request(governance, descriptor["source_sha"], current["id"], current["run_attempt"], role,
+                   _session_reads(governance, descriptor, api, index, role, os.environ["PURPOSE"], authority))
     import base64
     import urllib.request
     from urllib.parse import urlparse
@@ -710,10 +869,12 @@ def credentials(role):
               and claims["ref"] == "refs/heads/develop", "OIDC governed claims")
     client = boto3.client("sts", region_name="us-east-2", config=Config(signature_version=UNSIGNED,
                           connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1}, ignore_configured_endpoint_urls=True))
-    response = client.assume_role_with_web_identity(RoleArn=governance["roles"][role],
+    from tools.cnesdata_delivery.aws_boundary import bounded
+    response = bounded(lambda: client.assume_role_with_web_identity(RoleArn=governance["roles"][role],
         RoleSessionName=f"cnesdata-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}",
-        WebIdentityToken=token, DurationSeconds=3600)
-    value = response["Credentials"]
+        WebIdentityToken=token, DurationSeconds=3600, **session_request))
+    value = session_policy.validate_response(response)
+    session_owner.verify_managed(AWS(governance, credentials=value), authority, value["Expiration"].timestamp())
     # Runner workflow-command control channel, not an ordinary log line. Register
     # before GITHUB_ENV, whose next-step environment block would otherwise expose it.
     for field in ("AccessKeyId", "SecretAccessKey", "SessionToken"):

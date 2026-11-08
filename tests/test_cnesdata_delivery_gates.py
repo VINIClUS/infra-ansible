@@ -119,6 +119,42 @@ def test_actionlint_executes_pinned_workflows():
                              for gate in ("plan", "deploy")]], check=True)
 
 
+def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
+    import ast
+    import re
+    import yaml
+    package = "tools.cnesdata_delivery"
+    directory = ROOT / "tools/cnesdata_delivery"
+    required, pending = set(), {"plan_gate", "apply_gate"}
+    while pending:
+        module = pending.pop()
+        name = module + ".py"
+        if name in required:
+            continue
+        required.add(name)
+        for node in ast.walk(ast.parse((directory / name).read_text())):
+            if isinstance(node, ast.ImportFrom):
+                if node.module == package:
+                    pending.update(alias.name for alias in node.names)
+                elif node.module and node.module.startswith(package + "."):
+                    pending.add(node.module.removeprefix(package + ".").split(".", 1)[0])
+    required.add("runtime-requirements.txt")
+    lists = []
+    for gate in ("plan", "deploy"):
+        raw = (ROOT / f".github/workflows/reusable-cnesdata-infra-{gate}-gate.yml").read_text()
+        workflow = yaml.safe_load(raw)
+        assert set(workflow["on"]["workflow_call"]["inputs"]) == {
+            "request_descriptor", "request_descriptor_sha256", "contract_repository", "contract_source_sha",
+            "contract_path", "contract_sha256", "expected_source_sha", "purpose"}
+        values = re.findall(r"files = (\[[\s\S]*?\])", raw)
+        assert len(values) == 2
+        lists.extend(ast.literal_eval(value) for value in values)
+    assert len(lists) == 4
+    for names in lists:
+        assert len(names) == len(set(names))
+        assert set(names) == required
+
+
 def test_purpose_cost_pre_requires_real_guardrail_context(contract):
     from fixtures.cnesdata_cost import fixture
     cost, stage, evidence, manifest = fixture(False)
@@ -587,6 +623,357 @@ def test_redacted_address_hides_brackets_and_escaped_quotes_inside_keys(contract
     result = contract.loads(contract.redacted_plan(raw, "a" * 40, "bootstrap"))
     assert result["changes"][0]["address_shape"] == "module.root[redacted].aws_example.test[redacted]"
     assert "private" not in contract.canonical(result).decode()
+
+
+def test_published_plan_proof_is_admitted_for_deploy_without_future_self_reference(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    planned = chain.planned()
+    chain.configure("deploy", 2, planned)
+    _, _, _, _, current, _, index = runtime.admission("deploy")
+    assert current["plan_binding_sha256"] == index["plan_binding_sha256"]
+    assert [item["purpose"] for item in index["admission_proof"]["artifacts"]] == [
+        "backend", "cost", "drift", "policy", "shared-outputs", "toolchain"]
+    assert "planned" in [item["purpose"] for item in current["artifacts"]]
+
+
+def test_current_deploy_proof_cannot_bind_another_published_plan(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    chain.configure("deploy", 2, chain.planned())
+    reference = chain.gov["admission_reference"]
+    members = copy.deepcopy(chain.artifacts[reference["repository"], reference["artifact_id"]][2])
+    proof = json.loads(members["proof.json"])
+    proof["plan_binding_sha256"] = "f" * 64
+    members["proof.json"] = runtime.c.canonical(proof)
+    chain.gov["admission_reference"] = chain.add_artifact(reference["run_id"], members, reference["workflow_path"],
+        repository=reference["repository"], source=reference["source_sha"])
+    monkeypatch.setenv("CNESDATA_DELIVERY_GOVERNANCE", runtime.c.canonical(chain.gov).decode())
+    with pytest.raises(ValueError, match="historical/current proof binding"):
+        runtime.admission("deploy")
+
+
+def test_historical_phase_input_context_is_independently_governed(contract):
+    from tools.cnesdata_delivery.provenance import historical_plan_governance, validate_artifact_set
+    entries, governance, api = artifact_inventory(contract)
+    governance["artifact_purposes"].append("planned")
+    governance["artifact_references"]["planned"] = {"repository": "VINIClUS/CnesData", "artifact_id": 99}
+    phase = {"repository": "VINIClUS/CnesData", "artifact_id": 98}
+    governance["artifact_references"]["phase-inputs"] = phase
+    entries.append(entries[0] | {"purpose": "phase-inputs", "reference": phase})
+    entries.sort(key=lambda item: item["purpose"])
+    historical = historical_plan_governance(governance, "phase-a")
+    validate_artifact_set(entries, historical, api, 1794053700, "2026-11-07T13:00:00Z")
+    assert "planned" in governance["artifact_purposes"]
+    governance["artifact_references"]["phase-inputs"] = governance["artifact_references"]["planned"]
+    with pytest.raises(ValueError, match="circular"):
+        historical_plan_governance(governance, "phase-a")
+
+
+def test_oidc_request_limits_session_to_authenticated_current_run(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    runtime.credentials("plan")
+    policy = json.loads(chain.sts_request["Policy"])
+    assert policy["Version"] == "2012-10-17"
+    assert len(chain.sts_request["Policy"]) <= 2048
+    assert chain.sts_request["PolicyArns"] == [{"arn": chain.gov["session_policy_pins"]["plan"]["policy_arn"]}]
+    assert len(chain.sts_request["Policy"]) + sum(len(item["arn"]) for item in chain.sts_request["PolicyArns"]) <= 2048
+
+
+def test_deploy_sts_reads_authenticated_plan_but_cannot_rewrite_history(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from fixtures.cnesdata_iam_evaluation import allowed
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    chain.configure("deploy", 2, chain.planned())
+    runtime.credentials("deploy")
+    policy = json.loads(chain.sts_request["Policy"])
+    old = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/" + "a" * 40 + "/1/1/planned/plan.bin"
+    own = old.replace("/1/1/planned/plan.bin", "/2/1/applied/attempt.json")
+    assert allowed(policy, "s3:GetObject", old)
+    assert not allowed(policy, "s3:PutObject", old)
+    assert not allowed(policy, "s3:GetObjectVersion", old, {"s3:VersionId": "unapproved"})
+    assert not allowed(policy, "s3:GetObject", old.replace("/1/1/", "/3/1/"))
+    assert allowed(policy, "s3:PutObject", own)
+    assert len(chain.sts_request["Policy"]) <= 2048
+
+
+@pytest.mark.parametrize("failure", ["packed", "sdk"])
+def test_sts_capacity_rejection_exports_no_credentials(monkeypatch, tmp_path, failure):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    if failure == "packed":
+        chain.packed_size = 101
+    else:
+        chain.sts_failure = ValueError("PackedPolicyTooLarge")
+    with pytest.raises(ValueError):
+        runtime.credentials("plan")
+    assert not (tmp_path / "credentials.env").exists()
+
+
+def test_sts_without_original_authenticated_session_policy_pin_is_closed(monkeypatch, tmp_path):
+    from fixtures.cnesdata_delivery_chain import Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        runtime.credentials("plan")
+    assert not hasattr(chain, "sts_request")
+
+
+def test_authenticated_historical_key_with_changed_bytes_aborts_before_apply(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    planned = chain.planned()
+    prefix = runtime._prefix(chain.gov, "a" * 40, 1, 1, "planned")
+    key = chain.gov["evidence_bucket"], prefix + "plan.bin"
+    original, _ = chain.objects[key]
+    chain.objects[key] = b"x" * len(original), "new-etag"
+    chain.configure("deploy", 2, planned)
+    with pytest.raises(ValueError, match="package tamper"):
+        runtime.execute("deploy")
+    assert not any(len(command) > 1 and command[1] == "apply" for command in chain.commands)
+
+
+def test_phase_plan_retains_the_real_fresh_ecr_observation(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path, purpose="phase-a")
+    runtime.execute("plan")
+    prefix = runtime._prefix(chain.gov, "a" * 40, 1, 1, "planned")
+    observed = runtime.c.loads(chain.objects[chain.gov["evidence_bucket"], prefix + "drift-before.json"][0])
+    assert observed["ecr_before"]["run_id"] == 1
+    assert observed["ecr_before"]["report"]["image_digest"] == chain.gov["release"]["image_digest"]
+    assert observed["ecr_before"]["report"]["blob_digests"] == list(chain.blobs)
+
+
+def test_phase_ecr_persistence_failure_stops_before_product_process(monkeypatch, tmp_path):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path, purpose="phase-a")
+    chain.corrupt_ecr_readback = True
+    with pytest.raises(ValueError, match="durable ECR observation"):
+        runtime.execute("plan")
+    assert not chain.commands
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_phase_oidc_reads_exact_approved_private_inputs_without_write(monkeypatch, tmp_path, compact):
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from fixtures.cnesdata_iam_evaluation import allowed
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path, purpose="phase-a", compact_names=compact)
+    runtime.credentials("plan")
+    policy = json.loads(chain.sts_request["Policy"])
+    for spec in chain.gov["phase_input_objects"].values():
+        resource = "arn:aws:s3:::" + chain.gov["evidence_bucket"] + "/" + spec["key"]
+        assert allowed(policy, "s3:GetObject", resource)
+        assert not allowed(policy, "s3:PutObject", resource)
+        assert not allowed(policy, "s3:GetObject", resource + ".unapproved")
+    assert len(chain.sts_request["Policy"]) <= 2048
+
+
+@pytest.mark.parametrize("mutation", [None, "changed", "removed", "other-run", "promotion", "post-readback"])
+def test_applied_drift_commits_to_fresh_ecr_and_post_readbacks(contract, mutation):
+    from tools.cnesdata_delivery import runtime
+    ecr = {"observation_version": 1, "repository": contract.REPOSITORY, "source_sha": "a" * 40,
+        "purpose": "phase-a", "run_id": 2, "run_attempt": 1, "observed_at": "2026-11-07T12:00:01Z",
+        "report": {"repository_sha256": "b" * 64, "image_digest": "sha256:" + "c" * 64,
+            "manifest_sha256": "c" * 64, "config_digest": "sha256:" + "d" * 64,
+            "blob_digests": ["sha256:" + "d" * 64, "sha256:" + "e" * 64]}}
+    promotion = {key: ecr["report"][key] for key in ("image_digest", "manifest_sha256", "config_digest", "blob_digests")}
+    report = {"drift_report_version": 1, "repository": contract.REPOSITORY, "source_sha": "a" * 40,
+        "purpose": "phase-a", "run_id": 2, "run_attempt": 1, "ecr_before": copy.deepcopy(ecr),
+        "post_readbacks": [{"service": "ecs", "operation": "describe_clusters",
+            "sha256": hashlib.sha256(b'{"clusters":[]}\n').hexdigest(), "observed": {"clusters": []}}]}
+    raw = contract.canonical(report)
+    plan = {"repository": contract.REPOSITORY, "source_sha": "a" * 40, "purpose": "phase-a",
+        "created_at": "2026-11-07T12:00:00Z", "release": {"image_digest": ecr["report"]["image_digest"]},
+        "drift": {"evidence_sha256": "f" * 64}}
+    envelope = {"plan": plan, "apply": {"producer": {"run_id": 2, "run_attempt": 1}, "started_at": "2026-11-07T12:00:02Z",
+        "drift": {"evidence_sha256": contract.sha(raw), "readback_sha256": contract.sha(raw)}}}
+    before = contract.canonical(plan)
+    if mutation == "changed":
+        report["ecr_before"]["report"]["config_digest"] = "sha256:" + "0" * 64
+    elif mutation == "removed":
+        report["ecr_before"] = None
+    elif mutation == "other-run":
+        report["ecr_before"]["run_id"] = 3
+    elif mutation == "promotion":
+        promotion["blob_digests"] = []
+    elif mutation == "post-readback":
+        report["post_readbacks"][0]["observed"]["clusters"] = ["unapproved"]
+    if mutation is None:
+        runtime.verify_drift_evidence(envelope, raw, contract.canonical(ecr), promotion)
+    else:
+        raw = contract.canonical(report)
+        envelope["apply"]["drift"] = {"evidence_sha256": contract.sha(raw), "readback_sha256": contract.sha(raw)}
+        with pytest.raises(ValueError):
+            runtime.verify_drift_evidence(envelope, raw,
+                contract.canonical(report["ecr_before"]) if report["ecr_before"] is not None else None, promotion)
+    assert contract.canonical(plan) == before
+
+
+@pytest.mark.parametrize("shared_bucket,shared_key", [(False, False), (True, False), (False, True), (True, True)])
+def test_session_policy_keeps_state_and_denies_other_evidence_runs(shared_bucket, shared_key):
+    from tools.cnesdata_delivery.session_policy import build, managed_arn
+    from fixtures.cnesdata_iam_evaluation import effective
+    from fixtures.cnesdata_session_cases import expected_documents
+    state = "evi" if shared_bucket else "state"
+    key = "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000001"
+    governance = {"account_id": "111122223333", "state_bucket": state, "evidence_bucket": "evi",
+        "state_kms_key_arn": key if shared_key else key.replace("0001", "0002"), "evidence_kms_key_arn": key, "evidence_prefix": "cnesdata/prod/e/",
+        "roles": {role: f"arn:aws:iam::111122223333:role/cnesdata-infra-{role}" for role in ("plan", "deploy")}}
+    identity, managed = expected_documents(governance, "plan")
+    session = json.loads(build(governance, "a" * 40, 1, 1, "plan", []))
+    def permitted(action, resource, context=None):
+        return effective(identity, managed, session, action, resource, context)
+    own = "arn:aws:s3:::evi/cnesdata/prod/e/" + "a" * 40 + "/1/1/planned/envelope.json"
+    other = own.replace("/1/1/", "/2/1/")
+    assert permitted("s3:PutObject", own)
+    assert permitted("s3:GetObject", own)
+    assert not permitted("s3:PutObject", other)
+    assert not permitted("s3:GetObject", other)
+    assert not permitted("s3:GetObjectVersion", own, {"s3:VersionId": "old"})
+    context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": own}
+    assert permitted("kms:GenerateDataKey", key, context)
+    assert not permitted("kms:GenerateDataKey", key, context | {"kms:EncryptionContext:aws:s3:arn": other})
+    assert not permitted("kms:Decrypt", key, {})
+    for suffix in ("cnesdata/prod/opentofu.tfstate", "cnesdata/prod/opentofu.tfstate.tflock",
+                   "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"):
+        resource = f"arn:aws:s3:::{state}/{suffix}"
+        assert permitted("s3:GetObject", resource)
+        assert permitted("s3:PutObject", resource) is (suffix != "cnesdata/prod/opentofu.tfstate")
+        assert permitted("s3:DeleteObject", resource) is suffix.endswith(".tflock")
+        assert permitted("s3:ListBucket", f"arn:aws:s3:::{state}", {"s3:prefix": suffix})
+        assert permitted("kms:Encrypt", governance["state_kms_key_arn"], context | {"kms:EncryptionContext:aws:s3:arn": resource})
+    assert permitted("iam:GetPolicy", managed_arn(governance, "plan"))
+
+
+def test_session_policy_allows_only_exact_history_and_refuses_oversize():
+    from tools.cnesdata_delivery.session_policy import build
+    from fixtures.cnesdata_iam_evaluation import effective
+    from fixtures.cnesdata_session_cases import expected_documents
+    governance = {"account_id": "111122223333", "state_bucket": "state", "evidence_bucket": "evidence",
+        "state_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000001",
+        "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000002", "evidence_prefix": "cnesdata/prod/e"}
+    governance["roles"] = {role: f"arn:aws:iam::111122223333:role/cnesdata-infra-{role}" for role in ("plan", "deploy")}
+    identity, managed = expected_documents(governance, "deploy")
+    def permitted(action, resource, context=None):
+        return effective(identity, managed, session, action, resource, context)
+    old = "cnesdata/prod/e/old/envelope.json"
+    session = json.loads(build(governance, "a" * 40, 1, 1, "deploy", [old]))
+    resource = "arn:aws:s3:::evidence/" + old
+    assert permitted("s3:GetObject", resource)
+    assert not permitted("s3:PutObject", resource)
+    assert not permitted("s3:GetObject", resource + ".other")
+    assert permitted("kms:Decrypt", governance["evidence_kms_key_arn"], {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": resource})
+    assert not permitted("kms:Encrypt", governance["evidence_kms_key_arn"], {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": resource})
+    with pytest.raises(ValueError, match="2048"):
+        build(governance, "a" * 40, 1, 1, "deploy", ["cnesdata/prod/e/" + str(i) + "/" + "f" * 120 for i in range(32)])
+    prefix = "cnesdata/prod/e/" + "b" * 40 + "/2/1/planned/*"
+    session = json.loads(build(governance, "a" * 40, 1, 1, "deploy", [prefix]))
+    approved = "arn:aws:s3:::evidence/" + prefix[:-1] + "plan.bin"
+    assert permitted("s3:GetObject", approved)
+    assert not permitted("s3:PutObject", approved)
+    assert not permitted("kms:Encrypt", governance["evidence_kms_key_arn"], {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": approved})
+    assert not permitted("s3:GetObject", approved.replace("/2/1/", "/3/1/"))
+    with pytest.raises(ValueError):
+        build(governance, "a" * 40, 1, 1, "deploy", ["cnesdata/prod/e/*"])
+
+
+def test_session_policy_fits_realistic_ids_arns_and_authenticated_plan_scope():
+    from tools.cnesdata_delivery.session_policy import build, managed_arn
+    governance = {"account_id": "111122223333", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
+        "state_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000001",
+        "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000002",
+        "evidence_prefix": "cnesdata/prod/evidence/"}
+    governance["roles"] = {role: f"arn:aws:iam::111122223333:role/cnesdata-infra-{role}" for role in ("plan", "deploy")}
+    old = "cnesdata/prod/evidence/" + "b" * 40 + "/42448920421/1/planned/*"
+    value = build(governance, "a" * 40, 42448571873, 1, "deploy", [old])
+    assert len(value) + len(managed_arn(governance, "deploy")) <= 2048
+
+
+def test_resolved_policy_widening_is_not_authorized_by_state_api_and_complete_matrix(contract):
+    from fixtures.cnesdata_iam_sources import symbolic_phase_a, symbolic_state
+    from test_cnesdata_delivery_lease import Store
+    from tools.cnesdata_delivery import runtime
+    from tools.cnesdata_delivery.coordination_lease import Lease, Watchdog
+    from types import SimpleNamespace
+    import time
+    plan, context, observed, address = symbolic_phase_a()
+    contract.validate_graph(plan, context["approved_graph"], context["source_files"])
+    contract.validate_delta(plan, "phase-a")
+    wide = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+    observed[address]["policy"] = json.dumps(wide)
+    state = symbolic_state(observed)
+    contract.applied_state(plan, state)
+    owner = Lease(Store(), {"repository": contract.REPOSITORY, "run_id": 1, "run_attempt": 1, "session_sha256": "a" * 64})
+    owner.acquire()
+    watchdog = Watchdog(owner, fixed_deadline=time.monotonic() + 3600, credential_deadline=time.monotonic() + 3600)
+    aws = SimpleNamespace(call=lambda *args, **kwargs: {"RoleName": observed[address]["role"],
+        "PolicyName": observed[address]["name"], "PolicyDocument": wide})
+    governance = {"readbacks": [{"service": "iam", "operation": "get_role_policy",
+        "parameters": {"RoleName": observed[address]["role"], "PolicyName": observed[address]["name"]},
+        "expected_sha256": "0" * 64}]}
+    with pytest.raises(ValueError):
+        reports = runtime._readbacks(aws, governance, watchdog, contract.canonical(state))
+        rows = []
+        for item in plan["resource_changes"]:
+            attributes = observed[item["address"]]
+            reports.append({"observed": attributes})
+            for field in attributes:
+                rows.append({"address": item["address"], "attribute": field,
+                    "readback": 0 if field == "policy" else len(reports) - 1,
+                    "path": ["PolicyDocument"] if field == "policy" else [field],
+                    "encoding": "json" if field == "policy" else "identity"})
+        matrix = {"matrix_version": 1, "source_sha": "a" * 40, "purpose": "phase-a", "before": [], "after": rows}
+        contract.drift_coverage(plan, reports, matrix, "a" * 40, "phase-a", "after", state)
+
+
+@pytest.mark.parametrize("kind", ["seeder", "verifier"])
+@pytest.mark.parametrize("mutation", [None, "action", "resource", "condition", "state"])
+def test_source_resolver_derives_complete_grants_and_role_from_authenticated_hcl(kind, mutation):
+    from fixtures.cnesdata_iam_sources import ACCOUNT, REGION, symbolic_phase_a, symbolic_state
+    from tools.cnesdata_delivery.iam_source import SourceResolver
+    plan, context, observed, address = symbolic_phase_a(kind)
+    resource = (f"arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/cnesdata-prod-canary" if kind == "seeder"
+                else f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/cnesdata-prod-processor-audit:2")
+    condition = ({"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["TENANT#_GLOBAL"]},
+                  "Null": {"dynamodb:LeadingKeys": "false"}} if kind == "seeder" else {
+                  "ArnEquals": {"ecs:cluster": f"arn:aws:ecs:{REGION}:{ACCOUNT}:cluster/cnesdata-prod-processor"}})
+    expected = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "dynamodb:PutItem" if kind == "seeder" else "ecs:RunTask",
+        "Resource": resource, "Condition": condition}]}
+    observed[address]["policy"] = json.dumps(expected)
+    resolver = SourceResolver(plan, context["source_files"], context)
+    resolver.precheck(address)
+    resolver.bind(observed)
+    if mutation in {"action", "resource", "condition"}:
+        changed = copy.deepcopy(expected)
+        changed["Statement"][0][mutation.title()] = "*" if mutation != "condition" else {}
+        observed[address]["policy"] = json.dumps(changed)
+        with pytest.raises(ValueError, match="resolved_policy"):
+            resolver.verify(address, observed[address])
+        return
+    resolver.verify(address, observed[address])
+    state = symbolic_state(observed)
+    if mutation == "state":
+        row = next(item for item in state["resources"] if item["type"] == "aws_iam_role_policy")
+        row["instances"][0]["attributes"]["policy"] = '{"Version":"2012-10-17","Statement":[]}'
+        with pytest.raises(ValueError, match="resolved_policy"):
+            resolver.verify_state(state)
+    else:
+        assert resolver.policy(address) == expected
+        resolver.verify_state(state)
 
 
 @pytest.mark.parametrize("mutation", [None, "state", "coordination", "binding"])

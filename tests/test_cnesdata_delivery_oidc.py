@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from test_cnesdata_delivery_roles_anywhere import inputs
-
 FIXTURE = Path(__file__).parent / "fixtures/cnesdata_delivery_roles_anywhere"
 
 
@@ -57,6 +55,40 @@ def test_rendered_oidc_roles_are_separate_and_exact(native):
         writers = [s for s in policy["Statement"] if s["Effect"] == "Allow" and s["Resource"] == state and "s3:PutObject" in s["Action"]]
         assert bool(writers) is (role == "deploy")
         assert not any(s["Effect"] == "Allow" and any(a.endswith(":*") for a in s["Action"]) for s in policy["Statement"])
+        from tools.cnesdata_delivery.session_policy import request
+        from fixtures.cnesdata_iam_evaluation import effective as permits
+        settings = variables()["github_delivery"]
+        governance = {"account_id": variables()["account_id"], "state_bucket": "synthetic-state",
+            "evidence_bucket": "synthetic-evidence", "state_kms_key_arn": settings["state_kms_arn"],
+            "evidence_kms_key_arn": settings["evidence_kms_arn"], "evidence_prefix": settings["evidence_prefix"],
+            "roles": {kind: f"arn:aws:iam::111122223333:role/cnesdata-test-{kind}" for kind in ("plan", "deploy")}}
+        historical = "cnesdata/prod/evidence/" + "c" * 40 + "/9/1/planned/*"
+        session_request = request(governance, "d" * 40, 10, 1, role, [historical])
+        session = json.loads(session_request["Policy"])
+        managed = json.loads(resources[f'aws_iam_policy.delivery_session["{role}"]']["policy"])
+        assert len(session_request["Policy"]) + sum(len(item["arn"]) for item in session_request["PolicyArns"]) <= 2048
+        def effective(action, resource, context=None):
+            return permits(policy, managed, session, action, resource, context)
+        status = "planned" if role == "plan" else "applied"
+        own_prefix = "cnesdata/prod/evidence/" + "d" * 40 + "/10/1/" + status + "/"
+        own = "arn:aws:s3:::synthetic-evidence/" + own_prefix + "envelope.json"
+        old = "arn:aws:s3:::synthetic-evidence/" + historical[:-1] + "plan.bin"
+        assert effective("s3:PutObject", own) and effective("s3:GetObject", own)
+        assert effective("s3:GetObject", old) and not effective("s3:PutObject", old)
+        assert not effective("s3:DeleteObject", own) and not effective("s3:DeleteObject", old)
+        assert not effective("s3:GetObjectVersion", old, {"s3:VersionId": "unapproved"})
+        assert not effective("s3:ListBucketVersions", settings["evidence_bucket_arn"])
+        assert not effective("s3:ListBucket", settings["evidence_bucket_arn"], {"s3:prefix": own_prefix})
+        assert not effective("s3:ListBucket", settings["evidence_bucket_arn"], {"s3:prefix": "cnesdata/prod/evidence/"})
+        assert effective("s3:PutObject", state) is (role == "deploy")
+        assert effective("s3:DeleteObject", state + ".tflock")
+        assert not effective("s3:DeleteObject", state)
+        context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": own}
+        assert effective("kms:GenerateDataKey", settings["evidence_kms_arn"], context)
+        assert not effective("kms:GenerateDataKey", settings["evidence_kms_arn"], context | {"kms:EncryptionContext:aws:s3:arn": old})
+        assert effective("kms:Decrypt", settings["evidence_kms_arn"], context | {"kms:EncryptionContext:aws:s3:arn": old})
+        assert not effective("kms:Decrypt", settings["evidence_kms_arn"], context | {"kms:ViaService": "ec2.us-east-2.amazonaws.com"})
+        assert not effective("sts:AssumeRole", "*")
     assert set(outputs["github"]["value"]) == {"infrastructure_plan_role_arn", "infrastructure_deploy_role_arn"}
     assert not any(key.startswith("aws_iam_openid_connect_provider.") for key in resources)
 

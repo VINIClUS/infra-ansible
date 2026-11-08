@@ -12,7 +12,9 @@ Autoridades imutáveis desta implementação:
 - [Outer A3 e exceção exclusiva R2](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716076093).
 - [Custo por etapa](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716241666).
 - [ACM/bootstrap inicial e outputs](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716490764).
-- [Closure de conteúdo e purposes](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716699477).
+- [Closure de conteúdo e purposes](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6716699477),
+- [Resolver de fontes do bootstrap](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6718141241),
+- [Capacidade e pin das session policies](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6718506538).
 - [Path actionlint](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6715872832).
 - CnesData `7ebc0e3dc024617b33903577c87dac3ca6fba529`, arquivo
   `docs/superpowers/specs/2026-11-07-phase-a-contract-amendment.md` (A3).
@@ -260,3 +262,87 @@ workflows, falta/versão incorreta falha sem skip. Casos nativos usam source exa
 provider cached e mocks em user+network namespace; sem AWS e sem apply.
 Handoff pós-merge registra workflow refs SHA40, root/lock/contrato/dependency digests,
 BASE/HEAD e CI auditado. Não fechar #28 Produção apenas com Código.
+
+### Correções do round de auditoria de a2da20a
+
+O resolver IAM independente usa blobs Git do checkout de produto SHA40 autenticado.
+Rejeita fontes alteradas, untracked, symlinks e paths fora dos módulos fechados;
+confere todos os inputs gerados compartilhados com plan.variables e a conta governada.
+Um único orçamento cobre precheck, bind e verificação integral das sete policies
+Phase A ou das nove instâncias bootstrap. ACM não admite policy IAM alterada.
+Escopo each/count e nomes vêm das fontes. Apenas identidades de producers podem
+resolver ARNs desconhecidos; policies e fingerprints de state/API não autorizam grants.
+Depois do apply, o documento integral, nome e role de cada policy têm de coincidir
+com fonte, state e GetRolePolicy, com inventário completo de readbacks.
+
+O kernel próprio deriva de CnesData a06f84fb82a90705f6f2df371609ff687dbbaead e recebe
+o delta imutável 80e6451a2c995905183a30a0775f98a68b1f6c10: sort/setunion até 128,
+deduplicação antes do limite; concat/for/splat continuam 64. A extensão bootstrap
+admite somente os formatos/funções ratificados. try está restrito ao parser observado
+da API role e captura apenas erros dinâmicos de null/index. Descrição heredoc estática
+é metadata lexical ignorada, sem admitir heredoc como expressão. Os 30 arquivos HCL
+de fixture mantêm os hashes de CnesData 00370142815870a90ea3e7790c7a9465fb3e7aaa;
+oracles fixos verificam os 16 documentos integrais e suas mutações.
+
+A prova histórica de plan usa o inventário independente de seus seis baselines e,
+para Phase A, phase-inputs; nunca exige o futuro artifact planned do deploy.
+O deploy mantém seu próprio inventário com planned e verifica a ligação à prova original.
+O retorno ECR fresco é retido e readback antes do processo de produto, e novamente
+ligado ao drift aplicado, aos readbacks posteriores e ao checkpoint. O drift original
+do plan é preservado; ambos os digests de apply.drift comprometem os bytes retidos.
+
+Este round exige nova CI hosted no SHA final e auditoria independente antes de merge.
+Positivos nativos da nova session policy continuam pendentes até essa execução;
+os testes puros com identidades sintéticas não constituem evidência de Produção.
+
+### Session policy gerenciada e prova original do owner
+
+A extensão S3 cria uma managed policy por role na própria raiz delivery, com ARN
+determinístico e uso exclusivo como session policy. Não há attachment de identidade
+ou uso como permissions boundary. Os paths novos estão enumerados no
+[complemento de caminhos](https://github.com/VINIClUS/infra-ansible/issues/28#issuecomment-6719681668),
+sem novo A3, workflow input, shared_outputs, reader role ou transporte.
+
+A autorização efetiva é identity intersectada com a união de managed e inline;
+qualquer Deny aplicável prevalece. A managed exclui dados S3/List/multipart e todo
+KMS de seu NotAction geral, restaura state/.tflock/coordination e metadados de produto
+em seus escopos finitos e preserva os Denys. A inline contém somente current/history
+de evidência: Get/Decrypt para os escopos admitidos, Put/Encrypt/GenerateDataKey para
+o current, com Deny explícito de Put nos históricos. Os testes cobrem buckets e CMKs
+iguais/distintos, sem negar buckets/CMKs inteiros que também atendem state/produto.
+
+O pin privado `session_policy_pins` contém conta/role/ARN próprios, root source SHA,
+DefaultVersionId esperado, documento integral/hash, observação/expiração, freeze do
+epoch e producer owner. Não é autoridade sozinho: o mesmo admission_reference e
+os reports tipados existentes têm de carregar as medições ORIGINAIS do owner,
+autenticadas novamente por API/bytes/proof. Report de consumidor, fatos ausentes,
+datas estendidas, binding de outro plan ou versões/documentos misturados fecham antes
+do pedido OIDC. A medição pública transporta commitments; o documento fica privado.
+
+Após STS, a própria sessão retornada faz GetPolicy/GetPolicyVersion/GetPolicy antes
+do export: ARN/default/version/documento exatos e AttachmentCount e
+PermissionsBoundaryUsageCount zero. A verificação se repete antes do lease e do
+processo privilegiado. Owner deve serializar/fixar default e conteúdo durante todo
+o epoch; não há alegação de binding atômico entre STS e versão IAM. As roles delivery
+não podem administrar versões/attachments das policies de sessão.
+
+Policy e todos os PolicyArn enviados somam no máximo 2048 caracteres ASCII, com no
+máximo dez managed policies; capacidade packed/utilization inválida nega antes do
+export. O builder mediu 1934/1936 caracteres nos casos sintéticos plan/deploy com
+input-run autenticado agrupado e receipt anterior. Isso é medição de documento,
+não prova AWS. Se o grouping não for demonstrado, preserva as três chaves exatas e
+pode negar por capacidade; não reduz ARN nem amplia namespace para caber.
+
+Grouping exige exatamente phase-inputs.json/candidate.json/promotion.json sob o
+prefixo dedicado phase-inputs/source40/run/attempt já governado, o payload completo
+autenticado, purpose correto e a reserva medida pelo owner no report original.
+Só essas três chaves e seus hashes são consumidos. A leitura de outros membros
+desse único prefixo não os transforma em inputs. Não há VersionId map/carrier novo.
+
+A SDK continua single PutObject condicional com BucketKeyEnabled=False. O critério
+universal de multipart do draft original permanece ABERTO: Create/UploadPart/Complete
+compartilham a ação IAM s3:PutObject. A proposta R2 de clarificação requer decisão
+explícita do owner; não foi ratificada e não autoriza Code accept/Ready/merge. Os
+Denys de ações reais multipart e a política do SDK não são apresentados como prova
+de bloqueio universal de APIs. Também faltam CI hosted nativa final e handoff real
+do owner antes de qualquer aceite operacional.
