@@ -18,6 +18,7 @@ def fixture(tmp_path,monkeypatch,late=False):
         expected=expected_snapshot
         def __init__(self,config,initial_baseline=None):
             self.config=config;self.initial_baseline=initial_baseline;self.last_local=None;self.stage=None
+            self.publication_started=False
         def current(self):
             self.last_local=original_snapshot(tree,require_ntacl=False);return self.last_local
         def remote(self):return self.expected

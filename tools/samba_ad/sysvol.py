@@ -198,6 +198,7 @@ class Pull:
         self.initial_baseline=initial_baseline
         self.last_local=None
         self.stage=None
+        self.publication_started=False
         self.ssh=['/usr/bin/ssh','-F','/dev/null','-T','-i',str(ROOT/'pull_ed25519'),
                   '-oBatchMode=yes','-oIdentitiesOnly=yes','-oStrictHostKeyChecking=yes',
                   '-oUserKnownHostsFile='+str(ROOT/'known_hosts'),'-oGlobalKnownHostsFile=/dev/null',
@@ -244,6 +245,9 @@ class Pull:
         sync_dir(self.stage)
         # A durable partial marker means ANY interruption is inspect-only next
         # time. Exchange publishes a complete tree in one Linux rename syscall.
+        # From this point on, persistence or exchange can fail ambiguously.
+        # This latch never resets, including after rollback or marker removal.
+        self.publication_started=True
         receipt={'sid':self.config['sid'],'baseline':self.last_local,'require_ntacl':self.initial_baseline is None}
         atomic_file(self.stage.parent/'receipt.json',json.dumps(receipt,sort_keys=True).encode())
         marker={'stage':str(self.stage),'started':int(time.time())}
@@ -315,9 +319,10 @@ def sync(initial_baseline=None):
             return {'state':'synced','changed':backend.stage is not None,'last_success':record['last_success'],
                     'retention':retention}
         except Exception:
-            # An unpublished temporary tree has no recovery value. Delete only
-            # this process's exact staging path with Python's fd-safe walker.
-            if backend is not None and backend.stage is not None and not (ROOT/'partial.json').exists():
+            # Only an explicitly never-published staging tree may be deleted.
+            # Marker absence cannot prove this: success removes that marker
+            # before its final fsync, which can fail after the exchange.
+            if backend is not None and backend.stage is not None and getattr(backend,'publication_started',True) is False:
                 import shutil
                 require(backend.stage.name=="tree" and backend.stage.parent.parent==RETIRED and shutil.rmtree.avoids_symlink_attacks)
                 secure_directory(backend.stage.parent,exact=True)
