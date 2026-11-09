@@ -128,11 +128,17 @@ def boot_guard():
     from tools.samba_ad import sysvol
     config=sysvol.runtime_config()
     require(config['role']=='consumer')
+    require(not (ROOT/'revoked.json').exists() and not (ROOT/'revoked.json').is_symlink())
     completed=ROOT/'joined.json'
     if completed.exists():
         require(json.loads(secure_file(completed,secret=True).read_bytes())==
                 {'sid':config['sid'],'spec_sha256':config['spec_sha256']})
         return
+    activation_lease()
+
+
+def activation_lease():
+    require(not (ROOT/'revoked.json').exists() and not (ROOT/'revoked.json').is_symlink())
     token=json.loads(secure_file(ACTIVATION,secret=True).read_bytes())
     start,state=process_identity(token['pid'])
     require(activation_matches(token,token['pid'],start,state,
@@ -153,6 +159,11 @@ class Native(domain.Native):
         files=super().host_files(r)
         path='/etc/systemd/system/samba-ad-dc.service.d/60-samba-ad-firewall.conf'
         files[path]+='[Service]\nExecStartPre=/usr/local/libexec/samba-ad-s5 --replica-boot-guard\n'
+        files['/etc/systemd/system/samba-ad-replica-watch.service']=('[Unit]\nDescription=Supervise partial DC02 activation\nStartLimitIntervalSec=0\n'
+            '[Service]\nType=oneshot\nExecStart=/usr/local/libexec/samba-ad-s5 --replica-supervise\nTimeoutStartSec=45\nUMask=0077\n')
+        files['/etc/systemd/system/samba-ad-replica-watch.timer']=('[Unit]\nDescription=Revoke interrupted partial DC02 activation\n'
+            '[Timer]\nOnBootSec=1s\nOnActiveSec=1s\nOnUnitInactiveSec=1s\nAccuracySec=100ms\n'
+            '[Install]\nWantedBy=timers.target\n')
         return files
 
     def configuration(self, r):
@@ -301,23 +312,27 @@ class Native(domain.Native):
         atomic_file(ACTIVATION,json.dumps({'pid':os.getpid(),'starttime':start,
                     'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                     'deadline':int(time.time())+600}).encode())
+        from tools.samba_ad import replica_watch
+        replica_watch.arm(r,self.service_snapshot)
         self.activation_started=True
+        command(['systemctl','enable','--now',replica_watch.TIMER])
+        command(['systemctl','start',replica_watch.SERVICE])
+        for action in ['is-active','is-enabled']:command(['systemctl',action,'--quiet',replica_watch.TIMER])
+        activation_lease()
         self.services.activate(self.blocked_services)
+        activation_lease()
         command(['systemctl','start','samba-ad-dc.service'])
         self.services.inspect(initial=False)
 
     def quarantine(self,request):
         if not getattr(self,'activation_started',False):return
-        if ACTIVATION.exists():secure_file(ACTIVATION,secret=True).unlink()
-        from tools.samba_ad.domain_services import MEMBERS,DC,ALIAS
+        from tools.samba_ad import replica_watch
         require(json.loads(secure_file(ROOT/'attempt.json',secret=True).read_bytes())=={'sid':request['local']['target']['sid']})
-        # Revalidate canonical fragments/aliases before stopping ONLY our DC.
-        for unit in [*MEMBERS,DC,ALIAS]:
-            current=self.services.snapshot(unit)
-            require(current['vendor_sha256']==self.service_snapshot[unit]['vendor_sha256'])
-        if getattr(self,'timer_started',False):command(['systemctl','disable','--now','samba-ad-sysvol.timer'])
-        command(['systemctl','stop',DC])
-        self.services.converge_initial(self.services.inspect(initial=True))
+        io=replica_watch.NativeWatch()
+        with io.lock():
+            require(not io.committed())
+            io.revoke()
+            io.block()
 
     def configure_policy(self, r):
         # A replica never writes forest policy. Verify the replicated S4 policy.
@@ -351,8 +366,8 @@ class Native(domain.Native):
         receipt=ROOT/'joined.json'
         if receipt.exists(): require(json.loads(secure_file(receipt,secret=True).read_bytes())==data)
         else:
-            atomic_file(receipt,json.dumps(data).encode())
-            if ACTIVATION.exists():secure_file(ACTIVATION,secret=True).unlink()
+            from tools.samba_ad import replica_watch
+            replica_watch.commit(data)
         result.update(replication='verified',dns_gc_kerberos='verified',sysvol='verified')
         return result
 

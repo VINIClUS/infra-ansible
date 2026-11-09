@@ -13,13 +13,15 @@ import stat
 import struct
 import subprocess
 import sys
-import tempfile
 import time
+import uuid
 from tools.samba_ad.domain import require, sha
-from tools.samba_ad.pki_files import atomic_file, secure_directory, secure_file, sync_dir
+from tools.samba_ad.pki_files import atomic_file, future_directory, secure_directory, secure_file, sync_dir
 
 ROOT=Path('/var/lib/samba-ad-sysvol')
 TREE=Path('/var/lib/samba/sysvol')
+RETIRED=Path('/var/lib/samba/.samba-ad-sysvol-retired')
+RETENTION_LIMIT=8
 CONFIG=Path('/etc/samba-ad-sysvol.json')
 HELPER='/usr/local/libexec/samba-ad-s5'
 ERROR='S5 SYSVOL refused; inspect local status (values suppressed)'
@@ -107,6 +109,10 @@ def validate_tree(tree, config):
 def synchronize(io, baseline):
     require(io.current()==baseline)
     before=io.remote()
+    if before==baseline:
+        require(io.current()==baseline)
+        io.verify()
+        return before
     transferred=io.transfer()
     require(before==transferred and io.remote()==before)
     require(io.current()==baseline)
@@ -162,6 +168,30 @@ def export(mode):
         require(result.returncode==0)
 
 
+def audit_retained(config):
+    """Never delete published old trees: an open writer fd survives rename.
+
+    Eight changed generations are admitted (each bounded by snapshot's 1GiB
+    limit). Unchanged syncs consume no slots. At capacity, only a new publication
+    pauses for directed review/disposal; ordinary health checks continue.
+    """
+    if not RETIRED.exists():
+        require(not RETIRED.is_symlink())
+        return {'count':0,'limit':RETENTION_LIMIT,'saturated':False}
+    secure_directory(RETIRED,exact=True)
+    slots=sorted(RETIRED.iterdir())
+    require(len(slots)<=RETENTION_LIMIT)
+    for slot in slots:
+        require(re.fullmatch(r'generation-[a-f0-9]{32}',slot.name))
+        secure_directory(slot,exact=True)
+        require({p.name for p in slot.iterdir()}=={'tree','receipt.json'})
+        receipt=json.loads(secure_file(slot/'receipt.json',secret=True).read_bytes())
+        require(set(receipt)=={'sid','baseline','require_ntacl'} and receipt['sid']==config['sid'])
+        require(type(receipt['require_ntacl']) is bool)
+        require(snapshot(slot/'tree',require_ntacl=receipt['require_ntacl'])==receipt['baseline'])
+    return {'count':len(slots),'limit':RETENTION_LIMIT,'saturated':len(slots)==RETENTION_LIMIT}
+
+
 class Pull:
     def __init__(self,config,initial_baseline=None):
         self.config=config
@@ -187,8 +217,17 @@ class Pull:
         require(set(data)=={'digest','entries'} and sha(data['entries'])==data['digest'])
         return data
 
+    def allocate_stage(self):
+        require(not audit_retained(self.config)['saturated'])
+        directory=future_directory(RETIRED)
+        if not directory.exists():directory.mkdir(mode=0o700)
+        secure_directory(directory,exact=True)
+        slot=directory/('generation-'+uuid.uuid4().hex);slot.mkdir(mode=0o700)
+        self.stage=slot/'tree';self.stage.mkdir(mode=0o700)
+        sync_dir(directory)
+
     def transfer(self):
-        self.stage=Path(tempfile.mkdtemp(prefix='.samba-ad-sysvol-',dir=TREE.parent))
+        self.allocate_stage()
         # Never dereference symlinks or materialize devices/special files. The
         # manifest rejects these even if rsync would silently skip them.
         run(['/usr/bin/rsync','--fsync','-aAX','--numeric-ids','--delete-delay','--no-links','--no-devices','--no-specials',
@@ -197,33 +236,36 @@ class Pull:
         return validate_tree(self.stage,self.config)
 
     def publish(self):
-        require(self.stage is not None and self.stage.parent==TREE.parent)
+        require(self.stage is not None and self.stage.name=="tree" and self.stage.parent.parent==RETIRED)
+        secure_directory(self.stage.parent,exact=True)
         require(TREE.stat().st_dev==self.stage.stat().st_dev)
         for path in sorted(self.stage.rglob('*')):
             if path.is_dir():sync_dir(path)
         sync_dir(self.stage)
         # A durable partial marker means ANY interruption is inspect-only next
         # time. Exchange publishes a complete tree in one Linux rename syscall.
+        receipt={'sid':self.config['sid'],'baseline':self.last_local,'require_ntacl':self.initial_baseline is None}
+        atomic_file(self.stage.parent/'receipt.json',json.dumps(receipt,sort_keys=True).encode())
         marker={'stage':str(self.stage),'started':int(time.time())}
         atomic_file(ROOT/'partial.json',json.dumps(marker).encode())
         libc=ctypes.CDLL(None,use_errno=True)
         result=libc.renameat2(-100,os.fsencode(self.stage),-100,os.fsencode(TREE),2)
         require(result==0)
-        sync_dir(TREE.parent)
+        sync_dir(TREE.parent);sync_dir(self.stage.parent)
         # Detect a local write racing the final pre-exchange snapshot, restore
         # the complete previous tree atomically and retain both for inspection.
         previous=snapshot(self.stage,require_ntacl=self.initial_baseline is None)
         if previous != self.last_local:
             require(libc.renameat2(-100,os.fsencode(self.stage),-100,os.fsencode(TREE),2)==0)
-            sync_dir(TREE.parent)
+            sync_dir(TREE.parent);sync_dir(self.stage.parent)
             require(False)
         self.initial_baseline=None
 
     def verify(self):
         run(['samba-tool','ntacl','sysvolcheck'])
         require(self.current()==self.remote())
-        # Preserve the former owned tree for explicit inspection, not recursive
-        # deletion. A subsequent sync refuses until that path is reviewed.
+        # The old tree remains reachable for writers holding pre-exchange fds.
+        # audit_retained detects their writes now and on every later inspection.
 
 
 def prejoin(expected):
@@ -253,6 +295,7 @@ def sync(initial_baseline=None):
         if status.exists():old=json.loads(secure_file(status,secret=True).read_bytes())
         try:
             require(not (ROOT/'partial.json').exists())
+            audit_retained(config)
             backend=Pull(config,initial_baseline)
             baseline=old.get('baseline')
             if baseline is None:
@@ -261,25 +304,24 @@ def sync(initial_baseline=None):
                 # is writable to clients. Never invoked by timer or CLI retry.
                 baseline=initial_baseline
             result=synchronize(backend,baseline)
-            record={'state':'ok','last_success':int(time.time()),'last_attempt':int(time.time()),'failures':0,
+            retention=audit_retained(config)
+            record={'retention':retention,'state':'ok','last_success':int(time.time()),'last_attempt':int(time.time()),'failures':0,
                     'baseline':result,'sid':config['sid']}
             atomic_file(status,json.dumps(record,sort_keys=True).encode())
-            # The exchanged old tree contains only previously owned SYSVOL.
-            # Remove through fd-safe shutil after lstat/manifest validation.
-            import shutil
-            require(backend.stage is not None and backend.stage.parent==TREE.parent)
-            snapshot(backend.stage,require_ntacl=initial_baseline is None)
-            require(shutil.rmtree.avoids_symlink_attacks)
-            shutil.rmtree(backend.stage)
-            (ROOT/'partial.json').unlink();sync_dir(ROOT)
-            return {'state':'synced','changed':True,'last_success':record['last_success']}
+            # Published generations are retained indefinitely until directed
+            # inspection/disposal. No snapshot can revoke an already open fd.
+            if backend.stage is not None:
+                (ROOT/'partial.json').unlink();sync_dir(ROOT)
+            return {'state':'synced','changed':backend.stage is not None,'last_success':record['last_success'],
+                    'retention':retention}
         except Exception:
             # An unpublished temporary tree has no recovery value. Delete only
             # this process's exact staging path with Python's fd-safe walker.
             if backend is not None and backend.stage is not None and not (ROOT/'partial.json').exists():
                 import shutil
-                require(backend.stage.parent==TREE.parent and shutil.rmtree.avoids_symlink_attacks)
-                shutil.rmtree(backend.stage)
+                require(backend.stage.name=="tree" and backend.stage.parent.parent==RETIRED and shutil.rmtree.avoids_symlink_attacks)
+                secure_directory(backend.stage.parent,exact=True)
+                shutil.rmtree(backend.stage.parent)
             atomic_file(status,json.dumps({**old,'state':'failed_or_conflict','last_attempt':int(time.time()),
                                           'failures':old.get('failures',0)+1},sort_keys=True).encode())
             raise ValueError(ERROR) from None
@@ -292,9 +334,10 @@ def inspect():
     require(0<=time.time()-status['last_success']<=600)
     require(not (ROOT/'partial.json').exists())
     require(validate_tree(TREE,config)==status['baseline'])
+    retention=audit_retained(config)
     run(['samba-tool','ntacl','sysvolcheck'])
     for action in ['is-active','is-enabled']:run(['systemctl',action,'--quiet','samba-ad-sysvol.timer'])
-    return {'state':'current','changed':False,'age_seconds':int(time.time()-status['last_success'])}
+    return {'state':'current','changed':False,'age_seconds':int(time.time()-status['last_success']),'retention':retention}
 
 
 def main():

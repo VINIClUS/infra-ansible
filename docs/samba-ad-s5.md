@@ -19,7 +19,10 @@ Não depende dos PRs ainda não integrados de laboratório ou protocolos S4.
 5. Validar toda a árvore e seus IDs/ACLs antes e depois da cópia; recusar conflito
    de autoria em vez de sobrescrevê-lo. Publicar uma árvore completa por troca
    atômica de diretórios, com marcador persistente de operação parcial.
-6. Exercitar recusas primeiro, verificar os adapters e transporte local com
+6. Supervisionar a aceitação transitória com timer do systemd independente do
+   processo manual, revogação durável e parada/máscara do DC parcial se o
+   processo morrer ou exceder o prazo.
+7. Exercitar recusas primeiro, verificar os adapters e transporte local com
    fixtures temporárias e manter os readbacks de produção explicitamente pendentes.
 
 ## Entrypoints e contrato
@@ -117,6 +120,22 @@ autoriza essa ativação transitória somente enquanto o processo manual origina
 estiver vivo, com PID/starttime/boot-id correspondentes, prazo de600s e lock
 exclusivo ainda mantido. Morte do processo ou reboot impedem novo start sem
 `joined.json` durável; não basta um arquivo temporário remanescente.
+Além do guard de start, `samba-ad-replica-watch.timer` é habilitado e seu serviço
+é executado/verificado **antes** de liberar as máscaras. O watcher é um job do
+systemd, independente da sessão/Python manual. A cada1s (`AccuracySec=100ms`),
+confere o processo original, prazo e lock. Se a execução morrer por SIGKILL/OOM
+ou expirar, persiste `revoked.json`, para o serviço/timer SYSVOL próprio, para
+DC02 e restaura as máscaras S4. Valida hashes dos units vendor e arquivos
+próprios antes de qualquer parada. Comandos têm timeout15s e o job45s; falhas
+ficam no estado do serviço e serão tentadas novamente pelo timer. A parada não
+é instantânea: depende dessa cadência e do manager systemd funcional.
+
+Commit de `joined.json` e revogação usam o mesmo flock; o prazo é relido após
+os readbacks. Um processo atrasado não pode declarar sucesso após revogação.
+Somente um recibo completo e correspondente desarma o watcher. Um parcial
+revogado permanece monitorado/bloqueado para inspeção, com estado
+`watch-status.json`. O guard de boot e a supervisão não dependem de `except`
+rodar no processo interrompido.
 Se aceitação inicial falhar após essa
 ativação, o backend revalida as unidades próprias, para e mascara DC02 novamente.
 Se a quarentena também falhar, informa explicitamente que não foi verificada.
@@ -161,13 +180,35 @@ parcial falham sem sobrepor a árvore corrente. A troca final usa Linux
 `renameat2(RENAME_EXCHANGE)` no mesmo filesystem. Uma escrita local que corra com
 a troca é detectada na árvore antiga; restaura-se essa árvore e conserva-se o
 parcial. Interrupção durante publicação deixa `partial.json` e bloqueia retries.
-Somente estágios próprios não publicados são removidos automaticamente.
+Somente estágios próprios **nunca publicados** são removidos automaticamente.
+A árvore anterior publicada permanece em
+`/var/lib/samba/.samba-ad-sysvol-retired/generation-<id>/tree`, dentro de pais0700,
+com recibo0600 do SID e snapshot esperado. Não há remoção automática dessa
+árvore: um descritor aberto antes do exchange continua apontando para ela.
+As árvores retidas são comparadas após a publicação e em cada sync/inspect;
+uma escrita tardia é preservada e produz conflito na próxima observação.
+Uma escrita posterior à última observação também permanece íntegra, embora a
+detecção só ocorra no check seguinte.
+
+A admissão é limitada a **oito gerações alteradas**, cada uma sujeita ao limite
+normal de1GiB/100000 entradas. Se a fonte coincide com a baseline, não há
+transferência/exchange nem nova retenção: sysvolcheck, comparação da fonte e
+checagem das árvores antigas continuam normalmente, inclusive com os oito
+slots ocupados. Com a retenção cheia, uma nova revisão da fonte falha antes de
+transferir/publicar, preservando o estado e a evidência. O operador deve então
+inspecionar escritores/descritores e realizar descarte dirigido das gerações
+já examinadas; não existe expurgo ou acknowledgement automático que possa
+apagar autoria. Isso é retenção técnica de conflito, não backup/DR nem um gate
+novo de recuperação. Escritas externas que excedam os limites são recusadas
+pela auditoria; o código não aplica quota de filesystem a processos root.
 
 ## Estado observável e limites de prova
 
 `/var/lib/samba-ad-sysvol/status.json` é0600 e registra `state` (`ok` ou
 `failed_or_conflict`), `last_success`/`last_attempt` (epoch inteiro), `failures`,
 `sid` e `baseline` (digest + entries). Falhas preservam o último sucesso.
+O campo adicional `retention` informa `count`, `limit: 8` e `saturated`; os
+campos existentes consumidos por S6 permanecem inalterados.
 `samba-ad-sysvol.service` tem limite300s; `samba-ad-sysvol.timer` roda a cada2min.
 `--sysvol-inspect` exige timer enabled/active, idade ≤600s, ausência de parcial,
 SID/identidade vivos, igualdade da árvore e sysvolcheck. Timer falho, estado,
@@ -178,6 +219,12 @@ Testes usam árvores temporárias, xattrs `user.*` exclusivamente como fixture d
 transporte rsync, adapters e metadados sintéticos. Exercitam transporte rsync
 real via stdio local e recusa de escrita, mas **não** qualificam ACL protegida,
 Samba real, dois DCs, Kerberos, SYSVOL operacional, SSH/sudo real ou timer remoto.
+Testes adicionais usam processos locais controlados: SIGKILL do pai manual,
+prazo expirado com pai vivo, watcher em outro processo e DC fake encerrado;
+um recibo concluído preserva o serviço fake. Outra bateria usa renameat2 real
+e diretório aberto antes da troca, escreve durante/depois do sucesso e prova
+que a autoria não é apagada, além de testar saturação/no-op. O manager systemd
+real e Samba continuam sem execução nesta etapa de fonte.
 Esses readbacks são implementados e sua execução/auditoria continua pendente.
 Não houve suite nativa completa nem testes de serviços não relacionados.
 
@@ -191,3 +238,6 @@ Context7 tentou resolver Samba e retornou `Monthly quota exceeded`. Fallback:
 - [DNS update](https://github.com/samba-team/samba/blob/samba-4.25.1/source4/scripting/bin/samba_dnsupdate)
 - [rsync3.4.1 manual](https://github.com/RsyncProject/rsync/blob/v3.4.1/rsync.1.md)
 - [OpenSSH10 authorized_keys](https://github.com/openssh/openssh-portable/blob/V_10_0_P1/sshd.8)
+
+- [systemd257 timers](https://github.com/systemd/systemd/blob/v257/man/systemd.timer.xml)
+- [systemd257 serviços/timeouts](https://github.com/systemd/systemd/blob/v257/man/systemd.service.xml)

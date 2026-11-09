@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 {% set bundle = namespace(sources={}) %}
-{% for name in ['compatibility', 'contract', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network', 'domain_services', 'replica', 'replica_health', 'sysvol', 'sysvol_setup'] %}
+{% for name in ['compatibility', 'contract', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network', 'domain_services', 'replica', 'replica_watch', 'replica_health', 'sysvol', 'sysvol_setup'] %}
 {% set _ = bundle.sources.update({name: lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py')}) %}
 {% endfor %}
 import base64, json, sys, types, zlib
@@ -18,7 +18,7 @@ try:
         sys.modules[full] = module
         setattr(sys.modules['tools.samba_ad'], short, module)
         exec(source, module.__dict__)
-    from tools.samba_ad import domain, replica, sysvol, sysvol_setup
+    from tools.samba_ad import domain, replica, replica_watch, sysvol, sysvol_setup
     if sys.argv[1:] in [['--validate'], ['--substrate-check']]:
         import os
         data = domain.loads(sys.stdin.read())
@@ -34,6 +34,8 @@ try:
             print(json.dumps(domain.substrate_preflight(data['request'][profile]['substrate'])))
         else:
             print('{"state":"validated","changed":false}')
+    elif sys.argv[1:] == ['--replica-supervise']:
+        replica_watch.main()
     elif sys.argv[1:] == ['--replica-boot-guard']:
         replica.boot_guard()
     elif '--setup' in sys.argv:
