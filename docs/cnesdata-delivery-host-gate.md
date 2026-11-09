@@ -254,3 +254,41 @@ concorrência, stale recovery, refresh de cliente, cleanup, rollback exato e
 Tunnel. Manter produto <=USD8, agregado <USD15, freeze ao atingir15,
 Actions pagos USD0 e CloudFront FREE ACTIVE exato; não usar crédito ou fallback
 pago como prova. Deploy-develop e Actions do personal-infra-live permanecem disabled.
+
+
+### Revisões, alternância de owner e diagnóstico histórico
+
+As revisões `unit`, `recovery` e `audit` são ARNs ECS `task-definition`
+versionados da activation original. O ARN Step Functions pertence à state machine
+e aos ambientes que a referenciam. O verificador de assinatura confere também a
+projeção de identidade/revisões/candidate/Phase A/image contra essa activation;
+Phase B conserva os Schedulers anteriores quando o contrato original assim exige.
+
+A transferência de um lease `RELEASED` despacha a prova pelo owner anterior:
+workflow exige o run/attempt original terminal success e seu Record terminal;
+systemd exige processo ausente, invocation distinta quando aplicável e checkpoint
+administrativo durável da aplicação. A leitura pública de terminalidade GitHub usa
+HTTPS com identidade/attempt exatos, sem credencial nova. Cada renovação retém o
+ponteiro da release aceita no checkpoint administrativo e carrega o checkpoint
+anterior no campo já existente `checkpoint_sha256` durante a posse; nenhum campo
+foi acrescentado ao LeaseRecord/Authority. Humano exige a observação original de
+encerramento da sessão retida pelo recovery root-only revisado, além da ausência
+PID/boot/start-time novamente observada. TTL nunca substitui essas provas.
+
+O host descobre o replay antes de qualquer admissão mutante. Ele compara o
+Envelope/arquivo/governance privados originais e o commitment do token original;
+expiração histórica não rearma janela, lease, OIDC, SSM ou efeitos. O único consumo
+`CONSUMED` permanece CAS e durável antes da resposta. No primeiro retorno de falha,
+um executor comprovadamente sem capacidade de envio pode entregar diretamente o
+diagnóstico original ao runner. Falha conhecida permite restauração apenas do
+checkpoint Nginx exato sob o `D_rec` original; efeito incerto permanece fechado.
+O transporte pode aguardar essa resposta dentro de F, enquanto a admissão e os
+efeitos API continuam limitados à etapa original. A projeção pública continua
+marcada `recovery_required` e não é aceite operacional.
+
+Um marcador privado e imutável é gravado antes do primeiro OIDC/SSM no runner;
+reexecutar a mesma tentativa não solicita credenciais novas. Perda de resposta
+após consumo, ausência de prova suficiente ou nova execução sem diagnóstico
+retido permanece recovery revisada. Os testes de integração executam os
+entrypoints host/SSH/runner e o classificador reais com pipes/processo filho e
+endpoints externos sintéticos; não representam uma execução de produção.

@@ -686,7 +686,7 @@ def closed_ready_fixture():
         "phase_a_evidence_sha256": H,
         "ecr_image_digest": "sha256:" + H,
         **{
-            k + "_revision": "arn:aws:states:us-east-1:111111111111:stateMachine:"
+            k + "_revision": "arn:aws:ecs:us-east-2:111111111111:task-definition/"
             + k
             + ":1"
             for k in ("unit", "recovery", "audit")
@@ -960,6 +960,8 @@ def test_original_closed_ready_admits_host_without_future_open(tmp_path):
         "pending",
         "permit",
         "route",
+        "recovery-sfn-revision",
+        "audit-sfn-revision",
         "checkpoint",
         "late-send",
         "late-handoff",
@@ -1001,6 +1003,10 @@ def test_closed_ready_counterexamples_refuse_before_effect(mutation):
         ready["permit"] = {"holder": "busy"}
     elif mutation == "route":
         phase["routes"]["unit_environment_state_machine_arn"] += "wrong"
+    elif mutation in {"recovery-sfn-revision", "audit-sfn-revision"}:
+        phase["routes"][mutation.split("-")[0] + "_revision"] = (
+            "arn:aws:states:us-east-2:111111111111:stateMachine:wrong:1"
+        )
     elif mutation == "checkpoint":
         phase["after"]["serial"] = phase["before"]["serial"]
     elif mutation == "late-send":

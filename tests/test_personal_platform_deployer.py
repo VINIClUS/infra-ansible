@@ -101,7 +101,7 @@ def operation(tmp_path, action="validate"):
             "phase_a_evidence_sha256": H,
             "ecr_image_digest": "sha256:" + H,
             **{
-                key + "_revision": "arn:aws:states:us-east-1:111111111111:stateMachine:"
+                key + "_revision": "arn:aws:ecs:us-east-2:111111111111:task-definition/"
                 + key
                 + ":1"
                 for key in ("unit", "recovery", "audit")
@@ -785,3 +785,401 @@ def test_recovery_runner_outputs_projection_and_wrapper_fails_only_after_upload(
         assert z.namelist() == ["host-handoff.json"]
         assert b"synthetic-private-secret" not in z.read("host-handoff.json")
     assert subprocess.run(["sh", "-c", steps[-1]["run"]], check=False).returncode == 1
+
+
+@pytest.mark.parametrize(
+    "expired,changed",
+    [
+        (False, None),
+        (True, None),
+        (True, "archive"),
+        (True, "token"),
+        (True, "governance"),
+    ],
+)
+def test_host_historical_diagnostic_precedes_all_mutating_admission(
+    tmp_path, monkeypatch, expired, changed
+):
+    import io
+    import types
+
+    g, clock, gov, request, op, window, _ = public_handoff_fixture(tmp_path)
+    op.persist_recovery(window)
+    g.durable(op.directory / "original-governance", g.canonical(gov), immutable=True)
+    g.durable(
+        op.directory / "original-token-sha256",
+        g.sha(request.token).encode(),
+        immutable=True,
+    )
+    if expired:
+        clock.advance(3000)
+    if changed == "archive":
+        request.archive += b"changed"
+    elif changed == "token":
+        request.token[:] = b"different-original-token"
+    elif changed == "governance":
+        gov["binding"]["approval"]["governance_sha256"] = "f" * 64
+    monkeypatch.setattr(g, "ROOT", tmp_path)
+    monkeypatch.setattr(g, "Clock", lambda: clock)
+    monkeypatch.setattr(g, "load_governance", lambda: gov)
+    monkeypatch.setattr(g, "read_request", lambda _: request)
+    monkeypatch.setattr(g, "process_absent", lambda _: True)
+    monkeypatch.setenv("SSH_ORIGINAL_COMMAND", "deploy")
+    request.envelope["release_manifest"] = {"requested_action": "deploy"}
+
+    def forbidden(*_a, **_kw):
+        raise AssertionError("historical diagnostic reached mutating admission")
+
+    monkeypatch.setattr(g, "authenticate_request", forbidden)
+    monkeypatch.setattr(g, "admit_physical_action", forbidden)
+    buf = io.BytesIO()
+    monkeypatch.setattr(g.sys, "stdout", types.SimpleNamespace(buffer=buf))
+    if changed:
+        with pytest.raises(ValueError, match="original"):
+            g.host_main()
+        assert op.lease.snapshot()["head"] == op.snapshot["head"]
+    else:
+        assert g.host_main() == 2
+        nonce, raw = buf.getvalue().split(b"\n", 1)
+        value = g.accept_recovery_diagnostic(
+            raw, binding=gov["binding"], channel_nonce=nonce.decode(), now=clock.t
+        )
+        assert value["recovery_decision"] == window.decision
+        assert value["proof"]["retry"] == "CONSUMED"
+        assert op.lease.snapshot()["lease"] == op.snapshot["lease"]
+
+
+@pytest.mark.parametrize(
+    "uncertain,late", [(False, False), (True, False), (False, True)]
+)
+def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
+    tmp_path, monkeypatch, uncertain, late
+):
+    """Actual host_main, driver, framing, ssh_exchange/classifier and runner projection.
+
+    Only authenticated source, OS process, cloud and HTTP endpoints are synthetic.
+    SSH endpoint uses real kernel pipes and a child process running host_main.
+    """
+    import base64
+    import contextlib
+    import io
+    import os
+    import types
+    from pathlib import Path
+
+    from test_personal_platform_dispatcher import closed_ready_fixture
+
+    g, clock, gov, api, *_ = closed_ready_fixture()
+    root = g.private_directory(tmp_path / "host")
+    runner = g.private_directory(tmp_path / "runner")
+    staged = g.private_directory(tmp_path / "stage")
+    active = tmp_path / "active.conf"
+    g.durable(active, b"original nginx checkpoint")
+    gov["host"] = {
+        "slot": "green",
+        "port": 18081,
+        "previous_slot": "blue",
+        "previous_nginx_sha256": g.sha(active.read_bytes()),
+        "readiness_sha256": g.sha(b"ready"),
+        "public_hostname": "api.example.test",
+        "tunnel_health_url": "https://api.example.test/health/ready",
+    }
+    envelope = {"release_manifest": {"requested_action": "deploy"}}
+    raw = g.canonical(envelope)
+    gov["binding"]["original_bytes"]["envelope_sha256"] = g.sha(raw)
+    gov["binding"]["original_bytes"]["archive_sha256"] = g.sha(b"original archive")
+    gov["binding"]["api_image"] = "registry.example/api@sha256:" + H
+    hostkey = b"synthetic public host key"
+    gov["binding"]["platform"]["host_key_fingerprint"] = "SHA256:" + base64.b64encode(
+        g.hashlib.sha256(hostkey).digest()
+    ).decode().rstrip("=")
+    binary = b"synthetic cloudflared"
+    gov["runner"] = {
+        "ssh_hostname": "host.example.test",
+        "known_hosts": "host.example.test ssh-ed25519 "
+        + base64.b64encode(hostkey).decode(),
+        "cloudflared": {"version": "2026.1.0", "sha256": g.sha(binary)},
+        "ssm_parameters": {
+            name: "arn:aws:ssm:us-east-2:111111111111:parameter/cnesdata/deploy/" + name
+            for name in ("ssh-key", "cloudflare-client-id", "cloudflare-client-secret")
+        },
+    }
+    for name in ("platform", "baseline"):
+        original = ("original " + name).encode()
+        g.durable(root / ("original-" + name + ".json"), original)
+        gov["binding"]["original_bytes"][name + "_sha256"] = g.sha(original)
+    admission = g.admit_physical_action(gov["binding"], gov, api, clock)
+    request = g.Request(
+        envelope, raw, b"original archive", bytearray(b"synthetic-token"), admission
+    )
+    monkeypatch.setattr(g, "ROOT", root)
+    monkeypatch.setattr(g, "Clock", lambda: clock)
+    monkeypatch.setattr(g.time, "time", lambda: clock.t)
+    monkeypatch.setattr(g, "load_governance", lambda: gov)
+    monkeypatch.setattr(g, "GitHub", lambda *_: api)
+    monkeypatch.setattr(
+        g, "authenticate_request", lambda *_: (copy.deepcopy(gov["binding"]), {})
+    )
+    monkeypatch.setattr(g, "verify_original_activation", lambda *_: None)
+    monkeypatch.setattr(g, "verify_runtime_probes", lambda *_: None)
+    monkeypatch.setattr(g, "stage_archive", lambda *_: staged)
+    private_dir, read, write = g.private_directory, g.read_private, g.durable
+    monkeypatch.setattr(
+        g,
+        "private_directory",
+        lambda p: (
+            private_dir(staged)
+            if str(p) == "/run/personal-platform/staging"
+            else private_dir(p)
+        ),
+    )
+    fixed = Path("/etc/personal-platform/nginx/active.conf")
+    monkeypatch.setattr(
+        g,
+        "read_private",
+        lambda p, *a, **kw: read(active if p == fixed else p, *a, **kw),
+    )
+    monkeypatch.setattr(
+        g,
+        "durable",
+        lambda p, data, **kw: write(active if p == fixed else p, data, **kw),
+    )
+    image = gov["binding"]["api_image"]
+    normalized = {
+        "services": {
+            "api": {
+                "image": image,
+                "ports": [
+                    {"host_ip": "127.0.0.1", "published": "18081", "target": 8000}
+                ],
+                "networks": {"cnesdata": {}},
+                "read_only": True,
+                "cap_drop": ["ALL"],
+                "security_opt": ["no-new-privileges:true"],
+                "mem_limit": "512m",
+                "cpus": "0.5",
+                "pids_limit": 128,
+                "logging": {
+                    "driver": "json-file",
+                    "options": {"max-size": "10m", "max-file": "3"},
+                },
+                "healthcheck": {"test": ["CMD", "true"]},
+            }
+        },
+        "networks": {"cnesdata": {"name": "cnesdata"}},
+    }
+
+    def endpoint(argv, guard, **kwargs):
+        guard()
+        if "--format" in argv:
+            return json.dumps(normalized).encode()
+        if argv[1:3] == ["image", "inspect"]:
+            return json.dumps(
+                [{"RepoDigests": [image], "Os": "linux", "Architecture": "amd64"}]
+            ).encode()
+        if uncertain and "pull" in argv:
+            raise TimeoutError("unknown daemon effect")
+        if "-c" in argv:
+            if late:
+                clock.advance(
+                    150
+                )  # API expired and lease lacks the 156s effect margin.
+            raise ValueError("known failed candidate config validation")
+        return b""
+
+    monkeypatch.setattr(g, "supervise", endpoint)
+
+    class Health:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def open(self, *_a, **_kw):
+            return self
+
+        def read(self, _):
+            return b"ready"
+
+    monkeypatch.setattr(g.urllib.request, "build_opener", lambda *_: Health())
+    monkeypatch.setattr(
+        g.urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: contextlib.closing(io.BytesIO(binary)),
+    )
+
+    class SSHProcess:
+        def __init__(self, argv, **kwargs):
+            assert argv[0] == "/usr/bin/ssh"
+            input_r, input_w = os.pipe()
+            output_r, output_w = os.pipe()
+            self.pid = os.fork()
+            self.returncode = None
+            if self.pid == 0:
+                os.setsid()
+                os.close(input_w)
+                os.close(output_r)
+                g.sys = types.SimpleNamespace(
+                    stdin=types.SimpleNamespace(
+                        buffer=os.fdopen(input_r, "rb", buffering=0)
+                    ),
+                    stdout=types.SimpleNamespace(
+                        buffer=os.fdopen(output_w, "wb", buffering=0)
+                    ),
+                )
+                os.environ["SSH_ORIGINAL_COMMAND"] = "deploy"
+                try:
+                    status = g.host_main()
+                except BaseException:  # noqa: BLE001 -- child endpoint must exit, never resume pytest
+                    import traceback
+
+                    (root / "child-error.txt").write_text(traceback.format_exc())
+                    status = 1
+                (root / "child-clock").write_text(str(clock.t))
+                os._exit(status)
+            os.close(input_r)
+            os.close(output_w)
+            self.stdin = os.fdopen(input_w, "wb", buffering=0)
+            self.stdout = os.fdopen(output_r, "rb", buffering=0)
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                _, status = os.waitpid(self.pid, 0)
+                self.returncode = os.waitstatus_to_exitcode(status)
+                returned = int((root / "child-clock").read_text())
+                clock.advance(returned - clock.t)
+            return self.returncode
+
+        def poll(self):
+            if self.returncode is None:
+                pid, status = os.waitpid(self.pid, os.WNOHANG)
+                if pid:
+                    self.returncode = os.waitstatus_to_exitcode(status)
+            return self.returncode
+
+    monkeypatch.setattr(g.subprocess, "Popen", SSHProcess)
+    calls = []
+
+    class SSM:
+        def get_parameter(self, Name, WithDecryption):
+            calls.append("ssm")
+            return {
+                "Parameter": {"ARN": Name, "Type": "SecureString", "Value": "synthetic"}
+            }
+
+    def clients(_):
+        calls.append("oidc")
+        return None, SSM()
+
+    monkeypatch.setattr(g, "runner_request", lambda *_: request)
+    monkeypatch.setattr(g, "runner_clients", clients)
+    monkeypatch.setattr(g, "runner_handoff", lambda *_: None)
+    monkeypatch.setattr(
+        g.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"synthetic-token"))
+    )
+    monkeypatch.setenv("CNESDATA_HOST_GOVERNANCE", g.canonical(gov).decode())
+    monkeypatch.setenv("RUNNER_TEMP", str(runner))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(runner / "outputs"))
+    if uncertain:
+        with pytest.raises(ValueError, match="unknown outcome"):
+            g.runner_main("execute")
+    else:
+        assert g.runner_main("execute") == 2
+    authority = g.host_json(read(root / "authority.json"))
+    directory = root / "cnesdata" / authority["head"]["operation_id"]
+    record = g.host_json(
+        read(directory / (authority["head"]["record_sha256"] + ".json"))
+    )
+    decision = read(directory / "recovery-decision.json")
+    assert authority["lease"]["state"] == "HELD"
+    assert record["state"] == "RECOVERY_REQUIRED"
+    assert active.read_bytes() == b"original nginx checkpoint"
+    assert calls == ["oidc", "ssm", "ssm", "ssm"]
+    if uncertain:
+        assert record["effect_possible"] is True
+        assert all(d["kind"] != "restore-previous" for d in record["dispatches"])
+        assert not (runner / "cnesdata-host-public").exists()
+    else:
+        restored = any(
+            d["kind"] == "restore-previous" and d["state"] == "EFFECT_CONFIRMED"
+            for d in record["dispatches"]
+        )
+        assert restored is (not late)
+        if late:
+            assert g.host_json(decision)["choice_at"] == g.utc(1150)
+            assert record["effect_possible"] is False
+        public = g.host_json(read(runner / "cnesdata-host-public/host-handoff.json"))
+        assert public["status"] == "recovery_required"
+        assert public["recovery_proof_sha256"] == g.sha(decision)
+        assert record["retry"] == "CONSUMED"
+        assert "status=recovery_required" in (runner / "outputs").read_text()
+    monkeypatch.setattr(
+        g.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(b"synthetic-token"))
+    )
+    with pytest.raises(ValueError, match="original attempt already spent"):
+        g.runner_main("execute")
+    assert calls == ["oidc", "ssm", "ssm", "ssm"]
+
+
+@pytest.mark.parametrize("domain", ["ecs", "sfn", "mismatch"])
+def test_activation_original_revision_projection(tmp_path, monkeypatch, domain):
+    from test_personal_platform_dispatcher import closed_ready_fixture
+
+    g, _clock, gov, _api, *_ = closed_ready_fixture()
+    release = gov["binding"]["release"]
+    activation = {
+        key: release[key]
+        for key in (
+            "repository",
+            "release_id",
+            "source_sha",
+            "candidate_sha256",
+            "binding_sha256",
+            "canary_id",
+        )
+    }
+    activation.update(
+        {
+            "revisions": {
+                name: release[name + "_revision"]
+                for name in ("unit", "recovery", "audit")
+            },
+            "phase_a_evidence_digest": release["phase_a_evidence_sha256"],
+            "ecr_uri": "111111111111.dkr.ecr.us-east-2.amazonaws.com/cnesdata@"
+            + release["ecr_image_digest"],
+        }
+    )
+    if domain == "sfn":
+        release["unit_revision"] = (
+            "arn:aws:states:us-east-2:111111111111:stateMachine:unit:1"
+        )
+        with pytest.raises(ValueError, match="revision ARN"):
+            g.validate_binding(gov["binding"])
+        return
+    if domain == "mismatch":
+        activation["revisions"]["recovery"] = activation["revisions"][
+            "recovery"
+        ].replace(":1", ":2")
+    raw = g.canonical(activation)
+    for name, data in (
+        ("activation.json", raw),
+        ("activation-signature.der", b"signature"),
+        ("activation-public-key.pem", b"key"),
+    ):
+        g.durable(tmp_path / name, data)
+    release["activation_sha256"], release["signature_sha256"] = (
+        g.sha(raw),
+        g.sha(b"signature"),
+    )
+    gov["signing_spki_pem_sha256"] = g.sha(b"key")
+    monkeypatch.setattr(g, "ROOT", tmp_path)
+    monkeypatch.setattr(g, "supervise", lambda *_a, **_kw: b"")
+    if domain == "mismatch":
+        with pytest.raises(ValueError, match="revisions binding"):
+            g.verify_original_activation(gov, lambda: None)
+    else:
+        g.validate_binding(gov["binding"])
+        g.verify_original_activation(gov, lambda: None)

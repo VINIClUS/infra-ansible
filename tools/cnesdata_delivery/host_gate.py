@@ -720,7 +720,9 @@ class HostLease:
                 "acquired_at": utc(now),
                 "renewed_at": utc(now),
                 "expires_at": utc(now + 300),
-                "checkpoint_sha256": None,
+                # Retain the preceding checkpoint through administrative ownership;
+                # the fixed LeaseRecord schema needs no additional pointer field.
+                "checkpoint_sha256": prior["checkpoint_sha256"] if prior else None,
                 "recovery_proof_sha256": None,
             }
             return token, self._commit(
@@ -752,6 +754,13 @@ class HostLease:
         with self.locked():
             current = self._check(token, expected)
             require(physical_terminal(), "workers not proven terminal")
+            if current["head"] is not None:
+                record = find_record(self.root, checkpoint)
+                require(
+                    record["state"] in {"ACCEPTED", "ROLLED_BACK"}
+                    and not record["effect_possible"],
+                    "release terminal record",
+                )
             current["lease"].update(
                 state="RELEASED",
                 checkpoint_sha256=digest(checkpoint),
@@ -775,11 +784,31 @@ class HostLease:
                 "stale proof",
             )
             require(self.snapshot() == expected, "CAS recovery proof race")
+            digest(observed["checkpoint_sha256"])
+            digest(observed["proof_sha256"])
+            # Retain the reviewed observation itself so a later owner can verify
+            # session termination without reasserting it from the elapsed TTL.
+            recovery = canonical(
+                {
+                    "version": 1,
+                    "prior_authority_sha256": sha(canonical(expected)),
+                    "owner": expected["lease"]["owner"],
+                    "owner_token_sha256": expected["lease"]["owner_token_sha256"],
+                    "generation": expected["lease"]["generation"] + 1,
+                    "observation": observed,
+                }
+            )
+            durable(
+                private_directory(self.root / "recovery-proofs")
+                / (sha(recovery) + ".json"),
+                recovery,
+                immutable=True,
+            )
             value = copy.deepcopy(expected)
             value["lease"].update(
                 state="RELEASED",
                 checkpoint_sha256=digest(observed["checkpoint_sha256"]),
-                recovery_proof_sha256=digest(observed["proof_sha256"]),
+                recovery_proof_sha256=sha(recovery),
                 generation=value["lease"]["generation"] + 1,
                 revision=value["lease"]["revision"] + 1,
             )
@@ -871,7 +900,7 @@ def validate_binding(b):
         require(
             all(
                 re.fullmatch(
-                    r"arn:aws:states:[a-z0-9-]+:\d{12}:stateMachine:[A-Za-z0-9_-]+:\d+",
+                    r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}",
                     release[key],
                 )
                 for key in ("unit_revision", "recovery_revision", "audit_revision")
@@ -1690,7 +1719,11 @@ class GitHub:
         request = urllib.request.Request(
             "https://api.github.com/" + path,
             headers={
-                "Authorization": "Bearer " + self.token.decode("ascii"),
+                **(
+                    {"Authorization": "Bearer " + self.token.decode("ascii")}
+                    if self.token
+                    else {}
+                ),
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
@@ -2594,9 +2627,24 @@ def verify_original_activation(governance, guard):
         guard,
         env={"PATH": "/usr/bin:/bin"},
     )
+    activation = host_json(raw)
     require(
-        host_json(raw)["candidate_sha256"] == release["candidate_sha256"],
-        "activation candidate binding",
+        all(
+            activation[key] == release[key]
+            for key in (
+                "repository",
+                "release_id",
+                "source_sha",
+                "candidate_sha256",
+                "binding_sha256",
+                "canary_id",
+            )
+        )
+        and activation["revisions"]
+        == {name: release[name + "_revision"] for name in ("unit", "recovery", "audit")}
+        and activation["phase_a_evidence_digest"] == release["phase_a_evidence_sha256"]
+        and activation["ecr_uri"].endswith("@" + release["ecr_image_digest"]),
+        "activation candidate/revisions binding",
     )
 
 
@@ -2752,17 +2800,7 @@ def renew_application_credentials(governance):
     }
 
     def terminal(prior):
-        require(
-            prior["owner"]["class"] == "systemd"
-            and process_absent(prior["owner"]["process"]),
-            "prior credential owner not terminal",
-        )
-        # A different kernel-issued systemd invocation plus absent process is the
-        # observation for this fixed oneshot service, never an expired-TTL takeover.
-        require(
-            prior["owner"]["systemd_invocation"] != identity["invocation_id"],
-            "same invocation",
-        )
+        prior_owner_terminal(lease.root, prior, GitHub(bytearray(), clock), identity)
         return True
 
     token, snapshot = lease.acquire(owner, sha(canonical(c)), terminal_proof=terminal)
@@ -2855,7 +2893,31 @@ def renew_application_credentials(governance):
                 and clock.wall() + 156 < expires,
                 "replacement credential health",
             )
-            lease.release(token, snapshot, sha(health), lambda: True)
+            checkpoint = canonical(
+                {
+                    "version": 1,
+                    "kind": "credential-renewal",
+                    "application": app,
+                    "owner": owner,
+                    "operation_id": snapshot["lease"]["operation_id"],
+                    "generation": snapshot["lease"]["generation"],
+                    "accepted_record_sha256": accepted_release(
+                        lease.root, snapshot["lease"]["checkpoint_sha256"]
+                    ),
+                    "previous_checkpoint_sha256": snapshot["lease"][
+                        "checkpoint_sha256"
+                    ],
+                    "readiness_sha256": sha(health),
+                    "quiescent": True,
+                }
+            )
+            durable(
+                private_directory(lease.root / "checkpoints")
+                / (sha(checkpoint) + ".json"),
+                checkpoint,
+                immutable=True,
+            )
+            lease.release(token, snapshot, sha(checkpoint), lambda: True)
         except BaseException:
             if previous is not None:
                 # Preserve the preceding session bytes for reviewed recovery,
@@ -2922,35 +2984,133 @@ def find_record(root, commitment):
     return found[0]
 
 
+def accepted_release(root, checkpoint):
+    """Read the release pointer independently of the current administrative owner."""
+    if checkpoint is None:
+        return None
+    digest(checkpoint)
+    administrative = Path(root) / "checkpoints" / (checkpoint + ".json")
+    if administrative.exists():
+        raw = read_private(administrative)
+        require(sha(raw) == checkpoint, "administrative checkpoint digest")
+        accepted = host_json(raw)["accepted_record_sha256"]
+        if accepted is not None:
+            record = find_record(root, accepted)
+            require(
+                record["state"] in {"ACCEPTED", "ROLLED_BACK"}
+                and not record["effect_possible"],
+                "accepted release record",
+            )
+        return accepted
+    record = find_record(root, checkpoint)
+    require(
+        record["state"] in {"ACCEPTED", "ROLLED_BACK"}
+        and not record["effect_possible"],
+        "accepted release record",
+    )
+    return (
+        record["previous_accepted_sha256"]
+        if record["binding"]["requested_action"] == "validate"
+        else checkpoint
+    )
+
+
+def prior_owner_terminal(root, lease, api, identity=None):
+    """Dispatch terminal proof by owner; TTL alone never conveys authority."""
+    require(lease["state"] == "RELEASED", "prior owner not released")
+    owner = lease["owner"]
+    validate_owner(owner)
+    require(process_absent(owner["process"]), "previous owner process still present")
+    commitment = lease["recovery_proof_sha256"]
+    reviewed_path = Path(root) / "recovery-proofs" / (str(commitment) + ".json")
+    if commitment is not None and reviewed_path.exists():
+        digest(commitment)
+        raw = read_private(reviewed_path)
+        require(sha(raw) == commitment, "reviewed session proof digest")
+        proof = closed(
+            host_json(raw),
+            "version prior_authority_sha256 owner owner_token_sha256 generation observation",
+        )
+        observed = closed(
+            proof["observation"],
+            "process_absent owner_terminal checkpoint_sha256 proof_sha256",
+        )
+        require(
+            proof["version"] == 1
+            and proof["owner"] == owner
+            and proof["owner_token_sha256"] == lease["owner_token_sha256"]
+            and proof["generation"] == lease["generation"]
+            and observed["process_absent"] is True
+            and observed["owner_terminal"] is True
+            and observed["checkpoint_sha256"] == lease["checkpoint_sha256"],
+            "reviewed owner terminal checkpoint",
+        )
+        digest(proof["prior_authority_sha256"])
+        digest(observed["proof_sha256"])
+        return accepted_release(root, lease["checkpoint_sha256"])
+    if owner["class"] == "workflow":
+        record = find_record(root, lease["checkpoint_sha256"])
+        require(
+            record["binding"]["caller"] == owner["workflow"]
+            and record["operation_id"] == lease["operation_id"]
+            and record["generation"] == lease["generation"]
+            and record["binding"]["lease_owner_sha256"] == lease["owner_token_sha256"]
+            and record["state"] in {"ACCEPTED", "ROLLED_BACK"}
+            and not record["effect_possible"],
+            "workflow terminal checkpoint",
+        )
+        accepted = (
+            record["previous_accepted_sha256"]
+            if record["binding"]["requested_action"] == "validate"
+            else lease["checkpoint_sha256"]
+        )
+        ref = owner["workflow"]
+        verify_run(
+            api.read(
+                f"repos/{ref['repository']}/actions/runs/{ref['run_id']}/attempts/{ref['run_attempt']}"
+            ),
+            ref,
+        )
+    elif owner["class"] == "systemd":
+        checkpoint = digest(lease["checkpoint_sha256"])
+        raw = read_private(Path(root) / "checkpoints" / (checkpoint + ".json"))
+        require(sha(raw) == checkpoint, "administrative checkpoint digest")
+        value = closed(
+            host_json(raw),
+            "version kind application owner operation_id generation accepted_record_sha256 previous_checkpoint_sha256 readiness_sha256 quiescent",
+        )
+        require(
+            value["version"] == 1
+            and value["kind"] == "credential-renewal"
+            and value["application"] in {"cnesdata", "limnopulse"}
+            and value["owner"] == owner
+            and value["operation_id"] == lease["operation_id"]
+            and value["generation"] == lease["generation"]
+            and value["quiescent"] is True,
+            "administrative terminal checkpoint",
+        )
+        digest(value["readiness_sha256"])
+        accepted = accepted_release(root, value["previous_checkpoint_sha256"])
+        require(accepted == value["accepted_record_sha256"], "accepted release pointer")
+        if identity is not None:
+            require(
+                identity["invocation_id"] != owner["systemd_invocation"],
+                "same invocation",
+            )
+    else:
+        raise ValueError("human session requires reviewed terminal recovery")
+    return accepted
+
+
 def prior_terminal(lease, binding, api):
-    prior_record = find_record(ROOT, lease["checkpoint_sha256"])
-    accepted = (
-        prior_record["previous_accepted_sha256"]
-        if prior_record["binding"]["requested_action"] == "validate"
-        else lease["checkpoint_sha256"]
-    )
+    accepted = prior_owner_terminal(ROOT, lease, api)
     require(
-        lease["state"] == "RELEASED"
-        and accepted == binding["previous_accepted_sha256"],
-        "previous accepted checkpoint",
+        accepted == binding["previous_accepted_sha256"], "previous accepted checkpoint"
     )
-    require(
-        process_absent(lease["owner"]["process"]),
-        "previous owner process still present",
-    )
-    require(
-        lease["owner"]["class"] == "workflow",
-        "non-workflow owner needs reviewed recovery",
-    )
-    ref = lease["owner"]["workflow"]
-    run = api.read(
-        f"repos/{ref['repository']}/actions/runs/{ref['run_id']}/attempts/{ref['run_attempt']}"
-    )
-    verify_run(run, ref)
     return True
 
 
-def diagnose_once(lease, expected, request, channel_nonce):
+def diagnose_once(lease, expected, request, channel_nonce, *, retired=None):
     """Root physical read-only diagnostic; never renew, refresh, render or send."""
     with lease.locked():
         require(lease.snapshot() == expected and expected["head"], "CAS diagnostic")
@@ -2978,10 +3138,18 @@ def diagnose_once(lease, expected, request, channel_nonce):
         lease._commit(current)
         # Consumption is durable before any response. Missing sealed receipts,
         # active executor or expired authority are diagnostic failure, not rearm.
-        require(
-            process_absent(expected["lease"]["owner"]["process"]),
-            "original executor may still send",
-        )
+        if retired is None:
+            require(
+                process_absent(expected["lease"]["owner"]["process"]),
+                "original executor may still send",
+            )
+        else:
+            require(
+                record["state"] in {"RECOVERY_REQUIRED", "ROLLED_BACK"}
+                and expected["lease"]["owner"]["process"] == process_identity()
+                and retired()["all_absent_or_send_disabled"] is True,
+                "original executor not retired",
+            )
         receipt = (
             host_json(read_private(directory / "receipt.json", 65536))
             if (directory / "receipt.json").exists()
@@ -3055,6 +3223,8 @@ def host_main():
     window = None
     staged = None
     docker_config = None
+    driver = None
+    response_started = False
     try:
         signal.alarm(20)
         request = read_request(sys.stdin.buffer)
@@ -3065,34 +3235,47 @@ def host_main():
             "forced action binding",
         )
         clock = Clock()
+        # Discovery uses root-retained, originally authenticated facts. Historical
+        # read-only responses must not inherit live expiry/stage/OIDC admission.
+        lease = HostLease(ROOT, clock)
+        current = lease.snapshot()
+        if current["head"]:
+            directory = ROOT / "cnesdata" / current["head"]["operation_id"]
+            prior_raw = read_private(
+                directory / (current["head"]["record_sha256"] + ".json")
+            )
+            require(
+                sha(prior_raw) == current["head"]["record_sha256"],
+                "original record digest",
+            )
+            prior = host_json(prior_raw)
+            validate_record(prior)
+            if prior["binding"]["original_bytes"]["envelope_sha256"] == sha(
+                request.envelope_bytes
+            ):
+                require(
+                    read_private(directory / "original-governance")
+                    == canonical(governance)
+                    and hmac.compare_digest(
+                        read_private(directory / "original-token-sha256"),
+                        sha(request.token).encode(),
+                    )
+                    and read_private(directory / "original-archive") == request.archive,
+                    "retry original governance/token/archive",
+                )
+                response = diagnose_once(lease, current, request, channel_nonce)
+                sys.stdout.buffer.write(response)
+                sys.stdout.buffer.flush()
+                return 2
         api = GitHub(request.token, clock)
         b, files = authenticate_request(request, governance, api, clock.wall())
         admission = admit_physical_action(b, governance, api, clock)
-        # Physical host preflight and platform originals are independently installed,
-        # private, hash-bound owner handoffs. No private access via product GITHUB_TOKEN.
         for name in ("platform", "baseline"):
             require(
                 sha(read_private(ROOT / ("original-" + name + ".json")))
                 == b["original_bytes"][name + "_sha256"],
                 "original private handoff",
             )
-        lease = HostLease(ROOT, clock)
-        current = lease.snapshot()
-        if current["head"]:
-            record_path = (
-                ROOT
-                / "cnesdata"
-                / current["head"]["operation_id"]
-                / (current["head"]["record_sha256"] + ".json")
-            )
-            prior = host_json(read_private(record_path))
-            if prior["binding"]["original_bytes"]["envelope_sha256"] == sha(
-                request.envelope_bytes
-            ):
-                response = diagnose_once(lease, current, request, channel_nonce)
-                sys.stdout.buffer.write(response)
-                sys.stdout.buffer.flush()
-                return 2
         owner = {
             "class": "workflow",
             "process": process_identity(),
@@ -3117,6 +3300,8 @@ def host_main():
                 "envelope": request.envelope_bytes,
                 "archive": request.archive,
                 "manifest": canonical(request.envelope["release_manifest"]),
+                "governance": canonical(governance),
+                "token-sha256": sha(request.token).encode(),
             },
         )
         deadlines = [instant(e["expires_at"]) for e in b["expires"]]
@@ -3152,6 +3337,7 @@ def host_main():
         driver.run()
         response = operation.seal(channel_nonce, window, driver.processes)
         watchdog.tick()
+        response_started = True
         sys.stdout.buffer.write(response)
         sys.stdout.buffer.flush()
         # Release after sealing cannot give another operation authority without the
@@ -3170,8 +3356,32 @@ def host_main():
     except BaseException:
         if operation is not None and window is not None:
             with contextlib.suppress(Exception):
-                operation.persist_recovery(window)
+                decision = operation.persist_recovery(window)
+                # Known terminal effects may restore only the original physical
+                # checkpoint within the ORIGINAL recovery allocation. Uncertain
+                # daemon/external effects never trigger a speculative rollback.
+                if (
+                    driver is not None
+                    and operation.record["effect_confirmed"]
+                    and not operation.record["effect_possible"]
+                    and (operation.directory / "previous-nginx.conf").exists()
+                ):
+                    window.import_recovery(decision)
+                    with contextlib.suppress(Exception):
+                        driver.restore_previous()
                 operation.transition("RECOVERY_REQUIRED")
+                if driver is not None and request is not None and not response_started:
+                    driver.processes()  # Prove retirement before spending the one-shot.
+                    response = diagnose_once(
+                        operation.lease,
+                        operation.snapshot,
+                        request,
+                        channel_nonce,
+                        retired=driver.processes,
+                    )
+                    sys.stdout.buffer.write(response)
+                    sys.stdout.buffer.flush()
+                    return 2
         raise
     finally:
         signal.alarm(0)
@@ -3527,14 +3737,20 @@ def validate_closed_ready(files: dict, binding: dict, now):
         and routes["unit_revision"] == release["unit_revision"],
         "PhaseB routes/activation",
     )
-    for key in (
-        "state_machine_arn",
-        "unit_revision",
-        "recovery_revision",
-        "audit_revision",
-    ):
+    require(
+        re.fullmatch(
+            r"arn:aws:states:[a-z0-9-]+:\d{12}:stateMachine:[A-Za-z0-9_-]+",
+            routes["state_machine_arn"],
+        ),
+        "original state machine ARN",
+    )
+    for key in ("unit_revision", "recovery_revision", "audit_revision"):
         require(
-            isinstance(routes[key], str) and routes[key].startswith("arn:aws:states:"),
+            isinstance(routes[key], str)
+            and re.fullmatch(
+                r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}",
+                routes[key],
+            ),
             "original route ARN",
         )
     expirations: list[dict] = close["input_expirations"]
@@ -3954,7 +4170,10 @@ def ssh_exchange(request, governance, secrets_value):
                     admitted = request.admission.window(request.admission.clock)
                     admitted.guard(lease_expires_at=time.time() + 300)
                     fixed = min(fixed, admitted.fixed_deadline)
-                    timeout = min(admitted.stage_deadline, fixed) - time.time()
+                    # API effects obey their original stage on the host. Receiving
+                    # its recovery diagnostic may use the remaining original F;
+                    # this transport wait grants no additional effect authority.
+                    timeout = fixed - time.time()
                 else:
                     timeout = min(1800, fixed - time.time())
                 require(timeout >= 36, "SSH original deadline")
@@ -4027,9 +4246,33 @@ def runner_main(mode):
     failure_status = "rejected"
     try:
         governance = host_json(os.environ["CNESDATA_HOST_GOVERNANCE"].encode())
+        attempt = (
+            Path(os.environ["RUNNER_TEMP"]) / "cnesdata-host-attempt.json"
+            if mode == "execute"
+            else None
+        )
+        if attempt is not None:
+            require(
+                not attempt.exists(),
+                "original attempt already spent; use retained diagnostic or reviewed recovery",
+            )
         request = runner_request(governance, token)
         if mode == "preflight":
             return 0
+        # A duplicate invocation must never obtain fresh OIDC/SSM material for
+        # the same physical attempt. The original return carries its diagnostic.
+        if attempt is None:
+            raise ValueError("execution attempt path missing")
+        durable(
+            attempt,
+            canonical(
+                {
+                    "governance_sha256": sha(canonical(governance)),
+                    "original_request_sha256": sha(request.envelope_bytes),
+                }
+            ),
+            immutable=True,
+        )
         # Independent repeated preflight above precedes the first OIDC request.
         s3, ssm = runner_clients(governance)
         runner_handoff(governance, s3)
