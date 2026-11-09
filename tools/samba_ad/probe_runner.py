@@ -16,8 +16,12 @@ import re
 import subprocess
 import sys
 
-import s2_guest as guest
-import s2_compatibility as evidence
+try:
+    import s2_guest as guest
+    import s2_compatibility as evidence
+except ImportError:
+    import guest
+    import compatibility as evidence
 
 
 def checked_snapshot(value):

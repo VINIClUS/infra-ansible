@@ -1,6 +1,8 @@
 # samba_ad_compatibility
 
-Primeira prova protegida S2, manual, somente em um LXC lab próprio já iniciado.
+Provas S2 manuais, em um guest lab próprio já iniciado. O modo padrão
+`samba_ad_compatibility_probe: lxc_first` conserva a primeira prova protegida LXC;
+`qemu_substrate` executa os checks mínimos QEMU via QGA já disponível no template.
 Defaults `samba_ad_compatibility_enabled: false` e
 `samba_ad_compatibility_apply: false`. Exige `--limit` exato de **um nó atual
 do probe**, facts correspondentes e somente `--tags samba_ad_compatibility`.
@@ -58,8 +60,16 @@ preserva o resultado da prova que já foi validado, sem inventar confirmação.
 Timeout, ferramenta ausente, EINVAL, ENOSPC, identidade errada, drift ou cleanup
 incompleto não escolhem plataforma. Não há fallback para execução no host.
 
-Esta role não implementa instalação, floresta lab, segundo LXC, bateria AD,
-prova QEMU nem limpeza de guest automática. A continuação está no
+QEMU usa nonce por stdin, UUID SMBIOS/DMI, boot-id distinto do PVE e identidade
+node/VMID/spec/config/template antes/depois, sem comparar namespaces entre kernels.
+Mede NTACL/ACL efetiva, systemd, sincronismo/janela de relógio, status do audit no
+kernel próprio, isolamento VM e configuração de rede com guards de firewall S1.
+Não afirma entrega de logs de produção, descritor NTACL Samba ou alcance de
+protocolos. Cada execução deixa qualification pending e guest cleanup pending;
+o agregado exige incompatibilidade LXC preservada, dois nós e ausência completa.
+
+Esta role não implementa instalação, floresta lab, segundo LXC, bateria AD
+ou limpeza de guest automática. A agregação e seus limites estão no
 [runbook S2](../../docs/samba-ad-s2.md): laudo durável primeiro; depois stop e
 absent explícitos pelo lifecycle S1. Runtime depende de S1 aplicado e auditoria
 independente de estado. Nenhum recurso/compatibilidade foi observado por estes testes.

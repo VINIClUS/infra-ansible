@@ -1,7 +1,8 @@
 # Samba AD — S2, prova protegida e contrato de evidência
 
 Código disponível: stop lab explícito, cleanup/readbacks, primeira prova LXC,
-laudo/classificador e consumidor genérico de bundle privado. Nenhum runtime S2,
+substrato QEMU via QGA, agregação conservadora, laudo/classificador e consumidor
+genérico de bundle privado. Nenhum runtime S2,
 escolha real, pin válido, floresta institucional ou prontidão foi estabelecido.
 S1 aplicado e parecer independente de estado são precondições de execução.
 
@@ -43,7 +44,7 @@ S1 aplicado e parecer independente de estado são precondições de execução.
    se precisar de política diferente, limpar somente o lab próprio e recriar
    uma geração com política revisada; não atualizar marcador para adotar clone.
 
-## Continuação que ainda exige implementação e runtime próprios
+## Continuação LXC que ainda exige implementação e runtime próprios
 
 LXC só pode ser qualificado com dois hosts físicos, em `lab.ad.test`, e a bateria
 completa: NTACL Samba real/ACL/SID, systemd, SYSVOL unidirecional com autor único,
@@ -62,10 +63,109 @@ não identificam a VM. Prova mínima: protected xattr/ACL efetiva, systemd, rel�
 auditoria no kernel próprio e rede/isolamento. Qualifica apenas `qemu_substrate`;
 Samba/SYSVOL/replicação de produção continuam nas etapas S4/S5.
 
-Os runners dessas duas continuações não estão implementados aqui. O consumidor
-aceita laudos completos produzidos e auditados posteriormente, sem gerar checks
-passed ou aprovação. Backups/DR, custódia externa e inventário/migração municipal
-permanecem fora da entrega e dos gates.
+O runner da bateria completa LXC continua não implementado. Backups/DR, custódia
+externa e inventário/migração municipal permanecem fora da entrega e dos gates.
+
+## Substrato QEMU mínimo, manual e separado da produção
+
+A mesma role aceita `samba_ad_compatibility_probe: qemu_substrate`, mantendo
+`enabled/apply: false` por padrão e o mesmo `--limit` do nó atual, tag dedicada,
+request S1 de lab, proveniência e parecer S1. O request deve apontar para QEMU
+próprio já iniciado, disco `scsi0`, digest atual e template/digest revisados.
+O lifecycle continua exclusivamente em S1; o runner não clona, instala pacotes,
+inicia serviços, altera relógio, concede capacidades ou provisiona Samba/AD.
+Check-mode/apply falso somente lê precondições S1; não entra no QGA, cria arquivo
+ou prepara laudo. Assim esse preflight não comprova disponibilidade do agent.
+
+Em apply, o transporte nativo é `qm guest exec` síncrono com `--pass-stdin 1`,
+timeout QGA de 30 s e subprocess de 40 s. Não há polling, retry, shell ou fallback
+no PVE. O clone deve trazer QGA e Python3 instalados e agent habilitado no config;
+falta dessas condições é erro operacional. A captura faz ping QGA limitado a
+10 s, nonce novo por stdin e verifica hostname exato, root, boot-id distinto do
+PVE, UUID SMBIOS do config igual ao DMI observado, filesystem e diretório. Config
+PVE, boot/UUID e âncora node/VMID/spec/digests são estáveis antes/depois. Números
+de namespace de kernels diferentes não são comparados. O runner exige execução
+no nó PVE correto e nunca executa o helper diretamente no host.
+
+| Check mínimo | Medição real e limite |
+| --- | --- |
+| security_ntacl | Sentinel opaco em security.NTACL via fd e readback; não é um descritor Samba. |
+| posix_acl | ACL UAPI v2 e leitura permitida/negada por UIDs distintos, no arquivo próprio. |
+| systemd | PID 1 systemd e is-system-running=running; degraded falha operacionalmente. |
+| clock | NTPSynchronized=yes e realtime da VM dentro da janela PVE ±2 s; nenhuma escrita de relógio. |
+| audit | AUDIT_GET via NETLINK_AUDIT no kernel da VM: enabled, listener PID, política de falha e zero lost. |
+| isolation | systemd-detect-virt identifica qemu/kvm, sem container; config S1 sem passthrough/mounts/hooks. |
+| network | Uma NIC além de lo, MAC/MTU/IPv4/gateway exatos e UP/LOWER_UP; firewall PVE/roteador via guards S1. |
+
+Audit mede status do kernel/listener, não entrega de eventos ou retenção de logs.
+Network mede configuração e política carregada; não afirma alcance de serviços
+nem substitui os testes de protocolos S4/S5. Clock compara com o relógio PVE da
+janela; não certifica a fonte NTP. Os binários systemd e ip devem existir no
+template; não são instalados pelo probe. Resposta parcial/PID, truncamento, nonce
+errado, timeout, ausência de ferramenta, drift ou qualquer falha é operacional,
+nunca incompatibilidade LXC nem sucesso sintético. Um timeout pode deixar processo
+do guest em andamento: cleanup fica desconhecido/incompleto até recuperação e
+readback direcionados, sem kill/retry automático.
+
+O helper limpa só seu arquivo com o mesmo O_EXCL/O_NOFOLLOW e verificação de inode
+da primeira prova. A role persiste o laudo completo no controlador antes de
+reportar falha. Um QEMU medido conserva `selection: null`, `qualification: pending`
+e cleanup guest pending. Executar em dois nós físicos distintos, sequencialmente
+se necessário, persistindo cada laudo antes de stop/absent explícitos S1.
+
+### Agregação após cleanup explícito
+
+`tools/samba_ad/qemu_probe_runner.py` também oferece entrada manual JSON por stdin
+em um PVE do cluster, usando cópia revisada dos módulos. Não usa credenciais por
+argv. Exemplo de forma, com o payload privado já preparado:
+
+```bash
+python3 tools/samba_ad/qemu_probe_runner.py < /caminho/privado/s2-aggregate.json
+```
+
+O objeto fecha `{mode: aggregate, operation: {enabled, apply, check, reports,
+requests, directory, provenance}}`. Flags são booleanas explícitas; disabled
+retorna sem API/escrita. `reports` contém os objetos originais duráveis, na mesma
+ordem dos requests S1 `lab`/digest de cada geração. `provenance` contém as revisões
+completas `public_revision/private_revision` da agregação revisada. `directory`
+é absoluto/canônico/0700, próprio do usuário efetivo, fora do Git, no PVE onde o
+comando roda. Fazer primeiro `check: true`; depois `check: false, apply: true`.
+
+A agregação não para/remove guests. Exige ausência atual de todos os VMIDs,
+firewalls e volumes pelos readbacks S1, inclusive quando VMID foi reutilizado
+entre gerações. Só executar após o último cleanup S1. Também revalida versões
+kernel/PVE e digests dos templates; filesystem/política divergentes são recusados.
+Preserva o laudo LXC integral e todos os demais laudos nas observations, com seus
+hashes e revisões originais, sem reclassificar um erro operacional. `helper_sha256`
+e `s1_audit_sha256` agregados são os hashes canônicos das respectivas listas
+ordenadas dos hashes originais; não representam um único helper/parecer novo.
+O header registra a revisão da agregação, permitindo que o LXC tenha sido medido
+antes da implementação QEMU. Os originais continuam necessários para auditoria.
+
+Antes de contar um placement, a agregação revalida o protocolo fechado da origem,
+não apenas o envelope genérico. QEMU exige capturas antes/depois coerentes com
+node/VMID/spec/config/template, boot/UUID e filesystem; `before.probe_request`
+registra o request enviado ao helper, incluindo run_id, nonce, identidade e
+resource, separadamente da resposta. O resultado deve corresponder a esse
+request e aos checks/cleanup externos, com resumos tipados de cada medição.
+Laudos QEMU antigos sem esse request gravado são recusados; não completar o
+campo retrospectivamente a partir da resposta. Preservar o original e produzir
+uma nova medição em execução autorizada.
+A primeira prova LXC mantém seu protocolo original: run_id, snapshots e resultado
+são validados pelos validadores LXC, com VMID/init/starttime/NSpid, namespaces,
+hostname, boot, uid_map/AppArmor e filesystem estáveis. Os campos do subject
+node/spec/config/template e a política devem corresponder ao request S1 da
+origem. Não exige nonce/UUID QEMU nem compara namespaces entre kernels.
+Traços ausentes, campos desconhecidos ou contradições são recusados. Resultados
+operacionais coerentes e completos permanecem pending; falhas posteriores que
+invalidam as capturas ou contradizem o resultado também impedem a agregação.
+Nenhum readback atual de ausência reconstrói uma medição histórica, e os hashes
+preservados demonstram integridade/coerência, não atestação externa da origem.
+Só a incompatibilidade LXC preservada permite seleção qemu. Apenas dois nós
+distintos com todos os MINIMUM reais e cleanup completo dão `qemu_substrate`.
+Um nó ou qualquer erro permanece pending. O mesmo writer exclusivo 0600/fsync
+persiste o agregado antes de imprimir estado/metadados; check-mode não escreve.
+Não cria bundle/pin/aprovação independente, nem autoriza S4/S5 por si só.
 
 ## Laudo e bundle operacional privado
 
@@ -147,5 +247,8 @@ não gravável por terceiros; não é defesa contra outro processo root malicios
 substituindo a entrada entre stat e unlink.
 
 Referências: contratos S1 e plano aprovado versionados; formato ACL conferido nos
-headers Linux UAPI `linux/posix_acl.h` e `linux/posix_acl_xattr.h` instalados.
+headers Linux UAPI `linux/posix_acl.h` e `linux/posix_acl_xattr.h` instalados;
+AUDIT_GET/status em `linux/audit.h`; transporte em
+[qm(1), qm guest exec](https://pve.proxmox.com/pve-docs/qm.1.html), consultado em
+2026-11-08 (Context7 indisponível por quota). Conferir CLI instalada antes do runtime.
 Context7 indisponível pela cota informada; nenhum download foi necessário.
