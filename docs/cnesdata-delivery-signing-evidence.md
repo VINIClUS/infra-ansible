@@ -103,6 +103,77 @@ Fontes: [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObj
 [override de Bucket Keys por objeto](https://docs.aws.amazon.com/AmazonS3/latest/userguide/configuring-bucket-key-object.html),
 [retries do SDK](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/retries.html).
 
+## Root delivery e inventário privado
+
+`ext2_enabled=false` é o default. Somente habilitação explícita e o objeto nominal
+`ext2` permitem quatro instâncias: `aws_iam_role.ext2_gate[0]`,
+`aws_iam_role_policy.ext2_gate[0]`, `aws_kms_key.ext2_signing[0]` e
+`aws_kms_alias.ext2_signing[0]`. O output sensível `ext2` é null quando desabilitado;
+não entra em shared_outputs, v2, bootstrap 9, Phase A 7 ou ACM 0. Não há nova reader
+role, managed policy, OIDC provider ou recurso/configuração/policy do bucket externo.
+
+O handoff do owner fixa SHA do reusable, prazo absoluto de escrita e retain_until,
+administradores existentes da key, bucket/cipher CMK full ARN e listas finitas de
+objetos current/history. A role `cnesdata-delivery-ext2-gate` confia somente no provider
+GitHub compartilhado existente, aud sts e custom sub do reusable exato. A key própria
+é SIGN_VERIFY/ECC_NIST_P256/AWS_KMS, Enabled, single-region, com alias
+`alias/cnesdata-delivery-ext2-signing`. Administração pertence aos principals do
+owner, não à sessão runtime. A trust permite a sessão histórica após o prazo de
+escrita; Sign, Put e GenerateDataKey current expiram sem remover os reads autorizados.
+
+Identity grants e sessão intersectam objetos exatos. Put exige cifra, COMPLIANCE e
+retain-until absolutos; PutObjectRetention também permite tecnicamente a API própria,
+embora o helper só a use como headers no create. O código não promete que IAM
+distingue essas intenções. Há Deny real de AbortMultipartUpload,
+ListMultipartUploadParts e ListBucketMultipartUploads. Create/Upload/Complete
+multipart continuam sob PutObject no modelo IAM; single-put é prova do helper.
+Contexto KMS limita cifra aos ARNs aprovados via S3 regional, sem validar conteúdo.
+Freeze efetivo do owner deve negar Sign/Put em todas as camadas necessárias e
+conservar leitura autorizada; nenhuma atualização automática deste root o implementa.
+
+`ext2_inventory.py` é uma avaliação read-only do root
+`opentofu/cnesdata-delivery`, state `shared/cnesdata-delivery/prod/opentofu.tfstate`.
+Não cria credenciais, não aplica plan e não é um novo purpose de EXT1. O operador
+fornece governança autenticada separadamente: BASE99/source SHA, manifests completos
+de HCL/lock, inputs gerados, hashes integrais before/after, plan binário/JSON e SPKI.
+Hashes submetidos pelo caller, isoladamente, não dão autoridade. A closure BASE99
+é preservada byte a byte, com somente as adições nominais de variables/outputs.
+
+`read_saved_plan` executa apenas `tofu show -json` com binário fixado por hash em
+namespace sem rede e ambiente sem credenciais. O diretório fonte deve estar previamente
+inicializado offline pelo operador com provider/lock pinados; o helper não faz init,
+instalação, plan ou apply. O objeto interno sela bytes e JSON para impedir substituição
+após a leitura. `verify_ext2_inventory` exige esse objeto, resolve as expressões reais
+de HCL com parser limitado e cruza configuração/provider, todas as ações, IDs,
+documentos integrais, outputs e state. IDs/ARNs ainda unknown só resolvem pelos quatro
+producers e pelo post-state observado; policy unknown nunca substitui a avaliação da fonte.
+
+O checkpoint anterior deve conter todo o catálogo derivado da fonte: três recursos
+Roles Anywhere e, quando configurados, seis de EXT1 delivery. Todos precisam no-op,
+mesmos atributos/lineage/serial e readback; não se omite recurso porque não mudou.
+Inicial exige quatro creates sem import/adoption; reexecução exige todos os quatro
+presentes e somente no-op. Delete/replacement/update, cardinalidade parcial, policy
+extra attached/inline, provider alternativo, output indevido ou observação ausente recusam.
+
+`observe_inventory` chama apenas GET/List do SDK governado do operador: GetRole e
+listas completas de policies, GetRolePolicy, GetPolicy/GetPolicyVersion, GetTrustAnchor,
+GetProfile, DescribeKey/GetKeyPolicy/GetPublicKey e DescribeKey pelo alias. Trust,
+grants, key policy e target do alias derivam da fonte, não do state ou da resposta
+usada como oráculo. O SPKI precisa do pin autenticado. JSON serializado de observações
+não é aceito como resultado do observador. Essa capacidade de auditoria do operador
+continua um handoff real de Ready; nenhum desses reads administrativos amplia a role
+runtime. Fixtures usam SDK/decoder explícitos e plans mockados; o teste separado do
+decoder usa apenas terraform_data local, sem AWS. Nenhuma fixture é evidência live.
+
+Custos incrementais a registrar no handoff: uma CMK assimétrica própria; três
+novas versões S3 por publicação bem-sucedida (payload, DER, receipt), seus bytes e
+retain_until absolutos; uma Sign e os requests Put/Head/Get/Retention/bucket/KMS
+readback observados. Ambiguidade pode deixar versão privada órfã, sem nova tentativa
+automática. A CMK de cifra e o bucket permanecem externos. O artifact público único
+e os logs também têm consumo/retenção próprios. Quantidade de APIs do helper não é
+uma estimativa completa da cobrança interna SSE-KMS; metering, baseline agregado,
+orçamento e aceite owner precisam de evidência real antes de Ready.
+
 Sem operação AWS/host/DNS/CA/apply em desenvolvimento; operações reais permanecem
 manuais e exigem owner handoff, readbacks, IAM/freeze, custos USD8 produto/USD15
 agregado, paid Actions USD0, EXT5/EXT6 e smoke. Preservar Actions personal e

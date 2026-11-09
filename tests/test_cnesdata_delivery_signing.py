@@ -33,6 +33,602 @@ from fixtures.cnesdata_delivery_ext2 import (
 
 
 @pytest.fixture(scope="module")
+def ext2_native():
+    from fixtures.cnesdata_delivery_ext2.inventory import Ext2Native
+
+    harness = Ext2Native()
+    yield harness
+    harness.temp.cleanup()
+
+
+def test_disabled_ext2_has_no_resources_or_usable_output(ext2_native):
+    from fixtures.cnesdata_delivery_ext2.inventory import FOUR, variables, values
+
+    v = variables(False)
+    v.pop("ext2_enabled")  # The actual default must close it.
+    code, plans, errors = ext2_native.plan(v, "ext2-disabled")
+    assert code == 0, errors
+    assert not set(values(plans[0])) & FOUR
+    assert plans[0]["planned_values"]["outputs"]["ext2"]["value"] is None
+
+
+def test_ext2_native_creates_exactly_four_with_independent_full_policy_oracles(
+    ext2_native,
+):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        ALIAS,
+        FOUR,
+        ROLE,
+        key_policy,
+        policy,
+        trust,
+        variables,
+        values,
+    )
+
+    v = variables()
+    code, plans, errors = ext2_native.plan(v, "ext2-four")
+    assert code == 0, errors
+    resources = values(plans[0])
+    assert set(resources) & FOUR == FOUR
+    assert len(resources) == 13  # 9 pre-existing delivery/RA resources, 4 EXT2.
+    role = resources["aws_iam_role.ext2_gate[0]"]
+    assert role["name"] == ROLE.rsplit("/", 1)[1]
+    assert json.loads(role["assume_role_policy"]) == trust(v)
+    inline = resources["aws_iam_role_policy.ext2_gate[0]"]
+    assert inline["role"] == role["name"]
+    assert json.loads(inline["policy"]) == policy(v)
+    key = resources["aws_kms_key.ext2_signing[0]"]
+    assert (
+        key["key_usage"] == "SIGN_VERIFY"
+        and key["customer_master_key_spec"] == "ECC_NIST_P256"
+    )
+    assert key["is_enabled"] is True and key["multi_region"] is False
+    assert json.loads(key["policy"]) == key_policy(v)
+    alias = resources["aws_kms_alias.ext2_signing[0]"]
+    assert (
+        alias["name"] == ALIAS
+        and alias["target_key_id"] == SIGNING_KEY.rsplit("/", 1)[1]
+    )
+
+
+def test_ext2_inventory_boundary_exists():
+    from tools.cnesdata_delivery.ext2_inventory import verify_ext2_inventory
+
+    with pytest.raises(ValueError):
+        verify_ext2_inventory(
+            source_blobs={},
+            saved_plan={},
+            generated_inputs={},
+            state_before={},
+            state_after={},
+            observations={},
+            governance={},
+        )
+
+
+def test_ext2_plan_binary_is_decoded_by_pinned_offline_tool(tmp_path, monkeypatch):
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    calls = []
+    tofu = Path(shutil.which("tofu"))
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert argv[-3:-1] == ["show", "-json"]
+        binary = Path(argv[-1]).read_bytes()
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"binary_sha256": sha(binary)}).encode(),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(inventory.subprocess, "run", run)
+    result = inventory.read_saved_plan(
+        b"synthetic-plan",
+        directory=tmp_path,
+        tofu=tofu,
+        tofu_sha256=sha(tofu.read_bytes()),
+    )
+    assert result["json"]["binary_sha256"] == sha(b"synthetic-plan")
+    assert result["binary"] == b"synthetic-plan"
+    assert calls[0][0][:4] == [
+        shutil.which("rtk"),
+        "proxy",
+        shutil.which("unshare"),
+        "--user",
+    ]
+    env = calls[0][1]["env"]
+    assert not any(
+        "SECRET" in name or name in {"AWS_PROFILE", "AWS_ACCESS_KEY_ID"} for name in env
+    )
+    with pytest.raises(ValueError):
+        inventory.read_saved_plan(
+            b"synthetic-plan", directory=tmp_path, tofu=tofu, tofu_sha256="f" * 64
+        )
+
+
+def test_ext2_real_offline_plan_decoder(tmp_path):
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    (tmp_path / "main.tf").write_text(
+        'terraform { required_version = "= 1.13.2" }\nresource "terraform_data" "synthetic_decoder_only" { input = "offline" }\n'
+    )
+    env = {
+        "PATH": os.defpath,
+        "HOME": str(tmp_path),
+        "LANG": "C.UTF-8",
+        "CHECKPOINT_DISABLE": "1",
+    }
+    tofu = Path(shutil.which("tofu"))
+    for args in [
+        ["init", "-backend=false", "-input=false"],
+        ["plan", "-input=false", "-out=offline.tfplan"],
+    ]:
+        result = subprocess.run(
+            [
+                shutil.which("rtk"),
+                "proxy",
+                shutil.which("unshare"),
+                "--user",
+                "--map-root-user",
+                "--net",
+                str(tofu),
+                *args,
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+    binary = (tmp_path / "offline.tfplan").read_bytes()
+    decoded = inventory.read_saved_plan(
+        binary, directory=tmp_path, tofu=tofu, tofu_sha256=sha(tofu.read_bytes())
+    )
+    assert (
+        decoded["json"]["resource_changes"][0]["address"]
+        == "terraform_data.synthetic_decoder_only"
+    )
+    assert decoded["binary"] == binary
+    with pytest.raises(ValueError, match="plan_decode"):
+        inventory.read_saved_plan(
+            b"invalid saved plan",
+            directory=tmp_path,
+            tofu=tofu,
+            tofu_sha256=sha(tofu.read_bytes()),
+        )
+
+
+@pytest.mark.parametrize("purpose,count", [("bootstrap", 9), ("phase-a", 7)])
+def test_product_bootstrap_inventory_remains_closed(purpose, count):
+    from fixtures.cnesdata_iam_inventory import inventory
+    from fixtures.cnesdata_iam_sources import ACCOUNT as PRODUCT_ACCOUNT, REGION
+    from tools.cnesdata_delivery.iam_source import SourceResolver
+
+    plan, sources, inputs, _, policies = inventory(purpose)
+    resolver = SourceResolver(
+        plan,
+        sources,
+        {
+            "generated_inputs": inputs,
+            "account_id": PRODUCT_ACCOUNT,
+            "region": REGION,
+            "purpose": purpose,
+        },
+    )
+    assert len(policies) == count
+    for address in policies:
+        resolver.precheck(address)
+    with pytest.raises(ValueError, match="iam=policy_scope"):
+        resolver.precheck("aws_iam_role_policy.ext2_gate[0]")
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_ext2_effective_grants_are_finite_and_every_explicit_deny_wins(
+    ext2_native, gate, crypto, historical
+):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        decision,
+        policy,
+        key_policy,
+        variables,
+        ROLE,
+    )
+
+    v = variables()
+    code, plans, errors = ext2_native.plan(v, "ext2-four")
+    assert code == 0, errors
+    from fixtures.cnesdata_delivery_ext2.inventory import values
+
+    rendered = values(plans[0])
+    identity = json.loads(rendered["aws_iam_role_policy.ext2_gate[0]"]["policy"])
+    assert identity == policy(v)
+    key = json.loads(rendered["aws_kms_key.ext2_signing[0]"]["policy"])
+    assert key == key_policy(v)
+    gov = signing_case(crypto)[0]
+    session = json.loads(gate.session_policy(gov, historical=historical))
+    current = v["ext2"]["current_object_arns"][0]
+    context = {
+        "aws:CurrentTime": "2027-01-01T00:00:00Z",
+        "s3:object-lock-mode": "COMPLIANCE",
+        "s3:object-lock-retain-until-date": v["ext2"]["retain_until"],
+        "s3:x-amz-server-side-encryption": "aws:kms",
+        "s3:x-amz-server-side-encryption-aws-kms-key-id": KEY,
+        "kms:MessageType": "DIGEST",
+        "kms:SigningAlgorithm": "ECDSA_SHA_256",
+        "kms:ViaService": "s3.us-east-2.amazonaws.com",
+        "kms:EncryptionContext:aws:s3:arn": current,
+    }
+
+    def effective(action, resource, ctx, layers=()):
+        documents = [identity, session, *layers]
+        if resource == SIGNING_KEY:
+            documents.append(key)
+        return all(
+            decision(p, action, resource, ctx, ROLE) == "allow" for p in documents
+        )
+
+    for action, resource in [
+        ("s3:GetObjectVersion", current),
+        ("s3:GetObjectRetention", current),
+        ("kms:Decrypt", KEY),
+        ("kms:GetPublicKey", SIGNING_KEY),
+    ]:
+        assert effective(action, resource, context)
+        # Model all mandatory policy layers as exact allows, then one explicit Deny.
+        for layer in ["bucket", "key", "boundary", "SCP", "freeze"]:
+            allow = {
+                "Statement": [
+                    {
+                        "Sid": layer,
+                        "Effect": "Allow",
+                        "Action": action,
+                        "Resource": resource,
+                    }
+                ]
+            }
+            assert effective(action, resource, context, [allow])
+            allow["Statement"].append(
+                {"Effect": "Deny", "Action": action, "Resource": resource}
+            )
+            assert not effective(action, resource, context, [allow])
+    for action, resource in [
+        ("s3:PutObject", current),
+        ("s3:PutObjectRetention", current),
+        ("kms:Sign", SIGNING_KEY),
+        ("kms:GenerateDataKey", KEY),
+    ]:
+        assert effective(action, resource, context) is (not historical)
+        assert not effective(
+            action, resource, context | {"aws:CurrentTime": v["ext2"]["enabled_until"]}
+        )
+    foreign = [
+        current.replace("cnesdata", "other-app"),
+        current.replace("/123/", "/999/"),
+        current.replace("synthetic-ext2-evidence", "other-bucket"),
+        "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate",
+        "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate.tflock",
+        "arn:aws:s3:::synthetic-state/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json",
+    ]
+    for resource in foreign:
+        for action in ["s3:GetObjectVersion", "s3:PutObject", "s3:PutObjectRetention"]:
+            assert not effective(action, resource, context)
+    for action in [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:BypassGovernanceRetention",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectAcl",
+        "s3:PutObjectTagging",
+        "s3:ListBucketVersions",
+    ]:
+        assert not effective(action, current, context)
+    for arn in [
+        KEY,
+        SIGNING_KEY.replace(ACCOUNT, "999988887777"),
+        SIGNING_KEY.replace("us-east-2", "us-west-2"),
+    ]:
+        assert not effective("kms:Sign", arn, context)
+    for key_name, value in [
+        ("kms:MessageType", "RAW"),
+        ("kms:SigningAlgorithm", "ECDSA_SHA_384"),
+    ]:
+        assert not effective("kms:Sign", SIGNING_KEY, context | {key_name: value})
+    for key_name, value in [
+        ("kms:ViaService", "s3.us-west-2.amazonaws.com"),
+        ("kms:EncryptionContext:aws:s3:arn", foreign[0]),
+    ]:
+        assert not effective("kms:Decrypt", KEY, context | {key_name: value})
+    for action in ["s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]:
+        assert decision(identity, action, current, context) == "deny"
+    assert (
+        decision(
+            identity, "s3:ListBucketMultipartUploads", v["ext2"]["bucket_arn"], context
+        )
+        == "deny"
+    )
+    for arn in v["ext2"]["history_object_arns"]:
+        assert decision(identity, "s3:GetObjectVersion", arn, context) == "allow"
+        assert decision(identity, "s3:PutObject", arn, context) == "implicit"
+        assert decision(identity, "s3:PutObjectRetention", arn, context) == "implicit"
+
+
+@pytest.mark.parametrize("mode", ["disabled", "noop"])
+def test_ext2_inventory_all_existing_resources_remain_observed(ext2_native, mode):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        inventory_case,
+        InventoryAPI,
+        rebind,
+    )
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native, enabled=mode != "disabled")
+    if mode == "noop":
+        case["state_before"] = copy.deepcopy(case["state_after"])
+        for row in case["saved_plan"]["json"]["resource_changes"]:
+            if row["mode"] == "managed":
+                row["change"]["actions"] = ["no-op"]
+                row["change"]["before"] = copy.deepcopy(row["change"]["after"])
+        rebind(case)
+    api = InventoryAPI(case)
+    result = inventory.verify_ext2_inventory(
+        **case,
+        observations=inventory.observe_inventory(
+            state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+        ),
+    )
+    assert result.ext2_count == (0 if mode == "disabled" else 4)
+    assert result.prior_count == 9
+    assert len(api.covered) == (9 if mode == "disabled" else 13)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_ext2_inventory_output_is_source_derived(ext2_native, enabled):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        inventory_case,
+        InventoryAPI,
+        rebind,
+    )
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native, enabled)
+    plan = case["saved_plan"]["json"]
+    plan["planned_values"]["outputs"]["ext2"]["value"] = {"role_arn": "foreign"}
+    plan["output_changes"]["ext2"]["after"] = {"role_arn": "foreign"}
+    case["state_after"]["outputs"]["ext2"] = {
+        "value": {"role_arn": "foreign"},
+        "sensitive": True,
+    }
+    rebind(case)
+    api = InventoryAPI(case)
+    observed = inventory.observe_inventory(
+        state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+    )
+    with pytest.raises(ValueError):
+        inventory.verify_ext2_inventory(**case, observations=observed)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["provider", "plan-field", "failed-check", "data-action", "unsealed-plan"],
+)
+def test_ext2_inventory_rejects_unreviewed_plan_configuration(ext2_native, mutation):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        inventory_case,
+        InventoryAPI,
+        rebind,
+    )
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native)
+    plan = case["saved_plan"]["json"]
+    if mutation == "provider":
+        plan["configuration"]["provider_config"]["evil"] = copy.deepcopy(
+            plan["configuration"]["provider_config"]["aws"]
+        )
+    elif mutation == "plan-field":
+        plan["target"] = ["aws_kms_key.ext2_signing[0]"]
+    elif mutation == "failed-check":
+        plan["checks"][0]["status"] = "fail"
+    elif mutation == "data-action":
+        plan["resource_changes"].append(
+            {
+                "mode": "data",
+                "address": "data.aws_iam_role.foreign",
+                "change": {"actions": ["read"]},
+            }
+        )
+    rebind(case)
+    if mutation == "unsealed-plan":
+        case["saved_plan"] = dict(case["saved_plan"])
+    api = InventoryAPI(case)
+    observed = inventory.observe_inventory(
+        state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+    )
+    with pytest.raises(ValueError):
+        inventory.verify_ext2_inventory(**case, observations=observed)
+
+
+def test_ext2_inventory_resolves_only_source_defined_new_producer_unknowns(ext2_native):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        inventory_case,
+        InventoryAPI,
+        rebind,
+    )
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native)
+    fields = {
+        "aws_iam_role.ext2_gate[0]": ["arn", "id"],
+        "aws_iam_role_policy.ext2_gate[0]": ["role", "policy"],
+        "aws_kms_key.ext2_signing[0]": ["arn", "id", "key_id", "policy"],
+        "aws_kms_alias.ext2_signing[0]": ["target_key_id", "target_key_arn"],
+    }
+    for row in case["saved_plan"]["json"]["resource_changes"]:
+        for field in fields.get(row["address"], []):
+            row["change"]["after"].pop(field)
+            row["change"]["after_unknown"][field] = True
+    output = case["saved_plan"]["json"]["output_changes"]["ext2"]
+    output["after_unknown"] = {"role_arn": True, "signing_key_arn": True}
+    for field in output["after_unknown"]:
+        output["after"].pop(field)
+    case["saved_plan"]["json"]["planned_values"]["outputs"]["ext2"].pop("value")
+    rebind(case)
+    api = InventoryAPI(case)
+    result = inventory.verify_ext2_inventory(
+        **case,
+        observations=inventory.observe_inventory(
+            state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+        ),
+    )
+    assert result.ext2_count == 4
+
+
+def test_ext2_inventory_derives_full_trust_grants_key_alias_from_source(ext2_native):
+    from fixtures.cnesdata_delivery_ext2.inventory import inventory_case, InventoryAPI
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native)
+    api = InventoryAPI(case)
+    observed = inventory.observe_inventory(
+        state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+    )
+    result = inventory.verify_ext2_inventory(**case, observations=observed)
+    assert result.ext2_count == 4 and result.prior_count == 9
+    assert api.covered == set(inventory.state_resources(case["state_after"]))
+    assert not any(
+        name.startswith(("put", "create", "update", "delete", "sign", "import"))
+        for name, _ in api.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "extra",
+        "missing",
+        "import",
+        "delete",
+        "replace",
+        "prior-update",
+        "prior-missing",
+        "prior-readback",
+        "extra-inline",
+        "extra-attached",
+        "trust",
+        "policy",
+        "key-policy",
+        "alias",
+        "unknown-policy",
+        "source-policy",
+        "source-resource",
+        "config-expression",
+        "lineage",
+        "serial",
+        "unsealed-observation",
+        "omitted-observation",
+        "spki",
+        "key-state",
+    ],
+)
+def test_ext2_inventory_rejects_adoption_drift_and_correlated_state_api_mutation(
+    ext2_native, mutation
+):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        inventory_case,
+        InventoryAPI,
+        rebind,
+    )
+    from tools.cnesdata_delivery import ext2_inventory as inventory
+
+    case = inventory_case(ext2_native)
+    plan = case["saved_plan"]["json"]
+    changes = {r["address"]: r for r in plan["resource_changes"]}
+    rows = case["state_after"]["resources"]
+    by_name = {
+        r["type"] + "." + r["name"]: r["instances"][0]["attributes"] for r in rows
+    }
+    if mutation == "extra":
+        rows.append(
+            copy.deepcopy(rows[0]) | {"type": "aws_s3_bucket", "name": "external"}
+        )
+    elif mutation == "missing":
+        case["state_after"]["resources"] = [
+            r for r in rows if r["type"] != "aws_kms_alias"
+        ]
+    elif mutation == "import":
+        changes["aws_kms_key.ext2_signing[0]"]["change"]["importing"] = {"id": "adopt"}
+    elif mutation in {"delete", "replace", "prior-update"}:
+        a = (
+            "aws_iam_role.api"
+            if mutation == "prior-update"
+            else "aws_kms_key.ext2_signing[0]"
+        )
+        changes[a]["change"]["actions"] = {
+            "delete": ["delete"],
+            "replace": ["delete", "create"],
+            "prior-update": ["update"],
+        }[mutation]
+    elif mutation == "prior-missing":
+        case["state_before"]["resources"].pop()
+    elif mutation in {"trust", "policy", "key-policy"}:
+        kind, field = {
+            "trust": ("aws_iam_role.ext2_gate", "assume_role_policy"),
+            "policy": ("aws_iam_role_policy.ext2_gate", "policy"),
+            "key-policy": ("aws_kms_key.ext2_signing", "policy"),
+        }[mutation]
+        body = json.loads(by_name[kind][field])
+        body["Statement"].append({"Effect": "Allow", "Action": "*", "Resource": "*"})
+        by_name[kind][field] = json.dumps(body)
+        changes[kind + "[0]"]["change"]["after"][field] = by_name[kind][field]
+    elif mutation == "alias":
+        by_name["aws_kms_alias.ext2_signing"]["target_key_id"] = (
+            "00000000-0000-4000-8000-000000000099"
+        )
+        changes["aws_kms_alias.ext2_signing[0]"]["change"]["after"]["target_key_id"] = (
+            by_name["aws_kms_alias.ext2_signing"]["target_key_id"]
+        )
+    elif mutation == "unknown-policy":
+        changes["aws_iam_role_policy.ext2_gate[0]"]["change"]["after_unknown"] = {
+            "policy": True,
+            "role": True,
+        }
+    elif mutation.startswith("source-"):
+        path = "opentofu/cnesdata-delivery/evidence.tf"
+        raw = case["source_blobs"]["head"][path]
+        raw = (
+            raw.replace(b'"kms:Sign"', b'"kms:*"')
+            if mutation == "source-policy"
+            else raw + b'\nresource "aws_s3_bucket" "external" { bucket = "adopt" }\n'
+        )
+        case["source_blobs"]["head"][path] = raw
+        case["governance"]["sources"][path] = sha(raw)
+    elif mutation == "config-expression":
+        row = next(
+            r
+            for r in plan["configuration"]["root_module"]["resources"]
+            if r["address"] == "aws_iam_role_policy.ext2_gate"
+        )
+        row["expressions"]["role"] = {"constant_value": "cnesdata-delivery-ext2-gate"}
+    elif mutation == "lineage":
+        case["state_after"]["lineage"] = "foreign"
+    elif mutation == "serial":
+        case["state_after"]["serial"] = 1
+    rebind(case)
+    api = InventoryAPI(case)
+    api.mutation = mutation
+    with pytest.raises(ValueError):
+        observed = inventory.observe_inventory(
+            state=case["state_after"], iam=api, kms=api, rolesanywhere=api
+        )
+        if mutation == "unsealed-observation":
+            observed = dict(observed.values)
+        elif mutation == "omitted-observation":
+            observed.values.pop("aws_iam_role.api")
+        inventory.verify_ext2_inventory(**case, observations=observed)
+
+
+@pytest.fixture(scope="module")
 def crypto(tmp_path_factory):
     directory = tmp_path_factory.mktemp("ext2-synthetic-ephemeral-key")
     executable = shutil.which("openssl")
