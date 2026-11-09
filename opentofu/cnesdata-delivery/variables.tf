@@ -170,3 +170,42 @@ variable "crl_handoff_sha256" {
   default     = null
   nullable    = true
 }
+
+variable "ext2_enabled" {
+  description = "Explicit owner-reviewed delivery-only EXT2 creation. Never enables a product apply."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "ext2" {
+  description = "Owner-frozen finite signing/evidence contract; external bucket and cipher key are never adopted."
+  type = object({
+    workflow_sha        = string
+    enabled_until       = string
+    retain_until        = string
+    admin_arns          = list(string)
+    bucket_arn          = string
+    cipher_kms_key_arn  = string
+    current_object_arns = list(string)
+    history_object_arns = list(string)
+  })
+  default  = null
+  nullable = true
+  validation {
+    condition = var.ext2 == null ? !var.ext2_enabled : try(
+      can(regex("^[0-9a-f]{40}$", var.ext2.workflow_sha)) &&
+      can(regex("^arn:aws:s3:::[a-z0-9.-]+$", var.ext2.bucket_arn)) &&
+      can(regex("^arn:aws:kms:us-east-2:${var.account_id}:key/[0-9a-f-]{36}$", var.ext2.cipher_kms_key_arn)) &&
+      alltrue([for date in [var.ext2.enabled_until, var.ext2.retain_until] : can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", date)) && can(timecmp(date, "1970-01-01T00:00:00Z"))]) &&
+      length(var.ext2.admin_arns) > 0 && length(var.ext2.admin_arns) <= 4 &&
+      length(distinct(var.ext2.admin_arns)) == length(var.ext2.admin_arns) &&
+      alltrue([for arn in var.ext2.admin_arns : can(regex("^arn:aws:iam::${var.account_id}:role/[A-Za-z0-9_+=,.@/-]+$", arn)) && arn != "arn:aws:iam::${var.account_id}:role/cnesdata-delivery-ext2-gate"]) &&
+      length(var.ext2.current_object_arns) == 3 && length(var.ext2.history_object_arns) <= 9 &&
+      length(distinct(concat(var.ext2.current_object_arns, var.ext2.history_object_arns))) == 3 + length(var.ext2.history_object_arns) &&
+      alltrue([for arn in var.ext2.current_object_arns : startswith(arn, "${var.ext2.bucket_arn}/cnesdata/prod/ext2/current/")]) &&
+      alltrue([for arn in var.ext2.history_object_arns : startswith(arn, "${var.ext2.bucket_arn}/cnesdata/prod/ext2/")]) &&
+    alltrue([for arn in concat(var.ext2.current_object_arns, var.ext2.history_object_arns) : length(regexall("[?*]", arn)) == 0 && !strcontains(arn, "..") && !endswith(arn, "/")]), false)
+    error_message = "EXT2 requires finite exact private object ARNs, a full same-account regional cipher CMK, immutable reusable SHA, absolute owner dates and named owner administrators."
+  }
+}

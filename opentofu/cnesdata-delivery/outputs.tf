@@ -36,3 +36,13 @@ output "github" {
     infrastructure_deploy_role_arn = aws_iam_role.delivery["deploy"].arn
   }
 }
+
+output "ext2" {
+  description = "Private delivery-only audit identifiers; never shared_outputs/v2 or an activation receipt."
+  sensitive   = true
+  value = var.ext2_enabled ? {
+    role_arn        = aws_iam_role.ext2_gate[0].arn
+    signing_key_arn = aws_kms_key.ext2_signing[0].arn
+    signing_alias   = aws_kms_alias.ext2_signing[0].name
+  } : null
+}

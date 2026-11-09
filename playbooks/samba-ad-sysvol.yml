@@ -1,0 +1,10 @@
+---
+- name: Manual Samba S5 SYSVOL transport
+  hosts: samba_ad_hosts
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: samba_ad_sysvol
+      tags:
+        - samba_ad_sysvol

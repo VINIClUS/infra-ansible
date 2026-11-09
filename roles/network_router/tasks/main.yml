@@ -230,42 +230,48 @@
   check_mode: false
   when: not ansible_check_mode
 
+- name: Install the bounded router recovery helper
+  ansible.builtin.copy:
+    src: router-recovery.py
+    dest: /usr/local/sbin/network-router-recovery.py
+    owner: root
+    group: root
+    mode: "0600"
+  when: not ansible_check_mode
+
+# Staging is outside rescue: a failed snapshot must never authorize restoring stale .prev.
+- name: Publish the complete preimage and arm network-router-deadman
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - /usr/local/sbin/network-router-recovery.py
+      - nft
+      - arm
+      - "{{ network_router_deadman_minutes | int }}"
+  changed_when: true
+  when: not ansible_check_mode and network_router_nft_cmp.rc != 0
+
 - name: Apply the ruleset under the dead-man timer
   when: not ansible_check_mode and network_router_nft_cmp.rc != 0
   block:
-    - name: Arm the nftables dead-man timer
-      ansible.builtin.command:
-        argv:
-          - sh
-          - -c
-          - >-
-            cp -p /etc/nftables.conf /etc/nftables.conf.prev 2>/dev/null;
-            systemctl stop network-router-deadman.timer 2>/dev/null;
-            systemctl reset-failed network-router-deadman.service 2>/dev/null;
-            systemd-run --unit=network-router-deadman --on-active={{ network_router_deadman_minutes | int }}min
-            --description='Restore the previous router ruleset unless confirmed'
-            /bin/sh -c "if [ -f /etc/nftables.conf.prev ]; then cp -p /etc/nftables.conf.prev /etc/nftables.conf;
-            nft -f /etc/nftables.conf; else nft flush ruleset; fi" &&
-            systemctl is-active --quiet network-router-deadman.timer
-      changed_when: true
-
     - name: Install and load the new ruleset
       ansible.builtin.command:
-        argv:
-          - sh
-          - -c
-          - cp /etc/nftables.conf.candidate /etc/nftables.conf && nft -f /etc/nftables.conf
+        argv: [/usr/bin/python3, /usr/local/sbin/network-router-recovery.py, nft, apply]
       changed_when: true
 
     - name: Drop the persistent SSH connection so the next task opens a new one
       ansible.builtin.meta: reset_connection
 
-    # If the new input chain locks the controller out this task is unreachable
-    # (not rescued) and the dead-man restores the previous ruleset.
+    # An unreachable controller leaves the timer free to restore the complete preimage.
     - name: Prove a new SSH connection from the controller still works
       ansible.builtin.ping:
 
-    - name: Read the loaded ruleset
+    - name: Finalize the timer and verify no recovery ran and final file and loaded state match
+      ansible.builtin.command:
+        argv: [/usr/bin/python3, /usr/local/sbin/network-router-recovery.py, nft, finalize]
+      changed_when: true
+
+    - name: Read the loaded ruleset after recovery finalization
       ansible.builtin.command:
         argv: [nft, list, tables]
       register: network_router_tables
@@ -278,30 +284,18 @@
           - "'table ip nat' in network_router_tables.stdout"
         fail_msg: "Loaded ruleset is incomplete: {{ network_router_tables.stdout_lines }}"
 
-    - name: Disarm the nftables dead-man timer
-      ansible.builtin.command:
-        argv:
-          - sh
-          - -c
-          - systemctl stop network-router-deadman.timer && ! systemctl is-active --quiet network-router-deadman.timer
-      changed_when: true
   rescue:
-    - name: Restore the previous ruleset after a failed verification
+    - name: Finish any running recovery and restore only the complete bound preimage
       ansible.builtin.command:
-        argv:
-          - sh
-          - -c
-          - >-
-            if [ -f /etc/nftables.conf.prev ]; then cp -p /etc/nftables.conf.prev /etc/nftables.conf;
-            nft -f /etc/nftables.conf; else nft flush ruleset; fi
+        argv: [/usr/bin/python3, /usr/local/sbin/network-router-recovery.py, nft, recover]
       changed_when: true
 
     - name: Fail after restoring the previous ruleset
       ansible.builtin.fail:
         msg: >-
-          The new router ruleset did not verify
-          ({{ ansible_failed_task.name | default('unknown task') }}); the previous
-          ruleset was restored.
+          The router attempt failed ({{ ansible_failed_task.name | default('unknown task') }}).
+          The complete bound preimage was restored; inspect the owned recovery state
+          and obtain fresh final file, loaded ruleset, network and service readbacks.
 
 # Package-dependent steps: a check run on a fresh guest stops validating here.
 - name: Load the ruleset at boot

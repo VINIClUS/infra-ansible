@@ -1,0 +1,469 @@
+---
+name: CnesData EXT2 signing and versioned evidence
+'on':
+  workflow_call:
+    inputs:
+      request_descriptor:
+        required: true
+        type: string
+      request_descriptor_sha256:
+        required: true
+        type: string
+      expected_source_sha:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+    outputs:
+      ext2_post_upload_receipt_v1:
+        description: Authenticated locator only; private bytes remain in S3
+        value: ${{ jobs.verify-handoff.outputs.ext2_post_upload_receipt_v1 }}
+permissions: {}
+env:
+  EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+  REQUEST_DESCRIPTOR: ${{ inputs.request_descriptor }}
+  REQUEST_DESCRIPTOR_SHA256: ${{ inputs.request_descriptor_sha256 }}
+  EXT2_MODE: ${{ inputs.mode }}
+  GITHUB_TOKEN: ${{ github.token }}
+  AWS_EC2_METADATA_DISABLED: 'true'
+  AWS_CONFIG_FILE: /dev/null
+  AWS_SHARED_CREDENTIALS_FILE: /dev/null
+jobs:
+  validate-no-creds:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    env:
+      CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
+    steps:
+      - name: Set pinned Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Load actual immutable EXT2 producer from authenticated attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYBOOT'
+          import base64, hashlib, json, os, re, urllib.request
+          from pathlib import Path
+
+          repo = "VINIClUS/CnesData"
+          producer = "VINIClUS/infra-ansible"
+          workflow = ".github/workflows/reusable-cnesdata-signing-gate.yml"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          source = os.environ["EXPECTED_SOURCE_SHA"]
+          assert re.fullmatch("[0-9a-f]{40}", source) and source == os.environ["GITHUB_SHA"]
+          run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+          assert re.fullmatch("[1-9][0-9]{0,19}", run_id) and re.fullmatch(
+              "[1-9][0-9]{0,19}", attempt
+          )
+          raw = os.environ["CNESDATA_DELIVERY_GOVERNANCE"].encode()
+          assert 0 < len(raw) <= 65536
+          gov = json.loads(raw)["ext2"]
+          assert gov["activation_enabled"] is True
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + path,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              with urllib.request.build_opener(NoRedirect()).open(
+                  request, timeout=20
+              ) as response:
+                  body = response.read(2097153)
+              assert len(body) <= 2097152
+              return json.loads(body)
+
+
+          run = get(repo + "/actions/runs/" + run_id + "/attempts/" + attempt)
+          assert run["repository"]["full_name"] == repo and run["repository"]["id"] == 1177879951
+          assert run["repository"]["owner"]["id"] == 124298687
+          assert (
+              run["head_repository"]["id"] == 1177879951
+              and run["head_repository"]["full_name"] == repo
+          )
+          assert run["head_sha"] == source and run["run_attempt"] == int(attempt)
+          assert run["event"] == "workflow_dispatch" and run["head_branch"] == "develop"
+          assert run["path"].split("@")[0] == gov["provenance"]["caller_workflow_path"]
+          refs = [
+              item
+              for item in run.get("referenced_workflows", [])
+              if item["path"].startswith(producer + "/" + workflow + "@")
+          ]
+          assert len(refs) == 1
+          pin = refs[0]["sha"]
+          assert (
+              re.fullmatch("[0-9a-f]{40}", pin)
+              and refs[0]["path"] == producer + "/" + workflow + "@" + pin
+          )
+          assert pin == gov["provenance"]["workflow_sha"]
+          names = [
+              "evidence.py",
+              "ext2_transport.py",
+              "signing_gate.py",
+              "ext2_inventory.py",
+              "runtime-requirements.txt",
+          ]
+          root = Path("tools/cnesdata_delivery")
+          assert (
+              not Path("tools").is_symlink()
+              and not root.parent.is_symlink()
+              and not root.is_symlink()
+          )
+          root.mkdir(parents=True, exist_ok=True)
+          for name in names:
+              path = "tools/cnesdata_delivery/" + name
+              entries = [
+                  item
+                  for item in gov["provenance"]["closure"]
+                  if item["repository"] == producer
+                  and item["revision"] == pin
+                  and item["path"] == path
+              ]
+              assert len(entries) == 1
+              item = get(producer + "/contents/" + path + "?ref=" + pin)
+              assert (
+                  item["type"] == "file" and item["encoding"] == "base64" and item["path"] == path
+              )
+              body = base64.b64decode(item["content"].replace("\n", ""), validate=True)
+              assert 0 < len(body) <= 262144 and len(body) == item["size"]
+              assert hashlib.sha256(body).hexdigest() == entries[0]["sha256"]
+              assert (
+                  hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest()
+                  == item["sha"]
+              )
+              target = root / name
+              assert not target.is_symlink()
+              target.write_bytes(body)
+          PYBOOT
+      - name: Install checksum-locked protected SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/ext2-python"
+          "${RUNNER_TEMP}/ext2-python/bin/pip" install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
+          echo "${RUNNER_TEMP}/ext2-python/bin" >> "${GITHUB_PATH}"
+      - name: Verify source, request and consumer closure without AWS credentials
+        run: python3 -m tools.cnesdata_delivery.signing_gate preflight
+  sign-store-publish:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+    env:
+      CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
+    steps:
+      - name: Set pinned Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Load actual immutable EXT2 producer from authenticated attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYBOOT'
+          import base64, hashlib, json, os, re, urllib.request
+          from pathlib import Path
+
+          repo = "VINIClUS/CnesData"
+          producer = "VINIClUS/infra-ansible"
+          workflow = ".github/workflows/reusable-cnesdata-signing-gate.yml"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          source = os.environ["EXPECTED_SOURCE_SHA"]
+          assert re.fullmatch("[0-9a-f]{40}", source) and source == os.environ["GITHUB_SHA"]
+          run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+          assert re.fullmatch("[1-9][0-9]{0,19}", run_id) and re.fullmatch(
+              "[1-9][0-9]{0,19}", attempt
+          )
+          raw = os.environ["CNESDATA_DELIVERY_GOVERNANCE"].encode()
+          assert 0 < len(raw) <= 65536
+          gov = json.loads(raw)["ext2"]
+          assert gov["activation_enabled"] is True
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + path,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              with urllib.request.build_opener(NoRedirect()).open(
+                  request, timeout=20
+              ) as response:
+                  body = response.read(2097153)
+              assert len(body) <= 2097152
+              return json.loads(body)
+
+
+          run = get(repo + "/actions/runs/" + run_id + "/attempts/" + attempt)
+          assert run["repository"]["full_name"] == repo and run["repository"]["id"] == 1177879951
+          assert run["repository"]["owner"]["id"] == 124298687
+          assert (
+              run["head_repository"]["id"] == 1177879951
+              and run["head_repository"]["full_name"] == repo
+          )
+          assert run["head_sha"] == source and run["run_attempt"] == int(attempt)
+          assert run["event"] == "workflow_dispatch" and run["head_branch"] == "develop"
+          assert run["path"].split("@")[0] == gov["provenance"]["caller_workflow_path"]
+          refs = [
+              item
+              for item in run.get("referenced_workflows", [])
+              if item["path"].startswith(producer + "/" + workflow + "@")
+          ]
+          assert len(refs) == 1
+          pin = refs[0]["sha"]
+          assert (
+              re.fullmatch("[0-9a-f]{40}", pin)
+              and refs[0]["path"] == producer + "/" + workflow + "@" + pin
+          )
+          assert pin == gov["provenance"]["workflow_sha"]
+          names = [
+              "evidence.py",
+              "ext2_transport.py",
+              "signing_gate.py",
+              "ext2_inventory.py",
+              "runtime-requirements.txt",
+          ]
+          root = Path("tools/cnesdata_delivery")
+          assert (
+              not Path("tools").is_symlink()
+              and not root.parent.is_symlink()
+              and not root.is_symlink()
+          )
+          root.mkdir(parents=True, exist_ok=True)
+          for name in names:
+              path = "tools/cnesdata_delivery/" + name
+              entries = [
+                  item
+                  for item in gov["provenance"]["closure"]
+                  if item["repository"] == producer
+                  and item["revision"] == pin
+                  and item["path"] == path
+              ]
+              assert len(entries) == 1
+              item = get(producer + "/contents/" + path + "?ref=" + pin)
+              assert (
+                  item["type"] == "file" and item["encoding"] == "base64" and item["path"] == path
+              )
+              body = base64.b64decode(item["content"].replace("\n", ""), validate=True)
+              assert 0 < len(body) <= 262144 and len(body) == item["size"]
+              assert hashlib.sha256(body).hexdigest() == entries[0]["sha256"]
+              assert (
+                  hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest()
+                  == item["sha"]
+              )
+              target = root / name
+              assert not target.is_symlink()
+              target.write_bytes(body)
+          PYBOOT
+      - name: Install checksum-locked protected SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/ext2-python"
+          "${RUNNER_TEMP}/ext2-python/bin/pip" install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
+          echo "${RUNNER_TEMP}/ext2-python/bin" >> "${GITHUB_PATH}"
+      - name: Verify source, request and consumer closure without AWS credentials
+        run: python3 -m tools.cnesdata_delivery.signing_gate preflight
+      - name: Sign once after authenticated Phase A and verify three S3 versions
+        run: python3 -m tools.cnesdata_delivery.signing_gate sign
+      - name: Publish only the receipt commitment
+        id: artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ext2-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .ext2-public/receipt-ref.json
+          if-no-files-found: error
+          overwrite: false
+      - name: Commit EXT2 artifact reference
+        id: commit
+        env:
+          EXT2_ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+          EXT2_ARTIFACT_SHA256: ${{ steps.artifact.outputs.artifact-digest }}
+        run: python3 -m tools.cnesdata_delivery.signing_gate publish-commit
+    needs: validate-no-creds
+    if: ${{ inputs.mode == 'activation' }}
+    outputs:
+      ext2_post_upload_receipt_v1: ${{ steps.commit.outputs.ext2_post_upload_receipt_v1 }}
+  verify-handoff:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+    env:
+      CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
+      EXT2_POST_UPLOAD_RECEIPT: ${{ needs.sign-store-publish.outputs.ext2_post_upload_receipt_v1 }}
+    steps:
+      - name: Set pinned Python runtime
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Load actual immutable EXT2 producer from authenticated attempt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYBOOT'
+          import base64, hashlib, json, os, re, urllib.request
+          from pathlib import Path
+
+          repo = "VINIClUS/CnesData"
+          producer = "VINIClUS/infra-ansible"
+          workflow = ".github/workflows/reusable-cnesdata-signing-gate.yml"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          source = os.environ["EXPECTED_SOURCE_SHA"]
+          assert re.fullmatch("[0-9a-f]{40}", source) and source == os.environ["GITHUB_SHA"]
+          run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+          assert re.fullmatch("[1-9][0-9]{0,19}", run_id) and re.fullmatch(
+              "[1-9][0-9]{0,19}", attempt
+          )
+          raw = os.environ["CNESDATA_DELIVERY_GOVERNANCE"].encode()
+          assert 0 < len(raw) <= 65536
+          gov = json.loads(raw)["ext2"]
+          assert gov["activation_enabled"] is True
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + path,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2026-03-10",
+                  },
+              )
+              with urllib.request.build_opener(NoRedirect()).open(
+                  request, timeout=20
+              ) as response:
+                  body = response.read(2097153)
+              assert len(body) <= 2097152
+              return json.loads(body)
+
+
+          run = get(repo + "/actions/runs/" + run_id + "/attempts/" + attempt)
+          assert run["repository"]["full_name"] == repo and run["repository"]["id"] == 1177879951
+          assert run["repository"]["owner"]["id"] == 124298687
+          assert (
+              run["head_repository"]["id"] == 1177879951
+              and run["head_repository"]["full_name"] == repo
+          )
+          assert run["head_sha"] == source and run["run_attempt"] == int(attempt)
+          assert run["event"] == "workflow_dispatch" and run["head_branch"] == "develop"
+          assert run["path"].split("@")[0] == gov["provenance"]["caller_workflow_path"]
+          refs = [
+              item
+              for item in run.get("referenced_workflows", [])
+              if item["path"].startswith(producer + "/" + workflow + "@")
+          ]
+          assert len(refs) == 1
+          pin = refs[0]["sha"]
+          assert (
+              re.fullmatch("[0-9a-f]{40}", pin)
+              and refs[0]["path"] == producer + "/" + workflow + "@" + pin
+          )
+          assert pin == gov["provenance"]["workflow_sha"]
+          names = [
+              "evidence.py",
+              "ext2_transport.py",
+              "signing_gate.py",
+              "ext2_inventory.py",
+              "runtime-requirements.txt",
+          ]
+          root = Path("tools/cnesdata_delivery")
+          assert (
+              not Path("tools").is_symlink()
+              and not root.parent.is_symlink()
+              and not root.is_symlink()
+          )
+          root.mkdir(parents=True, exist_ok=True)
+          for name in names:
+              path = "tools/cnesdata_delivery/" + name
+              entries = [
+                  item
+                  for item in gov["provenance"]["closure"]
+                  if item["repository"] == producer
+                  and item["revision"] == pin
+                  and item["path"] == path
+              ]
+              assert len(entries) == 1
+              item = get(producer + "/contents/" + path + "?ref=" + pin)
+              assert (
+                  item["type"] == "file" and item["encoding"] == "base64" and item["path"] == path
+              )
+              body = base64.b64decode(item["content"].replace("\n", ""), validate=True)
+              assert 0 < len(body) <= 262144 and len(body) == item["size"]
+              assert hashlib.sha256(body).hexdigest() == entries[0]["sha256"]
+              assert (
+                  hashlib.sha1(b"blob " + str(len(body)).encode() + b"\0" + body).hexdigest()
+                  == item["sha"]
+              )
+              target = root / name
+              assert not target.is_symlink()
+              target.write_bytes(body)
+          PYBOOT
+      - name: Install checksum-locked protected SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/ext2-python"
+          "${RUNNER_TEMP}/ext2-python/bin/pip" install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
+          echo "${RUNNER_TEMP}/ext2-python/bin" >> "${GITHUB_PATH}"
+      - name: Verify source, request and consumer closure without AWS credentials
+        run: python3 -m tools.cnesdata_delivery.signing_gate preflight
+      - name: Read original publisher and versions using a read-only session
+        id: verify
+        run: python3 -m tools.cnesdata_delivery.signing_gate verify
+    needs:
+      - validate-no-creds
+      - sign-store-publish
+    if: >-
+      ${{ always() && needs.validate-no-creds.result == 'success' && ((inputs.mode == 'activation' &&
+      needs.sign-store-publish.result == 'success') || (inputs.mode == 'historical' && needs.sign-store-publish.result
+      == 'skipped')) }}
+    outputs:
+      ext2_post_upload_receipt_v1: ${{ steps.verify.outputs.ext2_post_upload_receipt_v1 }}
