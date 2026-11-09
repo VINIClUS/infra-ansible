@@ -102,7 +102,7 @@ identidade e porta em S7, sem ampliar o grupo dos cinco guests do projeto.
 | --- | --- | --- |
 | Pilotos/administradores exatos → DCs | 53, 88, 135, 389, 445, 464, 636, 3268, 3269, 49152–65535 | 53, 88, 389, 464; 123 somente pilotos |
 | DCs → DCs | mesmas portas TCP de AD | 53, 88, 389, 464 |
-| DC01 → DC02 | 22 com chave de comando restrito para SYSVOL | — |
+| DC02 → DC01 | 22 para pull SYSVOL, chave privada apenas no DC02 e exportação somente leitura no DC01 | — |
 | Administradores exatos → `ssh_targets` | 22; Windows administrado por console inicialmente | — |
 | Guests de identidade → CA | 443 com identidade TLS validada | — |
 | DCs → forwarders exatos | 53 | 53 |

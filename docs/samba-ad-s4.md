@@ -186,8 +186,10 @@ Não há resultado efetivo CBT/SMB signing/SMB1/NTLMv1 negativo nesta fonte.
 `native_protocol_acceptance: pending` é explícito mesmo após os readbacks locais.
 É obrigatório provar binding válido, ausente e incorreto; LDAP sem assinatura;
 TLS antigo; SMB sem signing; SMB1 e NTLMv1; NTLMv2 e AES piloto válidos antes de
-aceite S4. Falta ainda o runner autenticado dessa bateria, vinculado aos clientes
-piloto reais e à versão instalada; não substituir por assertions de configuração.
+aceite S4. O runner manual opt-in está em `tools.samba_ad.protocol`, com contrato,
+provas e limitações em [samba-ad-s4-protocol.md](samba-ad-s4-protocol.md). Esta
+fonte não executou a bateria nos pilotos reais ou na versão instalada; não
+substituir medições e auditoria por assertions de configuração ou testes locais.
 Backup/DR e migração municipal não fazem parte da entrega ou dos gates.
 
 ## Fontes e verificação

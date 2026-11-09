@@ -1,0 +1,8 @@
+# Optional manual runner dependencies; never installed by a role or deployment.
+# Supply the reviewed cryptography/PyYAML/native GSS libraries separately.
+# pip --no-deps --require-hashes -r tools/samba_ad/protocol-requirements.txt
+pyspnego==0.12.4 \
+    --hash=sha256:a29a34de1abe9e9b30d9aa1d363f8e49fc159eb7355b1f2ee86ccb3a2ce3bba9 \
+    --hash=sha256:acb314d6ca5c9ce87994b1eebbe2d8b687e0d564f9d650b306afb4c8f9c2ffd5
+gssapi==1.11.1 \
+    --hash=sha256:2049ee4b1d0c363163a1344b7282a363f9f4094e51d2c36de0cf01d4735e0ae2
