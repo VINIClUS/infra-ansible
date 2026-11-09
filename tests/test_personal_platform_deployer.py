@@ -850,10 +850,16 @@ def test_host_historical_diagnostic_precedes_all_mutating_admission(
 
 
 @pytest.mark.parametrize(
-    "uncertain,late", [(False, False), (True, False), (False, True)]
+    "uncertain,late,restore_failure",
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
 )
 def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
-    tmp_path, monkeypatch, uncertain, late
+    tmp_path, monkeypatch, uncertain, late, restore_failure
 ):
     """Actual host_main, driver, framing, ssh_exchange/classifier and runner projection.
 
@@ -979,6 +985,8 @@ def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
             ).encode()
         if uncertain and "pull" in argv:
             raise TimeoutError("unknown daemon effect")
+        if restore_failure and argv[-2:] == ["-s", "reload"]:
+            raise TimeoutError("rollback reload outcome unknown")
         if "-c" in argv:
             if late:
                 clock.advance(
@@ -1083,7 +1091,7 @@ def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
     monkeypatch.setenv("CNESDATA_HOST_GOVERNANCE", g.canonical(gov).decode())
     monkeypatch.setenv("RUNNER_TEMP", str(runner))
     monkeypatch.setenv("GITHUB_OUTPUT", str(runner / "outputs"))
-    if uncertain:
+    if uncertain or restore_failure:
         with pytest.raises(ValueError, match="unknown outcome"):
             g.runner_main("execute")
     else:
@@ -1095,12 +1103,21 @@ def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
     )
     decision = read(directory / "recovery-decision.json")
     assert authority["lease"]["state"] == "HELD"
-    assert record["state"] == "RECOVERY_REQUIRED"
+    expected_state = (
+        "RECOVERY_REQUIRED" if uncertain or late or restore_failure else "ROLLED_BACK"
+    )
+    assert record["state"] == authority["head"]["state"] == expected_state
     assert active.read_bytes() == b"original nginx checkpoint"
     assert calls == ["oidc", "ssm", "ssm", "ssm"]
-    if uncertain:
+    if uncertain or restore_failure:
         assert record["effect_possible"] is True
-        assert all(d["kind"] != "restore-previous" for d in record["dispatches"])
+        if restore_failure:
+            assert any(
+                d["kind"] == "restore-previous" and d["state"] == "OUTCOME_UNKNOWN"
+                for d in record["dispatches"]
+            )
+        else:
+            assert all(d["kind"] != "restore-previous" for d in record["dispatches"])
         assert not (runner / "cnesdata-host-public").exists()
     else:
         restored = any(

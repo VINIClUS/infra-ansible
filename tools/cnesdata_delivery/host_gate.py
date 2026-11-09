@@ -3369,7 +3369,13 @@ def host_main():
                     window.import_recovery(decision)
                     with contextlib.suppress(Exception):
                         driver.restore_previous()
-                operation.transition("RECOVERY_REQUIRED")
+                # The exact rollback readback owns its terminal state. Preserve
+                # it while still returning a diagnostic, not fresh acceptance.
+                if (
+                    operation.record["state"] != "ROLLED_BACK"
+                    or operation.record["effect_possible"]
+                ):
+                    operation.transition("RECOVERY_REQUIRED")
                 if driver is not None and request is not None and not response_started:
                     driver.processes()  # Prove retirement before spending the one-shot.
                     response = diagnose_once(
