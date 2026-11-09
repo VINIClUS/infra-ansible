@@ -29,9 +29,14 @@ only. The role is disabled by default and needs an exact `--limit` and
   zone, `except-interface=lo` and `no-dhcp-interface=<uplink>`; the role asserts
   nothing answers DNS on the uplink or a wildcard address. DHCP ranges announce
   the router, DNS and the VNet MTU (option 26).
-- Every ruleset is validated with `nft --check`, then loaded under a dead-man
-  timer (`network-router-deadman`) that restores the previous ruleset unless a
-  fresh SSH connection from the controller succeeds.
+- Every ruleset is validated with `nft --check`. A verified complete preimage
+  is published atomically before arming `network-router-deadman`; a staging
+  failure stops outside the apply/rescue block. Applying and restoring also
+  use same-directory temporary files, file/directory fsync and atomic replace,
+  preserving ownership and mode. A fresh SSH connection must succeed. Finalizing
+  stops only the timer, waits boundedly for any queued/running recovery without
+  killing it, and fails the attempt if recovery ran. Only then are the final
+  persistent hash and loaded semantic ruleset checked; table/DNS checks follow.
 
 ```bash
 ansible-playbook -i <private-inventory> playbooks/network-router.yml \
@@ -42,6 +47,34 @@ A `--check` run on a fresh guest validates the contract, interfaces, sysctl,
 netplan override and the rendered ruleset, then stops validating at the
 package-dependent steps (nftables service, dnsmasq configuration and
 services), which only run for real.
+
+## Recovery boundaries
+
+The root-owned helper `/usr/local/sbin/network-router-recovery.py` is mode 0600
+and is invoked with `/usr/bin/python3`. Its CLI accepts only fixed `nft` or
+`netplan` operations, never caller-supplied paths or native commands. Its private
+operation state and locks live in `/run/network-router-recovery` (0700), with
+files 0600. The existing nft `.prev` keeps the current file's ownership/mode;
+the candidate must be 0600. An incomplete or recovered attempt is not silently
+rearmed. Inspect/classify it and obtain fresh network/service readbacks before
+an operator prepares another attempt. Reboot invalidates the transient state;
+these timers are not reboot-persistent recovery guarantees.
+
+The role's timer protects nft only. For a separately reviewed netplan change,
+an operator may stage the same reviewed helper before the role, then invoke
+`netplan arm <actual-before-sha256> <reviewed-desired-sha256>`. This fixed-path
+operation snapshots only `/etc/netplan/90-network-router.yaml` into
+`/run/network-router-recovery/netplan.before` and arms the separate 15 minute
+`samba-ad-router-policy-netplan-deadman` pair. It does not install a new overlay.
+The `netplan finalize` operation rejects a triggered recovery and verifies the
+final overlay hash; the operator must then verify fresh actual links/routes,
+wait-online requirements and services. `netplan recover` first waits for any
+running restoration, then repeats atomic restore/generate/reload if necessary.
+It refuses foreign overlay bytes, while accepting either complete before or
+desired image so a failed native generate/reload is safely retryable. Never
+classify a stopped timer alone as completed recovery or reapply an expired
+attempt to hide failure. Use the independently verified recovery channel when
+SSH is unavailable, and leave an in-progress restoration uninterrupted.
 
 ## Changing the uplink address
 
