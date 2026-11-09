@@ -235,7 +235,7 @@ function Verify-UserPolicy($R,$Credential,$DC,[string]$Work) {
     @{sid=$sid.Value;dc=$DC.fqdn;policies=@(Scope-Policies $script:Policies 'User');rows=$rows;directory=$directory} |
         ConvertTo-Json -Depth 40 -Compress | Set-Content $inputFile -Encoding UTF8
     $source="param([string]`$InputFile)`n`$ErrorActionPreference='Stop';Set-StrictMode -Version Latest`n"
-    foreach($name in @('Assert-S6','Rsop-Child','Rsop-ID','Assert-RsopGPO','Assert-RsopApplied','Read-RsopXML','Assert-RegistryPolicy')){
+    foreach($name in @('Assert-S6','Rsop-Child','Rsop-ID','Rsop-Guid','Assert-RsopGPO','Assert-RsopApplied','Read-RsopXML','Assert-RegistryPolicy')){
         $source+='function '+$name+' {'+(Get-Command $name).Definition+"}`n"
     }
     $source+=@'

@@ -79,7 +79,7 @@ function Check-Assets($R) {
     Assert-S6 ((File-Hash $R.windows.baseline.archive) -ceq $R.windows.baseline.sha256)
 }
 function Prepare-Pilot($R, $Observed) {
-    Check-Assets $R; Assert-RsopSamples $R
+    Check-Assets $R
     if (-not $R.apply) { return }
     Assert-S6 (-not $Observed.member)
     foreach ($key in @('root','issuer')) {
@@ -216,7 +216,8 @@ try {
     $R=$wire.request; $script:M=$wire.manifest; $script:BaselineCatalog=$wire.baseline_catalog
     $observed=Inspect-Pilot $R
     if ($wire.mode -eq 'probe') {
-        Check-Assets $R; Assert-RsopSamples $R
+        Check-Assets $R
+        if ($R.action -eq 'policy') { Assert-RsopSamples $R }
         if ($R.action -ne 'prepare') {
             Assert-S6 ($null -ne $observed.state)
             Check-Endpoints $R $observed # before PVE opens its credential reference

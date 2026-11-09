@@ -311,6 +311,35 @@ def test_uuid_guard_rejects_equivalent_uppercase_and_invalid_identity(configured
         guest.check_collisions(r['substrate'],api,[{'vmid':800099,'node':'node-a','type':'qemu'}])
 
 
+@pytest.mark.parametrize('configured,accepted', [
+    ('AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE',False),('invalid-uuid',False),(None,False),
+    ('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee',True)])
+def test_template_uuid_is_canonical_and_valid_before_clone(configured,accepted):
+    from tools.samba_ad import guest
+    from test_samba_ad_guest import Fake
+    r,_=pilot_request(True);s=r['substrate'];s['expected_digest']=None
+    api=Fake();original=api.get
+    target=f"/nodes/{s['template']['node']}/qemu/{s['template']['vmid']}/config"
+    def get(path,**kwargs):
+        if path=='/cluster/status':
+            return [{'type':'cluster','quorate':1}, *[{'type':'node','name':n,'online':1}
+                    for n in {s['template']['node'],s['resource']['node']}]]
+        if path==target:
+            result={'template':1,'digest':s['template']['digest'],'name':'source-template','ostype':'win11',
+                    'onboot':0,'scsi0':s['template']['storage']+':base-disk-0,size=16G'}
+            if configured is not None:result['smbios1']='uuid='+configured
+            return result
+        result=original(path,**kwargs)
+        if path.startswith('/nodes/') and path.endswith('/status') and '/storage/' not in path:
+            result.update(kversion='test-kernel',pveversion='test-pve')
+        return result
+    api.get=get
+    if accepted:assert guest.reconcile(s,api,check=True)['state']=='planned'
+    else:
+        with pytest.raises(ValueError,match='UUID'):guest.reconcile(s,api,check=True)
+    assert not api.guests
+
+
 def test_only_linux_prepare_can_bypass_two_dc_gate():
     m=mod()
     for pilot in ['linux_pilot','windows_pilot']:
@@ -318,10 +347,18 @@ def test_only_linux_prepare_can_bypass_two_dc_gate():
             assert m.needs_dc_gate({'pilot':pilot,'action':action}) == (pilot!='linux_pilot' or action!='prepare')
 
 
+@pytest.mark.parametrize('action',['prepare','join','verify','policy'])
+def test_rsop_qualification_is_mandatory_for_policy_without_creating_join_cycle(action):
+    r,m=pilot_request(True);r['action']=action;r['windows']['rsop']=None
+    if action=='policy':
+        with pytest.raises(ValueError):mod().validate(r,m)
+    else:assert mod().validate(r,m)['state']=='validated'
+
+
 def test_windows_prepare_without_two_dc_records_stops_before_guest_or_directory(monkeypatch,capsys):
     import io
     import sys
-    m=mod();r,manifest=pilot_request(True)
+    m=mod();r,manifest=pilot_request(True);r['apply']=True
     wire={'schema':'samba-ad-pilot-wire/v1','request':r,'manifest':manifest,'credentials':None,
           'dc_records':[],'directory':None,'probe':None}
     monkeypatch.setattr(m.resource,'setrlimit',lambda *a:None)

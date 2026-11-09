@@ -38,10 +38,12 @@ def test_denied_filtered_stale_wrong_scope_or_dc_rsop_is_rejected():
 $id='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';$ext='35378eac-683f-11d2-a89a-00c04fbbcfa2'
 $start=[DateTime]::UtcNow.AddSeconds(-5);$finish=[DateTime]::UtcNow
 $p=@(@{id=$id;version=2;extensions=@($ext)})
-$native=@(@{guidName=$id;version=2;enabled=$true;accessDenied=$false;filterAllowed=$true;extensionIds=@($ext)})
+$native=@(@{guidName='LocalGPO'},@{guidName=$id;version=2;enabled=$true;accessDenied=$false;filterAllowed=$true;extensionIds=@($ext)})
 $extensions=@(@{extensionGuid=$ext;error=0;loggingStatus=1;beginTime=$start;endTime=$finish})
 $good='<Rsop xmlns="http://www.microsoft.com/GroupPolicy/Rsop"><ComputerResults><DCName>dc01.ad.test</DCName><GPO><Identifier>'+ $id +'</Identifier><Enabled>true</Enabled><IsValid>true</IsValid><AccessDenied>false</AccessDenied><FilterAllowed>true</FilterAllowed></GPO></ComputerResults></Rsop>'
 Assert-RsopApplied ([xml]$good) 'Computer' $p 'dc01.ad.test' $start $finish $native $extensions
+$local=$good.Replace('<ComputerResults>','<ComputerResults><GPO><Identifier>LocalGPO</Identifier></GPO>')
+Assert-RsopApplied ([xml]$local) 'Computer' $p 'dc01.ad.test' $start $finish $native $extensions
 $bad=@($good.Replace('<AccessDenied>false','<AccessDenied>true'),$good.Replace('<FilterAllowed>true','<FilterAllowed>false'),$good.Replace('<IsValid>true','<IsValid>false'),$good.Replace('ComputerResults','UserResults'),$good.Replace('dc01.ad.test','dc02.ad.test'),$good.Replace('/Rsop"','/Unknown"'))
 foreach($xml in $bad){$caught=$false;try{Assert-RsopApplied ([xml]$xml) 'Computer' $p 'dc01.ad.test' $start $finish $native $extensions}catch{$caught=$true};Assert-S6 $caught}
 $extensions[0].error=5;$caught=$false;try{Assert-RsopApplied ([xml]$good) 'Computer' $p 'dc01.ad.test' $start $finish $native $extensions}catch{$caught=$true};Assert-S6 $caught

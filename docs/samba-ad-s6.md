@@ -152,11 +152,14 @@ running-service requirements must pass. Current templates are not thereby
 qualified for it.
 
 RSoP acceptance has a fixed `server2025-gpmc-rsop-v1` parser profile. Before any
-Windows preparation/policy mutation, private SHA-256 pins and a review reference
+pilot GPO mutation, private SHA-256 pins and a review reference
 must identify real `rsop-computer.xml` and `rsop-user.xml` samples under
 `C:\SambaADAssets`, bound to the qualified template's observation artifact. The
 samples must match the exact namespace/structure and contain positive applied-GPO
-records. These are schema-qualification inputs, **not runtime acceptance**;
+records. Preparation and membership can run with `rsop: null`; collect the real
+computer/user reports from the newly joined owned pilot and review their pins
+before `policy`. This avoids requiring domain RSoP before the client can join.
+These are schema-qualification inputs, **not runtime acceptance**;
 current acceptance additionally requires fresh native CIM results and the exact
 current GPOs/versions/DC. Missing real samples, unrecognized schemas, stale
 extensions, logging-incomplete extensions, or missing assets fail closed. No

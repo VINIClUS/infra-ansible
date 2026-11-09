@@ -40,9 +40,15 @@ function Rsop-ID($Node) {
     $ids=@($Node.SelectNodes("./*[local-name()='Identifier']"))
     Assert-S6 ($ids.Count -eq 1)
     $inner=@($ids[0].SelectNodes("./*[local-name()='Identifier']"))
-    if ($inner.Count -eq 1) { return [Guid]$inner[0].InnerText }
+    if ($inner.Count -eq 1) { return Rsop-Guid $inner[0].InnerText }
     Assert-S6 ($inner.Count -eq 0 -and $ids[0].ChildNodes.Count -eq 1)
-    return [Guid]$ids[0].InnerText
+    return Rsop-Guid $ids[0].InnerText
+}
+function Rsop-Guid([string]$Value) {
+    # The native local-policy record is not an AD GPO. It must never satisfy
+    # a required baseline GUID, but it may coexist with real domain entries.
+    if ($Value -ceq 'LocalGPO') { return $null }
+    return [Guid]$Value
 }
 function Assert-RsopGPO($GPO) {
     foreach ($name in @('Enabled','IsValid','FilterAllowed')) {
@@ -62,7 +68,7 @@ function Assert-RsopApplied($XML,[string]$Scope,$Policies,[string]$DC,[DateTime]
     foreach ($policy in $Policies) {
         $matched=@($gpos | Where-Object {(Rsop-ID $_) -eq [Guid]$policy.id})
         Assert-S6 ($matched.Count -eq 1); Assert-RsopGPO $matched[0]
-        $native=@($NativeGpos | Where-Object {[Guid]$_.guidName -eq [Guid]$policy.id})
+        $native=@($NativeGpos | Where-Object {(Rsop-Guid $_.guidName) -eq [Guid]$policy.id})
         Assert-S6 ($native.Count -eq 1 -and $native[0].enabled -eq $true -and $native[0].accessDenied -eq $false -and
                    $native[0].filterAllowed -eq $true -and [uint32]$native[0].version -eq [uint32]$policy.version)
         Assert-S6 (@($policy.extensions).Count -gt 0)

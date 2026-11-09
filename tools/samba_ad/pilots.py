@@ -117,12 +117,15 @@ def validate(r, manifest):
             require(re.fullmatch(r"[A-Za-z0-9_.-]+\.(cab|msu)", path)); hex_value(digest)
         from tools.samba_ad.pilot_baseline import validate_request as validate_baseline
         validate_baseline(w["baseline"], r["ou"])
-        fields(w["rsop"], "profile template_artifact_sha256 samples review_ref")
-        require(w["rsop"]["profile"] == "server2025-gpmc-rsop-v1")
-        require(w["rsop"]["template_artifact_sha256"] == data["report"]["artifact_sha256"])
-        fields(w["rsop"]["samples"], "Computer User")
-        for value in w["rsop"]["samples"].values(): hex_value(value)
-        review(w["rsop"]["review_ref"])
+        if w["rsop"] is None:
+            require(r["action"] != "policy")
+        else:
+            fields(w["rsop"], "profile template_artifact_sha256 samples review_ref")
+            require(w["rsop"]["profile"] == "server2025-gpmc-rsop-v1")
+            require(w["rsop"]["template_artifact_sha256"] == data["report"]["artifact_sha256"])
+            fields(w["rsop"]["samples"], "Computer User")
+            for value in w["rsop"]["samples"].values(): hex_value(value)
+            review(w["rsop"]["review_ref"])
     return {"state": "validated", "changed": False}
 
 
