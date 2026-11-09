@@ -195,7 +195,12 @@ def authentication(r, manifest, credentials):
 def execute(w):
     r = w["request"]; manifest = w["manifest"]
     member, previous = inspect(r)
-    if w["mode"] == "probe": return {"nonce": w["nonce"], "identity": r["identity"], "member": member}
+    if w["mode"] == "probe":
+        if r["action"] != "prepare":
+            require(previous is not None)
+            for path, expected in previous["files"].items(): require(digest(path) == expected)
+            tls(r)  # before PVE even opens the protected credential reference
+        return {"nonce": w["nonce"], "identity": r["identity"], "member": member}
     if r["action"] == "prepare":
         require(not member and w["credentials"] is None)
         prepare(r, manifest, previous)

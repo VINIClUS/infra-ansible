@@ -326,6 +326,11 @@ try {
     $R=$wire.request; $script:M=$wire.manifest
     $observed=Inspect-Pilot $R
     if ($wire.mode -eq 'probe') {
+        Check-Assets $R
+        if ($R.action -ne 'prepare') {
+            Assert-S6 ($null -ne $observed.state)
+            Check-Endpoints $R $observed # before PVE opens its credential reference
+        }
         @{nonce=$wire.nonce; identity=$R.identity; member=$observed.member} | ConvertTo-Json -Depth 20 -Compress
         exit 0
     }

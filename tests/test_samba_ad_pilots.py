@@ -288,6 +288,16 @@ def test_linux_ldap_pins_same_tls_connection_before_password(monkeypatch,wrong_p
         assert calls == [("",""),("pilot-user@AD.EXAMPLE.INVALID","SENTINEL")]
 
 
+def test_join_probe_fails_tls_before_it_can_return_identity_for_secret_release(monkeypatch):
+    from tools.samba_ad import pilot_linux
+    r,manifest=pilot_request(); r["action"]="join"
+    monkeypatch.setattr(pilot_linux,"inspect",lambda _: (False,{"files":{}}))
+    def reject(_): raise ValueError("public TLS pin failed")
+    monkeypatch.setattr(pilot_linux,"tls",reject)
+    with pytest.raises(ValueError,match="public TLS pin failed"):
+        pilot_linux.execute({"request":r,"manifest":manifest,"mode":"probe","nonce":"test","credentials":None})
+
+
 def test_drs_health_rejects_missing_naming_context_errors_wrong_partner_and_stale_success():
     import datetime
     from tools.samba_ad.pilots_dc import check_replication
