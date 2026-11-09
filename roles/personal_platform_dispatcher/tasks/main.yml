@@ -1,0 +1,96 @@
+---
+- name: Install the fixed dispatcher only when explicitly enabled
+  when: personal_platform_dispatcher_enabled | bool
+  block:
+    - name: Require governed configuration and exact runtime checksum
+      ansible.builtin.assert:
+        that:
+          - personal_platform_delivery_enabled | default(false) | bool
+          - ansible_limit | default('') == inventory_hostname
+          - personal_platform_dispatcher_user == 'personal-cnesdata-deploy'
+          - personal_platform_host_governance.runtime_sha256 is match('^[0-9a-f]{64}$')
+          - personal_platform_host_governance.enabled | bool
+    - name: Create root-owned boundary directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - /etc/personal-platform
+        - /var/lib/personal-platform/deployments
+        - /usr/local/lib/personal-platform
+        - /run/personal-platform
+        - /run/personal-platform/staging
+    - name: Install the self-contained runtime from this exact checkout
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../tools/cnesdata_delivery/host_gate.py"
+        dest: /usr/local/lib/personal-platform/host_gate.py
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Read back the installed runtime checksum
+      ansible.builtin.stat:
+        path: /usr/local/lib/personal-platform/host_gate.py
+        checksum_algorithm: sha256
+      register: personal_platform_dispatcher_installed_runtime
+    - name: Install the integrated EXT1 cost validator in the declared closure
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../tools/cnesdata_delivery/contract.py"
+        dest: /usr/local/lib/personal-platform/contract.py
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Require the independently approved installed bytes
+      ansible.builtin.assert:
+        that:
+          - >-
+            personal_platform_dispatcher_installed_runtime.stat.checksum ==
+            personal_platform_host_governance.runtime_sha256
+    - name: Install the private original governed handoff
+      ansible.builtin.copy:
+        content: "{{ personal_platform_host_governance | to_json }}\n"
+        dest: /etc/personal-platform/host-gate.json
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+    - name: Create the isolated forced-command account
+      ansible.builtin.user:
+        name: "{{ personal_platform_dispatcher_user }}"
+        create_home: true
+        shell: /bin/sh
+        password_lock: true
+        groups: ""
+    - name: Install the exact sudo boundary
+      ansible.builtin.copy:
+        content: |
+          Defaults:personal-cnesdata-deploy env_keep += "SSH_ORIGINAL_COMMAND"
+          personal-cnesdata-deploy ALL=(root) NOPASSWD: \
+            /usr/bin/python3 -I /usr/local/lib/personal-platform/host_gate.py --host
+        dest: /etc/sudoers.d/personal-platform-dispatcher
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+    - name: Install the restricted SSH match block
+      ansible.builtin.copy:
+        content: |
+          Match User personal-cnesdata-deploy
+              ForceCommand sudo -n /usr/bin/python3 -I /usr/local/lib/personal-platform/host_gate.py --host
+              PermitTTY no
+              AllowTcpForwarding no
+              AllowAgentForwarding no
+              X11Forwarding no
+              PermitTunnel no
+              PermitUserRC no
+              PasswordAuthentication no
+          Match all
+        dest: /etc/ssh/sshd_config.d/60-personal-platform-dispatcher.conf
+        owner: root
+        group: root
+        mode: "0644"
+    - name: Validate the complete SSH configuration without reloading
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false

@@ -92,6 +92,44 @@ def test_ext2_native_creates_exactly_four_with_independent_full_policy_oracles(
     )
 
 
+def test_ext2_inventory_snapshot_keeps_current_native_source_and_plan_isolated(
+    ext2_native,
+):
+    from fixtures.cnesdata_delivery_ext2.inventory import (
+        INVENTORY_BASE,
+        INVENTORY_SOURCE,
+        ROOT,
+        inventory_case,
+        snapshot_sources,
+        variables,
+    )
+
+    inputs = variables(False)
+    code, current_plans, errors = ext2_native.plan(inputs, "current-source-isolation")
+    assert code == 0, errors
+    current_prepared = ext2_native.prepared
+    case = inventory_case(ext2_native, enabled=False)
+    assert ext2_native.prepared == current_prepared
+    assert INVENTORY_BASE == "99fc0e4805b96fbca7df06440d5ea3ad42e53369"
+    assert INVENTORY_SOURCE == "d6c2fe101f5a5c2287aabc83ed73dd9f9b95f41f"
+    assert case["source_blobs"] == {
+        "base": snapshot_sources(INVENTORY_BASE),
+        "head": snapshot_sources(INVENTORY_SOURCE),
+    }
+    for path, raw in case["source_blobs"]["head"].items():
+        assert (ext2_native.inventory_prepared / Path(path).name).read_bytes() == raw
+    for path in (ROOT / "opentofu/cnesdata-delivery").glob("*.tf"):
+        assert (current_prepared / path.name).read_bytes() == path.read_bytes()
+    configured = lambda plan: {
+        r["address"] for r in plan["configuration"]["root_module"]["resources"]
+    }
+    assert "aws_iam_role.host_gate" in configured(current_plans[0])
+    assert "aws_iam_role.host_gate" not in configured(case["saved_plan"]["json"])
+    assert "opentofu/cnesdata-delivery/host-gate.tf" not in case["source_blobs"]["head"]
+    # The original current-root cached plan is not replaced by the historical plan.
+    assert ext2_native.plan(inputs, "current-source-isolation")[1] == current_plans
+
+
 def test_ext2_inventory_boundary_exists():
     from tools.cnesdata_delivery.ext2_inventory import verify_ext2_inventory
 

@@ -12,6 +12,8 @@ from . import ACCOUNT, KEY, KEYS, PIN, SIGNING_KEY, UNTIL
 from fixtures.cnesdata_delivery_roles_anywhere.native import Native
 
 ROOT = Path(__file__).resolve().parents[3]
+INVENTORY_BASE = "99fc0e4805b96fbca7df06440d5ea3ad42e53369"
+INVENTORY_SOURCE = "d6c2fe101f5a5c2287aabc83ed73dd9f9b95f41f"
 ROLE = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-delivery-ext2-gate"
 ALIAS = "alias/cnesdata-delivery-ext2-signing"
 PROVIDER = f"arn:aws:iam::{ACCOUNT}:oidc-provider/token.actions.githubusercontent.com"
@@ -245,6 +247,37 @@ def policy(v):
 
 
 class Ext2Native(Native):
+    def inventory_plan(self, variables, name):
+        """Historical EXT2 inventory: plan and source bytes share one immutable tree.
+
+        Native.plan remains the current-root path for all other native tests.
+        This separate preparation/cache namespace does not claim that the closed
+        EXT2 production validator accepts a later expanded delivery root.
+        """
+        if not hasattr(self, "inventory_prepared"):
+            self.inventory_prepared = self.base / "inventory-source"
+            self.inventory_prepared.mkdir()
+            self.inventory_source_blobs = snapshot_sources(INVENTORY_SOURCE)
+            for path, raw in self.inventory_source_blobs.items():
+                (self.inventory_prepared / Path(path).name).write_bytes(raw)
+            for args in (
+                ("fmt", "-check"),
+                ("init", "-backend=false", "-input=false", "-lockfile=readonly"),
+                ("validate", "-json"),
+            ):
+                result = self.run(self.inventory_prepared, *args)
+                assert result.returncode == 0, result.stdout + result.stderr
+            assert all(
+                (self.inventory_prepared / Path(path).name).read_bytes() == raw
+                for path, raw in self.inventory_source_blobs.items()
+            )
+        current = self.prepared
+        try:
+            self.prepared = self.inventory_prepared
+            return self.plan(variables, "inventory-" + INVENTORY_SOURCE + "-" + name)
+        finally:
+            self.prepared = current
+
     def run(self, directory, *args):
         if args[0] == "test":
             path = directory / "contract.tftest.hcl"
@@ -331,12 +364,48 @@ def raw_state(resources, serial):
     }
 
 
+def snapshot_sources(revision):
+    prefix = "opentofu/cnesdata-delivery"
+    names = (
+        subprocess.run(
+            [
+                "rtk",
+                "proxy",
+                "git",
+                "ls-tree",
+                "--name-only",
+                "-z",
+                revision + ":" + prefix,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode()
+        .split("\0")
+    )
+    paths = [
+        prefix + "/" + name
+        for name in names
+        if name.endswith(".tf") or name == ".terraform.lock.hcl"
+    ]
+    return {
+        path: subprocess.run(
+            ["rtk", "proxy", "git", "show", revision + ":" + path],
+            cwd=ROOT,
+            capture_output=True,
+            check=True,
+        ).stdout
+        for path in paths
+    }
+
+
 def inventory_case(native, enabled=True):
     from . import canonical, sha
     from tools.cnesdata_delivery.ext2_inventory import _SavedPlan
 
     v = variables(enabled)
-    code, plans, errors = native.plan(
+    code, plans, errors = native.inventory_plan(
         v, "ext2-four" if enabled else "ext2-disabled-inventory"
     )
     assert code == 0, errors
@@ -352,33 +421,13 @@ def inventory_case(native, enabled=True):
         after["outputs"]["ext2"] = copy.deepcopy(
             plan["planned_values"]["outputs"]["ext2"]
         )
-    paths = [
-        p
-        for p in (ROOT / "opentofu/cnesdata-delivery").iterdir()
-        if p.suffix == ".tf" or p.name == ".terraform.lock.hcl"
-    ]
-    head = {str(p.relative_to(ROOT)): p.read_bytes() for p in paths}
-    base = {}
-    for path in head:
-        if path.endswith(("signing.tf", "evidence.tf")):
-            continue
-        base[path] = subprocess.run(
-            [
-                "rtk",
-                "proxy",
-                "git",
-                "show",
-                "99fc0e4805b96fbca7df06440d5ea3ad42e53369:" + path,
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            check=True,
-        ).stdout
+    head = dict(native.inventory_source_blobs)
+    base = snapshot_sources(INVENTORY_BASE)
     binary = b"explicitly synthetic saved plan; never an apply artifact"
     gov = {
         "root": "opentofu/cnesdata-delivery",
         "state_key": "shared/cnesdata-delivery/prod/opentofu.tfstate",
-        "base_sha": "99fc0e4805b96fbca7df06440d5ea3ad42e53369",
+        "base_sha": INVENTORY_BASE,
         "source_sha": PIN,
         "base_sources": {p: sha(b) for p, b in base.items()},
         "sources": {p: sha(b) for p, b in head.items()},

@@ -1,0 +1,21 @@
+---
+- name: Install the explicitly authorized personal delivery boundary
+  hosts: personal_platform
+  become: true
+  gather_facts: false
+  tags: [personal_platform_delivery]
+  pre_tasks:
+    - name: Require one exact inventory host and explicit installation authorization
+      ansible.builtin.assert:
+        that:
+          - personal_platform_delivery_enabled | default(false) | bool
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+          - personal_platform_delivery_checkpoint_sha256 is match('^[0-9a-f]{64}$')
+          - personal_platform_limnopulse_smoke_evidence_sha256 is match('^[0-9a-f]{64}$')
+        fail_msg: Personal delivery installation requires reviewed host checkpoint and LimnoPulse smoke evidence.
+  roles:
+    - role: personal_platform_dispatcher
+    - role: personal_platform_deployer
+    - role: personal_platform_nginx
+    - role: personal_platform_credentials
