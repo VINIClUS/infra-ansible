@@ -178,10 +178,23 @@ class Recovery:
                          "--property=LoadState,ActiveState,SubState,Job,InvocationID,"
                          "ExecMainStartTimestampMonotonic,Result,ExecMainStatus"])
         state = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
-        required = {"ActiveState", "Job"}
+        required = {"LoadState", "ActiveState", "SubState", "Job", "InvocationID"}
         if suffix == ".service":
-            required |= {"SubState", "InvocationID", "ExecMainStartTimestampMonotonic"}
+            required |= {"ExecMainStartTimestampMonotonic"}
         require(required <= state.keys(), "incomplete recovery unit readback")
+        require(state["LoadState"] in ["loaded", "not-found"], "unknown recovery load state")
+        require(state["ActiveState"] in ["active", "inactive", "failed", "activating",
+                                         "deactivating", "reloading"], "unknown recovery active state")
+        substates = (["dead", "waiting", "running", "elapsed", "failed"] if suffix == ".timer"
+                     else ["dead", "failed", "exited", "running", "condition", "start-pre", "start",
+                           "start-post", "stop", "stop-post", "stop-sigterm", "stop-sigkill",
+                           "final-sigterm", "final-sigkill"])
+        require(state["SubState"] in substates, "unknown recovery unit substate")
+        if state["LoadState"] == "not-found":
+            require(state["ActiveState"] == "inactive" and state["SubState"] == "dead"
+                    and state["Job"] in ["", "0"] and not state["InvocationID"]
+                    and state.get("ExecMainStartTimestampMonotonic", "0") == "0",
+                    "inconsistent absent recovery unit")
         return state
 
     @staticmethod
@@ -198,8 +211,20 @@ class Recovery:
 
     def close_timer(self):
         # Stop only the timer. A queued or running restoration must finish itself.
-        self.run(["systemctl", "stop", self.config["unit"] + ".timer"])
-        timer = self.show(".timer")
+        timer = self.show(".timer")  # Failed/unknown show never proves absence.
+        if timer["LoadState"] != "not-found":
+            try:
+                self.run(["systemctl", "stop", self.config["unit"] + ".timer"])
+            except subprocess.CalledProcessError as error:
+                # systemd v257 maps NoSuchUnit to EXIT_NOTINSTALLED (5).
+                # It may have collected this transient timer after our query.
+                if error.returncode != 5:
+                    raise
+                timer = self.show(".timer")
+                if timer["LoadState"] != "not-found":
+                    raise
+            else:
+                timer = self.show(".timer")
         require(timer.get("ActiveState") == "inactive" and not self.pending(timer), "timer not stopped")
         seen = False
         for _ in range(self.polls):
