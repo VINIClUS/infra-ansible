@@ -320,15 +320,15 @@ class AuthenticatedReceiptReference:
     member_bytes: bytes
 
 
-def authenticate_reference(
+def _authenticate_source(
     reference: dict[str, Any],
     *,
     github: Any,
     governance: dict[str, Any],
     current_invocation: dict[str, Any] | None,
     now: datetime,
-) -> AuthenticatedReceiptReference:
-    ref = validate_reference(reference)
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    ref = reference
     profile = governance["provenance"]
     require(
         profile["repository_id"] == 1177879951
@@ -428,6 +428,52 @@ def authenticate_reference(
             for name in required
         ),
         "source_checks",
+    )
+    return path, run, repo
+
+
+def authenticate_invocation(
+    *,
+    github: Any,
+    governance: dict[str, Any],
+    invocation: dict[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    closed(invocation, {"run_id", "run_attempt", "source_sha"})
+    positive_id(invocation["run_id"])
+    positive_id(invocation["run_attempt"])
+    hex_digest(invocation["source_sha"], 40)
+    profile = governance["provenance"]
+    identity = dict(invocation) | {
+        "caller_workflow_path": profile["caller_workflow_path"],
+        "reusable_workflow_sha": profile["workflow_sha"],
+    }
+    _, run, _ = _authenticate_source(
+        identity,
+        github=github,
+        governance=governance,
+        current_invocation=invocation,
+        now=now,
+    )
+    return run
+
+
+def authenticate_reference(
+    reference: dict[str, Any],
+    *,
+    github: Any,
+    governance: dict[str, Any],
+    current_invocation: dict[str, Any] | None,
+    now: datetime,
+) -> AuthenticatedReceiptReference:
+    ref = validate_reference(reference)
+    profile = governance["provenance"]
+    path, run, repo = _authenticate_source(
+        ref,
+        github=github,
+        governance=governance,
+        current_invocation=current_invocation,
+        now=now,
     )
     jobs: list[dict[str, Any]] = []
     total: int | None = None

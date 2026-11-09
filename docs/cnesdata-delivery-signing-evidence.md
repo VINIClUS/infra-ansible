@@ -48,6 +48,56 @@ Run corrente pode estar in_progress após publisher success; histórico exige te
 original completed/success e aceitação no catálogo retido. Nenhuma dessas provas é
 fornecida por channel/issuer JSON/result=success ou artifact name.
 
+## Assinatura, reusable e consumer privado
+
+O reusable próprio tem somente workflow_call: `validate-no-creds` autentica source/
+request/closure sem id-token; `sign-store-publish` assume a única role própria,
+valida Phase A e produz uma Sign DIGEST/ECDSA_SHA_256; `verify-handoff` sucede o
+publisher completo e assume a mesma role com sessão somente leitura. Histórico
+pula o job Sign e consome publisher original completed/success. Não há caller novo.
+
+Usa `CNESDATA_DELIVERY_GOVERNANCE` já existente, em subobjeto privado `ext2`, sem novo
+segredo ou campo v2. O owner fornece authority #29/6727502727, activation_enabled,
+storage, provenance, authorization, signing, crypto, consumer, session_duration_seconds
+e history. Ausência, shape errado ou fonte/SDK/tool fingerprint divergente fecha.
+`invocation` vem do contexto GitHub autenticado, não do descriptor. A autorização
+protegida fixa run/attempt/source/release/candidate e deadline absoluto do owner;
+rerun/ambiguidade exigem recovery revisado, nunca re-sign automático. O marcador
+in-process de mutação não é um lock distribuído: a closure auditada do caller deve
+ter uma única invocação de assinatura, sem fan-out/matrix. Não há nova lease/grant.
+
+Inputs privados do reusable: request_descriptor canônico, seu SHA256, expected_source_sha
+e mode activation/historical. Descriptor fechado: request_version=1, mode, source_sha,
+inputs e ext2_post_upload_receipt_v1. Em activation, inputs contém candidate_reference,
+phase_a_reference e retained_unit_task_definition_arns; refs são do contrato existente
+repo/run/attempt/artifact/digest/workflow/source. Em histórico, inputs=null e o locator
+precisa de entrada exata no catálogo retido protegido. Nenhum campo seleciona script,
+role, policy, backend, SDK endpoint, retenção ou source mutável. Descriptor é metadata
+pública e nunca deve conter credenciais, URL assinada ou corpo privado.
+
+O gate não publica um schema concorrente de activation. Antes de emitir credenciais,
+obtém por API/SHA/digest os arquivos aprovados de #470: activation.schema.json,
+verify_activation.py e build_activation.py. O adapter privado tem admit_ext2(payload,
+request=..., github=..., governance=..., now=..., historical=...) no verifier;
+prepare_ext2(request, ...) e render_ext2(VerifiedActivation, ...) no builder. admit_ext2
+valida schema/procedência/Phase A/freshness originais e retorna bytes originais de
+candidate/Phase A e activation_fields normalizados. O gate recompõe os digests,
+release/source/canary/ECR/revisões, verifica key usage/policy/SPKI reais e só então Sign.
+Esse ABI privado deve ser alinhado ao consumer integrado antes de Ready; fixtures
+offline não o tornam existente. Nenhum arquivo CnesData é implementado por EXT2.
+
+KMS Sign e Put SDK usam total_max_attempts=1, sem credencial ambiente ou endpoint de
+caller. A sessão cabe em2048 ou recusa sem widening; histórico tem Decrypt, nunca
+GenerateDataKey/Sign/Put. O prazo é rechecado com relógio atual antes das mutações.
+OpenSSL pinado pelo owner verifica prehash de SHA256 independentemente de KMS;
+fixtures geram chave efêmera só no diretório temporário de teste. O binário/fingerprint
+e suas dependências reais são facts de toolchain/Ready, sem promessa de configuração live.
+
+O renderer roda depois de verificar toda a cadeia e recebe VerifiedActivation com
+bytes/refs originais. Só produz as quatro variáveis aprovadas, em arquivo temporário
+privado do job. Wiring real e saída consumível por promoção/rollback são do owner
+antes de Ready; locator sozinho não significa que outro job leu bytes privados.
+
 Fontes: [HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html),
 [PutObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html),
 [override de Bucket Keys por objeto](https://docs.aws.amazon.com/AmazonS3/latest/userguide/configuring-bucket-key-object.html),
