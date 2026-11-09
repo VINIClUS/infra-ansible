@@ -322,3 +322,60 @@ class S3:
                 **self.retention_mutation,
             }
         }
+
+
+def install_historical_consumer(governance, github, candidate, phase_a, fields):
+    """Explicit synthetic owner modules fetched through the real source loader."""
+    verifier = (
+        "# OFFLINE CONTRACT FIXTURE; no real consumer integration.\n"
+        "def admit_ext2(payload, *, request, github, governance, now, historical=False):\n"
+        "    if not historical or payload != " + repr(canonical(fields)) + ":\n"
+        "        raise ValueError('synthetic original activation mismatch')\n"
+        "    expected = {'request_version': 1, 'mode': 'historical', 'inputs': None,\n"
+        "                'source_sha': governance['invocation']['source_sha'],\n"
+        "                'ext2_post_upload_receipt_v1': request['ext2_post_upload_receipt_v1']}\n"
+        "    if request != expected or request['ext2_post_upload_receipt_v1'] not in governance['provenance']['accepted_history']:\n"
+        "        raise ValueError('synthetic historical request mismatch')\n"
+        "    return {'candidate_bytes': "
+        + repr(candidate)
+        + ", 'phase_a_bytes': "
+        + repr(phase_a)
+        + ", 'activation_fields': "
+        + repr(fields)
+        + "}\n"
+    ).encode()
+    revisions = fields["revisions"]
+    rendered = {
+        "processor_active_unit_task_definition_arn": revisions["unit"],
+        "processor_retained_unit_task_definition_arns": [],
+        "scheduler_recovery_task_definition_arn": revisions["recovery"],
+        "scheduler_audit_task_definition_arn": revisions["audit"],
+    }
+    sources = {
+        "release/verify_activation.py": verifier,
+        "release/build_activation.py": (
+            "# OFFLINE CONTRACT FIXTURE\n"
+            "def prepare_ext2(*a, **kw): raise ValueError('historical fixture only')\n"
+            "def render_ext2(*a, **kw): return " + repr(rendered) + "\n"
+        ).encode(),
+        "release/activation.schema.json": canonical(
+            {"$comment": "offline contract fixture", "type": "object"}
+        ),
+    }
+    source = governance["provenance"]["source_sha"]
+    governance["consumer"] = {
+        "repository": REPOSITORY,
+        "source_sha": source,
+        "files": [{"path": path, "sha256": sha(raw)} for path, raw in sources.items()],
+    }
+    for path, raw in sources.items():
+        github.responses[f"repos/{REPOSITORY}/contents/{path}?ref={source}"] = {
+            "type": "file",
+            "path": path,
+            "encoding": "base64",
+            "size": len(raw),
+            "content": base64.b64encode(raw).decode(),
+            "sha": hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw
+            ).hexdigest(),
+        }

@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from typing import Any, cast
+from urllib.parse import unquote_to_bytes
 
 from tools.cnesdata_delivery import evidence as e
 from tools.cnesdata_delivery import ext2_transport as t
@@ -139,11 +140,22 @@ def document(value: Any, *, maximum: int = 32768) -> Any:
                 result[key] = item
             return result
 
-        return t.loads(
-            t.canonical(json.loads(value, object_pairs_hook=pairs)), maximum=maximum
-        )
+        try:
+            value = json.loads(value, object_pairs_hook=pairs)
+        except json.JSONDecodeError:
+            # Standard Botocore returns dictionaries. Also admit IAM's documented
+            # RFC3986 wire form, once, without form-style '+' to space conversion.
+            check(
+                "%" in value and re.search(r"%(?![0-9A-Fa-f]{2})", value) is None,
+                "document_encoding",
+            )
+            try:
+                decoded = unquote_to_bytes(value).decode("utf-8", "strict")
+                value = json.loads(decoded, object_pairs_hook=pairs)
+            except (UnicodeError, json.JSONDecodeError):
+                raise ValueError("ext2=inventory_document_encoding") from None
     check(type(value) is dict, "document")
-    return value
+    return t.loads(t.canonical(value), maximum=maximum)
 
 
 def closed(value: Any, required: set[str], optional: set[str]) -> dict[str, Any]:

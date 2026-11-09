@@ -5,6 +5,7 @@ from fnmatch import fnmatchcase
 import json
 import shutil
 import subprocess
+from urllib.parse import quote
 from pathlib import Path
 
 from . import ACCOUNT, KEY, KEYS, PIN, SIGNING_KEY, UNTIL
@@ -419,7 +420,8 @@ def rebind(case):
 class InventoryAPI:
     """SDK-shaped read-only double; response mutations do not change source oracles."""
 
-    def __init__(self, case):
+    def __init__(self, case, policy_format="dict"):
+        self.policy_format = policy_format
         self.resources = {}
         self.calls, self.covered, self.mutation = [], set(), None
         for row in case["state_after"]["resources"]:
@@ -428,6 +430,15 @@ class InventoryAPI:
                 if "index_key" in item:
                     address += "[" + json.dumps(item["index_key"]) + "]"
                 self.resources[address] = copy.deepcopy(item["attributes"])
+
+    def policy_document(self, value):
+        if self.policy_format == "dict":
+            return value
+        raw = json.dumps(value, ensure_ascii=False)
+        if self.policy_format == "json":
+            return raw
+        assert self.policy_format == "rfc3986"
+        return quote(raw, safe="")
 
     def find(self, kind, field, value):
         found = [
@@ -451,7 +462,7 @@ class InventoryAPI:
                 "Arn": r["arn"],
                 "Path": r.get("path") or "/",
                 "MaxSessionDuration": r["max_session_duration"],
-                "AssumeRolePolicyDocument": trust,
+                "AssumeRolePolicyDocument": self.policy_document(trust),
             }
         }
 
@@ -486,7 +497,9 @@ class InventoryAPI:
         ]
         assert len(found) == 1
         self.covered.add(found[0][0])
-        return kw | {"PolicyDocument": json.loads(found[0][1]["policy"])}
+        return kw | {
+            "PolicyDocument": self.policy_document(json.loads(found[0][1]["policy"]))
+        }
 
     def get_policy(self, **kw):
         self.calls.append(("get_policy", kw))
@@ -508,7 +521,7 @@ class InventoryAPI:
             "PolicyVersion": {
                 "VersionId": "v1",
                 "IsDefaultVersion": True,
-                "Document": json.loads(r["policy"]),
+                "Document": self.policy_document(json.loads(r["policy"])),
             }
         }
 

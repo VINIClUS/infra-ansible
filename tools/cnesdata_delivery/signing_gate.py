@@ -163,9 +163,10 @@ def _admission(
     return fields
 
 
-def read_signing_key(kms: Any, governance: dict[str, Any]) -> bytes:
+def _governed_signing_spki(governance: dict[str, Any]) -> bytes:
     config = t.closed(
-        governance["signing"], {"key_arn", "spki_sha256", "key_policy_sha256"}
+        governance.get("signing"),
+        {"key_arn", "spki_sha256", "key_policy_sha256", "spki_der_b64"},
     )
     account = e.storage_config(governance)["account_id"]
     e.require(
@@ -177,6 +178,27 @@ def read_signing_key(kms: Any, governance: dict[str, Any]) -> bytes:
         and config["key_arn"] != governance["storage"]["cipher_kms_key_arn"],
         "signing_key_scope",
     )
+    encoded = config["spki_der_b64"]
+    e.require(type(encoded) is str and len(encoded) == 124, "signing_spki_encoding")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception:
+        raise ValueError("ext2=signing_spki_encoding") from None
+    prefix = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
+    e.require(
+        base64.b64encode(raw).decode("ascii") == encoded
+        and len(raw) == 91
+        and raw.startswith(prefix)
+        and e.sha(raw) == t.hex_digest(config["spki_sha256"]),
+        "signing_spki_pin",
+    )
+    t.hex_digest(config["key_policy_sha256"])
+    return raw
+
+
+def read_signing_key(kms: Any, governance: dict[str, Any]) -> bytes:
+    governed_spki = _governed_signing_spki(governance)
+    config = governance["signing"]
     try:
         metadata = kms.describe_key(KeyId=config["key_arn"])["KeyMetadata"]
         public = kms.get_public_key(KeyId=config["key_arn"])
@@ -218,6 +240,7 @@ def read_signing_key(kms: Any, governance: dict[str, Any]) -> bytes:
         type(spki) is bytes
         and len(spki) == 91
         and spki.startswith(prefix)
+        and spki == governed_spki
         and e.sha(spki) == t.hex_digest(config["spki_sha256"])
         and e.sha(policy_bytes) == t.hex_digest(config["key_policy_sha256"]),
         "signing_key_pins",
@@ -492,6 +515,7 @@ def verify_ext2_reference(
     now: datetime,
     historical: bool,
 ) -> VerifiedActivation:
+    spki = _governed_signing_spki(governance)
     authenticated = t.authenticate_reference(
         reference,
         github=github,
@@ -586,22 +610,29 @@ def verify_ext2_reference(
         and signature.key == storage["current_keys"][1],
         "receipt_object_slots",
     )
+    if historical:
+        # Reconstruct data from authenticated contracted inputs. No prior CLI or
+        # Python adapter object is required; the existing consumer closure is
+        # fetched and authenticated by exactly the same source loader as the CLI.
+        request = {
+            "request_version": 1,
+            "mode": "historical",
+            "inputs": None,
+            "source_sha": t.hex_digest(governance["invocation"]["source_sha"], 40),
+            "ext2_post_upload_receipt_v1": dict(reference),
+        }
+        consumer = _load_consumer(governance, request, github)
+    else:
+        consumer = governance.get("_consumer_adapter")
     fields = _admission(
         payload.body,
-        governance.get("_consumer_adapter"),
+        consumer,
         github,
         governance,
         now,
         historical=historical,
     )
     _authorization(governance, fields, now, historical=historical)
-    spki_raw = governance.get("_signing_spki_der")
-    e.require(type(spki_raw) is bytes, "retained_spki_absent")
-    spki = cast(bytes, spki_raw)
-    e.require(
-        type(spki) is bytes and e.sha(spki) == governance["signing"]["spki_sha256"],
-        "retained_spki_pin",
-    )
     e.require(
         receipt["activation"]
         == {
@@ -939,6 +970,7 @@ def _configuration() -> tuple[dict[str, Any], dict[str, Any], t.GitHubClient]:
     _authorization(
         gov, gov["authorization"], _utc(), historical=request["mode"] == "historical"
     )
+    _governed_signing_spki(gov)
     return gov, request, github
 
 
@@ -1029,7 +1061,7 @@ def _private_root() -> Path:
 def _load_consumer(
     gov: dict[str, Any], request: dict[str, Any], github: Any
 ) -> _Consumer:
-    config = t.closed(gov["consumer"], {"repository", "source_sha", "files"})
+    config = t.closed(gov.get("consumer"), {"repository", "source_sha", "files"})
     e.require(
         config["repository"] == t.REPOSITORY
         and config["source_sha"] == gov["provenance"]["source_sha"],
@@ -1247,7 +1279,8 @@ def main() -> int:
             print(record)
             return 0
         consumer = _load_consumer(gov, request, github)
-        gov["_consumer_adapter"] = consumer
+        if request["mode"] == "activation":
+            gov["_consumer_adapter"] = consumer
         if args.stage == "preflight":
             return 0
         historical = request["mode"] == "historical"
@@ -1278,7 +1311,8 @@ def main() -> int:
                     os.environ.get("EXT2_POST_UPLOAD_RECEIPT", "").encode(), 4096
                 )
             )
-            gov["_signing_spki_der"] = read_signing_key(clients["kms"], gov)
+            if not historical:
+                read_signing_key(clients["kms"], gov)
             verified = verify_ext2_reference(
                 reference,
                 github=github,

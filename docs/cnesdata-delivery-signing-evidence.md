@@ -86,6 +86,22 @@ release/source/canary/ECR/revisões, verifica key usage/policy/SPKI reais e só 
 Esse ABI privado deve ser alinhado ao consumer integrado antes de Ready; fixtures
 offline não o tornam existente. Nenhum arquivo CnesData é implementado por EXT2.
 
+O handoff privado `signing` contém `key_arn`, `key_policy_sha256`, `spki_sha256` e
+`spki_der_b64`: DER público P-256 em base64 canônico e limitado (91 bytes DER,
+124 caracteres base64), conferido contra o pin existente. A realização nominal
+foi publicada em #29/6730732030 antes desta correção. Na publicação, esses bytes
+também precisam coincidir com GetPublicKey e os metadados/policy KMS reais antes
+de Sign. O valor não vem de receipt, env ou campo de caller não autenticados.
+
+`read_retained_activation(reference, *, github, s3, governance, now)` funciona em
+uma chamada nova com o handoff autenticado. Ela deriva o SPKI explícito, obtém a
+closure consumer já pinada por API/SHA/hash e monta o descriptor histórico fechado
+a partir de invocation/reference existentes. Não depende de objeto Python ou chave
+pré-carregados por um CLI anterior. As verificações de consumer, carrier, fonte,
+bindings, prazo atual e bytes originais continuam obrigatórias. Callable e CLI
+históricos verificam offline sem GetPublicKey, KMS metadata, Sign ou Put. O contrato
+público/GHA/grants e o conteúdo assinado de activation/receipt permanecem iguais.
+
 KMS Sign e Put SDK usam total_max_attempts=1, sem credencial ambiente ou endpoint de
 caller. A sessão cabe em2048 ou recusa sem widening; histórico tem Decrypt, nunca
 GenerateDataKey/Sign/Put. O prazo é rechecado com relógio atual antes das mutações.
@@ -164,6 +180,16 @@ não é aceito como resultado do observador. Essa capacidade de auditoria do ope
 continua um handoff real de Ready; nenhum desses reads administrativos amplia a role
 runtime. Fixtures usam SDK/decoder explícitos e plans mockados; o teste separado do
 decoder usa apenas terraform_data local, sem AWS. Nenhuma fixture é evidência live.
+
+Policies IAM aceitam os três formatos documentados: dict já decodificado, JSON
+textual e wire RFC3986. Botocore 1.40.71 normalmente converte policyDocumentType
+para dict no handler after-call.iam; a rejeição de um probe wire direto demonstrava
+uma lacuna do normalizador, sem comprovar falha generalizada do SDK em AWS. JSON
+válido é lido primeiro sem transformação; RFC3986 só é decodificado uma vez quando
+necessário, preservando `+` e percentuais literais. Encoding inválido/duplo, chaves
+duplicadas e limites excedidos recusam. Os mesmos limites/canonicalização se aplicam
+ao dict normal do SDK. Fixtures exercitam os três readbacks IAM nas três formas,
+incluindo a inventariação completa de recursos anteriores.
 
 Custos incrementais a registrar no handoff: uma CMK assimétrica própria; três
 novas versões S3 por publicação bem-sucedida (payload, DER, receipt), seus bytes e

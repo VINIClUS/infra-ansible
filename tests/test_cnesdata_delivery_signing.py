@@ -107,6 +107,65 @@ def test_ext2_inventory_boundary_exists():
         )
 
 
+@pytest.mark.parametrize("form", ["dict", "json", "rfc3986", "rfc3986-literal-plus"])
+def test_iam_policy_normalization_preserves_literal_percent_plus_and_unicode(form):
+    from urllib.parse import quote
+    from tools.cnesdata_delivery.ext2_inventory import document
+
+    expected = {
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "synthetic:Get",
+                "Resource": "arn:synthetic:literal+100%2F%ZZ café",
+            }
+        ]
+    }
+    raw = json.dumps(expected, ensure_ascii=False)
+    value = (
+        expected
+        if form == "dict"
+        else raw
+        if form == "json"
+        else quote(raw, safe="+" if form.endswith("literal-plus") else "")
+    )
+    assert document(value) == expected
+    assert document(document(value)) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "%7B%22Statement%22%3A%5B%5D%7G",
+        "%257B%2522Statement%2522%253A%255B%255D%257D",
+        "%7B%22Statement%22%3A%22%FF%22%7D",
+        '{"Statement":[],"Statement":[1]}',
+        "%7B%22Statement%22%3A%5B%5D%2C%22Statement%22%3A%5B1%5D%7D",
+        '{"Statement":[{"Effect":"Allow","Effect":"Deny"}]}',
+        "%7B%22Statement%22%3A%5B%7B%22Effect%22%3A%22Allow%22%2C%22Effect%22%3A%22Deny%22%7D%5D%7D",
+    ],
+)
+def test_iam_policy_normalization_rejects_invalid_double_encoding_and_duplicates(value):
+    from tools.cnesdata_delivery.ext2_inventory import document
+
+    with pytest.raises(ValueError):
+        document(value)
+
+
+@pytest.mark.parametrize("form", ["dict", "json", "rfc3986"])
+def test_iam_policy_normalization_keeps_size_bounds_for_every_form(form):
+    from urllib.parse import quote
+    from tools.cnesdata_delivery.ext2_inventory import document
+
+    value = {"Statement": ["x" * 100]}
+    if form != "dict":
+        value = json.dumps(value)
+        if form == "rfc3986":
+            value = quote(value, safe="")
+    with pytest.raises(ValueError):
+        document(value, maximum=32)
+
+
 def test_ext2_plan_binary_is_decoded_by_pinned_offline_tool(tmp_path, monkeypatch):
     from tools.cnesdata_delivery import ext2_inventory as inventory
 
@@ -484,12 +543,15 @@ def test_ext2_inventory_resolves_only_source_defined_new_producer_unknowns(ext2_
     assert result.ext2_count == 4
 
 
-def test_ext2_inventory_derives_full_trust_grants_key_alias_from_source(ext2_native):
+@pytest.mark.parametrize("policy_format", ["dict", "json", "rfc3986"])
+def test_ext2_inventory_derives_full_trust_grants_key_alias_from_source(
+    ext2_native, policy_format
+):
     from fixtures.cnesdata_delivery_ext2.inventory import inventory_case, InventoryAPI
     from tools.cnesdata_delivery import ext2_inventory as inventory
 
     case = inventory_case(ext2_native)
-    api = InventoryAPI(case)
+    api = InventoryAPI(case, policy_format=policy_format)
     observed = inventory.observe_inventory(
         state=case["state_after"], iam=api, kms=api, rolesanywhere=api
     )
@@ -818,6 +880,7 @@ def signing_case(crypto):
             "signing": {
                 "key_arn": SIGNING_KEY,
                 "spki_sha256": sha(crypto["public"]),
+                "spki_der_b64": base64.b64encode(crypto["public"]).decode(),
                 "key_policy_sha256": sha(canonical(kms.policy)),
             },
             "crypto": {
@@ -1033,8 +1096,15 @@ def published_case(gate, crypto):
         status="completed", conclusion="success"
     )
     gov["provenance"]["accepted_history"] = [ref.copy()]
-    gov["_consumer_adapter"] = adapter
-    gov["_signing_spki_der"] = crypto["public"]
+    from fixtures.cnesdata_delivery_ext2 import install_historical_consumer
+
+    install_historical_consumer(
+        gov, api, adapter.candidate, adapter.phase_a, adapter.fields
+    )
+    gov["signing"]["spki_der_b64"] = base64.b64encode(crypto["public"]).decode()
+    for name in list(gov):
+        if name.startswith("_") or name == "principal_sha256":
+            del gov[name]
     gov["authorization"]["frozen"] = True
     kms.calls.clear()
     s3.calls.clear()
@@ -1042,8 +1112,9 @@ def published_case(gate, crypto):
 
 
 def test_retained_activation_reads_original_versions_without_resign_or_refresh(
-    gate, crypto
+    gate, crypto, tmp_path, monkeypatch
 ):
+    monkeypatch.chdir(tmp_path)
     case, reference, produced = published_case(gate, crypto)
     gov, api, kms, s3, adapter, payload = case
     result = gate.read_retained_activation(
@@ -1060,13 +1131,190 @@ def test_retained_activation_reads_original_versions_without_resign_or_refresh(
     assert result.receipt_bytes == produced.receipt.body
     assert result.signing_spki_der == crypto["public"]
     assert result.authenticated_reference == reference
-    assert adapter.calls == [False, True]
+    assert adapter.calls == [False]
     assert not kms.calls and not any(op == "put" for op, _ in s3.calls)
     assert {args["VersionId"] for op, args in s3.calls if op == "head"} == {
         "1",
         "2",
         "3",
     }
+
+
+def test_historical_explicit_spki_handoff_needs_no_prior_cli_key_insertion(
+    gate, crypto, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    case, reference, produced = published_case(gate, crypto)
+    gov, api, kms, s3, _, payload = case
+    gov = json.loads(
+        json.dumps(gov)
+    )  # A fresh handoff contains no object/callable state.
+    assert not any(name.startswith("_") for name in gov)
+    result = gate.read_retained_activation(
+        reference,
+        github=api,
+        s3=s3,
+        governance=gov,
+        now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+    )
+    assert (
+        result.payload_bytes == payload
+        and result.signature_der == produced.signature.body
+    )
+    assert result.signing_spki_der == crypto["public"]
+    assert not kms.calls and not any(op == "put" for op, _ in s3.calls)
+
+
+def test_publisher_matches_explicit_spki_handoff_to_actual_public_key(gate, crypto):
+    case = signing_case(crypto)
+    case[0]["signing"]["spki_der_b64"] = base64.b64encode(crypto["public"]).decode()
+    result = sign(gate, case)
+    assert result.signing_spki_der == crypto["public"]
+    assert len([op for op, _ in case[2].calls if op == "sign"]) == 1
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "invalid-base64",
+        "padding-bits",
+        "oversize",
+        "wrong-pin",
+        "correlated-key",
+    ],
+)
+def test_spki_handoff_is_required_canonical_and_bound_to_original_key(
+    gate, crypto, historical, mutation, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    if historical:
+        case, reference, _ = published_case(gate, crypto)
+    else:
+        case = signing_case(crypto)
+    gov, api, kms, s3, _, _ = case
+    encoded = base64.b64encode(crypto["public"]).decode()
+    gov["signing"]["spki_der_b64"] = encoded
+    if mutation == "missing":
+        del gov["signing"]["spki_der_b64"]
+        monkeypatch.setenv(
+            "SPKI_DER_B64", encoded
+        )  # Env/caller material is not the governed handoff.
+    elif mutation == "invalid-base64":
+        gov["signing"]["spki_der_b64"] = encoded + "\n"
+    elif mutation == "padding-bits":
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        gov["signing"]["spki_der_b64"] = (
+            encoded[:-3] + alphabet[alphabet.index(encoded[-3]) + 1] + "=="
+        )
+    elif mutation == "oversize":
+        gov["signing"]["spki_der_b64"] = "A" * 1048576
+    elif mutation == "wrong-pin":
+        gov["signing"]["spki_sha256"] = "f" * 64
+    else:
+        # A distinct valid P-256 public key, not a malformed-DER stand-in.
+        key = tmp_path / "other-ephemeral.pem"
+        subprocess.run(
+            [
+                crypto["path"],
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-out",
+                str(key),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        public = subprocess.run(
+            [crypto["path"], "pkey", "-in", str(key), "-pubout", "-outform", "DER"],
+            check=True,
+            capture_output=True,
+        ).stdout
+        gov["signing"]["spki_der_b64"] = base64.b64encode(public).decode()
+        gov["signing"]["spki_sha256"] = sha(public)
+    with pytest.raises(ValueError):
+        if historical:
+            gate.read_retained_activation(
+                reference,
+                github=api,
+                s3=s3,
+                governance=gov,
+                now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            )
+        else:
+            sign(gate, case)
+    assert not any(op == "sign" for op, _ in kms.calls)
+    assert not any(op == "put" for op, _ in s3.calls)
+    if historical:
+        assert not kms.calls
+
+
+@pytest.mark.parametrize("mutation", ["missing", "source", "bytes"])
+def test_fresh_historical_consumer_source_authority_cannot_be_replaced(
+    gate, crypto, mutation, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    case, reference, _ = published_case(gate, crypto)
+    gov, api, kms, s3, _, _ = case
+    if mutation == "missing":
+        del gov["consumer"]
+    elif mutation == "source":
+        gov["consumer"]["source_sha"] = "f" * 40
+    else:
+        path = f"repos/{REPOSITORY}/contents/release/verify_activation.py?ref={SOURCE}"
+        raw = b"def admit_ext2(*a, **kw): return {}\n"
+        api.responses[path].update(
+            content=base64.b64encode(raw).decode(),
+            size=len(raw),
+            sha=hashlib.sha1(
+                b"blob " + str(len(raw)).encode() + b"\0" + raw
+            ).hexdigest(),
+        )
+    with pytest.raises(ValueError):
+        gate.read_retained_activation(
+            reference,
+            github=api,
+            s3=s3,
+            governance=gov,
+            now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+    assert not kms.calls and not any(op == "put" for op, _ in s3.calls)
+
+
+def test_historical_cli_verification_never_requests_kms_key_metadata(
+    gate, crypto, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    case, reference, _ = published_case(gate, crypto)
+    gov, api, kms, s3, _, _ = case
+    request = {
+        "request_version": 1,
+        "mode": "historical",
+        "source_sha": SOURCE,
+        "inputs": None,
+        "ext2_post_upload_receipt_v1": reference,
+    }
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError("historical KMS metadata is forbidden")
+
+    monkeypatch.setattr(gate, "_configuration", lambda: (gov, request, api))
+    monkeypatch.setattr(gate, "_selection", lambda current, request: current)
+    monkeypatch.setattr(
+        gate, "_clients", lambda current, historical: {"kms": kms, "s3": s3}
+    )
+    monkeypatch.setattr(gate, "read_signing_key", forbidden)
+    monkeypatch.setattr(gate, "_utc", lambda: datetime(2027, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(sys, "argv", ["signing_gate", "verify"])
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
+    assert gate.main() == 0
+    assert not calls and not kms.calls and not any(op == "put" for op, _ in s3.calls)
 
 
 @pytest.mark.parametrize(
@@ -1082,15 +1330,16 @@ def test_retained_activation_reads_original_versions_without_resign_or_refresh(
     ],
 )
 def test_retained_evidence_or_current_authorization_cannot_be_replaced(
-    gate, crypto, mutation
+    gate, crypto, mutation, tmp_path, monkeypatch
 ):
+    monkeypatch.chdir(tmp_path)
     case, reference, _ = published_case(gate, crypto)
     gov, api, kms, s3, _, _ = case
     if mutation in {"receipt", "payload", "signature"}:
         index = {"payload": 0, "signature": 1, "receipt": 2}[mutation]
         s3.objects[(KEYS[index], str(index + 1))] += b"altered"
     if mutation == "spki":
-        gov["_signing_spki_der"] = b"wrong"
+        gov["signing"]["spki_der_b64"] = base64.b64encode(b"wrong").decode()
     if mutation == "issuer":
         gov["provenance"]["workflow_sha"] = "f" * 40
     if mutation == "expired-admission":
