@@ -209,3 +209,36 @@ variable "ext2" {
     error_message = "EXT2 requires finite exact private object ARNs, a full same-account regional cipher CMK, immutable reusable SHA, absolute owner dates and named owner administrators."
   }
 }
+variable "host_gate" {
+  description = "EXT3 exact read-only host input capability. Null leaves the existing seed unchanged; live claims/readbacks remain a Ready gate."
+  type = object({
+    workflow_sha       = string
+    objects            = list(object({ arn = string, version = string }))
+    ssm_parameter_arns = list(string)
+    ssm_key_arn        = string
+    decrypt_keys       = list(object({ arn = string, object_arns = list(string) }))
+  })
+  default = null
+  validation {
+    condition = var.host_gate == null ? true : (
+      can(regex("^[0-9a-f]{40}$", var.host_gate.workflow_sha)) &&
+      length(var.host_gate.objects) > 0 &&
+      length(var.host_gate.ssm_parameter_arns) == 3 &&
+      length(distinct(var.host_gate.ssm_parameter_arns)) == 3 &&
+      alltrue([for object in var.host_gate.objects :
+        can(regex("^arn:aws:s3:::[a-z0-9.-]+/cnesdata/[^*?]+$", object.arn)) &&
+        length(object.version) > 0 && !contains(["null", "*"], object.version)
+      ]) &&
+      alltrue([for arn in var.host_gate.ssm_parameter_arns :
+        can(regex("^arn:aws:ssm:[a-z0-9-]+:[0-9]{12}:parameter/cnesdata/deploy/(ssh-key|cloudflare-client-id|cloudflare-client-secret)$", arn))
+      ]) &&
+      can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-z0-9-]+$", var.host_gate.ssm_key_arn)) &&
+      alltrue([for key in var.host_gate.decrypt_keys :
+        can(regex("^arn:aws:kms:[a-z0-9-]+:[0-9]{12}:key/[a-z0-9-]+$", key.arn)) &&
+        length(key.object_arns) > 0 &&
+        alltrue([for arn in key.object_arns : contains([for object in var.host_gate.objects : object.arn], arn)])
+      ])
+    )
+    error_message = "EXT3 requires an immutable workflow, exact versioned CnesData objects, three deployment SSM leaves, and exact KMS encryption contexts."
+  }
+}

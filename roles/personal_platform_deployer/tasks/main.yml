@@ -1,0 +1,26 @@
+---
+- name: Prepare the private application ledger only when explicitly enabled
+  when: personal_platform_deployer_enabled | bool
+  block:
+    - name: Require the dispatcher and exact host installation boundary
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_enabled | bool
+          - ansible_limit | default('') == inventory_hostname
+    - name: Create the isolated CnesData ledger
+      ansible.builtin.file:
+        path: /var/lib/personal-platform/deployments/cnesdata
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+    - name: Install ephemeral runtime directories for reboot
+      ansible.builtin.copy:
+        content: |
+          d /run/personal-platform 0700 root root -
+          d /run/personal-platform/staging 0700 root root -
+          d /run/personal-platform/credentials 0700 root root -
+        dest: /etc/tmpfiles.d/personal-platform-delivery.conf
+        owner: root
+        group: root
+        mode: "0644"

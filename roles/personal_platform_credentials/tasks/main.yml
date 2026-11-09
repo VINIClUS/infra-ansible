@@ -1,0 +1,44 @@
+---
+- name: Prepare isolated temporary credentials without importing secret values
+  when: personal_platform_credentials_enabled | bool
+  block:
+    - name: Require the same physical dispatcher and lease boundary
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_enabled | bool
+          - ansible_limit | default('') == inventory_hostname
+    - name: Create root-only temporary credential directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - /run/personal-platform/credentials
+        - /run/personal-platform/probes
+    - name: Install the fixed root-only credential renewer without starting it
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Personal platform lease-bound temporary credential replacement
+          After=docker.service
+          Requires=docker.service
+          [Service]
+          Type=oneshot
+          User=root
+          Group=root
+          UMask=0077
+          ExecStart=/usr/bin/python3 -I /usr/local/lib/personal-platform/host_gate.py --credential-reload
+          TimeoutStartSec=180
+          TimeoutStopSec=15
+          KillMode=control-group
+          PrivateTmp=yes
+          NoNewPrivileges=yes
+          ProtectHome=yes
+          ProtectSystem=strict
+          ReadWritePaths=/run/personal-platform /var/lib/personal-platform/deployments
+        dest: /etc/systemd/system/personal-platform-credential-reload.service
+        owner: root
+        group: root
+        mode: "0644"

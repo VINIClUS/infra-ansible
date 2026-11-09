@@ -30,11 +30,11 @@ output "crl_handoff_sha256" {
 }
 
 output "github" {
-  description = "Only the two EXT1 v2 leaves; null if closed. Host role and full shared_outputs belong to their owners."
-  value = var.github_delivery == null ? null : {
+  description = "Owned EXT1/EXT3 github leaves only; null if closed. This fragment is not complete shared_outputs/v2."
+  value = var.github_delivery == null ? null : merge({
     infrastructure_plan_role_arn   = aws_iam_role.delivery["plan"].arn
     infrastructure_deploy_role_arn = aws_iam_role.delivery["deploy"].arn
-  }
+  }, var.host_gate == null ? {} : { host_deploy_role_arn = aws_iam_role.host_gate[0].arn })
 }
 
 output "ext2" {

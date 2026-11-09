@@ -1,0 +1,37 @@
+---
+- name: Prepare only the named CnesData Nginx include
+  when: personal_platform_nginx_enabled | bool
+  block:
+    - name: Require the reviewed original per-application checkpoint
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_enabled | bool
+          - ansible_limit | default('') == inventory_hostname
+          - >-
+            personal_platform_nginx_checkpoint | hash('sha256') ==
+            personal_platform_host_governance.host.previous_nginx_sha256
+    - name: Create the private Nginx checkpoint directory
+      ansible.builtin.file:
+        path: /etc/personal-platform/nginx
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+    - name: Install the previously reviewed CnesData checkpoint without replacement
+      ansible.builtin.copy:
+        content: "{{ personal_platform_nginx_checkpoint }}"
+        dest: /etc/personal-platform/nginx/active.conf
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+    - name: Install only the named private application include
+      ansible.builtin.copy:
+        content: "include /etc/personal-platform/nginx/active.conf;\n"
+        dest: /etc/nginx/conf.d/cnesdata-delivery.conf
+        owner: root
+        group: root
+        mode: "0644"
+    - name: Validate full Nginx configuration without reload
+      ansible.builtin.command: /usr/sbin/nginx -t
+      changed_when: false
