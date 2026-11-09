@@ -1,0 +1,9 @@
+---
+samba_ad_sysvol_wire:
+  schema: samba-ad-sysvol-setup/v1
+  request: "{{ samba_ad_sysvol_request }}"
+  manifest: "{{ samba_ad_sysvol_manifest }}"
+  role: "{{ samba_ad_sysvol_role }}"
+  public_key: "{{ samba_ad_sysvol_public_key }}"
+  host_key: "{{ samba_ad_sysvol_host_key }}"
+  helper: "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"

@@ -28,8 +28,9 @@ flows:
     destination: dcs
     protocol: udp
     ports: ["53", "88", "389", "464"]
-  - source: dc01
-    destination: dc02
+  # DC02 pulls the read-only export; the private key stays on DC02.
+  - source: dc02
+    destination: dc01
     protocol: tcp
     ports: ["22"]
   - source: administrators
