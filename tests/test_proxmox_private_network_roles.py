@@ -267,6 +267,18 @@ def test_dnsmasq_serves_only_the_vnets_and_announces_the_mtu():
     assert "dhcp-option=tag:svc,option:mtu,1450" in conf
     assert "dhcp-host=bc:24:11:00:00:01,10.10.10.104,app" in conf
     assert "dhcp-range=set:ops" not in conf
+    assert "host-record=" not in conf
+
+
+def test_dnsmasq_answers_split_horizon_records_with_the_exact_name_only():
+    records = [{"name": "app.example.com", "address": "192.0.2.139"},
+               {"name": "stg-app.example.com", "address": "192.0.2.139"}]
+    conf = render("network_router", "dnsmasq.conf.j2", **ROUTER, network_router_dns_host_records=records)
+    assert [line for line in conf.splitlines() if line.startswith("host-record=")] == [
+        "host-record=app.example.com,192.0.2.139", "host-record=stg-app.example.com,192.0.2.139"]
+    # address=/name/ would also answer every subdomain; host-record keeps the override to the exact names.
+    assert "address=/" not in conf
+    assert defaults("network_router")["network_router_dns_host_records"] == []
 
 
 def test_router_role_blocks_service_starts_and_guards_the_ruleset():
