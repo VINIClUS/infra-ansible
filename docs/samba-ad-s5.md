@@ -112,7 +112,12 @@ qualquer alteração remota. DB local, secrets, keytab, árvore prévia, objeto 
 ou tentativa sem `joined.json` íntegro bloqueiam nova execução. Nenhum parcial é
 apagado/adotado. Máscaras persistentes de boot e serviços membros do S4 são
 preservadas até as verificações locais de hardening. O serviço precisa estar
-ativo para readbacks Kerberos/DRS e idmap; se aceitação inicial falhar após essa
+ativo para readbacks Kerberos/DRS e idmap. Um ExecStartPre exclusivo do DC02
+autoriza essa ativação transitória somente enquanto o processo manual original
+estiver vivo, com PID/starttime/boot-id correspondentes, prazo de600s e lock
+exclusivo ainda mantido. Morte do processo ou reboot impedem novo start sem
+`joined.json` durável; não basta um arquivo temporário remanescente.
+Se aceitação inicial falhar após essa
 ativação, o backend revalida as unidades próprias, para e mascara DC02 novamente.
 Se a quarentena também falhar, informa explicitamente que não foi verificada.
 Inspeção humana direcionada é necessária; não remover marcadores para tentar

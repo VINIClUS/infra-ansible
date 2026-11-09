@@ -182,3 +182,44 @@ def test_native_diagnostics_do_not_escape_file_descriptors(capfd):
         os.write(1,b'NATIVE_SECRET\n');os.write(2,b'NATIVE_SECRET\n')
     out=capfd.readouterr()
     assert 'SECRET' not in out.out+out.err
+
+
+def test_activation_guard_rejects_dead_reused_or_stale_manual_process():
+    m=api();token={'pid':42,'starttime':1234,'boot_id':'boot-a','deadline':1600}
+    assert m.activation_matches(token,42,1234,'S','boot-a',1000)
+    for pid,start,state,boot,now in [(43,1234,'S','boot-a',1000),(42,9999,'S','boot-a',1000),
+                                     (42,1234,'Z','boot-a',1000),(42,1234,'S','boot-b',1000),
+                                     (42,1234,'S','boot-a',1601)]:
+        assert not m.activation_matches(token,pid,start,state,boot,now)
+
+
+def test_dc02_boot_guard_does_not_change_dc01_unit_contract():
+    m=api();r,manifest=request()
+    from tools.samba_ad.domain import Native as DC01
+    path='/etc/systemd/system/samba-ad-dc.service.d/60-samba-ad-firewall.conf'
+    assert '--replica-boot-guard' in m.Native(manifest).host_files(r['local'])[path]
+    assert '--replica-boot-guard' not in DC01(manifest).host_files(r['peer'])[path]
+
+
+def test_boot_guard_requires_live_lock_or_completed_receipt(tmp_path,monkeypatch):
+    import fcntl,json,os,time
+    from tools.samba_ad import sysvol
+    m=api();root=tmp_path/'owned';root.mkdir(mode=0o700)
+    activation=root/'activation.json';lockpath=root/'operation.lock'
+    monkeypatch.setattr(m,'ROOT',root);monkeypatch.setattr(m,'ACTIVATION',activation)
+    config={'role':'consumer','sid':'S-1-5-21-1-2-3','spec_sha256':'a'*64}
+    monkeypatch.setattr(sysvol,'runtime_config',lambda:config)
+    original=m.secure_file
+    monkeypatch.setattr(m,'secure_file',lambda path,**kw:original(lockpath if str(path)=='/run/samba-ad-replica.lock' else path,**kw))
+    start,_=m.process_identity(os.getpid())
+    activation.write_text(json.dumps({'pid':os.getpid(),'starttime':start,'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'deadline':int(time.time())+600}));activation.chmod(0o600)
+    fd=os.open(lockpath,os.O_CREAT|os.O_RDWR,0o600)
+    try:
+        with pytest.raises(ValueError):m.boot_guard()
+        fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        m.boot_guard()
+        fcntl.flock(fd,fcntl.LOCK_UN)
+        with pytest.raises(ValueError):m.boot_guard()
+        (root/'joined.json').write_text(json.dumps({'sid':config['sid'],'spec_sha256':config['spec_sha256']}));(root/'joined.json').chmod(0o600)
+        activation.unlink();m.boot_guard()
+    finally:os.close(fd)

@@ -34,6 +34,8 @@ try:
             print(json.dumps(domain.substrate_preflight(data['request'][profile]['substrate'])))
         else:
             print('{"state":"validated","changed":false}')
+    elif sys.argv[1:] == ['--replica-boot-guard']:
+        replica.boot_guard()
     elif '--setup' in sys.argv:
         raise SystemExit(sysvol_setup.main())
     elif any(arg.startswith('--sysvol-') for arg in sys.argv[1:]):

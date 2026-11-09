@@ -61,7 +61,7 @@ def prepare(payload,apply):
     if not apply:return {'state':'checked','changed':False}
     config={'schema':'samba-ad-sysvol-runtime/v1','role':payload['role'],
             'sid':local['target']['sid'],'realm':local['target']['realm'],'fqdn':local['target']['fqdn'],
-            'machine_id':local['identity']['machine_id'],'packages':local['source']['packages'],'peer_fqdn':r['peer']['target']['fqdn']}
+            'machine_id':local['identity']['machine_id'],'spec_sha256':local['pki']['target']['spec_sha256'],'packages':local['source']['packages'],'peer_fqdn':r['peer']['target']['fqdn']}
     directory=future_directory(sysvol.ROOT)
     exists=directory.exists()
     if not exists:directory.mkdir(mode=0o700)

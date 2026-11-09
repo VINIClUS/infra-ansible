@@ -19,6 +19,7 @@ from tools.samba_ad.pki_files import atomic_file, secure_directory, secure_file,
 
 ERROR = 'S5 precondition failed (values suppressed)'
 ROOT = Path('/var/lib/samba-ad-replica')
+ACTIVATION = Path('/run/samba-ad-replica-activation.json')
 
 
 def validate_request(r, manifest):
@@ -111,8 +112,48 @@ def quiet_native():
         for fd, old in zip([1,2], saved): os.dup2(old, fd); os.close(old)
 
 
+def activation_matches(token,pid,starttime,state,boot_id,now):
+    return (set(token)=={'pid','starttime','boot_id','deadline'} and
+            token['pid']==pid and token['starttime']==starttime and token['boot_id']==boot_id and
+            state in ['R','S','D'] and 0<=token['deadline']-now<=600)
+
+
+def process_identity(pid):
+    require(type(pid) is int and pid>1)
+    fields=Path('/proc',str(pid),'stat').read_text().rpartition(')')[2].split()
+    return int(fields[19]),fields[0]
+
+
+def boot_guard():
+    from tools.samba_ad import sysvol
+    config=sysvol.runtime_config()
+    require(config['role']=='consumer')
+    completed=ROOT/'joined.json'
+    if completed.exists():
+        require(json.loads(secure_file(completed,secret=True).read_bytes())==
+                {'sid':config['sid'],'spec_sha256':config['spec_sha256']})
+        return
+    token=json.loads(secure_file(ACTIVATION,secret=True).read_bytes())
+    start,state=process_identity(token['pid'])
+    require(activation_matches(token,token['pid'],start,state,
+                              Path('/proc/sys/kernel/random/boot_id').read_text().strip(),int(time.time())))
+    # The same live manual process must still own the exclusive operation lock.
+    fd=os.open(secure_file('/run/samba-ad-replica.lock',secret=True),os.O_RDWR|os.O_NOFOLLOW)
+    try:
+        try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:return
+        require(False)
+    finally:os.close(fd)
+
+
 class Native(domain.Native):
     profile = 'dc02'
+
+    def host_files(self,r):
+        files=super().host_files(r)
+        path='/etc/systemd/system/samba-ad-dc.service.d/60-samba-ad-firewall.conf'
+        files[path]+='[Service]\nExecStartPre=/usr/local/libexec/samba-ad-s5 --replica-boot-guard\n'
+        return files
 
     def configuration(self, r):
         # Preserve the exact S4 protocol floor without widening its DC01 API.
@@ -255,6 +296,11 @@ class Native(domain.Native):
 
     def activate(self,r):
         self.pre_activation(r)
+        start,_=process_identity(os.getpid())
+        require(not ACTIVATION.exists() and not ACTIVATION.is_symlink())
+        atomic_file(ACTIVATION,json.dumps({'pid':os.getpid(),'starttime':start,
+                    'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                    'deadline':int(time.time())+600}).encode())
         self.activation_started=True
         self.services.activate(self.blocked_services)
         command(['systemctl','start','samba-ad-dc.service'])
@@ -262,6 +308,7 @@ class Native(domain.Native):
 
     def quarantine(self,request):
         if not getattr(self,'activation_started',False):return
+        if ACTIVATION.exists():secure_file(ACTIVATION,secret=True).unlink()
         from tools.samba_ad.domain_services import MEMBERS,DC,ALIAS
         require(json.loads(secure_file(ROOT/'attempt.json',secret=True).read_bytes())=={'sid':request['local']['target']['sid']})
         # Revalidate canonical fragments/aliases before stopping ONLY our DC.
@@ -303,7 +350,9 @@ class Native(domain.Native):
         data={'sid':r['target']['sid'],'spec_sha256':r['pki']['target']['spec_sha256']}
         receipt=ROOT/'joined.json'
         if receipt.exists(): require(json.loads(secure_file(receipt,secret=True).read_bytes())==data)
-        else: atomic_file(receipt,json.dumps(data).encode())
+        else:
+            atomic_file(receipt,json.dumps(data).encode())
+            if ACTIVATION.exists():secure_file(ACTIVATION,secret=True).unlink()
         result.update(replication='verified',dns_gc_kerberos='verified',sysvol='verified')
         return result
 
