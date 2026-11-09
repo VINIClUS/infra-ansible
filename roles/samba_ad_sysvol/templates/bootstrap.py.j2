@@ -1,0 +1,45 @@
+#!/usr/bin/python3
+{% set bundle = namespace(sources={}) %}
+{% for name in ['compatibility', 'contract', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network', 'domain_services', 'replica', 'replica_health', 'sysvol', 'sysvol_setup'] %}
+{% set _ = bundle.sources.update({name: lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py')}) %}
+{% endfor %}
+import base64, json, sys, types, zlib
+try:
+    sources = json.loads(zlib.decompress(base64.b64decode({{ bundle.sources | samba_ad_replica_pack_sources | to_json }})))
+    for name in ['tools', 'tools.samba_ad']:
+        package = types.ModuleType(name)
+        package.__path__ = []
+        sys.modules[name] = package
+    sys.modules['tools'].samba_ad = sys.modules['tools.samba_ad']
+    for short, source in sources.items():
+        full = 'tools.samba_ad.' + short
+        module = types.ModuleType(full)
+        module.__package__ = 'tools.samba_ad'
+        sys.modules[full] = module
+        setattr(sys.modules['tools.samba_ad'], short, module)
+        exec(source, module.__dict__)
+    from tools.samba_ad import domain, replica, sysvol, sysvol_setup
+    if sys.argv[1:] in [['--validate'], ['--substrate-check']]:
+        import os
+        data = domain.loads(sys.stdin.read())
+        if data['schema'] == 'samba-ad-sysvol-setup/v1':
+            sysvol_setup.validate(data)
+        else:
+            domain.fields(data, 'schema request manifest')
+            domain.require(data['schema'] == 'samba-ad-replica-wire/v1')
+            replica.validate_request(data['request'], data['manifest'])
+        if sys.argv[1:] == ['--substrate-check']:
+            profile = os.environ['SAMBA_AD_S5_SUBSTRATE']
+            domain.require(profile in ['local','peer'])
+            print(json.dumps(domain.substrate_preflight(data['request'][profile]['substrate'])))
+        else:
+            print('{"state":"validated","changed":false}')
+    elif '--setup' in sys.argv:
+        raise SystemExit(sysvol_setup.main())
+    elif any(arg.startswith('--sysvol-') for arg in sys.argv[1:]):
+        raise SystemExit(sysvol.main())
+    else:
+        raise SystemExit(replica.main())
+except Exception:
+    print('S5 precondition failed (values suppressed)', file=sys.stderr)
+    raise SystemExit(2)

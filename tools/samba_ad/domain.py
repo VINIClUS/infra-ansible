@@ -64,8 +64,12 @@ def loads(value):
 
 
 def validate_request(request, manifest):
+    return validate_host_request(request, manifest, "dc01")
+
+def validate_host_request(request, manifest, profile):
     """Declarations only. Provenance is the operator-reviewed private revision."""
     try:
+        require(profile in ["dc01", "dc02"])
         r = request
         require(r["schema"] == "samba-ad-domain/v1")
         require(type(r["enabled"]) is bool and type(r["apply"]) is bool)
@@ -79,7 +83,7 @@ def validate_request(request, manifest):
         fields(target, "realm netbios fqdn sid")
         require({k: target[k] for k in ["realm", "netbios"]} ==
                 {k: manifest["domain"][k] for k in ["realm", "netbios"]})
-        require(target["fqdn"] == manifest["resources"]["dc01"]["fqdn"])
+        require(target["fqdn"] == manifest["resources"][profile]["fqdn"])
         require(target["sid"] is None or bool(re.fullmatch(r"S-1-5-21-(?:[0-9]+-){2}[0-9]+", target["sid"])))
         substrate = r["substrate"]
         fields(substrate, "schema enabled apply action owner scope compatibility boot resource template expected_digest firewall")
@@ -88,14 +92,14 @@ def validate_request(request, manifest):
                 and substrate["apply"] is False and substrate["boot"] is True)
         hex_value(substrate["expected_digest"], 40)
         validate_bundle(substrate["compatibility"], substrate)
-        declared = manifest["resources"]["dc01"]
+        declared = manifest["resources"][profile]
         require(substrate["resource"]["name"] == target["fqdn"])
         for key in ["kind", "node", "vmid", "mac"]:
             require(substrate["resource"][key] == declared[key])
         address = ipaddress.IPv4Interface(substrate["resource"]["address"])
         require(str(address.ip) == declared["address"] and str(address.network) == declared["cidr"])
         validate_pki(r["pki"], manifest)
-        require(r["pki"]["enabled"] is True and r["pki"]["profile"] == "dc01")
+        require(r["pki"]["enabled"] is True and r["pki"]["profile"] == profile)
         require(r["pki"]["adapter"] == {"kind": "samba", "port": 636})
         require(r["pki"]["target"]["spec_sha256"] == spec_hash(substrate))
         require(re.fullmatch(r"[a-f0-9]{32}", r["generation"]))
@@ -201,6 +205,15 @@ def command(argv, data=None, allowed=(0,)):
 
 class Native:
     """Host-local backend. No networking, package download or shell expansion."""
+    profile = "dc01"
+
+    def configuration(self, r):
+        return smb_conf(r["target"]["realm"], r["target"]["netbios"], "dc01",
+                        self.manifest["network"]["dns_forwarders"])
+
+    def initial_receipt(self, r):
+        return r["target"]["sid"] is None
+
     def __init__(self, manifest):
         self.manifest = manifest
 
@@ -291,7 +304,7 @@ class Native:
 
     def generation(self, r):
         from tools.samba_ad.pki_runtime import candidate_info, consumer_conf
-        root = secure_directory("/var/lib/samba-ad-pki/dc01", exact=True)
+        root = secure_directory("/var/lib/samba-ad-pki/" + self.profile, exact=True)
         generation = secure_directory(root / "generations" / r["generation"], exact=True)
         require(secure_file(generation / "consumer.conf", secret=True).read_bytes() == consumer_conf(r["pki"], generation))
         info = candidate_info(r["pki"], generation, int(time.time()))
@@ -362,6 +375,13 @@ class Native:
         self.blocked_services = self.services.converge_initial(self.service_snapshot)
         atomic_file(Path("/etc/samba/smb.conf"), b"")
 
+    def configure_policy(self, r):
+        import ldb
+        message = ldb.Message(); message.dn = ldb.Dn(self.db, str(self.db.domain_dn()))
+        for name, value in PASSWORD_POLICY.items():
+            message[name] = ldb.MessageElement(str(value), ldb.FLAG_MOD_REPLACE, name)
+        self.db.modify(message)
+
     def harden(self, r):
         import ldb
         from tools.samba_ad.pki_files import atomic_file
@@ -369,10 +389,7 @@ class Native:
         from tools.samba_ad.pki_files import future_directory
         from tools.samba_ad import domain_network
         require(self.db is not None)
-        message = ldb.Message(); message.dn = ldb.Dn(self.db, str(self.db.domain_dn()))
-        for name, value in PASSWORD_POLICY.items():
-            message[name] = ldb.MessageElement(str(value), ldb.FLAG_MOD_REPLACE, name)
-        self.db.modify(message)
+        self.configure_policy(r)
         for path, content in self.host_files(r).items():
             p = Path(path)
             directory = future_directory(p.parent)
@@ -396,8 +413,7 @@ class Native:
             require(store.current() is None)
             self.generation(r)
             store.point("generations/" + r["generation"] + "/consumer.conf")
-        conf = smb_conf(r["target"]["realm"], r["target"]["netbios"], "dc01",
-                        self.manifest["network"]["dns_forwarders"])
+        conf = self.configuration(r)
         atomic_file(Path("/etc/samba/smb.conf"), conf.encode())
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
         integrity = future_directory("/var/lib/samba-ad-integrity")
@@ -420,14 +436,13 @@ class Native:
         row = self.db.search(base=self.db.domain_dn(), scope=ldb.SCOPE_BASE, attrs=list(PASSWORD_POLICY))[0]
         require(all(int(row[k][0]) == v for k, v in PASSWORD_POLICY.items()))
         self.host_guard(r)
-        require(secure_file("/etc/samba/smb.conf").read_text() == smb_conf(
-            r["target"]["realm"], r["target"]["netbios"], "dc01", self.manifest["network"]["dns_forwarders"]))
+        require(secure_file("/etc/samba/smb.conf").read_text() == self.configuration(r))
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
         require(domain_network.inspect(r))
         command(["systemctl", "is-active", "--quiet", "samba-ad-firewall.service"])
         command(["systemctl", "is-enabled", "--quiet", "samba-ad-firewall.service"])
         self.generation(r)
-        active = Path("/var/lib/samba-ad-pki/dc01/active.conf")
+        active = Path("/var/lib/samba-ad-pki") / self.profile / "active.conf"
         require(active.is_symlink() and str(active.readlink()) == "generations/" + r["generation"] + "/consumer.conf")
         command(["aide", "--config=/etc/samba-ad-integrity.conf", "--check"])
         command(["systemctl", "is-active", "--quiet", "samba-ad-integrity.timer"])
@@ -449,8 +464,7 @@ class Native:
         row = self.db.search(base=self.db.domain_dn(), scope=ldb.SCOPE_BASE, attrs=list(PASSWORD_POLICY))[0]
         require(all(int(row[k][0]) == v for k, v in PASSWORD_POLICY.items()))
         require(domain_network.inspect(r))
-        require(secure_file("/etc/samba/smb.conf").read_text() == smb_conf(
-            r["target"]["realm"], r["target"]["netbios"], "dc01", self.manifest["network"]["dns_forwarders"]))
+        require(secure_file("/etc/samba/smb.conf").read_text() == self.configuration(r))
         command(["testparm", "--suppress-prompt", "/etc/samba/smb.conf"])
         command(["systemctl", "is-active", "--quiet", "samba-ad-dc.service"])
         from tools.samba_ad.domain_services import ServiceOps
@@ -477,7 +491,7 @@ class Native:
                 "config_sha256": hashlib.sha256(secure_file("/etc/samba/smb.conf").read_bytes()).hexdigest()}
         if receipt.exists(): require(json.loads(secure_file(receipt, secret=True).read_bytes()) == data)
         else:
-            require(r["target"]["sid"] is None and not receipt.is_symlink())
+            require(self.initial_receipt(r) and not receipt.is_symlink())
             atomic_file(receipt, json.dumps(data, sort_keys=True).encode())
         return {"state": "current", "changed": False, "sid": observed["sid"],
                 "native_protocol_acceptance": "pending"}

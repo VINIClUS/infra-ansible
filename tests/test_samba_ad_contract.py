@@ -150,17 +150,18 @@ def test_port_contract_has_only_scoped_origins_and_modern_ad_protocols():
     assert policy["enforcement"] == ["router", "guest_default_drop"]
     for flow in policy["flows"]:
         assert flow["source"] in {
-            "pilots", "dcs", "dc01", "administrators", "identity_guests"
+            "pilots", "dcs", "dc02", "administrators", "identity_guests"
         }
         assert flow["destination"] in {
-            "dcs", "dc02", "ca", "ssh_targets", "dns_forwarders", "time_sources", "collector"
+            "dcs", "dc01", "ca", "ssh_targets", "dns_forwarders", "time_sources", "collector"
         }
         assert flow["protocol"] in {"tcp", "udp"}
         assert not ({"137", "138", "139", "all", "any"} & set(flow["ports"]))
     dc_tcp = set().union(*(set(f["ports"]) for f in policy["flows"]
                           if f["source"] == "dcs" and f["destination"] == "dcs" and f["protocol"] == "tcp"))
     assert {"53", "88", "135", "389", "445", "464", "636", "3268", "3269", "49152-65535"} <= dc_tcp
-    assert {"source": "dc01", "destination": "dc02", "protocol": "tcp", "ports": ["22"]} in policy["flows"]
+    assert {"source": "dc02", "destination": "dc01", "protocol": "tcp", "ports": ["22"]} in policy["flows"]
+    assert {"source": "dc01", "destination": "dc02", "protocol": "tcp", "ports": ["22"]} not in policy["flows"]
     assert policy["resource_groups"] == {
         "dcs": ["dc01", "dc02"], "pilots": ["windows_pilot", "linux_pilot"],
         "identity_guests": ["dc01", "dc02", "ca", "windows_pilot", "linux_pilot"],

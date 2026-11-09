@@ -1,0 +1,7 @@
+---
+samba_ad_replica_wire:
+  schema: samba-ad-replica-wire/v1
+  request: >-
+    {{ samba_ad_replica_request | combine({'enabled': true,
+       'apply': samba_ad_replica_apply and not ansible_check_mode}) }}
+  manifest: "{{ samba_ad_replica_manifest }}"

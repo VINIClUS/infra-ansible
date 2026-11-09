@@ -1,0 +1,8 @@
+---
+samba_ad_sysvol_enabled: false
+samba_ad_sysvol_apply: false
+samba_ad_sysvol_request: {}
+samba_ad_sysvol_manifest: {}
+samba_ad_sysvol_role: consumer
+samba_ad_sysvol_public_key: null
+samba_ad_sysvol_host_key: null

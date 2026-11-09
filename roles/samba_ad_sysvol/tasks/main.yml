@@ -1,0 +1,88 @@
+---
+- name: Validate S5 opt-in types
+  ansible.builtin.assert:
+    that:
+      - samba_ad_sysvol_enabled is boolean
+      - samba_ad_sysvol_apply is boolean
+
+- name: End disabled S5 before transport
+  ansible.builtin.meta: end_role
+  when: not samba_ad_sysvol_enabled
+
+- name: Require dedicated manual tag and one exact non-root SSH identity
+  ansible.builtin.assert:
+    that:
+      - samba_ad_sysvol_role in ['source', 'consumer']
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_sysvol']
+      - ansible_user is defined
+      - ansible_user != 'root'
+      - samba_ad_sysvol_request is mapping
+      - samba_ad_sysvol_manifest is mapping
+      - samba_ad_sysvol_request.local.substrate.resource.node in hostvars
+      - samba_ad_sysvol_request.peer.substrate.resource.node in hostvars
+    fail_msg: S5 requires private reviewed contracts, one exact limit and the sysvol tag.
+
+- name: Validate closed declarations on the controller before target transport
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --validate
+    stdin: "{{ samba_ad_sysvol_wire | to_json }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Revalidate the canonical S1 live PVE guards without lifecycle mutations
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --substrate-check
+    stdin: "{{ samba_ad_sysvol_wire | to_json }}"
+  delegate_to: "{{ samba_ad_sysvol_request[item].substrate.resource.node }}"
+  loop:
+    - local
+    - peer
+  environment:
+    SAMBA_AD_S5_SUBSTRATE: "{{ item }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read target preconditions or execute the explicitly enabled S5 backend
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --setup
+      - "{{ '--execute' if samba_ad_sysvol_apply and not ansible_check_mode else '--check' }}"
+    stdin: "{{ samba_ad_sysvol_wire | to_json }}"
+  register: samba_ad_sysvol_result
+  changed_when: (samba_ad_sysvol_result.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+
+- name: Report only sanitized S5 status
+  ansible.builtin.debug:
+    msg: >-
+      S5 state={{ (samba_ad_sysvol_result.stdout | from_json).state }};
+      real S5 acceptance requires the native readbacks; source tests are not runtime evidence.
+
+- name: Return only the consumer generated public key for reviewed source authorization
+  ansible.builtin.debug:
+    msg: "{{ (samba_ad_sysvol_result.stdout | from_json).public_key }}"
+  when: (samba_ad_sysvol_result.stdout | from_json).public_key is defined

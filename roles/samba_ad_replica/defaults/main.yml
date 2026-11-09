@@ -1,0 +1,5 @@
+---
+samba_ad_replica_enabled: false
+samba_ad_replica_apply: false
+samba_ad_replica_manifest: {}
+samba_ad_replica_request: {}
