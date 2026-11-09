@@ -8,6 +8,8 @@ import builtins
 import datetime
 import io
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -21,8 +23,44 @@ import fixtures.cnesdata_bootstrap_foundation_case as transporte_fixture
 from fixtures.cnesdata_bootstrap_foundation_case import (
     LoadedCase, canonical, field, load_case, plain,
 )
+from fixtures.cnesdata_aws_bootstrap_native import native as native_fixture
 from tools.aws_bootstrap.contract import BootstrapSpec, Readback
 from tools.aws_bootstrap.planner import plan_bootstrap
+
+native = native_fixture
+
+
+def test_lifecycle_logging_aguarda_todos_os_puts_do_bucket_no_grafo_nativo(native):
+    """Removing an ordering edge must expose the concurrent S3 PUT regression."""
+    result = native.plan("a", "foundation", "target")
+    graph = subprocess.run(
+        [shutil.which("rtk"), "proxy", shutil.which("unshare"),
+         "--user", "--map-root-user", "--net", shutil.which("tofu"),
+         "graph", "-type=plan", "-var-file=inputs.tfvars.json"],
+        cwd=result["work"], env=native.env, text=True, capture_output=True,
+        timeout=60, check=False,
+    )
+    assert graph.returncode == 0, graph.stderr
+    edges = {}
+    for source, target in re.findall(r'"([^"\n]+)" -> "([^"\n]+)"', graph.stdout):
+        edges.setdefault(source, set()).add(target)
+    lifecycle = "[root] aws_s3_bucket_lifecycle_configuration.logging (expand)"
+    assert lifecycle in edges, "native_graph_lifecycle_absent"
+    pending = list(edges[lifecycle])
+    predecessors = set()
+    while pending:
+        node = pending.pop()
+        if node not in predecessors:
+            predecessors.add(node)
+            pending.extend(edges.get(node, ()))
+    required = {
+        f"[root] aws_s3_bucket_{kind}.logging (expand)"
+        for kind in ("policy", "ownership_controls", "public_access_block",
+                     "server_side_encryption_configuration")
+    }
+    assert required <= predecessors, (
+        "lifecycle_concurrent_bucket_puts: " + repr(sorted(required - predecessors))
+    )
 
 
 @pytest.fixture(params=("enabled", "disabled", "no-binary", "inconclusive"))
