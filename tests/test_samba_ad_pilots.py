@@ -121,15 +121,18 @@ def pilot_request(windows=False):
         pem="-----BEGIN CERTIFICATE-----\nTEST-ONLY\n-----END CERTIFICATE-----\n"
         r["trust"][name+"_pem"]=pem; r["trust"][name+"_sha256"]=hashlib.sha256(pem.encode()).hexdigest()
     if windows:
+        from tools.samba_ad.pilot_baseline import URL, SHA256
+        from tools.samba_ad.pilot_baseline_catalog import CATALOG
         r["windows"]={"edition":"ServerStandard","build":"26100","support_until":"2034-11-14",
             "support_ref":"https://learn.microsoft.com/en-us/lifecycle/products/windows-server-2025",
             "rsat_source":"C:\\SambaADAssets\\FoD","rsat_files":{"fixture.cab":"a"*64},
-            "baseline":{"title":"Windows Server 2025 Security Baseline","publisher":"Microsoft Corporation",
-                "url":"https://download.microsoft.com/download/test/baseline.zip","sha256":"a"*64,
-                "archive":"C:\\SambaADAssets\\baseline.zip","files":{"test/Registry.pol":"b"*64},
+            "rsop":{"profile":"server2025-gpmc-rsop-v1","template_artifact_sha256":"b"*64,
+                    "samples":{"Computer":"c"*64,"User":"d"*64},"review_ref":review},
+            "baseline":{"title":"Windows Server 2025 Security Baseline v2602","publisher":"Microsoft Corporation",
+                "url":URL,"sha256":SHA256,"catalog_sha256":m.sha(CATALOG),
+                "archive":"C:\\SambaADAssets\\baseline.zip",
                 "gpo_name":"Samba-Pilot-aaaaaaaaaaaaaaaa",
-                "settings":[{"key":r"HKLM\Software\Policies\Microsoft\Windows\LanmanWorkstation",
-                    "name":"RequireSecuritySignature","value":1,"baseline_file":"test/Registry.pol"}],"review_ref":review}}
+                "review_ref":review}}
     else:
         r["linux"]={"packages":{n:"1.0" for n in ["adcli","sssd-ad","sssd-tools","libnss-sss","libpam-sss",
             "krb5-user","smbclient","ldap-utils","chrony","ca-certificates","python3-ldap","libpam-modules"]},
@@ -296,6 +299,73 @@ def test_join_probe_fails_tls_before_it_can_return_identity_for_secret_release(m
     monkeypatch.setattr(pilot_linux,"tls",reject)
     with pytest.raises(ValueError,match="public TLS pin failed"):
         pilot_linux.execute({"request":r,"manifest":manifest,"mode":"probe","nonce":"test","credentials":None})
+
+
+@pytest.mark.parametrize('configured', ['AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE', 'invalid-uuid'])
+def test_uuid_guard_rejects_equivalent_uppercase_and_invalid_identity(configured):
+    from tools.samba_ad import guest
+    from test_samba_ad_guest import Fake
+    r,_=pilot_request(True); api=Fake()
+    api.guests[800099]={'name':'foreign','node':'node-a','smbios1':'uuid='+configured}
+    with pytest.raises(ValueError):
+        guest.check_collisions(r['substrate'],api,[{'vmid':800099,'node':'node-a','type':'qemu'}])
+
+
+def test_only_linux_prepare_can_bypass_two_dc_gate():
+    m=mod()
+    for pilot in ['linux_pilot','windows_pilot']:
+        for action in ['prepare','join','verify','policy']:
+            assert m.needs_dc_gate({'pilot':pilot,'action':action}) == (pilot!='linux_pilot' or action!='prepare')
+
+
+def test_windows_prepare_without_two_dc_records_stops_before_guest_or_directory(monkeypatch,capsys):
+    import io
+    import sys
+    m=mod();r,manifest=pilot_request(True)
+    wire={'schema':'samba-ad-pilot-wire/v1','request':r,'manifest':manifest,'credentials':None,
+          'dc_records':[],'directory':None,'probe':None}
+    monkeypatch.setattr(m.resource,'setrlimit',lambda *a:None)
+    monkeypatch.setattr(sys,'stdin',io.StringIO(json.dumps(wire)))
+    monkeypatch.setattr(sys,'argv',['pilot','--execute'])
+    monkeypatch.setattr(m,'run_guest',lambda *a:pytest.fail('Windows prepare escaped two-DC gate'))
+    assert m.main({})==2
+    assert 'values suppressed' in capsys.readouterr().err
+
+
+def test_role_dc_gate_matches_linux_only_exception_and_prepare_never_creates_directory():
+    import yaml
+    import jinja2
+    root=Path(__file__).resolve().parents[1]
+    tasks=yaml.safe_load((root/'roles/samba_ad_pilots/tasks/main.yml').read_text())
+    collect=next(t for t in tasks if t['name'].startswith('Collect fresh'))
+    directory=next(t for t in tasks if t['name'].startswith('Create or inspect'))
+    env=jinja2.Environment()
+    for pilot in ['linux_pilot','windows_pilot']:
+        for action in ['prepare','join','verify','policy']:
+            r={'pilot':pilot,'action':action}
+            render=lambda expression:env.from_string('{% if '+expression+' %}yes{% else %}no{% endif %}').render(samba_ad_pilots_request=r)=='yes'
+            assert render(collect['when'])==mod().needs_dc_gate(r)
+            assert render(directory['when'])==(action!='prepare')
+
+
+@pytest.mark.parametrize('account_code', [0,6,7,12])
+def test_pam_account_preserves_actual_denial_code(account_code):
+    import ctypes
+    from tools.samba_ad import pilot_linux
+    class Function:
+        def __init__(self,fn): self.fn=fn
+        def __call__(self,*args): return self.fn(*args)
+    class PAM:
+        def __init__(self):
+            self.ended=[]
+            self.pam_start=Function(lambda service,user,conv,handle:0)
+            self.pam_acct_mgmt=Function(lambda handle,flags:account_code)
+            self.pam_end=Function(lambda handle,code:self.ended.append(code) or 0)
+    lib=PAM(); result=pilot_linux.pam_account('fixture@ad.example.invalid',lib)
+    assert result['account']==account_code and lib.ended==[account_code]
+    if account_code:
+        with pytest.raises(ValueError): pilot_linux.require_pam(result)
+    else: pilot_linux.require_pam(result)
 
 
 def test_drs_health_rejects_missing_naming_context_errors_wrong_partner_and_stale_success():

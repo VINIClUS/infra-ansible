@@ -1,6 +1,7 @@
 """Public fixed QGA program; private JSON exclusively on stdin. Debian 13."""
 from __future__ import annotations
 import contextlib
+import ctypes
 import hashlib
 import ipaddress
 import json
@@ -189,7 +190,42 @@ def authentication(r, manifest, credentials):
     command(["sssctl", "config-check"])
     command(["getent", "passwd", credentials["username"] + "@" + realm.lower()])
     # Exercise the PAM account stack, not just nss/getent.
-    command(["sssctl", "user-checks", "-a", "acct", "-s", "sshd", credentials["username"] + "@" + realm.lower()])
+    require_pam(pam_account(credentials["username"] + "@" + realm.lower()))
+
+
+def pam_account(username, library=None):
+    """Return actual Linux-PAM results, never sssctl's diagnostic exit status.
+
+    Account management needs no password. Unexpected conversation fails closed;
+    callback and struct stay alive until pam_end has completed.
+    """
+    lib = library or ctypes.CDLL("libpam.so.0")
+    callback_type = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p)
+    class Conversation(ctypes.Structure):
+        _fields_ = [("conv", callback_type), ("appdata_ptr", ctypes.c_void_p)]
+    callback = callback_type(lambda count, messages, response, data: 19)  # PAM_CONV_ERR
+    conversation = Conversation(callback, None)
+    lib.pam_start.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.POINTER(Conversation),
+                             ctypes.POINTER(ctypes.c_void_p)]
+    lib.pam_acct_mgmt.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.pam_end.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    for function in [lib.pam_start, lib.pam_acct_mgmt, lib.pam_end]: function.restype = ctypes.c_int
+    handle = ctypes.c_void_p()
+    result = {"schema": "samba-ad-pam-account/v1", "start": None, "account": None, "end": None}
+    result["start"] = lib.pam_start(b"sshd", username.encode(), ctypes.byref(conversation), ctypes.byref(handle))
+    if result["start"] == 0:
+        code = 4  # PAM_SYSTEM_ERR until account management returns a real code
+        try:
+            code = lib.pam_acct_mgmt(handle, 0)
+            result["account"] = code
+        finally:
+            result["end"] = lib.pam_end(handle, code)
+    return result
+
+
+def require_pam(result):
+    require(result == {"schema": "samba-ad-pam-account/v1", "start": 0, "account": 0, "end": 0})
 
 
 def execute(w):

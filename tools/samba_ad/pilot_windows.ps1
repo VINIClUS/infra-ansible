@@ -34,6 +34,7 @@ function Inspect-Pilot($R) {
     $edition = (Get-WindowsEdition -Online).Edition
     Assert-S6 ($edition -ceq $R.windows.edition)
     Assert-S6 ($os.BuildNumber -ceq $R.windows.build -and $os.OSArchitecture -eq '64-bit')
+    Assert-S6 ($os.ProductType -eq 3 -and $computer.DomainRole -in @(2,3))
     Assert-S6 ([DateTime]::UtcNow -lt [DateTime]::ParseExact($R.windows.support_until, 'yyyy-MM-dd', $null))
     $licenses = @(Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f'" |
         Where-Object { $_.PartialProductKey -and $_.LicenseStatus -eq 1 })
@@ -78,7 +79,7 @@ function Check-Assets($R) {
     Assert-S6 ((File-Hash $R.windows.baseline.archive) -ceq $R.windows.baseline.sha256)
 }
 function Prepare-Pilot($R, $Observed) {
-    Check-Assets $R
+    Check-Assets $R; Assert-RsopSamples $R
     if (-not $R.apply) { return }
     Assert-S6 (-not $Observed.member)
     foreach ($key in @('root','issuer')) {
@@ -209,124 +210,13 @@ function Read-Pol($Path) {
         return $entries
     } finally { $reader.Dispose() }
 }
-function Apply-Policy($R,$Credential,$Directory) {
-    Check-Assets $R
-    Import-Module GroupPolicy
-    $baseline=$R.windows.baseline
-    $temporary=Join-Path 'C:\ProgramData\SambaADPilot' ([Guid]::NewGuid().ToString())
-    New-Item -ItemType Directory $temporary | Out-Null
-    try {
-        # Validate entry paths before extraction; never run any downloaded code.
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        $archive=[IO.Compression.ZipFile]::OpenRead($baseline.archive)
-        try {
-            $entries=@($archive.Entries | Where-Object { $_.Name -ne '' })
-            Assert-S6 ($entries.Count -eq @($baseline.files.PSObject.Properties).Count)
-            foreach ($entry in $entries) {
-                $name=$entry.FullName.Replace('\','/')
-                Assert-S6 (-not $name.Contains('..') -and -not $name.StartsWith('/') -and -not $name.Contains(':'))
-                Assert-S6 ($null -ne $baseline.files.PSObject.Properties[$name])
-            }
-        } finally { $archive.Dispose() }
-        [IO.Compression.ZipFile]::ExtractToDirectory($baseline.archive,$temporary)
-        foreach ($file in $baseline.files.PSObject.Properties) {
-            Assert-S6 ((File-Hash (Join-Path $temporary $file.Name)) -ceq $file.Value)
-        }
-        foreach ($setting in $baseline.settings) {
-            $entries=@(Read-Pol (Join-Path $temporary $setting.baseline_file))
-            Assert-S6 (@($entries | Where-Object { $_.key -ceq $setting.key -and $_.name -ceq $setting.name -and $_.value -eq $setting.value }).Count -eq 1)
-        }
-        # GPMC uses the impersonated domain network token. No password in CLI,
-        # scheduled tasks, script files, environment variables or process command line.
-        Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class S6Logon {
- [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
- public static extern bool LogonUser(string u,string d,string p,int type,int provider,out IntPtr token);
- [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr token);
-}
-'@
-        $token=[IntPtr]::Zero; $context=$null
-        try {
-            $nc=$Credential.GetNetworkCredential()
-            Assert-S6 ([S6Logon]::LogonUser($nc.UserName,$nc.Domain,$nc.Password,9,3,[ref]$token))
-            $identity=[Security.Principal.WindowsIdentity]::new($token)
-            $context=$identity.Impersonate()
-            $dc=$R.dcs.dc01.fqdn; $domain=$script:M.domain.dns_domain
-            $all=@(Get-GPO -All -Domain $domain -Server $dc)
-            $found=@($all | Where-Object { $_.DisplayName -ceq $baseline.gpo_name })
-            Assert-S6 ($found.Count -le 1)
-            if ($found.Count -eq 1) {
-                Assert-S6 ($found[0].Description -ceq $Directory.owner)
-                $gpo=$found[0]
-            } else {
-                Assert-S6 ($R.apply)
-                $gpo=New-GPO -Name $baseline.gpo_name -Comment $Directory.owner -Domain $domain -Server $dc
-            }
-            $policyPath='\\' + $dc + '\SYSVOL\' + $domain + '\Policies\{' + $gpo.Id.ToString().ToUpperInvariant() + '}'
-            $existing=@(Get-ChildItem $policyPath -File -Recurse)
-            foreach ($file in $existing) {
-                $relative=$file.FullName.Substring($policyPath.Length + 1)
-                Assert-S6 ($relative -in @('GPT.INI','Machine\Registry.pol'))
-            }
-            if (Test-Path ($policyPath + '\Machine\Registry.pol')) {
-                foreach ($entry in @(Read-Pol ($policyPath + '\Machine\Registry.pol'))) {
-                    Assert-S6 ($entry.type -eq 4 -and @($baseline.settings | Where-Object {
-                        $_.key -ceq $entry.key -and $_.name -ceq $entry.name -and $_.value -eq $entry.value }).Count -eq 1)
-                }
-            }
-            $inheritance=Get-GPInheritance -Target $R.ou -Domain $domain -Server $dc
-            Assert-S6 (@($inheritance.GpoLinks | Where-Object { $_.GpoId -ne $gpo.Id }).Count -eq 0)
-            if ($R.apply) {
-                foreach ($setting in $baseline.settings) {
-                    Set-GPRegistryValue -Guid $gpo.Id -Key $setting.key -ValueName $setting.name -Type DWord -Value $setting.value -Domain $domain -Server $dc | Out-Null
-                }
-                if (@($inheritance.GpoLinks).Count -eq 0) {
-                    New-GPLink -Guid $gpo.Id -Target $R.ou -Domain $domain -Server $dc -LinkEnabled Yes -Enforced No | Out-Null
-                }
-            }
-            foreach ($setting in $baseline.settings) {
-                $value=Get-GPRegistryValue -Guid $gpo.Id -Key $setting.key -ValueName $setting.name -Domain $domain -Server $dc
-                Assert-S6 ($value.Type -eq 'DWord' -and $value.Value -eq $setting.value)
-            }
-            $script:PolicyId=$gpo.Id.ToString()
-        } finally {
-            if ($null -ne $context) { $context.Undo(); $context.Dispose() }
-            if ($token -ne [IntPtr]::Zero) { [void][S6Logon]::CloseHandle($token) }
-        }
-    } finally { Remove-Item $temporary -Recurse -Force }
-}
-function Verify-PolicyBothDCs($R) {
-    $digests=@()
-    foreach ($dc in @($R.dcs.dc01,$R.dcs.dc02)) {
-        $root='\\' + $dc.fqdn + '\SYSVOL\' + $script:M.domain.dns_domain + '\Policies\{' + $script:PolicyId.ToUpperInvariant() + '}'
-        $digests += ((File-Hash ($root + '\GPT.INI')) + (File-Hash ($root + '\Machine\Registry.pol')))
-        # Native refresh must demonstrably use each named DC. If DC Locator
-        # selects a different DC, fail pending runtime routing diagnosis.
-        & nltest.exe ("/sc_reset:" + $script:M.domain.dns_domain + '\' + $dc.fqdn) | Out-Null
-        Assert-S6 ($LASTEXITCODE -eq 0)
-        & gpupdate.exe /target:computer /force /wait:120 | Out-Null; Assert-S6 ($LASTEXITCODE -eq 0)
-        $report='C:\ProgramData\SambaADPilot\gpresult-' + $dc.fqdn.Split('.')[0] + '.xml'
-        & gpresult.exe /scope computer /x $report /f | Out-Null; Assert-S6 ($LASTEXITCODE -eq 0)
-        [xml]$result=Get-Content $report -Raw
-        Assert-S6 ($result.DocumentElement.LocalName -eq 'Rsop')
-        Assert-S6 ($result.OuterXml.ToLowerInvariant().Contains($script:PolicyId.ToLowerInvariant()))
-        $controllers=@($result.SelectNodes("//*[local-name()='DCName']") | ForEach-Object { $_.InnerText.TrimStart('\').ToLowerInvariant() })
-        Assert-S6 ($controllers -contains $dc.fqdn)
-        foreach ($setting in $R.windows.baseline.settings) {
-            $path=$setting.key.Replace('HKLM\','HKLM:\')
-            Assert-S6 ((Get-ItemPropertyValue -LiteralPath $path -Name $setting.name) -eq $setting.value)
-        }
-    }
-    Assert-S6 ($digests.Count -eq 2 -and $digests[0] -ceq $digests[1])
-}
+
 try {
     $wire=[Console]::In.ReadToEnd() | ConvertFrom-Json
-    $R=$wire.request; $script:M=$wire.manifest
+    $R=$wire.request; $script:M=$wire.manifest; $script:BaselineCatalog=$wire.baseline_catalog
     $observed=Inspect-Pilot $R
     if ($wire.mode -eq 'probe') {
-        Check-Assets $R
+        Check-Assets $R; Assert-RsopSamples $R
         if ($R.action -ne 'prepare') {
             Assert-S6 ($null -ne $observed.state)
             Check-Endpoints $R $observed # before PVE opens its credential reference
@@ -373,18 +263,10 @@ try {
                 $guid=([BitConverter]::ToString([byte[]]$accounts.Entries[0].Attributes['objectGUID'][0])).Replace('-','').ToLowerInvariant()
                 Assert-S6 ($guid -ceq $observed.state.computer_guid -and $guid -ceq $wire.directory.computer_guid)
                 Verify-Membership $R $credential
-                if ($R.action -eq 'policy') { Apply-Policy $R $credential $wire.directory; $changed=$R.apply }
+                if ($R.action -eq 'policy') { Apply-Policy $R $credential $wire.directory; $changed=$script:PolicyChanged }
                 if ($R.apply) {
-                    & gpupdate.exe /target:computer /force /wait:120 | Out-Null; Assert-S6 ($LASTEXITCODE -eq 0)
-                    $report='C:\ProgramData\SambaADPilot\gpresult.xml'
-                    & gpresult.exe /scope computer /x $report /f | Out-Null; Assert-S6 ($LASTEXITCODE -eq 0)
-                    [xml]$result=Get-Content $report -Raw
-                    Assert-S6 ($result.DocumentElement.LocalName -eq 'Rsop')
-                    if ($R.action -eq 'policy') {
-                        Assert-S6 ($result.OuterXml.ToLowerInvariant().Contains($script:PolicyId.ToLowerInvariant()))
-                        Verify-PolicyBothDCs $R
-                    }
-                    $state='verified'
+                    if ($R.action -eq 'policy') { Verify-PolicyBothDCs $R $credential; $state='verified' }
+                    else { $state='membership_verified' }
                 }
             }
         } finally { $ldap.Dispose(); $secure.Dispose(); $wire.credentials.password=$null }

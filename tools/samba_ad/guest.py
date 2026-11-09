@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 
 GIB = 1024 ** 3
 
@@ -155,6 +156,14 @@ def pairs(value):
     return dict(x.split("=", 1) for x in value.split(",") if "=" in x)
 
 
+def canonical_uuid(value):
+    require(isinstance(value, str), "known UUID")
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        raise ValueError("S1 precondition failed: valid UUID") from None
+
+
 def safe_devices(config, disk):
     for key, value in config.items():
         require(not (re.fullmatch(r"(?:hostpci|usb|unused|efidisk|tpmstate|dev|virtiofs|parallel)[0-9]+", key)
@@ -227,8 +236,9 @@ def check_collisions(r, api, guests):
             config = api.get(f'/nodes/{g["node"]}/{g["type"]}/{g["vmid"]}/config', current=current)
             require(c["name"] not in [config.get("name"), config.get("hostname")], "name collision")
             pilot = (r.get("compatibility") or {}).get("data", {})
-            if pilot.get("schema") == "samba-ad-pilot-substrate/v1":
-                require(pairs(config.get("smbios1", "")).get("uuid") != pilot["clone_uuid"], "pilot UUID collision")
+            if pilot.get("schema") == "samba-ad-pilot-substrate/v1" and g["type"] == "qemu":
+                require(canonical_uuid(pairs(config.get("smbios1", "")).get("uuid")) !=
+                        canonical_uuid(pilot["clone_uuid"]), "pilot UUID collision")
             for key, value in config.items():
                 if re.fullmatch(r"(?:net|ipconfig)[0-9]+", key):
                     require(c["mac"].lower() not in str(value).lower(), "MAC collision")
@@ -349,7 +359,8 @@ def reconcile(r, api, check=False):
     windows = pilot.get("schema") == "samba-ad-pilot-substrate/v1" and pilot.get("purpose") == "windows_pilot"
     require(source.get("ostype") == ("debian" if c["kind"] == "lxc" else "win11" if windows else "l26"), "typed OS template")
     if pilot.get("schema") == "samba-ad-pilot-substrate/v1":
-        require(pairs(source.get("smbios1", "")).get("uuid") != pilot["clone_uuid"], "new client UUID")
+        require(canonical_uuid(pairs(source.get("smbios1", "")).get("uuid")) !=
+                canonical_uuid(pilot["clone_uuid"]), "new client UUID")
     if c["kind"] == "lxc":
         require(source.get("unprivileged") == 1, "unprivileged template")
     require(source.get(t["disk"], "").startswith(t["storage"] + ":")

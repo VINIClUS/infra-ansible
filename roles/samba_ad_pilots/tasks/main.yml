@@ -63,7 +63,7 @@
   changed_when: false
   check_mode: false
   no_log: true
-  when: samba_ad_pilots_request.action != 'prepare'
+  when: not (samba_ad_pilots_request.action == 'prepare' and samba_ad_pilots_request.pilot == 'linux_pilot')
 
 - name: Create or inspect only the owned pilot OU on DC01
   ansible.builtin.command:
@@ -85,7 +85,8 @@
     stdin: >-
       {{ samba_ad_pilots_wire | combine({'dc_records':
          (samba_ad_pilots_dc_result.results | map(attribute='stdout') | map('from_json') | list)
-         if samba_ad_pilots_request.action != 'prepare' else [],
+         if not (samba_ad_pilots_request.action == 'prepare'
+         and samba_ad_pilots_request.pilot == 'linux_pilot') else [],
          'directory': (samba_ad_pilots_directory.stdout | from_json)
          if samba_ad_pilots_request.action != 'prepare' else none}) | to_json }}
   register: samba_ad_pilots_result

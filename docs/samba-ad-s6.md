@@ -44,7 +44,9 @@ MAC, static address, hostname, machine ID and boot identity again before secrets
    pinned Microsoft-signed offline feature assets and DISM `-LimitAccess`.
    Neither backend installs packages on PVE or performs unbounded discovery.
    Public root/intermediate certificates are installed, with exact SHA-256 pins.
-2. `join` requires fresh host-local results from both exact DCs. Each checks
+2. Windows `prepare`, and every client `join`, `verify` or `policy`, require
+   fresh host-local results from both exact DCs. Windows `prepare` creates no OU
+   or computer account. Each checks
    hostname/MAC/address, machine and boot identity, signed Samba package pins,
    expected forest SID, levels 7/7, schema 88, service state, SYSVOL ACL checks,
    and successful inbound replication of all five naming contexts from the peer
@@ -61,20 +63,37 @@ MAC, static address, hostname, machine ID and boot identity again before secrets
 4. Linux joins with `adcli --stdin-password`, enables SSSD/NSS/PAM, and tests
    machine membership, fresh Kerberos credentials and signed SYSVOL reads through
    both explicitly configured DCs. Kerberos uses isolated `/run` caches and exactly
-   one approved KDC per test, then destroys the cache. PAM account checks and NSS
-   lookups exercise the configured stack. It does not claim Windows GPO execution.
+   one approved KDC per test, then destroys the cache. A direct Linux-PAM call to `pam_acct_mgmt` on the sshd stack preserves
+   the actual PAM return code; any denial, expired-password state, incomplete
+   start or failed cleanup rejects acceptance. `sssctl` diagnostic exit status
+   is not authorization evidence. NSS lookups also exercise the configured stack. It does not claim Windows GPO execution.
 5. Windows joins with `Add-Computer -Server DC01 -OUPath OWNED_OU`, without WinRM
    or ADWS. It reports `joined_reboot_required`; reboot only this new owned client
    and update its private observed boot pin before `verify` or `policy`. Reruns
    with matching local/AD ownership, SID and computer GUID verify membership and
    never rejoin. Secure-channel, LDAPS SID and actual SYSVOL reads use both DCs.
-6. `policy` uses GPMC against DC01 only. The new owned GPO can link only to the
-   pilot OU; foreign names, descriptions, links or policy files stop the run.
-   After S5 has copied its GPT/Registry.pol to DC02, acceptance compares those
-   files through both DCs, runs real `gpupdate`/`gpresult`, checks the GPO GUID,
-   the reported DC and effective registry values. If DC Locator does not honor
-   the requested secure-channel selection, the check fails pending diagnosis;
-   two identical refresh commands are not evidence of two-DC acceptance.
+6. `policy` uses GPMC against DC01 only. Every component has a separately named
+   new owned GPO; a seventh owned GPO enables loopback Merge so the vendor's user
+   policies apply only to sessions on the pilot computers. Before the first
+   write, and again before each import/link, the backend queries reverse links
+   by GUID across the domain subtree and Sites. Any link outside the exact pilot
+   OU, disabled/enforced link, duplicate, foreign description or unknown direct
+   OU link stops the flow. Existing GPOs require exact content and enabled links;
+   they are not reimported or reset. Partially created unlinked GPOs need explicit
+   owned-object recovery.
+7. Acceptance compares all selected policy files and GPT.INI through both DCs.
+   A fresh `gpupdate`/`gpresult` is paired with native `RSOP_GPO` and
+   `RSOP_ExtensionStatus` observations for that same refresh. The exact GUID must
+   be enabled, valid, unfiltered and not denied in ComputerResults/UserResults;
+   native versions must agree, every required extension must report error zero
+   and complete logging within the refresh window, and the DC in that scope
+   must match the requested DC. A GUID merely appearing in XML never passes.
+   The effective registry, security export, audit policy and running Credential
+   Guard/HVCI are checked. User policies are tested in a profile-loaded process
+   using the credential API, with the actual domain SID verified. No password
+   appears in its script, arguments or public input file. Both computer and user
+   policy must pass through both DCs before the `policy` action returns `verified`;
+   membership-only actions return `membership_verified`.
 
 **S4 dependency ruling:** Linux `prepare` may run before DC02 exists, solely to
 prepare the new owned Linux pilot as the external S4 protocol test driver. That
@@ -92,25 +111,56 @@ The private operator remains responsible for the applicable license entitlement.
 Windows 11 is not qualified here: the existing S1 device guard intentionally does
 not yet permit its additional TPM/UEFI device requirements.
 
-The baseline request pins the reviewed Microsoft download URL, publisher,
-Server 2025 title, archive SHA-256, every extracted file hash and an explicit
-registry-policy setting allowlist. The backend reads the pinned Registry.pol
-binary and requires each chosen value to exist there before applying it with
-`Set-GPRegistryValue`. It does not execute downloaded scripts or import the full
-baseline. This is an explicit reviewed **baseline subset**, not a claim that all
-Microsoft recommendations have been applied. Additional baseline settings require
-an expanded reviewed parser/allowlist and corresponding acceptance tests.
+The mandatory baseline is Microsoft's **Windows Server 2025 v2602** member-server
+set, retrieved from the current official Security Compliance Toolkit page. The
+exact public ZIP SHA-256 is
+`a66dffbe2622c3c4dd70e44a7f2080f362fb2d6f9208c50678671cbb046a286f`.
+The source-pinned catalog is reproducible with `pilot_baseline.catalog()` and
+records every archive file hash and every setting in these six vendor components:
 
-The initial allowlist is restricted to signing/guest-access and PowerShell logging
-registry values. Some Microsoft settings may be represented in security templates
-rather than Registry.pol; such values remain unavailable until a reviewed adapter
-exists. The actual private artifact must match the selected OS and source file.
-Missing assets or mismatched values stop before policy mutation. Default Domain
-Policy and Default Domain Controllers Policy are never targeted.
+- Member Server: 103 Registry.pol records, 54 security settings, 24 audit settings.
+- Internet Explorer Computer: 133 Registry.pol records.
+- Domain Security: 8 security settings.
+- Member Server Credential Guard: 8 Registry.pol records.
+- Defender Antivirus: 27 Registry.pol records.
+- Internet Explorer User: 3 Registry.pol records.
 
-Encrypted LAPS, WHfB, AES-only, and complete NTLM disablement remain conditional
-P1 work. The allowlist cannot import these settings or weaken the existing NTLMv2
-floor. No broad blanket baseline exception is inferred.
+This covers 360 vendor policy records. The request cannot choose a subset or
+supply an arbitrary exclusion list. Parsers reject unknown policy-bearing file
+formats, unsupported Registry.pol records and duplicate settings. The native
+adapter validates the complete archive and all extracted hashes, transforms only
+the two approved S4 conflicts, then checks each complete prepared backup against
+the source catalog before `Import-GPO` into a new owned target. Downloaded scripts
+are never executed and arbitrary/unvalidated backups are never imported.
+
+There are exactly two baseline substitutions, with S4 as the existing authority:
+`PasswordHistorySize=24` becomes `30`, and `LockoutBadCount=3` becomes `10`.
+Both original values must match the pinned vendor artifact, and transformed
+GptTmpl.inf bytes have an exact expected hash. Other security values, privileges,
+audit policies, computer policies and user policies remain mandatory. No domain
+root link or Default Domain Policy/Default Domain Controllers Policy mutation is
+performed; Domain Security settings are linked only to the pilot OU.
+
+Encrypted LAPS, WHfB, AES-only and complete NTLM disablement remain conditional
+P1 work. These controls are absent from the selected pinned vendor set, so this
+release makes **no blanket omission** on their behalf. NTLM auditing and the
+NTLMv2 floor remain in the mandatory settings. A future artifact containing a
+conditional control requires a separate exact reviewed exception; it cannot be
+silently added or excluded by private request fields. Credential Guard is part
+of this vendor baseline and is **not** deferred: native hardware, reboot and
+running-service requirements must pass. Current templates are not thereby
+qualified for it.
+
+RSoP acceptance has a fixed `server2025-gpmc-rsop-v1` parser profile. Before any
+Windows preparation/policy mutation, private SHA-256 pins and a review reference
+must identify real `rsop-computer.xml` and `rsop-user.xml` samples under
+`C:\SambaADAssets`, bound to the qualified template's observation artifact. The
+samples must match the exact namespace/structure and contain positive applied-GPO
+records. These are schema-qualification inputs, **not runtime acceptance**;
+current acceptance additionally requires fresh native CIM results and the exact
+current GPOs/versions/DC. Missing real samples, unrecognized schemas, stale
+extensions, logging-incomplete extensions, or missing assets fail closed. No
+synthetic test XML is shipped as a qualified receipt.
 
 ## Secret and trust transport
 
@@ -127,6 +177,8 @@ The PVE backend reads that file only after canonical live S1 checks and a fresh
 QGA nonce/identity probe. `qm guest exec --pass-stdin 1` forwards credential JSON
 to a fixed public PowerShell/Python program. No passwords, keys, Base64 secrets,
 EncodedCommand payloads, tokens or `pvesh --input-data` values appear in argv.
+Only the fixed public source is gzip/Base64 compressed to fit the Windows
+CreateProcess command-line limit; private inputs remain exclusively on stdin.
 Windows reads `[Console]::In.ReadToEnd()` and uses PSCredential/LDAP/native logon
 APIs in memory. Linux passes passwords through stdin or a library call. Native
 errors are generic, Ansible tasks are `no_log`, Python core dumps are disabled,
@@ -143,7 +195,8 @@ CA certificates cross this interface; no CA or DC private key is transported.
 
 Synthetic pytest fixtures cover closed contract drift, foreign memberships,
 secret-free argv, truncated/failed QGA results, wrong QGA identity, TLS-before-bind,
-stale/mismatched DC evidence, DRS failure/peer/context checks, baseline restrictions,
+stale/mismatched DC evidence, DRS failure/peer/context checks, complete baseline coverage, inverse GPO scope, denied/filtered/stale RSoP,
+real PAM denial codes, canonical UUIDs, Linux-only preparation exceptions,
 bootstrap dependency loading and real disabled/manual Ansible guards. PowerShell
 is parsed with its AST parser without executing the Windows backend. S1 and CA
 lifecycle regressions are included in the focused test run.
@@ -151,7 +204,8 @@ lifecycle regressions are included in the focused test run.
 These tests do not qualify an OS image, a license, Microsoft assets, a transport
 version, Windows account-reuse policy, RSAT/GPMC impersonation behavior, policy
 propagation or Linux/Windows runtime acceptance. Those require the real new
-clients and both DCs. No runtime pass receipt is manufactured by local tests.
+clients and both DCs. The current source is Server 2025-specific; a Windows 11
+image/name does not satisfy its edition, baseline or hardware contract. No runtime pass receipt is manufactured by local tests.
 
 Current official references consulted (2026-11-08; Context7 quota was exhausted):
 
@@ -167,3 +221,13 @@ Current official references consulted (2026-11-08; Context7 quota was exhausted)
   [Set-GPRegistryValue](https://learn.microsoft.com/en-us/powershell/module/grouppolicy/set-gpregistryvalue?view=windowsserver2025-ps),
   [gpupdate](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/gpupdate).
 - [adcli documentation](https://www.freedesktop.org/software/realmd/adcli/adcli.html).
+
+Additional primary evidence for the first review fixes:
+
+- [Official v2602 artifact](https://download.microsoft.com/download/e99be2d2-e077-4986-a06b-6078051999dd/Windows%20Server%202025%20Security%20Baseline%20-%202602.zip).
+  Its WSMember selection was read from the vendor script without executing it.
+- [SSSD 2.10.1 diagnostic implementation](https://github.com/SSSD/sssd/blob/2.10.1/src/tools/sssctl/sssctl_user_checks.c):
+  sssctl's diagnostic return status does not preserve PAM denial.
+- [RSOP_GPO](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/policy/rsop-gpo)
+  and [RSOP_ExtensionStatus](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/policy/rsop-extensionstatus):
+  native version/authorization fields and numeric error/logging status.

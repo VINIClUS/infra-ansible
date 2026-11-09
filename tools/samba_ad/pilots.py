@@ -1,6 +1,8 @@
 """S6 manual orchestration. All private inputs arrive through stdin, never argv."""
 from __future__ import annotations
 import hashlib
+import base64
+import gzip
 import ipaddress
 import json
 import os
@@ -104,7 +106,7 @@ def validate(r, manifest):
         require(r["linux"] is None)
         require(re.fullmatch(r"S-1-5-21-(?:[0-9]+-){2}[0-9]+", i["local_sid"]))
         require(i["local_sid"] != data["report"]["template_observation"]["local_sid"])
-        fields(r["windows"], "edition build support_until support_ref baseline rsat_source rsat_files")
+        fields(r["windows"], "edition build support_until support_ref baseline rsat_source rsat_files rsop")
         w = r["windows"]
         require(w["edition"] in ["ServerStandard", "ServerDatacenter"] and w["build"] == "26100")
         require(w["support_until"] == "2034-11-14")
@@ -113,34 +115,14 @@ def validate(r, manifest):
         require(isinstance(w["rsat_files"], dict) and len(w["rsat_files"]) > 0)
         for path, digest in w["rsat_files"].items():
             require(re.fullmatch(r"[A-Za-z0-9_.-]+\.(cab|msu)", path)); hex_value(digest)
-        b = w["baseline"]
-        fields(b, "title publisher url sha256 archive files gpo_name settings review_ref")
-        require(b["title"] == "Windows Server 2025 Security Baseline" and b["publisher"] == "Microsoft Corporation")
-        require(re.fullmatch(r"https://download\.microsoft\.com/download/[A-Za-z0-9/_.%-]+\.zip", b["url"]))
-        require(b["archive"] == "C:\\SambaADAssets\\baseline.zip")
-        hex_value(b["sha256"]); review(b["review_ref"])
-        require(re.fullmatch(r"Samba-Pilot-[a-f0-9]{16}", b["gpo_name"]))
-        require(b["gpo_name"] == r["ou"].split(",")[0][3:])
-        require(isinstance(b["files"], dict) and len(b["files"]) > 0)
-        for name, digest in b["files"].items():
-            require(re.fullmatch(r"[A-Za-z0-9_{} ./-]+", name) and ".." not in name and not name.startswith("/"))
-            hex_value(digest)
-        # Deliberately use a reviewed registry-policy subset, never execute the
-        # downloaded baseline scripts or blindly import its security templates.
-        allowed = {
-            (r"HKLM\Software\Policies\Microsoft\Windows\LanmanWorkstation", "RequireSecuritySignature", 1),
-            (r"HKLM\Software\Policies\Microsoft\Windows\LanmanWorkstation", "EnableInsecureGuestLogons", 0),
-            (r"HKLM\System\CurrentControlSet\Services\LanmanServer\Parameters", "RequireSecuritySignature", 1),
-            (r"HKLM\Software\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging", "EnableScriptBlockLogging", 1),
-        }
-        require(isinstance(b["settings"], list) and len(b["settings"]) > 0)
-        seen = set()
-        for setting in b["settings"]:
-            fields(setting, "key name value baseline_file")
-            triple = (setting["key"], setting["name"], setting["value"])
-            require(type(setting["value"]) is int and triple in allowed and triple not in seen)
-            seen.add(triple)
-            require(setting["baseline_file"] in b["files"] and setting["baseline_file"].endswith("Registry.pol"))
+        from tools.samba_ad.pilot_baseline import validate_request as validate_baseline
+        validate_baseline(w["baseline"], r["ou"])
+        fields(w["rsop"], "profile template_artifact_sha256 samples review_ref")
+        require(w["rsop"]["profile"] == "server2025-gpmc-rsop-v1")
+        require(w["rsop"]["template_artifact_sha256"] == data["report"]["artifact_sha256"])
+        fields(w["rsop"]["samples"], "Computer User")
+        for value in w["rsop"]["samples"].values(): hex_value(value)
+        review(w["rsop"]["review_ref"])
     return {"state": "validated", "changed": False}
 
 
@@ -164,6 +146,10 @@ def dc_evidence(r, records, now=None):
         require(record["sid"] == r["sid"] and type(record["observed"]) is int and 0 <= now-record["observed"] <= 300)
         hex_value(record["sysvol_sha256"])
     require(records[0]["sysvol_sha256"] == records[1]["sysvol_sha256"])
+
+
+def needs_dc_gate(r):
+    return not (r["action"] == "prepare" and r["pilot"] == "linux_pilot")
 
 
 def qga(vmid, command, payload):
@@ -207,7 +193,17 @@ def run_guest(r, manifest, sources, mode, credentials=None, directory=None):
     payload = {"request": r, "manifest": manifest, "mode": "probe", "nonce": nonce,
                "credentials": None, "directory": None}
     windows = r["pilot"] == "windows_pilot"
-    command = (["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", sources["windows"]]
+    if windows:
+        from tools.samba_ad.pilot_baseline_catalog import CATALOG
+        payload["baseline_catalog"] = CATALOG
+    # Compress public code only to stay below the Windows CreateProcess limit.
+    # Credentials and all private data remain solely in the stdin payload.
+    code = base64.b64encode(gzip.compress(sources["windows"].encode(), mtime=0)).decode() if windows else ""
+    public = ("$m=[IO.MemoryStream]::new([Convert]::FromBase64String('" + code + "'));"
+              "$g=[IO.Compression.GZipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);"
+              "$s=[IO.StreamReader]::new($g);& ([ScriptBlock]::Create($s.ReadToEnd()))")
+    require(len(public) < 24000)
+    command = (["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", public]
                if windows else ["/usr/bin/python3", "-B", "-c", sources["linux"]])
     probe = qga(r["substrate"]["resource"]["vmid"], command, payload)
     require(probe.get("nonce") == nonce and probe.get("identity") == r["identity"])
@@ -257,10 +253,10 @@ def main(sources):
             from tools.samba_ad.pilots_dc import directory
             result = directory(r, manifest, wire["probe"])
         elif mode == ["--execute"]:
+            if needs_dc_gate(r): dc_evidence(r, wire["dc_records"])
             if r["action"] == "prepare":
                 require(wire["credentials"] is None and wire["directory"] is None)
             else:
-                dc_evidence(r, wire["dc_records"])
                 require(wire["credentials"] is None)
             result = run_guest(r, manifest, sources, "execute", wire["credentials"], wire["directory"])
         else: raise ValueError(ERROR)

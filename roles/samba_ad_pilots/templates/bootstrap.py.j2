@@ -1,5 +1,5 @@
 {% set bundle = namespace(sources={}) %}
-{% for name in ['compatibility', 'contract', 'pilot_substrate', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network', 'domain_services', 'pilots', 'pilots_dc'] %}
+{% for name in ['compatibility', 'contract', 'pilot_substrate', 'guest', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'domain', 'domain_source', 'domain_network', 'domain_services', 'pilot_baseline_catalog', 'pilot_baseline', 'pilots', 'pilots_dc'] %}
 {% set _ = bundle.sources.update({name: lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py')}) %}
 {% endfor %}
 import base64, json, sys, types, zlib
@@ -18,10 +18,9 @@ try:
         setattr(sys.modules['tools.samba_ad'], short, module)
         exec(source, module.__dict__)
     from tools.samba_ad import pilots
-    client_sources = {
-        'linux': {{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_linux.py') | to_json }},
-        'windows': {{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_windows.ps1') | to_json }}
-    }
+{% set clients = {'linux': lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_linux.py'),
+                  'windows': lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_policy.ps1') ~ '\n' ~ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_baseline_windows.ps1') ~ '\n' ~ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/pilot_windows.ps1')} %}
+    client_sources = json.loads(zlib.decompress(base64.b64decode({{ clients | samba_ad_pilot_pack_sources | to_json }})))
     raise SystemExit(pilots.main(client_sources))
 except Exception:
     print('S6 precondition failed (values suppressed)', file=sys.stderr)
