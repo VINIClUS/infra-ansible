@@ -3,6 +3,11 @@ import base64
 import copy
 import hashlib
 import json
+from pathlib import Path
+import subprocess
+import zlib
+
+import jinja2
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -54,3 +59,20 @@ def test_new_identity_conflicts_are_rejected(change):
     if change == 'unqualified_gateway': del manifest['telemetry_collector']
     reseal(data['guest_request'])
     with pytest.raises(ValueError): render(data)
+
+
+@pytest.mark.parametrize('role', ['samba_ad_replica', 'samba_ad_sysvol'])
+def test_s5_memory_loader_includes_new_profile_dependency(role):
+    root = Path(__file__).resolve().parents[1]
+    template = root / 'roles' / role / 'templates/bootstrap.py.j2'
+    env = jinja2.Environment(); env.filters['to_json'] = json.dumps
+    env.filters['samba_ad_replica_pack_sources'] = lambda sources: base64.b64encode(
+        zlib.compress(json.dumps(sources).encode(), 9)).decode()
+    code = env.from_string(template.read_text()).render(role_path=str(template.parent.parent),
+        lookup=lambda _, path: Path(path).read_text())
+    payload = {'schema': 'samba-ad-replica-wire/v1', 'request': {
+        'schema': 'samba-ad-replica/v1', 'enabled': False, 'apply': False}, 'manifest': {}}
+    result = subprocess.run(['python3', '-B', '-c', code, '--check'], input=json.dumps(payload),
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {'state': 'disabled', 'changed': False}
