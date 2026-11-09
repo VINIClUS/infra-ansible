@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import json
+import os
 import struct
 import pytest
 from tools.samba_ad import pilot_baseline as baseline
@@ -46,7 +47,7 @@ def test_security_inf_refuses_unsupported_sections_or_duplicate_settings():
 
 
 def test_public_reference_archive_rebuilds_exact_catalog_and_native_transform(tmp_path):
-    archive=Path('/tmp/s6-server2025-baseline.zip')
+    archive=Path(os.environ.get('S6_BASELINE_ARCHIVE', '/tmp/s6-server2025-baseline.zip'))
     if not archive.exists():pytest.skip('Public pinned Microsoft archive not staged on this test host')
     assert baseline.catalog(archive.read_bytes())==CATALOG
     catalog=tmp_path/'catalog.json';catalog.write_text(json.dumps(CATALOG))

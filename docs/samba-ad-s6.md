@@ -37,6 +37,45 @@ Neither its name nor PVE `ostype` is evidence of its Windows edition or support.
 S1 assigns the private fresh SMBIOS UUID before first boot; QGA checks that UUID,
 MAC, static address, hostname, machine ID and boot identity again before secrets.
 
+### Managed Windows firmware and virtualization
+
+The Windows-only `report.hardware` qualification is mandatory. It contains exact
+`bios: ovmf`, versioned `machine: pc-q35-X.Y`, `cpu: host`, the source EFI
+`efi_sha256`, and separate exact `template_volumes`, `clone_volumes` and
+`destination_volumes` maps for `scsi0` and `efidisk0`. The maps record observed
+allocation behavior of the qualified PVE version; clone/migration disk indices
+are not assumed to match the template. Each volume must identify the exact
+source template or new owned VM and declared storage. Additional disks,
+cloud-init drives, shared roots, TPM state, passthrough and hooks remain refused
+on this path. Linux/DC/CA keep their existing device guards. Production
+`stop`/`absent` remain forbidden; this does not introduce a destruction path.
+
+The source EFI must be 4m with pre-enrolled keys. S1 hashes its actual volume
+before cloning, then verifies the full clone's exact owned disk identities before
+configuration/migration and again at the destination. Firmware/CPU values remain
+checked on re-execution/start. This copies only the explicitly qualified EFI
+variable image, never TPM identity or a foreign volume. The private image review
+must establish its clean generalized state and UEFI-lock capability. No image or
+positive hardware report is supplied here.
+
+`hardware.nodes` records each source/destination node's CPU vendor/model,
+`extension` (`vmx` or `svm`), `slat` (`ept` or `npt`), `nested: true`, boot ID and
+raw observation artifact SHA-256. Vendor/model must agree across the two nodes.
+The live read-only probe checks every CPU's features, the existing KVM nested
+parameter and boot ID, in addition to S1's pinned PVE/kernel fingerprint; it does
+not load modules, enable nesting or change any host setting. A host reboot or
+hardware/version drift requires new reviewed qualification. The destination is
+rechecked immediately before boot.
+
+`hardware.native` binds observed Secure Boot, available VBS properties and
+UEFI-lock capability to the template observation. Before any GPO mutation the
+actual client must pass `Confirm-SecureBootUEFI` and expose hypervisor, Secure
+Boot and NX support in `Win32_DeviceGuard.AvailableSecurityProperties` (1, 2, 5).
+Policy acceptance still requires running CG/HVCI; capability alone never passes
+acceptance. TPM is recommended by Microsoft but is not required by these
+selected controls, and no TPM state is created or cloned. Actual KVM/firmware/
+Windows support, drivers and reboot behavior remain part of native qualification.
+
 ## Stages and evidence
 
 1. `prepare` operates only inside the new owned client. Linux uses reviewed,
@@ -90,7 +129,7 @@ MAC, static address, hostname, machine ID and boot identity again before secrets
    must match the requested DC. A GUID merely appearing in XML never passes.
    The effective registry, security export, audit policy and running Credential
    Guard/HVCI are checked. User policies are tested in a profile-loaded process
-   using the credential API, with the actual domain SID verified. No password
+   using LogonUser/CreateProcessAsUser under the LocalSystem QGA token, with the actual domain SID verified. No password
    appears in its script, arguments or public input file. Both computer and user
    policy must pass through both DCs before the `policy` action returns `verified`;
    membership-only actions return `membership_verified`.
@@ -104,12 +143,22 @@ retain the two-DC gate. This avoids the S4/S6 dependency cycle.
 ## Windows support, baseline and conditional controls
 
 The initial native implementation supports actual Windows Server 2025 Standard
-or Datacenter, x86-64, build 26100. It queries CIM, DISM edition, ImageState, local
-SID, MachineGuid and SoftwareLicensingProduct activation state. Activation is an
-observed technical fact, not an invented license key or legal ownership claim.
-The private operator remains responsible for the applicable license entitlement.
-Windows 11 is not qualified here: the existing S1 device guard intentionally does
-not yet permit its additional TPM/UEFI device requirements.
+or Datacenter (including `ServerStandardEval` and `ServerDatacenterEval`), x86-64,
+build 26100. The requested edition must match the qualified template and native
+DISM observation. It queries CIM, DISM edition, ImageState, local SID, MachineGuid
+and SoftwareLicensingProduct. Activation and purchased-license entitlement are
+not pilot gates: unactivated supported images and evaluation images are allowed.
+Probe/action results include the observed edition, evaluation flag and raw Windows
+product IDs, numeric license statuses and remaining grace minutes; an empty
+product list remains empty, and entitlement is explicitly `not_attested`. These
+facts do not assert a purchased license or extend an evaluation period. No key
+is collected or supplied, and no activation, rearm or edition conversion occurs.
+The Server 2025 lifecycle date does not represent evaluation expiry or entitlement.
+Placeholders can describe source preparation only; they cannot satisfy the real
+image, identity, hardware, authentication or policy observations. The baseline
+remains Server 2025-specific, including its mandatory CG/HVCI controls.
+Windows 11 is not qualified here. The managed EFI exception below is restricted
+to the reviewed Server 2025 pilot contract; TPM state remains forbidden.
 
 The mandatory baseline is Microsoft's **Windows Server 2025 v2602** member-server
 set, retrieved from the current official Security Compliance Toolkit page. The
@@ -194,6 +243,32 @@ pins the actual LDAP TLS connection with an empty anonymous bind before the real
 bind. Windows checks the pin in its LDAP TLS verification callback. Only public
 CA certificates cross this interface; no CA or DC private key is transported.
 
+The user-policy worker explicitly requires LocalSystem and uses `LogonUserW`
+(interactive primary token), `LoadUserProfileW`, `CreateEnvironmentBlock` and
+`CreateProcessAsUserW`. It enables only the required process privileges during
+the operation and restores them afterward. The password is marshalled from
+SecureString only for the logon call and its unmanaged buffer is zeroed. Worker
+argv/JSON contains public paths and policy assertions only. The worker has
+read-only access to its script/input and write access only to a results folder.
+No global QGA account change is made.
+
+Creation is suspended without inherited handles; the worker is assigned to a
+kill-on-close job before resuming. Wait is bounded to 180 seconds; failure or
+timeout terminates the worker tree, then bounded cleanup drains the job,
+closes thread/process/job handles, destroys the user environment, unloads the
+profile, closes the token and restores privileges. Cleanup attempts every owned
+resource even after another cleanup fails, and any failure rejects acceptance.
+This source path still needs validation on the actual Windows service token,
+profile/rights and native API implementation.
+
+Official API/firmware references for this path:
+- https://pve.proxmox.com/pve-docs/qm.1.html
+- https://learn.microsoft.com/en-us/windows/security/identity-protection/credential-guard/
+- https://learn.microsoft.com/en-us/windows/security/hardware-security/enable-virtualization-based-protection-of-code-integrity
+- https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw
+- https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
+- https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-loaduserprofilew
+
 ## Validation and limits
 
 Synthetic pytest fixtures cover closed contract drift, foreign memberships,
@@ -210,7 +285,7 @@ propagation or Linux/Windows runtime acceptance. Those require the real new
 clients and both DCs. The current source is Server 2025-specific; a Windows 11
 image/name does not satisfy its edition, baseline or hardware contract. No runtime pass receipt is manufactured by local tests.
 
-Current official references consulted (2026-11-08; Context7 quota was exhausted):
+Initial official references consulted (2026-11-08; Context7 quota was exhausted):
 
 - [Proxmox qm manual](https://pve.proxmox.com/pve-docs/qm.1.html): `guest exec`
   `--pass-stdin`, EOF forwarding, 1 MiB input limit and synchronous timeout.
@@ -224,6 +299,17 @@ Current official references consulted (2026-11-08; Context7 quota was exhausted)
   [Set-GPRegistryValue](https://learn.microsoft.com/en-us/powershell/module/grouppolicy/set-gpregistryvalue?view=windowsserver2025-ps),
   [gpupdate](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/gpupdate).
 - [adcli documentation](https://www.freedesktop.org/software/realmd/adcli/adcli.html).
+
+Round 2 documentation (2026-11-09): Context7's current Windows Server documentation
+confirms the `Eval` edition suffix via DISM in
+[upgrade/conversion options](https://learn.microsoft.com/en-us/windows-server/get-started/upgrade-conversion-options).
+That reference is used only to identify the installed edition; this workflow
+does not perform the documented conversion or activation operations.
+The native license fields are documented by Microsoft's
+[SoftwareLicensingProduct class](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/sppwmi/softwarelicensingproduct).
+The Win32 references above were read directly as well: CreateProcessAsUser
+requires explicit profile/environment management and LoadUserProfile requires
+backup/restore privileges under an administrator or LocalSystem caller.
 
 Additional primary evidence for the first review fixes:
 

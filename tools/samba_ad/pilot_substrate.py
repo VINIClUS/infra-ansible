@@ -44,7 +44,8 @@ def validate_pilot_bundle(envelope, target):
     require(target["template"]["disk"] == "scsi0")
     require(str(uuid.UUID(d["clone_uuid"])) == d["clone_uuid"])
     report = d["report"]
-    fields(report, "schema platform_fingerprint template_observation subject artifact_sha256 review_ref")
+    fields(report, "schema platform_fingerprint template_observation subject artifact_sha256 review_ref" +
+           (" hardware" if d["purpose"] == "windows_pilot" else ""))
     require(report["schema"] == "samba-ad-pilot-template-observation/v1")
     hex_value(report["artifact_sha256"], 64); review(report["review_ref"])
     fp = report["platform_fingerprint"]
@@ -71,10 +72,11 @@ def validate_pilot_bundle(envelope, target):
         require(obs["family"] == "debian" and obs["edition"] == "13" and obs["build"] == "13")
         require(obs["local_sid"] is None and obs["image_state"] == "machine-id-empty")
     else:
-        # S1 currently disallows unmanaged TPM/EFI disks. Support Server 2025
-        # explicitly; do not claim Windows 11 qualification without its hardware.
+        validate_windows_hardware(report["hardware"], target)
+        # Server 2025 only. TPM remains forbidden; the selected VBS baseline
+        # requires Secure Boot, not a TPM or copied TPM secret state.
         require(obs["family"] == "windows" and obs["build"] == "26100")
-        require(obs["edition"] in ["ServerStandard", "ServerDatacenter"])
+        require(obs["edition"] in ["ServerStandard", "ServerDatacenter", "ServerStandardEval", "ServerDatacenterEval"])
         require(re.fullmatch(r"S-1-5-21-(?:[0-9]+-){2}[0-9]+", obs["local_sid"]))
         require(obs["image_state"] == "IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE")
     p = d["provenance"]
@@ -88,3 +90,36 @@ def validate_pilot_bundle(envelope, target):
 def pilot_data(request):
     data = (request.get("compatibility") or {}).get("data", {})
     return data if data.get("schema") == SCHEMA else None
+
+
+def validate_windows_hardware(h, target):
+    """Private reviewed observations, bound by envelope/template/platform pins."""
+    fields(h, "bios machine cpu efi_sha256 template_volumes clone_volumes destination_volumes nodes native")
+    require(h["bios"] == "ovmf" and h["cpu"] == "host")
+    require(isinstance(h["machine"], str) and re.fullmatch(r"pc-q35-[0-9]+\.[0-9]+", h["machine"]))
+    hex_value(h["efi_sha256"], 64)
+    t, c = target["template"], target["resource"]
+    fields(h["template_volumes"], "scsi0 efidisk0")
+    for volume in h["template_volumes"].values():
+        require(isinstance(volume, str) and re.fullmatch(re.escape(t["storage"])+r":(?:"+str(t["vmid"])+r"/)?base-"+str(t["vmid"])+r"-disk-[0-9]+(?:\.(?:raw|qcow2))?", volume))
+    require(len(set(h["template_volumes"].values())) == 2)
+    for stage, storage in [("clone_volumes",t["storage"]),("destination_volumes",c["storage"])]:
+        fields(h[stage], "scsi0 efidisk0")
+        for volume in h[stage].values():
+            require(isinstance(volume, str) and re.fullmatch(re.escape(storage)+r":(?:"+str(c["vmid"])+r"/)?vm-"+str(c["vmid"])+r"-disk-[0-9]+(?:\.(?:raw|qcow2))?", volume))
+        require(len(set(h[stage].values())) == 2)
+    if t["node"] == c["node"]:
+        require(h["clone_volumes"] == h["destination_volumes"])
+
+    require(set(h["nodes"]) == {t["node"], c["node"]})
+    for n in h["nodes"].values():
+        fields(n, "vendor model extension slat nested boot_id artifact_sha256")
+        require((n["vendor"], n["extension"], n["slat"]) in [("GenuineIntel","vmx","ept"),("AuthenticAMD","svm","npt")])
+        require(isinstance(n["model"], str) and 0 < len(n["model"]) <= 256 and n["nested"] is True)
+        require(str(uuid.UUID(n["boot_id"])) == n["boot_id"])
+        hex_value(n["artifact_sha256"], 64)
+    require(len({(n["vendor"], n["model"]) for n in h["nodes"].values()}) == 1)
+    fields(h["native"], "secure_boot available_security_properties uefi_lock_capable")
+    require(h["native"]["secure_boot"] is True and h["native"]["uefi_lock_capable"] is True)
+    require(isinstance(h["native"]["available_security_properties"], list)
+            and {1, 2, 5} <= set(h["native"]["available_security_properties"]))

@@ -104,6 +104,17 @@ def pilot_request(windows=False):
                     "build":"26100" if windows else "13", "architecture":"x86_64", "machine_id":"b"*32,
                     "local_sid":"S-1-5-21-4-5-6" if windows else None,
                     "image_state":"IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE" if windows else "machine-id-empty", "domain":None}}}
+    if windows:
+        t=s["template"];c=s["resource"]
+        data["report"]["hardware"]={"bios":"ovmf","machine":"pc-q35-9.2","cpu":"host","efi_sha256":"e"*64,
+            "template_volumes":{"scsi0":f'{t["storage"]}:base-{t["vmid"]}-disk-0',
+                                "efidisk0":f'{t["storage"]}:base-{t["vmid"]}-disk-1'},
+            "nodes":{n:{"vendor":"GenuineIntel","model":"fixture-only","extension":"vmx","slat":"ept",
+                        "nested":True,"boot_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","artifact_sha256":"f"*64}
+                     for n in {c["node"],t["node"]}},
+            "clone_volumes":{"scsi0":f'{t["storage"]}:vm-{c["vmid"]}-disk-1',"efidisk0":f'{t["storage"]}:vm-{c["vmid"]}-disk-0'},
+            "destination_volumes":{"scsi0":f'{c["storage"]}:vm-{c["vmid"]}-disk-1',"efidisk0":f'{c["storage"]}:vm-{c["vmid"]}-disk-0'},
+            "native":{"secure_boot":True,"available_security_properties":[1,2,5],"uefi_lock_capable":True}}
     s["compatibility"] = {"sha256":m.sha(data), "data":data}
     r = {"schema":"samba-ad-pilot/v1", "enabled":True,"apply":False,"action":"prepare","pilot":role,
          "substrate":s,"identity":{"uuid":data["clone_uuid"],"machine_id":"c"*32,
@@ -180,7 +191,8 @@ def test_baseline_cannot_smuggle_deferred_or_weakened_controls(setting):
     with pytest.raises(ValueError): mod().validate(r, manifest)
 
 
-def test_public_bootstrap_loads_actual_dependencies_and_stays_below_exec_limit():
+@pytest.mark.parametrize("windows", [False, True])
+def test_public_bootstrap_loads_actual_dependencies_and_stays_below_exec_limit(windows):
     import base64
     import zlib
     import jinja2
@@ -191,7 +203,7 @@ def test_public_bootstrap_loads_actual_dependencies_and_stays_below_exec_limit()
     code=env.from_string(template.read_text()).render(role_path=str(template.parent.parent),
         lookup=lambda _,p:Path(p).read_text())
     assert len(code.encode()) < 120000
-    r, manifest=pilot_request()
+    r, manifest=pilot_request(windows)
     wire={"schema":"samba-ad-pilot-wire/v1","request":r,"manifest":manifest,"credentials":None,
           "dc_records":[],"directory":None,"probe":None}
     result=subprocess.run(["python3","-B","-c",code,"--validate"],input=json.dumps(wire),
@@ -327,6 +339,10 @@ def test_template_uuid_is_canonical_and_valid_before_clone(configured,accepted):
         if path==target:
             result={'template':1,'digest':s['template']['digest'],'name':'source-template','ostype':'win11',
                     'onboot':0,'scsi0':s['template']['storage']+':base-disk-0,size=16G'}
+            h=r['substrate']['compatibility']['data']['report']['hardware']
+            result.update({k:h[k] for k in ['bios','machine','cpu']})
+            result['scsi0']=h['template_volumes']['scsi0']+',size=64G'
+            result['efidisk0']=h['template_volumes']['efidisk0']+',efitype=4m,pre-enrolled-keys=1,size=4M'
             if configured is not None:result['smbios1']='uuid='+configured
             return result
         result=original(path,**kwargs)
@@ -334,6 +350,9 @@ def test_template_uuid_is_canonical_and_valid_before_clone(configured,accepted):
             result.update(kversion='test-kernel',pveversion='test-pve')
         return result
     api.get=get
+    h=r['substrate']['compatibility']['data']['report']['hardware']
+    api.windows_host=lambda r,node:{k:v for k,v in h['nodes'][node].items() if k!='artifact_sha256'}
+    api.efi_hash=lambda r:h['efi_sha256']
     if accepted:assert guest.reconcile(s,api,check=True)['state']=='planned'
     else:
         with pytest.raises(ValueError,match='UUID'):guest.reconcile(s,api,check=True)

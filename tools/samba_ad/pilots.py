@@ -108,7 +108,9 @@ def validate(r, manifest):
         require(i["local_sid"] != data["report"]["template_observation"]["local_sid"])
         fields(r["windows"], "edition build support_until support_ref baseline rsat_source rsat_files rsop")
         w = r["windows"]
-        require(w["edition"] in ["ServerStandard", "ServerDatacenter"] and w["build"] == "26100")
+        require(w["edition"] in ["ServerStandard", "ServerDatacenter", "ServerStandardEval", "ServerDatacenterEval"]
+                and w["build"] == "26100")
+        require(w["edition"] == data["report"]["template_observation"]["edition"])
         require(w["support_until"] == "2034-11-14")
         require(w["support_ref"] == "https://learn.microsoft.com/en-us/lifecycle/products/windows-server-2025")
         require(w["rsat_source"] == "C:\\SambaADAssets\\FoD")

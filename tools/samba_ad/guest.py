@@ -149,6 +149,9 @@ def desired_config(r, isolated=False):
     data = (r.get("compatibility") or {}).get("data", {})
     if data.get("schema") == "samba-ad-pilot-substrate/v1":
         result["smbios1"] = "uuid=" + data["clone_uuid"]
+    hardware = windows_hardware(r)
+    if hardware:
+        result.update({k: hardware[k] for k in ["bios", "machine", "cpu"]})
     return result
 
 
@@ -164,18 +167,51 @@ def canonical_uuid(value):
         raise ValueError("S1 precondition failed: valid UUID") from None
 
 
-def safe_devices(config, disk):
+def windows_hardware(r):
+    data = (r.get("compatibility") or {}).get("data", {})
+    if data.get("schema") == "samba-ad-pilot-substrate/v1" and data.get("purpose") == "windows_pilot":
+        return data["report"]["hardware"]
+    return None
+
+
+def windows_volumes(r, storage=None, template=False):
+    hardware = windows_hardware(r)
+    if template:
+        return hardware["template_volumes"]
+    # Full clone allocation and storage migration can renumber volumes. The
+    # reviewed probe pins each stage explicitly; never infer a disk identity.
+    return hardware["clone_volumes" if storage is not None else "destination_volumes"]
+
+
+
+def safe_devices(config, disk, r=None, template=False, storage=None):
+    hardware = windows_hardware(r) if r else None
+    if hardware:
+        require(all(config.get(k) == hardware[k] for k in ["bios", "machine", "cpu"]), "qualified Windows firmware/CPU")
+        volumes = windows_volumes(r, storage, template)
+        for key, volume in volumes.items():
+            require(config.get(key, "").split(",")[0] == volume, "exact Windows volume")
+        root = pairs(config[disk])
+        require(set(root) <= {"size", "format", "cache", "discard", "iothread", "ssd", "aio", "backup", "replicate"}, "managed root disk options")
+        efi = config["efidisk0"].split(",")
+        options = pairs(config["efidisk0"])
+        require(len(options) == len(efi)-1 and set(options) <= {"efitype", "pre-enrolled-keys", "size", "format"}, "EFI options")
+        require(options.get("efitype") == "4m" and options.get("pre-enrolled-keys") == "1", "Secure Boot EFI")
+        require(options.get("size", "4M") == "4M" and options.get("format", "raw") in ["raw", "qcow2"], "EFI size/format")
+
     for key, value in config.items():
+        if hardware and key == "efidisk0":
+            continue
         require(not (re.fullmatch(r"(?:hostpci|usb|unused|efidisk|tpmstate|dev|virtiofs|parallel)[0-9]+", key)
                      or key.startswith("lxc.") or re.fullmatch(r"mp[0-9]+", key)
                      or key in ["hookscript", "cicustom", "args"]), "unmanaged devices/hooks")
         if re.fullmatch(r"serial[0-9]+", key):
             require(value == "socket", "host serial device")
         if re.fullmatch(r"(?:scsi|sata|virtio|ide)[0-9]+", key) and key != disk:
-            require(key == "ide2" and "cloudinit" in value and "media=cdrom" in value, "additional disk")
+            require(not hardware and key == "ide2" and "cloudinit" in value and "media=cdrom" in value, "additional disk")
 
 
-def verify_config(r, config, configured=True, isolated=False):
+def verify_config(r, config, configured=True, isolated=False, storage=None):
     c = r["resource"]
     require(config.get("description") == marker(r) and config.get("template", 0) == 0, "ownership")
     require(config.get("hostname" if c["kind"] == "lxc" else "name") == c["name"], "guest identity")
@@ -194,7 +230,7 @@ def verify_config(r, config, configured=True, isolated=False):
         require(config[r["template"]["disk"]].startswith(c["storage"] + ":"), "disk placement")
         if c["kind"] == "lxc":
             require(config.get("unprivileged") == 1 and not config.get("features"), "LXC isolation")
-    safe_devices(config, r["template"]["disk"])
+    safe_devices(config, r["template"]["disk"], r, storage=storage)
     require(not any(re.fullmatch(r"net[1-9][0-9]*", k) for k in config), "additional NIC")
 
 
@@ -260,7 +296,8 @@ def is_owned_volume(r, volume):
 
 def owned_volumes(r, config):
     volumes = []
-    for key in [r["template"]["disk"], "ide2"]:
+    keys = [r["template"]["disk"], "efidisk0"] if windows_hardware(r) else [r["template"]["disk"], "ide2"]
+    for key in keys:
         if key not in config:
             continue
         volume = config[key].split(",")[0]
@@ -285,6 +322,11 @@ def reconcile(r, api, check=False):
             status = api.get(f"/nodes/{node}/status")
             require(fingerprint["nodes"].get(node) == {"kernel": status.get("kversion"), "pve": status.get("pveversion")},
                     "S2 live platform fingerprint")
+    hardware = windows_hardware(r)
+    if hardware:
+        for node, observed in hardware["nodes"].items():
+            require(api.windows_host(r, node) == {k: v for k, v in observed.items() if k != "artifact_sha256"},
+                    "live Windows virtualization qualification")
     guests = api.get("/cluster/resources")
     live = [g for g in guests if g.get("vmid") == c["vmid"]]
     require(len(live) <= 1, "unique cluster VMID")
@@ -353,7 +395,9 @@ def reconcile(r, api, check=False):
     source = api.get(template_path + "/config", current=1)
     require(source.get("template") == 1 and source.get("digest") == t["digest"] and not source.get("lock")
             and not source.get("onboot"), "template digest/identity")
-    safe_devices(source, t["disk"])
+    safe_devices(source, t["disk"], r, template=True)
+    if hardware:
+        require(api.efi_hash(r) == hardware["efi_sha256"], "template EFI content pin")
     require(not any(re.fullmatch(r"net[1-9][0-9]*", k) for k in source), "template additional NIC")
     pilot = (r.get("compatibility") or {}).get("data", {})
     windows = pilot.get("schema") == "samba-ad-pilot-substrate/v1" and pilot.get("purpose") == "windows_pilot"
@@ -371,11 +415,15 @@ def reconcile(r, api, check=False):
     api.probe_address(r)
     # Recheck the template immediately before clone; clone API has no digest parameter.
     require(api.get(template_path + "/config", current=1).get("digest") == t["digest"], "template changed")
+    if hardware:
+        require(api.efi_hash(r) == hardware["efi_sha256"], "preclone EFI content pin")
     api.mutate("create", template_path + "/clone", newid=c["vmid"], full=1, storage=t["storage"],
                description=marker(r), **{("hostname" if c["kind"] == "lxc" else "name"): c["name"]})
     source_path = f'/nodes/{t["node"]}/{c["kind"]}/{c["vmid"]}'
     clone = api.get(source_path + "/config", current=1)
-    verify_config(r, clone, configured=False)
+    verify_config(r, clone, configured=False, storage=t["storage"])
+    if windows_hardware(r):
+        owned_volumes(r, clone)
     require(api.get(source_path + "/status/current")["status"] == "stopped", "clone stopped")
     params = desired_config(r, isolated=True)
     if c["kind"] == "lxc" and clone.get("features"):
@@ -384,6 +432,8 @@ def reconcile(r, api, check=False):
     clone = api.get(source_path + "/config", current=1)
     if size_gib(clone, t["disk"]) < c["disk_gib"]:
         api.mutate("set", source_path + "/resize", disk=t["disk"], size=str(c["disk_gib"]) + "G", digest=clone["digest"])
+    if windows_hardware(r):
+        safe_devices(api.get(source_path + "/config", current=1), t["disk"], r, storage=t["storage"])
     if t["node"] != c["node"]:
         require(api.get(source_path + "/status/current")["status"] == "stopped", "offline migration")
         api.mutate("create", source_path + "/migrate", target=c["node"], online=0,
@@ -398,6 +448,11 @@ def reconcile(r, api, check=False):
 
 
 def boot_disconnected(r, api, path, cfg):
+    hardware = windows_hardware(r)
+    if hardware:
+        node = r["resource"]["node"]
+        require(api.windows_host(r, node) == {k: v for k, v in hardware["nodes"][node].items() if k != "artifact_sha256"},
+                "preboot virtualization qualification")
     guests = api.get("/cluster/resources")
     check_collisions(r, api, guests)
     api.probe_address(r)
@@ -666,6 +721,42 @@ class Pvesh:
             require(all(str(e.get("vmid")) != str(c["vmid"]) and e.get("volid") not in volumes
                         and not is_owned_volume(r, e.get("volid")) for e in entries),
                     "owned volume remains; explicit recovery required")
+
+
+    def windows_host(self, r, node):
+        # Read-only, exact cluster node via the existing trusted transport.
+        target = dict(r, resource=dict(r["resource"], node=node))
+        script = r"""
+import json
+from pathlib import Path
+blocks = Path('/proc/cpuinfo').read_text().strip().split('\n\n')
+cpus = [dict(line.split(':',1) for line in b.splitlines() if ':' in line) for b in blocks]
+cpus = [{k.strip():v.strip() for k,v in cpu.items()} for cpu in cpus]
+assert cpus
+vendor = cpus[0]['vendor_id']; model = cpus[0]['model name']
+assert all(c['vendor_id']==vendor and c['model name']==model for c in cpus)
+flagsets = [set(c['flags'].split()) for c in cpus]
+flags = set.intersection(*flagsets)
+assert vendor in ['GenuineIntel','AuthenticAMD']
+extension,slat,module = ('vmx','ept','kvm_intel') if vendor=='GenuineIntel' else ('svm','npt','kvm_amd')
+assert {extension,slat} <= flags
+nested = Path('/sys/module/'+module+'/parameters/nested').read_text().strip().lower() in ['1','y']
+print(json.dumps(dict(vendor=vendor,model=model,extension=extension,slat=slat,nested=nested,boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())))
+"""
+        return json.loads(self.node_run(target, "python3 -c " + shlex.quote(script)))
+
+    def efi_hash(self, r):
+        target = dict(r, resource=dict(r["resource"], node=r["template"]["node"]))
+        volume = windows_hardware(r)["template_volumes"]["efidisk0"]
+        script = r"""
+import hashlib,subprocess,sys
+p=subprocess.run(['pvesm','path',sys.argv[1]],check=True,capture_output=True,text=True,timeout=20).stdout.strip()
+h=hashlib.sha256()
+with open(p,'rb') as f:
+    for block in iter(lambda:f.read(65536),b''):h.update(block)
+print(h.hexdigest())
+"""
+        return self.node_run(target, "python3 -c " + shlex.quote(script) + " " + shlex.quote(volume)).strip()
 
     def probe_address(self, r):
         c = r["resource"]

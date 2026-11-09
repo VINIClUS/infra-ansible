@@ -27,6 +27,15 @@ function Write-State($State) {
     Assert-S6 ($LASTEXITCODE -eq 0)
     $State | ConvertTo-Json -Depth 20 -Compress | Set-Content -LiteralPath ($directory + '\state.json') -Encoding UTF8
 }
+function Read-LicenseObservation([string]$Edition) {
+    # Raw native facts only: activation and purchased entitlement are not pilot
+    # gates. Never collect keys, activate, rearm or convert the installed image.
+    $products=@(Get-CimInstance SoftwareLicensingProduct -Property ID,LicenseStatus,GracePeriodRemaining -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND LicenseIsAddon=False" |
+        ForEach-Object { @{id=$_.ID; license_status=$_.LicenseStatus;
+            grace_period_minutes=$_.GracePeriodRemaining} })
+    return @{source='SoftwareLicensingProduct'; edition=$Edition;
+        evaluation=$Edition.EndsWith('Eval'); products=$products; entitlement='not_attested'}
+}
 function Inspect-Pilot($R) {
     $computer = Get-CimInstance Win32_ComputerSystem
     $os = Get-CimInstance Win32_OperatingSystem
@@ -36,9 +45,7 @@ function Inspect-Pilot($R) {
     Assert-S6 ($os.BuildNumber -ceq $R.windows.build -and $os.OSArchitecture -eq '64-bit')
     Assert-S6 ($os.ProductType -eq 3 -and $computer.DomainRole -in @(2,3))
     Assert-S6 ([DateTime]::UtcNow -lt [DateTime]::ParseExact($R.windows.support_until, 'yyyy-MM-dd', $null))
-    $licenses = @(Get-CimInstance SoftwareLicensingProduct -Filter "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f'" |
-        Where-Object { $_.PartialProductKey -and $_.LicenseStatus -eq 1 })
-    Assert-S6 ($licenses.Count -eq 1) # observed activation, not proof of legal ownership
+    $licensing = Read-LicenseObservation $edition
     $machine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid.ToLowerInvariant()
     $localSids = @(Get-LocalUser | ForEach-Object { $_.SID.AccountDomainSid.Value } | Select-Object -Unique)
     Assert-S6 ($localSids.Count -eq 1 -and $localSids[0] -ceq $R.identity.local_sid)
@@ -63,7 +70,7 @@ function Inspect-Pilot($R) {
     } else {
         Assert-S6 ($null -eq $state -or $state.member -eq $false)
     }
-    return @{ member=[bool]$computer.PartOfDomain; state=$state; nic=$nic }
+    return @{ member=[bool]$computer.PartOfDomain; state=$state; nic=$nic; licensing=$licensing }
 }
 function Check-Assets($R) {
     $source = $R.windows.rsat_source
@@ -117,7 +124,7 @@ function Prepare-Pilot($R, $Observed) {
     New-Item 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' -Force | Out-Null
     New-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' -Name Disabled -Value 1 -PropertyType DWord -Force | Out-Null
     Write-State @{owner=$R.substrate.compatibility.data.target_sha256; uuid=$R.identity.uuid;
-                  machine_id=$R.identity.machine_id; sid=$R.sid; member=$false}
+        machine_id=$R.identity.machine_id; sid=$R.sid; member=$false; licensing=$Observed.licensing}
 }
 function Check-Endpoints($R, $Observed) {
     $dns = @((Get-DnsClientServerAddress -InterfaceIndex $Observed.nic.ifIndex -AddressFamily IPv4).ServerAddresses)
@@ -222,7 +229,7 @@ try {
             Assert-S6 ($null -ne $observed.state)
             Check-Endpoints $R $observed # before PVE opens its credential reference
         }
-        @{nonce=$wire.nonce; identity=$R.identity; member=$observed.member} | ConvertTo-Json -Depth 20 -Compress
+        @{nonce=$wire.nonce; identity=$R.identity; member=$observed.member; licensing=$observed.licensing} | ConvertTo-Json -Depth 20 -Compress
         exit 0
     }
     $changed=$false; $state='checked'
@@ -255,7 +262,7 @@ try {
                     $afterGuid=([BitConverter]::ToString([byte[]]$after.Entries[0].Attributes['objectGUID'][0])).Replace('-','').ToLowerInvariant()
                     Assert-S6 ($afterGuid -ceq $guid)
                     Write-State @{owner=$R.substrate.compatibility.data.target_sha256; uuid=$R.identity.uuid;
-                                  machine_id=$R.identity.machine_id; sid=$R.sid; member=$true; computer_guid=$guid}
+                        machine_id=$R.identity.machine_id; sid=$R.sid; member=$true; computer_guid=$guid; licensing=$observed.licensing}
                     $state='joined_reboot_required'; $changed=$true
                 } else { Assert-S6 ($accounts.Entries.Count -eq 0) }
             } else {
@@ -272,7 +279,7 @@ try {
             }
         } finally { $ldap.Dispose(); $secure.Dispose(); $wire.credentials.password=$null }
     }
-    @{nonce=$wire.nonce; state=$state; changed=$changed} | ConvertTo-Json -Compress
+    @{nonce=$wire.nonce; state=$state; changed=$changed; licensing=$observed.licensing} | ConvertTo-Json -Depth 20 -Compress
 } catch {
     [Console]::Error.WriteLine('S6 Windows precondition failed (values suppressed)')
     exit 2

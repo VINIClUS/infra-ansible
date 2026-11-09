@@ -123,7 +123,16 @@ function Gpo-Record($LDAP,$GPO,$Component,[string]$Base) {
     return @{id=$GPO.Id.ToString();version=[uint32][string]$entry.Attributes['versionNumber'][0];
              Machine=@($Component.extensions.Machine);User=@($Component.extensions.User);files=$Component.files}
 }
+function Assert-WindowsHardware {
+    # Capability gate before the first GPO mutation. Running CG/HVCI remains
+    # mandatory after policy refresh; this gate does not substitute that proof.
+    Assert-S6 ((Confirm-SecureBootUEFI) -eq $true)
+    $guard=@(Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard)
+    Assert-S6 ($guard.Count -eq 1)
+    foreach($property in @(1,2,5)){Assert-S6 ($property -in @($guard[0].AvailableSecurityProperties))}
+}
 function Apply-Policy($R,$Credential,$Directory) {
+    Assert-WindowsHardware
     Check-Assets $R;Assert-RsopSamples $R;Import-Module GroupPolicy
     $script:PolicyChanged=$false
     $temporary=Join-Path 'C:\ProgramData\SambaADPilot' ([Guid]::NewGuid().ToString())
@@ -229,10 +238,12 @@ function Verify-UserPolicy($R,$Credential,$DC,[string]$Work) {
         Assert-S6 ($sid.AccountDomainSid.Value -ceq $R.sid)
     }finally{$ldap.Dispose()}
     $directory=Join-Path $Work ('user-'+[Guid]::NewGuid().ToString());New-Item -ItemType Directory $directory | Out-Null
-    & icacls.exe $directory /grant ('*'+$sid.Value+':(OI)(CI)M') | Out-Null;Assert-S6 ($LASTEXITCODE -eq 0)
+    & icacls.exe $directory /grant ('*'+$sid.Value+':(OI)(CI)RX') | Out-Null;Assert-S6 ($LASTEXITCODE -eq 0)
+    $outputDirectory=Join-Path $directory 'results';New-Item -ItemType Directory $outputDirectory | Out-Null
+    & icacls.exe $outputDirectory /grant ('*'+$sid.Value+':(OI)(CI)M') | Out-Null;Assert-S6 ($LASTEXITCODE -eq 0)
     $inputFile=Join-Path $directory 'public.json';$scriptFile=Join-Path $directory 'worker.ps1'
     $rows=@($script:BaselineCatalog.components.PSObject.Properties.Value | ForEach-Object {$_.policies} | Where-Object {$_.scope -eq 'User'})
-    @{sid=$sid.Value;dc=$DC.fqdn;policies=@(Scope-Policies $script:Policies 'User');rows=$rows;directory=$directory} |
+    @{sid=$sid.Value;dc=$DC.fqdn;policies=@(Scope-Policies $script:Policies 'User');rows=$rows;directory=$outputDirectory} |
         ConvertTo-Json -Depth 40 -Compress | Set-Content $inputFile -Encoding UTF8
     $source="param([string]`$InputFile)`n`$ErrorActionPreference='Stop';Set-StrictMode -Version Latest`n"
     foreach($name in @('Assert-S6','Rsop-Child','Rsop-ID','Rsop-Guid','Assert-RsopGPO','Assert-RsopApplied','Read-RsopXML','Assert-RegistryPolicy')){
@@ -255,11 +266,8 @@ try {
 } catch { [Console]::Error.WriteLine('S6 user policy validation failed (values suppressed)');exit 2 }
 '@
     [IO.File]::WriteAllText($scriptFile,$source,[Text.Encoding]::UTF8)
-    # The password is passed through PSCredential to the native logon API,
-    # never in worker arguments, input JSON, script content or environment.
-    $process=Start-Process -FilePath 'powershell.exe' -Credential $Credential -LoadUserProfile -PassThru -ArgumentList @(
-        '-NoLogo','-NoProfile','-NonInteractive','-File',$scriptFile,'-InputFile',$inputFile)
-    Assert-S6 ($process.WaitForExit(180000));$process.Refresh();Assert-S6 ($process.ExitCode -eq 0)
+    # LocalSystem QGA requires CreateProcessAsUser, with explicit profile/env.
+    Invoke-UserWorker $Credential $scriptFile $inputFile
 }
 function Scope-Policies($Policies,[string]$Scope) {
     return @($Policies | Where-Object {@($_.$Scope).Count -gt 0} | ForEach-Object {
