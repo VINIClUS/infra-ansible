@@ -22,6 +22,7 @@ from tools.samba_ad.ca_substrate import validate_ca_bundle
 from tools.samba_ad.pki import PROFILES, _critical, _issuer, _key, _valid_time, require, spki
 from tools.samba_ad.pki_contract import dns, fields, hex_value, loads, path, public_jwk, review
 from tools.samba_ad.pki_files import future_directory, secure_file
+from tools.samba_ad.pki_profiles import profile_names, resource
 
 CONFIG = "/etc/samba-ad-pki"
 LIBRARY = "/usr/libexec/samba-ad-pki"
@@ -36,9 +37,9 @@ def validate(r):
     guest = r["guest_request"]
     validate_ca_bundle(guest["compatibility"], guest)
     manifest = guest["compatibility"]["data"]["manifest"]
-    require(set(manifest["certificate_profiles"]) == PROFILES)
-    for name in PROFILES:
-        fqdn = manifest["resources"][name.removeprefix("telemetry_")]["fqdn"]
+    profiles = profile_names(manifest)
+    for name in profiles:
+        fqdn = resource(manifest, name)["fqdn"]
         dns(fqdn)
         profile = manifest["certificate_profiles"][name]
         fields(profile, "sans eku validity_hours rotate_before_fraction")
@@ -63,10 +64,10 @@ def validate(r):
             and r["paths"]["identity_state"] == "/var/lib/samba-ad-pki")
     require(r["service_user"] == "samba-ad-ca" and r["frontend_user"] != r["service_user"])
     for key in ["root_sha256", "issuer_sha256"]: hex_value(r[key])
-    require(isinstance(r["registry"], dict) and set(r["registry"]) == PROFILES)
+    require(isinstance(r["registry"], dict) and set(r["registry"]) == profiles)
     public_keys = [public_jwk(value) for value in r["registry"].values()]
-    require(len({v["kid"] for v in r["registry"].values()}) == 6
-            and len({spki(key) for key in public_keys}) == 6)
+    require(len({v["kid"] for v in r["registry"].values()}) == len(profiles)
+            and len({spki(key) for key in public_keys}) == len(profiles))
     fields(r["tools"], "step_ca nginx njs")
     for artifact in r["tools"].values():
         fields(artifact, "path version sha256 provenance_ref")
@@ -125,10 +126,10 @@ def _render(r):
               "disableRenewal": True, "allowRenewalAfterExpiry": False, "enableSSHCA": False,
               "disableSmallstepExtensions": False}
     provisioners = []
-    for name in sorted(PROFILES):
+    for name in sorted(profile_names(manifest)):
         filename = CONFIG + "/profiles/" + name + ".tpl"
         host = manifest["certificate_profiles"][name]["sans"]
-        require(host == [manifest["resources"][name.removeprefix("telemetry_")]["fqdn"]])
+        require(host == [resource(manifest, name)["fqdn"]])
         files[filename] = profile_template(name, host[0], audience)
         provisioners.append({"type": "JWK", "name": "s3-" + name, "key": r["registry"][name],
                              "claims": claims, "options": {"x509": {"templateFile": filename}}})
@@ -137,8 +138,8 @@ def _render(r):
               "logger": {"format": "common"}, "db": {"type": "badgerv2", "dataSource": p["ca_state"] + "/db"},
               "tls": {"minVersion": "1.2", "maxVersion": "1.3", "renegotiation": False},
               "authority": {"enableAdmin": False, "disableIssuedAtCheck": False, "backdate": "0s", "claims": claims,
-                            "policy": {"x509": {"allow": {"dns": sorted({manifest['resources'][k]['fqdn']
-                                                                        for k in ['dc01', 'dc02', 'ca']})},
+                            "policy": {"x509": {"allow": {"dns": sorted({resource(manifest, k)['fqdn']
+                                                                        for k in profile_names(manifest)})},
                                                  "allowWildcardNames": False}}, "provisioners": provisioners}}
     files[CONFIG + "/ca.json"] = json.dumps(config, indent=2, sort_keys=True) + "\n"
     files[CONFIG + "/nginx.conf"] = f'''load_module {r['tools']['njs']['path']};

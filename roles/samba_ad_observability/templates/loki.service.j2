@@ -1,0 +1,14 @@
+[Unit]
+Description=Dedicated Samba AD Loki backend
+[Service]
+Type=simple
+DynamicUser=true
+StateDirectory=samba-ad-observability-loki
+ExecStart=/opt/samba-ad-observability/bin/loki -config.file=/etc/samba-ad-observability/loki.yml
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
