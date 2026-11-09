@@ -88,6 +88,12 @@ def validate(r):
             except ImportError:
                 from tools.samba_ad.ca_substrate import validate_ca_bundle
             validate_ca_bundle(r["compatibility"], r)
+        elif isinstance(data, dict) and data.get("schema") == "samba-ad-pilot-substrate/v1":
+            try:
+                from s6_pilot_substrate import validate_pilot_bundle
+            except ImportError:
+                from tools.samba_ad.pilot_substrate import validate_pilot_bundle
+            validate_pilot_bundle(r["compatibility"], r)
         else:
             try:
                 from s2_compatibility import validate_bundle
@@ -137,8 +143,12 @@ def desired_config(r, isolated=False):
     if c["kind"] == "lxc":
         return dict(common, hostname=c["name"], swap=0,
                     net0=f'name=eth0,bridge={c["bridge"]},hwaddr={c["mac"]},ip={c["address"]},gw={c["gateway"]},mtu={c["mtu"]},firewall=1,type=veth,link_down={link}')
-    return dict(common, sockets=1, balloon=0, name=c["name"], ipconfig0=f'ip={c["address"]},gw={c["gateway"]}',
-                net0=f'virtio={c["mac"]},bridge={c["bridge"]},firewall=1,mtu={c["mtu"]},link_down={link}')
+    result = dict(common, sockets=1, balloon=0, name=c["name"], ipconfig0=f'ip={c["address"]},gw={c["gateway"]}',
+                  net0=f'virtio={c["mac"]},bridge={c["bridge"]},firewall=1,mtu={c["mtu"]},link_down={link}')
+    data = (r.get("compatibility") or {}).get("data", {})
+    if data.get("schema") == "samba-ad-pilot-substrate/v1":
+        result["smbios1"] = "uuid=" + data["clone_uuid"]
+    return result
 
 
 def pairs(value):
@@ -216,6 +226,9 @@ def check_collisions(r, api, guests):
         for current in [1, 0]:
             config = api.get(f'/nodes/{g["node"]}/{g["type"]}/{g["vmid"]}/config', current=current)
             require(c["name"] not in [config.get("name"), config.get("hostname")], "name collision")
+            pilot = (r.get("compatibility") or {}).get("data", {})
+            if pilot.get("schema") == "samba-ad-pilot-substrate/v1":
+                require(pairs(config.get("smbios1", "")).get("uuid") != pilot["clone_uuid"], "pilot UUID collision")
             for key, value in config.items():
                 if re.fullmatch(r"(?:net|ipconfig)[0-9]+", key):
                     require(c["mac"].lower() not in str(value).lower(), "MAC collision")
@@ -332,7 +345,11 @@ def reconcile(r, api, check=False):
             and not source.get("onboot"), "template digest/identity")
     safe_devices(source, t["disk"])
     require(not any(re.fullmatch(r"net[1-9][0-9]*", k) for k in source), "template additional NIC")
-    require(source.get("ostype") == "debian" if c["kind"] == "lxc" else source.get("ostype") in ["l26"], "Debian template")
+    pilot = (r.get("compatibility") or {}).get("data", {})
+    windows = pilot.get("schema") == "samba-ad-pilot-substrate/v1" and pilot.get("purpose") == "windows_pilot"
+    require(source.get("ostype") == ("debian" if c["kind"] == "lxc" else "win11" if windows else "l26"), "typed OS template")
+    if pilot.get("schema") == "samba-ad-pilot-substrate/v1":
+        require(pairs(source.get("smbios1", "")).get("uuid") != pilot["clone_uuid"], "new client UUID")
     if c["kind"] == "lxc":
         require(source.get("unprivileged") == 1, "unprivileged template")
     require(source.get(t["disk"], "").startswith(t["storage"] + ":")
