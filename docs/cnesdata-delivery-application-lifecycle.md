@@ -255,8 +255,12 @@ after invocation, receives no inherited AWS/GitHub credentials, uses bounded
 canonical IPC, and terminates its process group on timeout/failure. An active
 descendant group prevents acceptance. This is credential/transport isolation,
 not an operating-system sandbox. Only the fixed promote_api entrypoint can run.
-Read, guard and observe are implemented; SDK calls remain closed until the
-protected broker and prepared-role proofs are integrated.
+Read, guard, observe and a read-only `evidence_snapshot()` are implemented.
+The getter takes no arguments and returns a canonical copy of only
+`call_receipts_sha256`, `pending` and `unknown`. It performs no IO, samples no
+clock, refreshes no guard and cannot clear poison or advance an ordinal. The
+product must put those fields into its original result; shared never rewrites
+the result. A stale snapshot, later call or omitted uncertainty fails validation.
 
 The shared-only SDK journal can now retain bounded canonical intent/response
 bytes, request ID/Date, monotonic samples, session commitments and original
@@ -264,7 +268,9 @@ owner/stage guard bindings. A pending native call prevents adapter completion;
 timeout, invalid response or lost guard preserves pending/unknown and poisons
 the context, including late responses. Credential fields and unfiltered
 execution payload fields are rejected before retention. This is an in-memory
-evidence component: immutable private publication before IO still needs wiring.
+evidence component joined to the finite closed-ready broker: conditional private
+intent publication and exact readback precede each native call, and response plus
+receipt publication/readback precede its return.
 The begin/complete/fail methods are not exposed through child IPC and confer no
 SDK or STS permission.
 
@@ -315,18 +321,55 @@ current-run original plan/inputs/state with an explicit no-op SourceResolver
 projection, original release/principal/RoleId, exact source closure and protected
 checkpoint ancestry. Current plan commitments remain separate from historical
 plan_receipt; the helper is an inactive producer measurement, not provenance.
-No historical grant is broadened. Protected current checkpoint-chain transport
-is also absent. Package production and privileged consumption remain disconnected.
+No historical grant is broadened. `current_checkpoint_chain` authenticates
+completed same-run plan/deploy jobs, artifact ZIPs, public indexes and private
+checkpoint/approval bytes. The first historical plan supplies the actual
+acquisition predecessor under the existing same-run read scope. Schema3 anchors
+that raw checkpoint, including an established terminal, and walks every applied
+checkpoint without treating a reference hash or embedded Phase A as that anchor.
+Package production and full capability consumption remain disconnected from the
+runtime entry.
 
 ClosedReadyEvidence adds conditional own-run/closed-ready intent, response and
 receipt storage through existing AWS.put/readback. Stable keys bind original
-owner/caller/checkpoint/native call; changed prepared/session proofs collide.
+owner/caller/checkpoint and an internal ordinal; native call parameters are in the
+complete intent but excluded from the key. Internal intent/receipt schema2 adds
+`sequence` and `previous_receipt_sha256` to the intent. Every process starts at
+zero/null, and only the original shared journal can advance after both response
+and receipt conditional writes and exact readbacks. The next intent commits the
+previous durable receipt wrapper. Ordinals are bounded to 0..8191; memory-only
+completion, a changed call/order/proof/session or a restart cannot mint a ticket.
 Persisted pending intent, crash or ambiguous outcome remains unknown; reentry
 cannot mint another ticket or replay SDK. Complete receipts return historical
-original bytes, not fresh readiness. The internal helper executes no SDK call,
-STS or IPC and does not itself update keeper uncertainty. Those integrations
-remain closed. Native shared IAM composition and a separately labelled synthetic
+original bytes, not fresh readiness. The finite broker validates strong FENCE/SEM
+reads and exact frozen-member metadata probes, then records real sanitized SDK
+responses. Original-process repeated reads get distinct durable receipts; they
+never reuse historical responses. Persistence failure poisons the context even
+after in-memory SDK completion. The keeper polling/uncertainty connection remains
+unfinished. Native shared IAM composition and a separately labelled synthetic
 fence/freeze fixture exercise readonly isolation; legacy source without SFN remains denial. The integrated #500 source was also
 compiled with the real resolver; that is code evidence only, with applied proof
 and exact live IAM readback still required. Strong reads, METADATA_ONLY and frozen membership remain
 SDK guard obligations, never invented IAM condition keys.
+
+The application CLI now connects `credentials` to an own-role bootstrap after
+public admission, complete product source authentication and the original
+session-owner proof. It verifies native role/policy readbacks and exact
+GetCallerIdentity before exporting masked credentials. Its session explicitly
+denies every product AssumeRole; a later privately admitted operation session is
+still required. `execute` remains closed. The fixture subprocess exercises the
+original sequence FENCE/SEM/FENCE/SEM/probe/FENCE/SEM through the real broker and
+validators with external SDK/S3 fakes. This is boundary evidence, not an integrated
+product adapter or completed application lifecycle.
+
+Phase A custody uses the adopted version1 carrier containing exactly the original
+checkpoint, drift and envelope bytes, their full legacy origin and hashes. Raw
+files and their aggregate are bounded to 131072 bytes; the canonical carrier to
+196608. The keeper conditionally publishes the version2 wrapper at its existing
+`keeper/checkpoint.json` locus, and terminal checkpoints use version2 with the
+same carrier and a 262144-byte cap checked before release. Established acquisition
+uses the current predecessor provenance; old embedded timestamps stay historical.
+
+## Paused implementation checkpoint — 2026-11-10
+
+This draft remains incomplete and disabled. The existing application/lifecycle/OIDC checkpoint passed 751 tests before the activation-policy changes. The adopted activation transport has only its exact session-policy constructor, ordinary-scope restrictions, and deadline evaluator started; two new focused tests pass. Native activation IAM rendering, original EXT2 verification and inputs transport, connected prepared production/capability/dispatcher/keeper, and the complete purpose/mode execution matrix remain unfinished. No operational readiness or applied IAM is implied. The full current patch still requires final verification and an independent code review. Work was stopped at the user’s request; no AWS operation, merge or deployment was performed.

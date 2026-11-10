@@ -1,7 +1,7 @@
-"""Original single-writer lifecycle keeper core.
+"""Protected application admission, own-role bootstrap, keeper and finite IPC.
 
-Product ABI transport remains disabled until its nominal authority is ratified.
-This module does not create clients, credentials or background renewers.
+Operational execution remains disabled until complete capability admission and
+the protected producer/keeper dispatch are connected. Defaults grant no access.
 """
 import time
 
@@ -124,14 +124,16 @@ def verify_terminal_bundle(files, released):
     terminal, checkpoint, evidence = (c.loads(files[name], canonical=True, limit=262144)
                                       for name in ("terminal.json", "checkpoint.json", "lease.json"))
     c.closed(terminal, "version owner checkpoint_sha256 promotion_status coordination_status assessment completed_at deadline")
-    c.closed(checkpoint, "version owner state state_object previous_checkpoint_sha256 assessment_sha256 inputs window")
+    c.closed(checkpoint, "version owner state state_object previous_checkpoint_sha256 assessment_sha256 inputs window phase_a_originals")
     c.closed(evidence, "protocol owner_sha256 " + " ".join(lc.OWNER_FIELDS)
              + " lifecycle_version acquire renewals release watchdog_until_release checkpoint_sha256 checkpoints "
              + " ".join(lc.application_identity(evidence)))
     owner = lc.owner_binding(released)
-    c.require(terminal["version"] == checkpoint["version"] == evidence["lifecycle_version"] == 1
+    c.require(type(checkpoint["version"]) is int and checkpoint["version"] == 2
+              and terminal["version"] == evidence["lifecycle_version"] == 1
               and terminal["owner"] == checkpoint["owner"] == owner
               and {key: evidence[key] for key in owner} == owner, "terminal original owner/generation")
+    lc.phase_a_originals(checkpoint["phase_a_originals"])
     digest = c.sha(files["checkpoint.json"])
     c.require(terminal["checkpoint_sha256"] == evidence["checkpoint_sha256"] == released["checkpoint_sha256"] == digest,
               "terminal original checkpoint bytes")
@@ -277,11 +279,19 @@ def authenticated_previous(aws, api, governance, previous):
                        else result["envelope"]["plan"]["source_sha"])
     c.require(original_source == reference["source_sha"], "original predecessor source")
     entries = {x["name"]: x for x in reference["objects"]}
+    originals = {}
     for key in session_policy.predecessor_keys(governance, governance["predecessor_read"]):
         entry = entries[key.rsplit("/", 1)[1]]
         raw, _ = aws.get(governance["evidence_bucket"], key, maximum=entry["size"])
         c.require(len(raw) == entry["size"] and c.sha(raw) == entry["sha256"], "original selected historical bytes")
-    return result | {"predecessor_reference": reference}
+        originals[entry["name"]] = raw
+    if reference["protocol"] == "legacy-infra":
+        carrier = lc.phase_a_carrier(reference, {name: originals[name] for name in ("envelope.json", "checkpoint.json", "drift.json")})
+    else:
+        carrier = result["checkpoint"]["phase_a_originals"]
+        lc.phase_a_originals(carrier)
+    return result | {"predecessor_reference": reference, "phase_a_originals": carrier,
+                     "checkpoint_raw": originals["checkpoint.json"]}
 
 
 class _TerminalStore:
@@ -328,11 +338,21 @@ class Context:
         return base64.b64decode(self.exchange({"kind": "read", "name": name})["bytes"], validate=True)
     def guard(self):
         c.require(self.exchange({"kind": "guard"}) == {"guarded": True}, "original guard response")
+    def evidence_snapshot(self):
+        return self.exchange({"kind": "evidence-snapshot"})
     def observe(self, kind, raw):
         c.require(type(raw) is bytes, "original observation bytes")
         return self.exchange({"kind": "observe", "observation_kind": kind, "bytes": base64.b64encode(raw).decode()})["sha256"]
     def call(self, role, service, operation, parameters):
-        return self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": parameters})
+        reply = self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": parameters})
+        if reply.get("kind") == "sdk-error":
+            c.closed(reply, "kind code")
+            c.require(reply["code"] == "ExecutionDoesNotExist", "closed shared SDK error")
+            from botocore.exceptions import ClientError
+            raise ClientError({"Error": {"Code": reply["code"]}}, "DescribeExecution")
+        c.closed(reply, "kind value")
+        c.require(reply["kind"] == "sdk-result", "original shared SDK result")
+        return reply["value"]
 start = receive()
 c.closed(start, "kind request")
 c.require(start["kind"] == "start", "fixed adapter start")
@@ -357,6 +377,13 @@ def _adapter_message(frame, journal):
         c.closed(value, "kind")
         journal.guard()
         return {"guarded": True}, None
+    if kind == "evidence-snapshot":
+        c.closed(value, "kind")
+        return journal.evidence_snapshot(), None
+    if kind == "call":
+        c.closed(value, "kind role service operation parameters")
+        c.require(type(getattr(journal, "_broker", None)) is ClosedReadyBroker, "adapter protected SDK admission absent")
+        return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
         raw = base64.b64decode(value["bytes"], validate=True)
@@ -482,10 +509,92 @@ def _sdk_private_fields(value):
             _sdk_private_fields(item)
 
 
+class _FenceSession:
+    """Shared-only result of the finite STS boundary; never exposed over IPC."""
+    def __init__(self, client, commitment, scope, deadline, request_binding):
+        self.client, self.commitment = client, c.digest(commitment)
+        self.scope = c.loads(c.canonical(scope), canonical=True)
+        self.deadline, self.request_binding = deadline, request_binding
+
+
+def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha256, credential_limit, clock=time.time):
+    """Exact native delegation after the caller authenticates prepared authority.
+
+    This internal boundary is not package admission. The shared dispatcher must
+    supply the original protected role/scope, never adapter frame parameters.
+    """
+    from tools.cnesdata_delivery.aws_boundary import AWS
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    from tools.cnesdata_delivery.session_policy import validate_response
+    c.require(type(journal) is AdapterJournal and journal._request["operation"] == "closed-ready"
+              and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
+    request, stage = journal._request, journal._request["stage"]
+    c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
+              and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
+              and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
+              and clock() + 900 <= credential_limit, "fence original API/credential window")
+    c.closed(scope, "account control_table_arn machine_arn members")
+    c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
+              and role["role_arn"] == governance["application_delegations"]["fence_operator"]
+              and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
+              and role["role_arn"] == "arn:aws:iam::" + scope["account"] + ":role/" + role["role_name"]
+              and role["session_name"] == "promotion-fence-" + role["release_id"]
+              and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
+    probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
+    for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
+        lc.validate_closed_ready_call(request=request, role="fence_operator", service="dynamodb", operation="get_item",
+            parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
+                        "ConsistentRead": True}, **scope)
+    for member in scope["members"]:
+        lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
+            parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
+    condition = {"DateLessThan": {"aws:CurrentTime": c.utc(stage["deadline"])}}
+    policy = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": scope["control_table_arn"], "Condition": condition | {
+            "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]},
+            "Null": {"dynamodb:LeadingKeys": "false"}}},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": probe_prefix + "*", "Condition": condition}]}
+    encoded = c.canonical(policy).decode().strip()
+    c.require(len(encoded) <= 2048, "fence STS policy limit")
+    context = {"aws:CurrentTime": c.utc(clock())}
+    for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE"):
+        c.require(effective_iam(role["policy"], [policy], "dynamodb:GetItem", scope["control_table_arn"],
+                                context | {"dynamodb:LeadingKeys": [key]}), "fence original effective strong-read grant")
+    c.require(effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context),
+              "fence original effective metadata-probe grant")
+    journal._guard.check(40)
+    journal.guard()
+    response = aws.call("sts", "assume_role", RoleArn=role["role_arn"], RoleSessionName=role["session_name"],
+                        DurationSeconds=900, Policy=encoded)
+    credentials = validate_response(response)
+    expiry = credentials["Expiration"]
+    c.require(getattr(expiry, "tzinfo", None) is not None and clock() + 140 < expiry.timestamp()
+              <= min(credential_limit, clock() + 900), "fence original STS expiration")
+    for field in ("AccessKeyId", "SecretAccessKey", "SessionToken"):
+        c.require(type(credentials[field]) is str and credentials[field] and "\n" not in credentials[field]
+                  and "\r" not in credentials[field], "fence temporary credential shape")
+    journal.guard()
+    client = AWS(governance | {"role": "fence_operator", "roles": {"fence_operator": role["role_arn"]}}, credentials=credentials)
+    expected_arn = role["role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + role["session_name"]
+    expected_id = role["role_id"] + ":" + role["session_name"]
+    c.require(client.identity["Account"] == scope["account"] and client.identity["Arn"] == expected_arn
+              and client.identity["UserId"] == expected_id
+              and response["AssumedRoleUser"] == {"Arn": expected_arn, "AssumedRoleId": expected_id},
+              "fence exact native role ID/session/account")
+    journal.guard()
+    c.require(clock() + 20 < stage["deadline"], "fence STS completed in original API window")
+    binding = c.sha(c.canonical(request))
+    commitment = c.sha(c.canonical({"prepared_sha256": c.digest(prepared_sha256), "request_sha256": binding,
+        "role_arn": role["role_arn"], "role_id": role["role_id"], "session_name": role["session_name"],
+        "policy_sha256": c.sha(c.canonical(policy)), "expires_at": c.utc(expiry.timestamp()),
+        "account": scope["account"], "arn": expected_arn, "user_id": expected_id}))
+    return _FenceSession(client, commitment, scope, stage["deadline"], binding)
+
+
 class AdapterJournal:
     """Shared-side originals, never a product SDK client or domain acceptance.
 
-    Only a future isolated proxy may expose read/guard/observe to the adapter.
+    The isolated proxy exposes read/guard/observe and read-only ABI metadata.
     Call receipts and uncertainty belong to the shared broker, not the product.
     """
     def __init__(self, raw, *, operation, owner, window, inputs, activation_sha256, guard):
@@ -497,6 +606,22 @@ class AdapterJournal:
         self._observations, self._call_receipts, self._pending, self._unknown = [], [], [], []
         self._observation_bytes, self._observation_links = {}, []
         self._call_bytes, self._inflight = {}, None
+        self._durable_count, self._durable_last, self._durable_active = 0, None, None
+
+    def evidence_snapshot(self):
+        """Read-only copy of existing ABI2 metadata; never refresh authority."""
+        return {"call_receipts_sha256": c.sha(c.canonical(self._call_receipts)),
+                "pending": self.pending, "unknown": self.unknown}
+
+    def _next_durable(self):
+        c.require(not self._failed and self._inflight is None and self._durable_active is None,
+                  "original durable call must settle before another intent")
+        c.integer(self._durable_count, 0, 8191)
+        c.require(self._durable_count == len(self._call_receipts), "in-memory receipt cannot advance durable ordinal")
+        c.require((self._durable_count == 0) == (self._durable_last is None), "original durable receipt ancestry")
+        if self._durable_last is not None:
+            c.digest(self._durable_last)
+        return self._durable_count, self._durable_last
 
     @property
     def call_receipts(self):
@@ -526,6 +651,11 @@ class AdapterJournal:
                   and (request["service"], request["operation"]) in {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
+        if self._durable_active is not None:
+            active = self._durable_active
+            c.require(active._reserved and active._state == "created" and active._sequence == len(self._call_receipts)
+                      and active._native_sha256 == c.sha(raw) and active._session_sha256 == role_session_sha256,
+                      "original reserved durable SDK call")
         c._secrets(request)
         _sdk_private_fields(request)
         c.digest(role_session_sha256)
@@ -556,7 +686,8 @@ class AdapterJournal:
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
             allowed = ({"Item"} if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
-            c.require(set(response) <= allowed, "SDK response already sanitized before journal")
+            absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
+            c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
             server = parsedate_to_datetime(server_date)
             c.require(server.tzinfo is not None and 0 <= ended - intent["started_monotonic_ns"] <= 20 * 10**9
                       and abs(time.time() - server.timestamp()) <= 30, "SDK clock/latency uncertainty")
@@ -608,6 +739,9 @@ class AdapterJournal:
         return raw
 
     def observe(self, kind, raw):
+        c.require(self._durable_active is None, "durable SDK receipt unresolved")
+        if getattr(self, "_broker", None) is not None:
+            c.require(self._durable_count == len(self._call_receipts), "all observations require durable SDK receipts")
         c.require(kind == lc.ADAPTER_OBSERVATIONS[self._request["operation"]], "adapter operation observation")
         value = c.loads(raw, canonical=True, limit=1024**2)
         c.require(type(value) is dict and value, "adapter observation requires original domain object")
@@ -621,6 +755,9 @@ class AdapterJournal:
         return digest
 
     def validate_result(self, raw):
+        c.require(self._durable_active is None, "durable SDK receipt unresolved")
+        if getattr(self, "_broker", None) is not None:
+            c.require(self._durable_count == len(self._call_receipts), "all results require durable SDK receipts")
         if self._inflight is not None:
             self.fail_sdk_call(self._inflight[0])
             raise ValueError("native SDK call unresolved; no adapter completion")
@@ -637,7 +774,7 @@ class ClosedReadyEvidence:
     A stable key fences retries across processes. Existing intent without a
     complete receipt is unknown, including a crash before the native read.
     Settled data are historical evidence, never a fresh probe or replay permit.
-    The privileged IPC/STS path remains closed until prepared-proof admission.
+    Only the original broker can turn a newly created reservation into native IO.
     """
     SUFFIXES = ("intent", "response", "receipt")
 
@@ -651,7 +788,9 @@ class ClosedReadyEvidence:
         lc.validate_closed_ready_call(request=journal._request, **native, **scope)
         _sdk_private_fields(native)
         request = journal._request
-        intent = {"schema_version": 1, "operation": "closed-ready", "owner": request["owner"],
+        sequence, previous = journal._next_durable()
+        intent = {"schema_version": 2, "operation": "closed-ready", "owner": request["owner"],
+                  "sequence": sequence, "previous_receipt_sha256": previous,
                   "caller": journal._identity, "adapter_request_sha256": c.sha(c.canonical(request)),
                   "checkpoint_sha256": request["checkpoint_sha256"], "activation_sha256": request["activation_sha256"],
                   "prepared_sha256": c.digest(prepared_sha256), "role_session_sha256": c.digest(role_session_sha256),
@@ -660,7 +799,8 @@ class ClosedReadyEvidence:
         self.intent_sha256 = c.sha(self._intent_raw)
         # Proof/session/activation changes collide at the same operation locus;
         # they cannot mint another ticket after an unresolved native call.
-        operation_sha256 = c.sha(c.canonical({key: intent[key] for key in ("schema_version", "operation", "owner", "caller", "checkpoint_sha256", "call")}))
+        operation_sha256 = c.sha(c.canonical({key: intent[key] for key in ("schema_version", "operation", "owner", "caller", "checkpoint_sha256", "sequence")}))
+        self._sequence, self._previous = sequence, previous
         owner = request["owner"]
         prefix = namespace(governance, {"source_sha": request["source_sha"], "step": "closed-ready"},
                            {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
@@ -709,13 +849,14 @@ class ClosedReadyEvidence:
     def _validate_receipt(self, raw, response):
         value = c.loads(raw, canonical=True, limit=128 * 1024)
         c.closed(value, "schema_version intent_sha256 response_sha256 call_receipt")
-        c.require(type(value["schema_version"]) is int and value["schema_version"] == 1
+        c.require(type(value["schema_version"]) is int and value["schema_version"] == 2
                   and value["intent_sha256"] == self.intent_sha256 and value["response_sha256"] == c.sha(response),
                   "original durable receipt binding")
         receipt = value["call_receipt"]
         c.closed(receipt, "sequence request_sha256 role_session_sha256 guard_before_sha256 started_monotonic_ns "
                  "response_sha256 request_id server_date ended_monotonic_ns guard_after_sha256")
-        c.integer(receipt["sequence"], 0)
+        c.integer(receipt["sequence"], 0, 8191)
+        c.require(receipt["sequence"] == self._sequence, "original durable ordinal receipt")
         for key in ("started_monotonic_ns", "ended_monotonic_ns"):
             c.integer(receipt[key], 0)
         c.require(receipt["request_sha256"] == self._native_sha256 and receipt["role_session_sha256"] == self._session_sha256
@@ -732,6 +873,8 @@ class ClosedReadyEvidence:
 
     def reserve(self):
         c.require(self._state == "unexamined", "no automatic replay after evidence attempt")
+        c.require(self._journal._next_durable() == (self._sequence, self._previous), "original durable ordinal unchanged")
+        self._journal._durable_active = self
         try:
             original = self._read("intent")
             if original is None:
@@ -749,7 +892,7 @@ class ClosedReadyEvidence:
             self._response, self._state = response, "settled"
             return self._state
         except BaseException:
-            self._state = "unknown"
+            self.fail()
             raise
 
     def complete(self, response, receipt):
@@ -757,14 +900,103 @@ class ClosedReadyEvidence:
         try:
             c.require(receipt in self._journal.call_receipts
                       and self._journal.call_bytes.get(c.sha(response)) == response, "original guarded in-memory receipt required")
-            raw = c.canonical({"schema_version": 1, "intent_sha256": self.intent_sha256,
+            c.require(self._journal._durable_active is self and self._journal._durable_count == self._sequence
+                      and self._journal._durable_last == self._previous, "original active durable receipt ancestry")
+            raw = c.canonical({"schema_version": 2, "intent_sha256": self.intent_sha256,
                                "response_sha256": c.sha(response), "call_receipt": receipt}, limit=128 * 1024)
             self._validate_receipt(raw, response)
             self._write("response", response)
             self._write("receipt", raw)
             self._response, self._receipt, self._state, self._reserved = response, receipt, "settled", False
+            self._journal._durable_count += 1
+            self._journal._durable_last = c.sha(raw)
+            self._journal._durable_active = None
         except BaseException:
-            self._state, self._reserved = "unknown", False
+            self.fail()
+            raise
+
+    def fail(self):
+        """The original durable intent remains the uncertainty witness."""
+        self._state, self._reserved = "unknown", False
+        self._journal._failed = True
+        for item in self.uncertainty:
+            if item not in self._journal._unknown:
+                self._journal._unknown.append(item)
+
+
+class ClosedReadyBroker:
+    """Finite private SDK dispatcher with a durable reservation before native IO."""
+    def __init__(self, aws, governance, journal, session, *, prepared_sha256, clock=None):
+        c.require(type(journal) is AdapterJournal and type(session) is _FenceSession
+                  and session.request_binding == c.sha(c.canonical(journal._request))
+                  and getattr(journal, "_broker", None) is None, "one original admitted closed-ready broker")
+        self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
+        self.prepared_sha256, self.clock = c.digest(prepared_sha256), clock or time.time
+        self.evidence = []
+        journal._broker = self
+
+    @property
+    def uncertainty(self):
+        return [item for ledger in self.evidence for item in ledger.uncertainty]
+
+    def call(self, *, role, service, operation, parameters):
+        journal, session = self.journal, self.session
+        journal.guard()
+        c.require(session.request_binding == c.sha(c.canonical(journal._request))
+                  and self.clock() + 20 < session.deadline, "original finite SDK request/window")
+        lc.validate_closed_ready_call(request=journal._request, role=role, service=service, operation=operation,
+                                      parameters=parameters, **session.scope)
+        native = {"role": role, "service": service, "operation": operation, "parameters": parameters}
+        raw = c.canonical(native, limit=128 * 1024)
+        ledger = ClosedReadyEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
+                                     role_session_sha256=session.commitment, scope=session.scope)
+        self.evidence.append(ledger)
+        ticket, created = None, False
+        try:
+            state = ledger.reserve()
+            c.require(state == "created", "existing durable call is historical/unknown; no fresh SDK replay")
+            created = True
+            ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
+            c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
+            journal._guard.check(20)
+            absent = False
+            try:
+                response = session.client.call(service, operation, **parameters)
+            except Exception as error:
+                response = getattr(error, "response", {})
+                c.require(service == "stepfunctions" and operation == "describe_execution"
+                          and response.get("Error", {}).get("Code") == "ExecutionDoesNotExist"
+                          and any(member["resolution"] == "CANCEL_BEFORE_SEND" and member["execution_ref"] is None
+                                  and parameters["executionArn"] == session.scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + member["dispatch_id"]
+                                  for member in session.scope["members"]), "native SDK outcome unknown")
+                absent = True
+            metadata = response.get("ResponseMetadata", {})
+            c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == (400 if absent else 200),
+                      "native SDK authenticated status")
+            if absent:
+                value = {"Error": {"Code": "ExecutionDoesNotExist"}}
+            elif service == "dynamodb":
+                c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
+                value = {key: response[key] for key in ("Item",) if key in response}
+            else:
+                value = lc.closed_ready_probe_response(response, execution_arn=parameters["executionArn"], machine_arn=session.scope["machine_arn"])
+            from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
+            response_raw = c.canonical(_exact_sdk_dates(value), limit=1024**2)
+            c.require(self.clock() < session.deadline, "native response exceeded original API window")
+            receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"], server_date=metadata["HTTPHeaders"]["date"])
+            ledger.complete(response_raw, receipt)
+            journal.guard()
+            c.require(self.clock() < session.deadline, "durable receipt exceeded original API window")
+            return {"kind": "sdk-error", "code": "ExecutionDoesNotExist"} if absent else {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
+        except BaseException:
+            if created or ledger.uncertainty:
+                ledger.fail()
+                if ticket is not None and journal._inflight is not None:
+                    journal.fail_sdk_call(ticket)
+                for item in ledger.uncertainty:
+                    if item not in journal._unknown:
+                        journal._unknown.append(item)
+            journal._failed = True
             raise
 
 
@@ -775,7 +1007,7 @@ class Keeper:
     returning its authenticated private checkpoint and protected full reference.
     Admission independently authenticates the reference before any lease write.
     """
-    def __init__(self, store, binding, authenticate_previous, *, api, governance, authenticate_terminal=None, clock=time.time, monotonic=time.monotonic):
+    def __init__(self, store, binding, authenticate_previous, *, api, governance, authenticate_terminal=None, evidence_aws=None, clock=time.time, monotonic=time.monotonic):
         c.require(binding.get("lifecycle_version") == 1, "lifecycle keeper binding")
         self.store, self.clock, self.monotonic = store, clock, monotonic
         self.authenticate_previous = authenticate_previous
@@ -783,6 +1015,9 @@ class Keeper:
         self.predecessor_reference = None
         self.authenticate_terminal = authenticate_terminal
         self.predecessor = None
+        self.evidence_aws = evidence_aws if evidence_aws is not None else getattr(store, "aws", None)
+        self.phase_a_originals = None
+        self.transport_raw = None
         self.lease = Lease(store, binding, clock=clock, monotonic=monotonic, previous_success=self._previous)
         self.last_renewed = None
 
@@ -798,10 +1033,17 @@ class Keeper:
                   and all(previous[k] == reference[k] for k in ("run_id", "run_attempt", "session_sha256", "checkpoint_sha256"))
                   and c.sha(previous["owner"].encode()) == reference["owner_sha256"]
                   and previous.get("generation") == reference["generation"], "original released predecessor selection")
-        raw = c.canonical(details["checkpoint"])
+        carrier = details["phase_a_originals"]
+        lc.phase_a_originals(carrier)
+        if reference["protocol"] == "lifecycle":
+            c.require(c.canonical(details["checkpoint"]["phase_a_originals"]) == c.canonical(carrier),
+                      "predecessor terminal Phase A custody")
+        raw = details["checkpoint_raw"]
+        c.require(c.loads(raw, canonical=True) == details["checkpoint"], "original raw predecessor checkpoint")
         c.require(c.sha(raw) == previous["checkpoint_sha256"], "original predecessor bytes")
         self.predecessor = {"lease": dict(previous), "checkpoint": details["checkpoint"], "raw": raw,
                             "reference": c.loads(c.canonical(reference), canonical=True)}
+        self.phase_a_originals = c.loads(c.canonical(carrier), canonical=True)
         return True
 
     def acquire(self, *, preparation_deadline):
@@ -838,7 +1080,27 @@ class Keeper:
             "predecessor_sha256": c.sha(c.canonical(self.predecessor["reference"])), **identity}
         self.lease.checkpoint(initial)
         self.last_renewed = self.monotonic()
-        return lc.owner_binding(self.lease.check())
+        owner = lc.owner_binding(self.lease.check())
+        try:
+            c.require(self.evidence_aws is not None, "keeper private transport unavailable")
+            from tools.cnesdata_delivery.lifecycle_runtime import namespace, keeper_transport
+            prefix = namespace(self.governance, {"source_sha": owner["source_sha"], "step": "keeper"},
+                               {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
+            raw = c.canonical({"version": 2, "owner": owner, "predecessor_sha256": initial["predecessor_sha256"],
+                               "phase_a_originals": self.phase_a_originals}, limit=262144)
+            self.lease.check()
+            self.evidence_aws.put(self.governance["evidence_bucket"], prefix + "checkpoint.json", raw)
+            class Guard:
+                def check(inner, seconds=0):
+                    self.lease.check()
+            observed = keeper_transport(aws=self.evidence_aws, governance=self.governance, owner=owner,
+                                       predecessor=reference, guard=Guard())
+            c.require(c.canonical(observed) == raw, "keeper conditional publication readback")
+            self.transport_raw = raw
+        except BaseException:
+            self.lease.failed = True
+            raise
+        return owner
 
     def tick(self):
         """Called by the keeper polling loop; never by delegated jobs."""
@@ -873,17 +1135,30 @@ class Keeper:
             state = checkpoint["state"] if "state" in checkpoint else checkpoint["state_after"]
         else:
             c.require(checkpoint["owner"] == owner, "original terminal state owner")
+            c.require(c.canonical(checkpoint["phase_a_originals"]) == c.canonical(self.phase_a_originals),
+                      "current checkpoint preserves admitted Phase A originals")
             state = checkpoint["state"]
+        from tools.cnesdata_delivery.lifecycle_runtime import keeper_transport
+        class Guard:
+            def check(inner, seconds=0):
+                self.lease.check()
+        transport = keeper_transport(aws=self.evidence_aws, governance=self.governance, owner=owner,
+                                     predecessor=self.predecessor_reference, guard=Guard())
+        c.require(c.canonical(transport) == self.transport_raw
+                  and c.canonical(transport["phase_a_originals"]) == c.canonical(self.phase_a_originals),
+                  "terminal original keeper transport custody")
         _terminal_inputs(assessment, window, proof["inputs"])
         now = int(self.clock())
         deadline = lc.terminal_deadline(window)
         c.require(now - 30 <= assessment["observed_at"] <= now, "fresh terminal assessment")
         status = lc.terminal_result(assessment, now=now, deadline=deadline)
         c.require(self.lease.check()["lifecycle"] == window, "terminal phase changed during authentication")
-        final_checkpoint = {"version": 1, "owner": owner, "state": state,
+        final_checkpoint = {"version": 2, "owner": owner, "state": state,
             "state_object": checkpoint["state_object"], "previous_checkpoint_sha256": window["checkpoint_sha256"],
-            "assessment_sha256": c.sha(c.canonical(assessment)), "inputs": proof["inputs"], "window": window}
-        final_raw = c.canonical(final_checkpoint)
+                            "assessment_sha256": c.sha(c.canonical(assessment)), "inputs": proof["inputs"], "window": window,
+                            "phase_a_originals": self.phase_a_originals}
+        lc.phase_a_originals(self.phase_a_originals)
+        final_raw = c.canonical(final_checkpoint, limit=262144)
         digest = c.sha(final_raw)
         original_store = self.lease.store
         self.lease.store = _TerminalStore(original_store, self.clock, deadline)
@@ -902,3 +1177,57 @@ class Keeper:
                     "assessment": assessment, "completed_at": completed, "deadline": deadline}
         evidence = self.lease.evidence(digest, {"quiescence_sha256": proof["inputs"]["quiescence"]})
         return {"checkpoint.json": final_raw, "terminal.json": c.canonical(terminal), "lease.json": c.canonical(evidence)}
+
+
+def credentials(admitted, *, product=None):
+    """Bootstrap own-role credentials with no product delegation authority.
+
+    Operation credentials must be separately admitted after private originals;
+    this session cannot AssumeRole even if the own managed policy allows it.
+    """
+    from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
+    governance, request, step, api, run, _ = admitted
+    product = Path.cwd() / "product" if product is None else product
+    manifest = governance["application_product_source_manifest"]
+    closure = governance["application_product_source_closure_sha256"]
+    authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
+    authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"],
+                                                     "application", "application-prepare", time.time())
+    restriction = session_policy.application_request(governance, request["source_sha"], run["id"], run["run_attempt"],
+        request["step"], application_purpose=request["application_purpose"])
+    value = lr.oidc_credentials(governance, "application", restriction, run)
+    expires = value["Expiration"].timestamp()
+    class Guard:
+        def check(self, seconds=0):
+            c.require(time.time() + seconds < expires <= min(authority.expires_at,
+                      c.instant(authority.application_fragment["enabled_until"])), "original bootstrap credential/freeze window")
+    client = lr.AWS(governance, credentials=value)
+    report = session_owner.verify_application(client, authority, expires, Guard(), clock=time.time, include_documents=True)
+    name = f"cnesdata-{run['id']}-{run['run_attempt']}"
+    expected = authority.application_fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + name
+    c.require(all(client.identity.get(key) == expected_value for key, expected_value in
+                     {"Account": governance["account_id"], "Arn": expected, "UserId": report["role_id"] + ":" + name}.items()),
+              "original bootstrap GetCallerIdentity")
+    authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
+    Guard().check()
+    lr.export_credentials(value)
+
+
+def main(argv=None):
+    """Public admission and own-role bootstrap; effects require private capability."""
+    import argparse
+    from tools.cnesdata_delivery import lifecycle_runtime, session_owner
+    parser = argparse.ArgumentParser(description="Protected CnesData application gate")
+    parser.add_argument("operation", choices=("preflight", "credentials", "execute"))
+    args = parser.parse_args(argv)
+    admitted = lifecycle_runtime.admission("application")
+    session_owner.application_fragment(admitted[0], time.time())
+    if args.operation == "credentials":
+        return credentials(admitted)
+    c.require(args.operation == "preflight", "application effect boundary not connected; execution disabled")
+    return admitted
+
+
+if __name__ == "__main__":
+    main()

@@ -153,7 +153,7 @@ def _terraform_document_digest(value):
     return c.sha(raw.encode())
 
 
-def verify_application(aws, authority, session_expires, guard, *, clock=time.time):
+def verify_application(aws, authority, session_expires, guard, *, clock=time.time, include_documents=False):
     """Read back exact original identity and unattached managed policy, guarded."""
     fragment = authority.application_fragment
     c.require(type(fragment) is dict, "original application fragment authority absent")
@@ -171,7 +171,7 @@ def verify_application(aws, authority, session_expires, guard, *, clock=time.tim
     policies = {"cnesdata-application-coordination": fragment["policy_sha256"]}
     if "predecessor_reads" in fragment:
         policies["cnesdata-application-predecessor-read"] = fragment["predecessor_reads"]["policy_sha256"]
-    observed = []
+    observed, original_documents = [], {}
     for _ in range(2):
         role = client.call("iam", "get_role", RoleName=name)["Role"]
         c.require(role["RoleName"] == name and role["Arn"] == fragment["application_role_arn"]
@@ -187,11 +187,22 @@ def verify_application(aws, authority, session_expires, guard, *, clock=time.tim
             response = client.call("iam", "get_role_policy", RoleName=name, PolicyName=policy)
             c.require(response["RoleName"] == name and response["PolicyName"] == policy
                       and _terraform_document_digest(response["PolicyDocument"]) == digest, "original application inline policy readback")
+            original_documents[policy] = _iam_document(response["PolicyDocument"])
         observed.append(role["RoleId"])
     c.require(observed[0] == observed[1], "application identity replaced during readback")
     verify_managed(client, authority, session_expires, clock=clock)
-    return {"fragment_sha256": c.sha(c.canonical(fragment)), "trust_sha256": fragment["trust_sha256"],
-            "policy_sha256": fragment["policy_sha256"], "managed_policy_sha256": authority.pin["document_sha256"]}
+    report = {"fragment_sha256": c.sha(c.canonical(fragment)), "trust_sha256": fragment["trust_sha256"],
+              "policy_sha256": fragment["policy_sha256"], "managed_policy_sha256": authority.pin["document_sha256"]}
+    if include_documents:
+        statements = []
+        for policy in policies:
+            document = original_documents[policy]
+            c.closed(document, "Version Statement" + (" Id" if "Id" in document else ""))
+            c.require(document["Version"] == "2012-10-17" and type(document["Statement"]) is list, "native application policy statements")
+            statements.extend(document["Statement"])
+        report |= {"role_id": observed[-1], "documents": {"application_identity": {"Version": "2012-10-17", "Statement": statements},
+                                                        "application_managed": authority.pin["document"]}}
+    return c.loads(c.canonical(report), canonical=True)
 
 
 def _pin(governance, role):

@@ -7,6 +7,56 @@ import pytest
 FIXTURE = Path(__file__).parent / "fixtures/cnesdata_delivery_roles_anywhere"
 
 
+def activation_governance():
+    from test_cnesdata_session_capacity import governance
+    gov = governance()
+    prefix = gov["evidence_prefix"] + "ext2/" + "a" * 40 + "/42448000000/1/"
+    gov["activation_read"] = {
+        "ceiling": {"bucket_arn": "arn:aws:s3:::" + gov["evidence_bucket"],
+            "cipher_kms_key_arn": gov["evidence_kms_key_arn"],
+            "keys": dict(zip(("payload", "signature", "receipt"),
+                (prefix + name for name in ("activation.json", "signature.der", "receipt.json"))))},
+        "ordinary_bucket_denies": ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"],
+        "plan_role_arn": gov["roles"]["plan"], "identity_sha256": "b" * 64, "session_sha256": "c" * 64,
+    }
+    return gov
+
+
+def test_activation_restrictions_exact_capacity_and_original_deadline():
+    import copy
+    from tools.cnesdata_delivery import session_policy as sp
+    gov = activation_governance()
+    versions = dict(zip(("payload", "signature", "receipt"), ("P" * 32, "S" * 32, "R" * 32)))
+    for selected, expected in (({"receipt": versions["receipt"]}, 1571), (versions, 2041)):
+        request = sp.activation_request(gov, selected, deadline="2030-01-01T00:15:00Z")
+        assert len(request["Policy"]) + len(request["PolicyArns"][0]["arn"]) == expected
+        statements = json.loads(request["Policy"])["Statement"]
+        assert statements[1]["Condition"] == {"DateGreaterThanEquals": {"aws:CurrentTime": "2030-01-01T00:15:00Z"}}
+        assert not any(action.startswith("iam:") for action in statements[0]["NotAction"])
+    versions["receipt"] += "R" * 8
+    with pytest.raises(ValueError, match="2048"):
+        sp.activation_request(gov, versions, deadline="2030-01-01T00:15:00Z")
+    for selected in ({}, {"payload": "P"}, {"receipt": None}, {"receipt": "null"}, {"receipt": True}):
+        with pytest.raises(ValueError):
+            sp.activation_request(gov, selected, deadline="2030-01-01T00:15:00Z")
+    bad = copy.deepcopy(gov)
+    bad["activation_read"]["ceiling"]["keys"]["receipt"] += "*"
+    with pytest.raises(ValueError):
+        sp.activation_request(bad, {"receipt": "R"}, deadline="2030-01-01T00:15:00Z")
+
+
+def test_activation_deadline_evaluator_denies_equality_and_requires_timezone():
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    identity = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObjectVersion", "Resource": "*"}]}
+    session = {"Version": "2012-10-17", "Statement": identity["Statement"] + [
+        {"Effect": "Deny", "Action": "*", "Resource": "*", "Condition": {
+            "DateGreaterThanEquals": {"aws:CurrentTime": "2030-01-01T00:15:00Z"}}}]}
+    for now, allowed in (("2030-01-01T00:14:59Z", True), ("2030-01-01T00:15:00Z", False), ("2030-01-01T00:15:01Z", False)):
+        assert effective_iam(identity, [session], "s3:GetObjectVersion", "arn:aws:s3:::bucket/object", {"aws:CurrentTime": now}) is allowed
+    with pytest.raises(ValueError, match="timezone"):
+        effective_iam(identity, [session], "s3:GetObjectVersion", "arn:aws:s3:::bucket/object", {"aws:CurrentTime": "2030-01-01T00:14:59"})
+
+
 @pytest.fixture(scope="module")
 def native():
     from fixtures.cnesdata_delivery_oidc_native import Native
@@ -282,7 +332,7 @@ def test_native_application_sessions_separate_keeper_history_and_operation(nativ
 
 
 @pytest.mark.parametrize("with_history", [False, True])
-def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, monkeypatch):
+def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, monkeypatch, tmp_path):
     import copy
     from urllib.parse import quote
     from tools.cnesdata_delivery import contract as c, session_owner
@@ -435,10 +485,82 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     guard = Guard()
     report = session_owner.verify_application(IAM(), authority, now + 3600, guard, clock=lambda: now)
     assert report["fragment_sha256"] == measured["application_fragment_sha256"]
+    original_documents = session_owner.verify_application(IAM(), authority, now + 3600, Guard(), clock=lambda: now, include_documents=True)
+    assert original_documents["role_id"] == "AROAoriginal"
+    assert original_documents["documents"]["application_managed"] == pin["document"]
+    expected_policies = [json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])]
+    if with_history:
+        expected_policies.append(json.loads(resources["aws_iam_role_policy.application_history[0]"]["policy"]))
+    assert original_documents["documents"]["application_identity"] == {"Version": "2012-10-17",
+        "Statement": [statement for document in expected_policies for statement in document["Statement"]]}
     assert 20 in guard.admissions and set(guard.admissions) == {1, 20}
     for mutation in ("managed-default", "boundary", "trust", "duration", "role-replaced", "extra-policy", "truncated", "attached", "policy-changed"):
         with pytest.raises(ValueError):
             session_owner.verify_application(IAM(mutation), authority, now + 3600, Guard(), clock=lambda: now)
+
+    # Own-role bootstrap uses the real source and authority/readback validators.
+    # The OIDC exchange and IAM network boundary are synthetic; no AWS is used.
+    import subprocess
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import application_gate as ag
+    product = tmp_path / "product"
+    script = product / "scripts/promotion/promote_api.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("def execute_shared_operation(operation, request, context):\n    raise RuntimeError('fixture not an operational adapter')\n")
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=product, check=True, capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "bootstrap source fixture")
+    source = git("rev-parse", "HEAD")
+    proof["source"]["source_sha"] = source
+    for row in proof["reports"]:
+        report_value = c.loads(files[row["name"]], canonical=True)
+        report_value["source_sha"] = source
+        files[row["name"]] = c.canonical(report_value)
+        row.update(size=len(files[row["name"]]), sha256=c.sha(files[row["name"]]))
+    api.freeze_owner(gov, proof, files)
+    gov["session_owner_references"]["application"] = api.owner_reference
+    manifest = {"version": 1, "source_sha": source, "files": {"scripts/promotion/promote_api.py": c.sha(script.read_bytes())}}
+    gov.update(role="application", application_product_source_manifest=manifest,
+               application_product_source_closure_sha256=c.sha(c.canonical(manifest)))
+    request = {"source_sha": source, "step": "closed-ready", "application_purpose": "promotion"}
+    run = {"id": 44, "run_attempt": 1}
+    exported = tmp_path / "github-env"
+    monkeypatch.setenv("GITHUB_ENV", str(exported))
+    native_credentials = {"AccessKeyId": "synthetic-key", "SecretAccessKey": "synthetic-secret", "SessionToken": "synthetic-token",
+                          "Expiration": datetime.fromtimestamp(now + 3600, timezone.utc)}
+    bootstrap_exchanges = []
+    def oidc(governance, role, restriction, current_run):
+        assert role == "application" and current_run == run
+        statements = json.loads(restriction["Policy"])["Statement"]
+        assert {"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"} in statements
+        bootstrap_exchanges.append(restriction)
+        return native_credentials
+    identity_change = {}
+    class BootstrapIAM(IAM):
+        def __init__(self, governance, *, credentials):
+            super().__init__()
+            assert credentials == native_credentials
+            self.identity = {"Account": gov["account_id"], "Arn": fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/cnesdata-44-1",
+                             "UserId": "AROAoriginal:cnesdata-44-1"} | identity_change
+    monkeypatch.setattr(lifecycle_runtime, "oidc_credentials", oidc)
+    monkeypatch.setattr(lifecycle_runtime, "AWS", BootstrapIAM)
+    admitted = (gov, request, {"purpose": "application-prepare"}, api, run, {})
+    ag.credentials(admitted, product=product)
+    original_export = exported.read_bytes()
+    assert b"AWS_CREDENTIAL_EXPIRATION=" in original_export and len(bootstrap_exchanges) == 1
+    for field, value in (("UserId", "AROAother:cnesdata-44-1"), ("Account", "999900001111"), ("Arn", "arn:aws:sts::111122223333:assumed-role/foreign/cnesdata-44-1")):
+        identity_change.clear()
+        identity_change[field] = value
+        with pytest.raises(ValueError, match="original bootstrap GetCallerIdentity"):
+            ag.credentials(admitted, product=product)
+        assert exported.read_bytes() == original_export
+    before = len(bootstrap_exchanges)
+    script.write_text(script.read_text() + "# dirty source\n")
+    with pytest.raises(ValueError, match="dirty or shadowed"):
+        ag.credentials(admitted, product=product)
+    assert len(bootstrap_exchanges) == before
 
 
 def test_native_schema_confirms_readonly_computed_delta_fields(native):
@@ -554,8 +676,8 @@ def test_native_closed_ready_composition_is_readonly_and_frozen(native):
     execution = "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-probe:original"
     assert not app("dynamodb:GetItem", table)
     assert not app("states:DescribeExecution", execution)
-    # Contract illustration only: this is deliberately not an adopted product
-    # grant. The current integrated Phase A source does not grant DescribeExecution.
+    # Synthetic policy fixture only. Product #500 source includes this grant,
+    # but source integration is not evidence that its IAM has been applied.
     policy = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table,
          "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]}, "Null": {"dynamodb:LeadingKeys": "false"}}},
@@ -579,6 +701,20 @@ def test_native_closed_ready_composition_is_readonly_and_frozen(native):
     claim = trust["Statement"][0]["Condition"]["StringEquals"]
     assert allowed(trust, "sts:AssumeRoleWithWebIdentity", "*", claim | {"aws:CurrentTime": "2029-12-31T23:59:59Z"})
     assert not allowed(trust, "sts:AssumeRoleWithWebIdentity", "*", claim | {"aws:CurrentTime": "2030-01-01T00:00:00Z"})
+    from tools.cnesdata_delivery import iam_boundary, lifecycle_contract as lc
+    scope = {"role_arn": roles["fence_operator"], "session_name": "promotion-fence-r1", "control_table_arn": table,
+        "execution_arn": execution, "foreign_execution_arn": execution + "-foreign",
+        "evidence_arn": own + "closed-ready/sdk-original-intent.json",
+        "lease_arn": "arn:aws:s3:::synthetic-state/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"}
+    documents = {"application_identity": identity, "application_managed": managed, "application_session": session,
+        "fence_identity": policy, "fence_session": frozen, "freeze": {"frozen_until": "2030-01-01T00:00:00Z",
+        "application_fragment_sha256": "a" * 64, "owner_policy_sha256": "b" * 64}}
+    report = iam_boundary.fence_effective_evaluation(documents, scope, evaluator_source_sha="c" * 40, observed_at="2029-12-31T23:59:59Z")
+    assert {item["case_id"] for item in report["cases"]} == set(lc.FENCE_EVALUATION_CASES)
+    assert all(item["observed"] is item["expected"] for item in report["cases"])
+    with pytest.raises(ValueError, match="effective IAM case"):
+        iam_boundary.fence_effective_evaluation(documents | {"fence_identity": legacy}, scope,
+            evaluator_source_sha="c" * 40, observed_at="2029-12-31T23:59:59Z")
 
 
 @pytest.mark.parametrize("value,exists", [(None, False), (None, True), ([], True), (["FENCE"], True), (["FOREIGN"], True)])

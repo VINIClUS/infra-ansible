@@ -72,7 +72,7 @@ def admission(role):
     c.require(c.sha(request_raw) == c.digest(os.environ["REQUEST_DESCRIPTOR_SHA256"]), "request bytes")
     request = c.loads(request_raw, canonical=True, limit=65536)
     c.closed(request, "schema_version repository source_sha step payloads application_purpose caller_binding_sha256")
-    c.require(request["schema_version"] == 1 and request["repository"] == c.REPOSITORY
+    c.require(type(request["schema_version"]) is int and request["schema_version"] == 1 and request["repository"] == c.REPOSITORY
               and request["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"], "lifecycle request")
     step = governance["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
@@ -81,10 +81,10 @@ def admission(role):
     api = GitHub()
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
     from tools.cnesdata_delivery.provenance import application_caller
-    caller = application_caller(api, governance, run, role, step)
+    caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
     c.require(request["application_purpose"] == caller["application_purpose"]
               and request["caller_binding_sha256"] == c.sha(c.canonical(caller)), "original requested application caller")
-    governance = governance | {"authenticated_application_caller": caller}
+    governance = governance | {"authenticated_application_caller": caller, "authenticated_application_job": original_job}
     if caller["application_purpose"] == "mode-readiness-drill" and role in {"plan", "deploy"}:
         c.require(step["purpose"] == "application-prepare" and step["mode"] == "mode-canary"
                   and step["direction"] == "advance", "readiness infra only mode-canary prepare")
@@ -111,7 +111,7 @@ def admission(role):
         c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", producer["step"]), "original producer step")
         payloads[name] = lifecycle_artifact(api, reference, time.time(), source=request["source_sha"],
             run_id=run["id"], attempt=run["run_attempt"], producer_name=producer["name"],
-            artifact_name="lifecycle-" + producer["step"])
+            artifact_name="lifecycle-" + producer["step"], application_purpose=governance["application_purpose"])
     return governance | {"role": role}, request, step, api, run, payloads
 
 
@@ -123,11 +123,28 @@ def namespace(governance, request, run, step=None):
     return f"{prefix}lifecycle/{request['source_sha']}/{run['id']}/{run['run_attempt']}/{name}/"
 
 
-def private_payload(aws, governance, request, run, public, *, guard=None):
+def keeper_transport(*, aws, governance, owner, predecessor, guard):
+    """Read the original keeper's same-run carrier after public predecessor admission."""
+    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": "keeper"},
+                       {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
+    guard.check(20)
+    raw, _ = aws.get(governance["evidence_bucket"], prefix + "checkpoint.json", maximum=262144)
+    guard.check()
+    wrapper = c.loads(raw, canonical=True, limit=262144)
+    c.closed(wrapper, "version owner predecessor_sha256 phase_a_originals")
+    c.require(type(wrapper["version"]) is int and wrapper["version"] == 2
+              and c.canonical(wrapper["owner"]) == c.canonical(owner)
+              and wrapper["predecessor_sha256"] == c.sha(c.canonical(predecessor)), "original keeper transport owner/predecessor")
+    lc.phase_a_originals(wrapper["phase_a_originals"])
+    guard.check()
+    return wrapper
+
+
+def private_payload(aws, governance, request, run, public, *, guard=None, names=None):
     c.require(set(public) == {"index.json"}, "sanitized lifecycle index only")
     index = c.loads(public["index.json"], canonical=True)
     c.closed(index, "version source_sha run_id run_attempt step owner_sha256 generation files " + " ".join(lc.application_identity(index)))
-    c.require(index["version"] == 1 and index["source_sha"] == request["source_sha"]
+    c.require(type(index["version"]) is int and index["version"] == 1 and index["source_sha"] == request["source_sha"]
               and index["run_id"] == run["id"] and index["run_attempt"] == run["run_attempt"], "private index producer")
     if "application_purpose" in request:
         c.require(lc.application_identity(index) == {"application_purpose": request["application_purpose"],
@@ -138,11 +155,17 @@ def private_payload(aws, governance, request, run, public, *, guard=None):
     c.require(type(index["files"]) is list and 0 < len(index["files"]) <= 32, "private file inventory")
     prefix = namespace(governance, request, run, index["step"])
     result = {}
+    seen = set()
+    c.require(names is None or type(names) is set and names, "private protected selection")
     for item in index["files"]:
         c.closed(item, "name sha256 size")
         name = item["name"]
-        c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}\.(?:json|bin)", name) and name not in result, "private basename")
+        c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}\.(?:json|bin)", name) and name not in seen, "private basename")
+        seen.add(name)
         c.integer(item["size"], 1, c.LIMIT)
+        c.digest(item["sha256"])
+        if names is not None and name not in names:
+            continue
         if guard is not None:
             guard.check(20)
         raw, _ = aws.get(governance["evidence_bucket"], prefix + name, maximum=item["size"])
@@ -150,13 +173,122 @@ def private_payload(aws, governance, request, run, public, *, guard=None):
             guard.check()
         c.require(len(raw) == item["size"] and c.sha(raw) == c.digest(item["sha256"]), "private original bytes")
         result[name] = raw
+    c.require(names is None or set(result) == names, "complete protected private selection")
     return index, result
+
+
+def current_checkpoint_chain(api, aws, governance, request, run, *, owner, predecessor, current_raw,
+                             approval_raw, previous_raw, producer, guard, now):
+    """Authenticate each earlier checkpoint from completed same-run publications.
+
+    The first historical plan republishes the actual acquisition predecessor.
+    Deploy reads that copy under its existing same-run scope; it never acquires a
+    historical S3 grant or treats embedded Phase A as the established anchor.
+    """
+    original_api = api
+    class GuardedAPI:
+        def read(self, *args, **kwargs):
+            guard.check(20)
+            result = original_api.read(*args, **kwargs)
+            guard.check()
+            return result
+    api = GuardedAPI()
+    def inventory(path, key):
+        result, total = [], None
+        for page in range(1, 21):
+            value = api.read(path + f"?per_page=100&page={page}")
+            c.integer(value["total_count"], 0, 2000)
+            if total is None:
+                total = value["total_count"]
+            c.require(value["total_count"] == total and type(value[key]) is list, "stable current publication inventory")
+            result.extend(value[key])
+            if len(result) >= total:
+                break
+        c.require(len(result) == total and len({row["id"] for row in result}) == total, "complete unique publication inventory")
+        return result
+
+    def checked(files, step):
+        checkpoint = c.loads(files["checkpoint.json"], canonical=True)
+        c.closed(checkpoint, "state state_object owner purpose plan_sha256 readbacks phase_a_originals")
+        approval = c.loads(files["approval.json"], canonical=True)
+        c.closed(approval, "version owner purpose direction plan_sha256 inputs_sha256 checkpoint_sha256 delta drift_matrix readbacks")
+        c.require(type(approval["version"]) is int and approval["version"] == 1
+                  and c.canonical(checkpoint["owner"]) == c.canonical(approval["owner"]) == c.canonical(owner)
+                  and checkpoint["purpose"] == approval["purpose"] == step["purpose"]
+                  and approval["direction"] == step["direction"]
+                  and all(approval["delta"][field] == step[field] for field in ("purpose", "direction", "mode"))
+                  and checkpoint["plan_sha256"] == approval["plan_sha256"], "original current deploy checkpoint/approval")
+        return checkpoint, c.digest(approval["checkpoint_sha256"])
+
+    current, parent = checked({"checkpoint.json": current_raw, "approval.json": approval_raw}, lc.FENCE_PREPARE_PRODUCER)
+    c.require(parent == c.sha(previous_raw), "current deploy immediate predecessor bytes")
+    anchor = predecessor["checkpoint_sha256"]
+    baseline = previous_raw if c.sha(previous_raw) == anchor else None
+    prior = {}
+    if parent != anchor:
+        catalog = governance["lifecycle_steps"]
+        c.require(type(catalog) is dict and 1 <= len(catalog) <= 256, "finite protected lifecycle catalog")
+        root = f"repos/{c.REPOSITORY}/actions/runs/{run['id']}"
+        jobs = inventory(root + f"/attempts/{run['run_attempt']}/jobs", "jobs")
+        artifacts = inventory(root + "/artifacts", "artifacts")
+        for step_name, step in catalog.items():
+            if step_name == request["step"] or step["role"] not in {"plan", "deploy"}:
+                continue
+            if step["role"] == "plan" and step.get("historical_entry") is not True:
+                continue
+            matches = [job for job in jobs if job["name"] == step["job_name"] and job["status"] == "completed" and job["conclusion"] == "success"]
+            c.require(len(matches) <= 1, "unique completed current producer")
+            if not matches:
+                continue
+            job = matches[0]
+            candidates = [item for item in artifacts if item["name"] == "lifecycle-" + step_name
+                          and c.instant(job["started_at"]) < c.instant(item["created_at"]) < c.instant(job["completed_at"])]
+            c.require(len(candidates) == 1, "unique current publication in original job interval")
+            artifact = candidates[0]
+            reference = {"job_id": job["id"], "artifact_id": artifact["id"], "artifact_digest": artifact["digest"]}
+            public = lifecycle_artifact(api, reference, now, source=owner["source_sha"], run_id=owner["run_id"],
+                attempt=owner["run_attempt"], producer_name=step["job_name"], artifact_name="lifecycle-" + step_name)
+            names = {"checkpoint.json"} | ({"approval.json"} if step["role"] == "deploy" else set())
+            index, files = private_payload(aws, governance, request, run, public, guard=guard, names=names)
+            c.require(index["step"] == step_name and index["owner_sha256"] == owner["owner_sha256"]
+                      and type(index["generation"]) is int and index["generation"] == owner["generation"], "current chain original owner")
+            raw = files["checkpoint.json"]
+            digest = c.sha(raw)
+            if step["role"] == "plan":
+                c.require(digest == anchor and (baseline is None or baseline == raw), "historical plan preserves acquisition predecessor")
+                baseline = raw
+                continue
+            checkpoint, previous = checked(files, step)
+            c.require(digest not in prior, "ambiguous current checkpoint")
+            origin = {"repository": c.REPOSITORY, "source_sha": owner["source_sha"], "run_id": owner["run_id"],
+                      "run_attempt": owner["run_attempt"], "job_id": job["id"], "producer_name": job["name"],
+                      "artifact_id": artifact["id"], "artifact_digest": artifact["digest"], "step": step_name,
+                      "name": "checkpoint.json", "sha256": digest, "size": len(raw)}
+            prior[digest] = (checkpoint, previous, origin)
+    c.require(type(baseline) is bytes, "authenticated current copy of acquisition predecessor required")
+    lc.fence_predecessor_baseline(baseline, predecessor, current["phase_a_originals"])
+    rows = [(current, parent, lc.fence_current_origin(producer, current_raw))]
+    visited = {c.sha(current_raw)}
+    while parent != anchor:
+        c.require(parent in prior and parent not in visited and len(rows) < 256, "complete acyclic current checkpoint ancestry")
+        visited.add(parent)
+        checkpoint, parent, origin = prior[parent]
+        c.require(c.canonical(checkpoint["phase_a_originals"]) == c.canonical(current["phase_a_originals"]), "current chain original Phase A carrier")
+        rows.append((checkpoint, parent, origin))
+    entries = [{"sequence": sequence, "checkpoint_sha256": origin["sha256"], "previous_checkpoint_sha256": previous,
+                "state": checkpoint["state"], "state_object": checkpoint["state_object"], "origin": origin}
+               for sequence, (checkpoint, previous, origin) in enumerate(reversed(rows))]
+    chain = {"schema_version": 3, "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
+             "anchor_sha256": anchor, "head_sha256": c.sha(current_raw), "entries": entries}
+    lc.validate_fence_checkpoint_chain(chain, current_raw, owner, predecessor_raw=baseline, predecessor_reference=predecessor, producer=producer)
+    return chain, baseline
 
 
 
 
 def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, original_sources, source_sha,
-                                  activation_source_sha, current_index, checkpoint, chain, historical, owner, fragment):
+                                  activation_source_sha, current_index, checkpoint, chain, historical, owner, fragment, producer,
+                                  predecessor_raw, predecessor_reference):
     """Derive one existing role from current plan/source and authenticated history.
 
     Infra producer only: supplied index/history/source closures and schema4 owner
@@ -199,7 +331,7 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         c.require(name in old_refs and old_refs[name]["sha256"] == c.sha(raw) and old_refs[name]["size"] == len(raw), "fence original historical bytes")
     old_state = old_checkpoint["state_after"]
     lc.validate_fence_checkpoint_chain(chain, c.canonical(checkpoint), owner,
-        anchor_sha256=c.sha(c.canonical(old_checkpoint)), original_state=old_state)
+        predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference, producer=producer)
     phase, release = envelope["plan"]["phase_a_inputs"], envelope["plan"]["release"]
     c.require(phase["canary_storage_enabled"] is True and phase["canary_release_id"] == release["canary_id"]
               and phase["canary_trusted_principal_arn"] == fragment["application_role_arn"]
@@ -264,7 +396,29 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
-def fence_prepared_payload(api, aws, governance, request, run, reference, *, owner, now, guard=None):
+def fence_prepared_files(*, originals, owner, fragment, activation_sha256, producer, preparation, predecessor_raw, predecessor_reference):
+    """Build before upload; enclosing artifact provenance remains external."""
+    c.require(type(originals) is dict and set(originals) == lc.FENCE_PREPARE_FILES - {"fence-prepared.json"},
+              "fence exact original documents")
+    manifest = {"schema_version": 1, "proof_kind": "iam-readback-and-evaluation", "operation": "closed-ready",
+        "application_purpose": "promotion", "context_kind": "promotion", "owner": owner,
+        "caller_binding_sha256": owner["caller_binding_sha256"], "activation_sha256": activation_sha256,
+        "application_fragment_sha256": c.sha(c.canonical(fragment)), "producer": producer, "preparation": preparation,
+        "files": [{"name": name, "sha256": c.sha(raw), "size": len(raw)} for name, raw in sorted(originals.items())],
+        "outcome": "observed"}
+    files = dict(originals, **{"fence-prepared.json": c.canonical(manifest)})
+    lc.validate_fence_prepared_package(files, originals=originals, owner=owner, fragment=fragment,
+        activation_sha256=activation_sha256, producer=producer, preparation=preparation,
+        predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference)
+    return files
+
+
+class PreparedFence(dict):
+    """Private bytes obtained from the completed, authenticated deploy producer."""
+
+
+def fence_prepared_payload(api, aws, governance, request, run, reference, *, owner, now,
+                           predecessor_raw, predecessor_reference, guard=None):
     """Read a completed deploy observation; no capability, credentials or SDK dispatch.
 
     Owner/request/governance must already have independent schema4 admission. This
@@ -327,7 +481,16 @@ def fence_prepared_payload(api, aws, governance, request, run, reference, *, own
     expected = producer | {"repository": c.REPOSITORY, "source_sha": request["source_sha"], "workflow_sha": pin,
                            "run_id": run["id"], "run_attempt": run["run_attempt"], "job_id": reference["job_id"]}
     c.require(c.canonical(manifest["producer"]) == c.canonical(expected), "fence private producer matches authenticated job")
-    return files
+    chain = c.loads(files["fence-chain.json"], canonical=True)
+    historical = c.loads(files["fence-origins.json"], canonical=True)["phase_a"]
+    lc._fence_state(historical["state"])
+    lc.validate_fence_checkpoint_chain(chain, files["checkpoint.json"], owner,
+        predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference, producer=expected)
+    lc.validate_fence_prepared_package(files, owner=owner, fragment=governance["application_fragment"],
+        activation_sha256=manifest["activation_sha256"], producer=expected, preparation=manifest["preparation"],
+        originals={name: raw for name, raw in files.items() if name != "fence-prepared.json"},
+        predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference)
+    return PreparedFence(files)
 
 def first_checkpoint(predecessor, record, expected_owner, actual_state, actual_object):
     """Plan-only historical entry oracle; predecessor is separately authenticated.
@@ -708,7 +871,7 @@ def execute(role):
     governance, request, step, api, run, public = admission(role)
     aws = AWS(governance)
     from tools.cnesdata_delivery import session_owner
-    session_owner.authenticate_lifecycle(governance, api, request["source_sha"], "application", "application-prepare", time.time())
+    application_authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"], "application", "application-prepare", time.time())
     authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"], role, step["purpose"], time.time())
     session_owner.verify_managed(aws, authority, c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"]))
     record, _ = S3LeaseStore(aws).get()
@@ -721,6 +884,13 @@ def execute(role):
     lease = lc.DelegatedLeaseView(S3LeaseStore(aws), owner, monotonic=time.monotonic)
     guard = LifecycleWatchdog(lease, record["lifecycle"], c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"]))
     guard.check()
+    predecessor = authenticate_predecessor(api, governance)
+    c.require(record["lifecycle"]["predecessor_sha256"] == c.sha(c.canonical(predecessor)), "original keeper predecessor commitment")
+    transport = keeper_transport(aws=aws, governance=governance, owner=owner, predecessor=predecessor, guard=guard)
+    carrier = transport["phase_a_originals"]
+    historical = lc.phase_a_originals(carrier)
+    c.require(historical["envelope"]["plan"]["phase_a_inputs"]["canary_trusted_principal_arn"] ==
+              application_authority.application_fragment["application_role_arn"], "original Phase A/current application principal")
     payload = {}
     for input_name, public_files in public.items():
         index, files = private_payload(aws, governance, request, run, public_files, guard=guard)
@@ -749,6 +919,10 @@ def execute(role):
                                                           raw=payload.get("checkpoint.json"))
         guard.check()
     checkpoint = c.loads(payload["checkpoint.json"], canonical=True)
+    if step.get("historical_entry") is True and predecessor["protocol"] == "legacy-infra":
+        c.require(payload["checkpoint.json"] == historical["raw"]["checkpoint.json"], "first checkpoint is original Phase A bytes")
+    else:
+        c.require(c.canonical(checkpoint["phase_a_originals"]) == c.canonical(carrier), "checkpoint preserves original Phase A custody")
     if step.get("historical_entry") is True and governance["predecessor_read"]["protocol"] == "legacy-infra":
         checkpoint_state = checkpoint["state_after"]
     else:
@@ -758,6 +932,9 @@ def execute(role):
     c.require(checkpoint_state == before and checkpoint["state_object"] == before_object
               and c.sha(payload["checkpoint.json"]) == guard.window["checkpoint_sha256"], "real predecessor checkpoint")
     inputs = c.loads(payload["inputs.json"], canonical=True)
+    original_phase = historical["envelope"]["plan"]["phase_a_inputs"]
+    c.require(all(c.canonical(inputs.get(key)) == c.canonical(original_phase[key]) for key in
+                  ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")), "original Phase A release/principal inputs")
     c.validate_cost(governance["cost"], purpose=step["purpose"], stage=baseline["cost_context"],
                     evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time())
     with tempfile.TemporaryDirectory(prefix="cnesdata-lifecycle-") as directory:
@@ -815,7 +992,8 @@ def execute(role):
             reports = readbacks(aws, approval["readbacks"]["after"], guard)
             c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
-                          "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports}
+                          "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
+                          "phase_a_originals": carrier}
             result_files = {"checkpoint.json": c.canonical(checkpoint), "approval.json": payload["approval.json"]}
             status = "applied"
         guard.check()

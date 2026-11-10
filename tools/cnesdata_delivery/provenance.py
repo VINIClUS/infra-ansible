@@ -21,8 +21,10 @@ BASE_CHECKS = {"source-develop-checks", "artifact-origin-attempt-expiry", "depen
                "cost-ledger-purpose-scope", "drift-baseline"}
 
 
-def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer_name, artifact_name):
+def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer_name, artifact_name, application_purpose="promotion"):
     """Authenticate a completed producer job while its keeper run remains live."""
+    from tools.cnesdata_delivery.lifecycle_contract import APPLICATION_CALLERS
+    require(application_purpose in APPLICATION_CALLERS, "closed lifecycle artifact caller")
     closed(reference, "artifact_id artifact_digest job_id")
     integer(reference["artifact_id"])
     integer(reference["job_id"])
@@ -32,7 +34,7 @@ def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer
     run = api.read(f"{prefix}/actions/runs/{run_id}/attempts/{attempt}")
     require(run["id"] == run_id and run["run_attempt"] == attempt and run["head_sha"] == source
             and run["event"] == "workflow_dispatch" and run["repository"]["full_name"] == REPOSITORY
-            and run["path"].split("@")[0] == ".github/workflows/promote-production.yml", "lifecycle producer run")
+            and run["path"].split("@")[0] == APPLICATION_CALLERS[application_purpose]["workflow_path"], "lifecycle producer run")
     job = api.read(f"{prefix}/actions/jobs/{reference['job_id']}")
     require(job["run_id"] == run_id and job["run_attempt"] == attempt and job["head_sha"] == source
             and job["name"] == producer_name and job["status"] == "completed" and job["conclusion"] == "success",
@@ -50,7 +52,7 @@ def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer
     return unzip(raw)
 
 
-def application_caller(api, governance, run, role, step):
+def application_caller(api, governance, run, role, step, *, include_job=False):
     """Original caller source and running job, independent of future receipts."""
     import base64
     from tools.cnesdata_delivery import contract as c, lifecycle_contract as lc
@@ -99,6 +101,7 @@ def application_caller(api, governance, run, role, step):
     matches = [job for job in jobs if job["name"] == step["job_name"]]
     c.require(len(matches) == 1, "unique original current job")
     job = matches[0]
+    c.integer(job["id"])
     c.require(job["run_id"] == run["id"] and job["run_attempt"] == run["run_attempt"] and job["head_sha"] == source
               and job["status"] == "in_progress" and job["conclusion"] is None, "original running caller job")
     c.require(type(step["admission_steps"]) is list and 1 <= len(step["admission_steps"]) <= 4
@@ -108,10 +111,13 @@ def application_caller(api, governance, run, role, step):
     c.require(len(active) == 1 and active[0]["name"] in step["admission_steps"], "original current admission step")
     producer = {"workflow_sha": governance["gate_shas"]["application"],
                 "source_closure_sha256": governance["application_source_closure_sha256"]}
-    return lc.application_caller_binding({"application_purpose": purpose, "context_kind": governance["context_kind"],
+    binding = lc.application_caller_binding({"application_purpose": purpose, "context_kind": governance["context_kind"],
         **caller, "source_sha": source, "run_id": run["id"], "run_attempt": run["run_attempt"],
         "producer_workflow_sha": producer["workflow_sha"], "producer_source_closure_sha256": producer["source_closure_sha256"],
         "event": run["event"], "fragment_version": 4}, producer)
+    original_job = {"repository": caller["repository"], "source_sha": source, "run_id": run["id"],
+                    "run_attempt": run["run_attempt"], "job_id": job["id"], "producer_name": job["name"]}
+    return (binding, original_job) if include_job else binding
 
 
 def historical_plan_governance(governance, purpose):

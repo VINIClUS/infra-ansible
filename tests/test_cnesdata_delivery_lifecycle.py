@@ -344,13 +344,22 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({}, {}, True),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
-    """Real execute, delta and source gates; only external IO is replaced."""
+    """Unit regression for execute's step/delta checks, not operational admission.
+
+    Source/authority/transport are isolated here. Their original validators have
+    separate external-boundary tests in test_cnesdata_application_gate.
+    """
     import json
     from pathlib import Path
     from types import SimpleNamespace
     from fixtures.cnesdata_delivery_lifecycle import mode_source_case
     from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, iam_boundary, session_owner, runtime
+    from test_cnesdata_application_gate import _phase_a_carrier_case
+    carrier, _ = _phase_a_carrier_case()
+    historical = lc.phase_a_originals(carrier)
     plan, sources, inputs = mode_source_case()
+    original_phase = historical["envelope"]["plan"]["phase_a_inputs"]
+    inputs.update({key: original_phase[key] for key in ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")})
     plan["resource_changes"] = [row for row in plan["resource_changes"] if ".mode_seed[0]" in row["address"]]
     configured = plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"]
     plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"] = [
@@ -367,14 +376,16 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     raw_state = c.canonical({"lineage": "fixture", "serial": 1, "resources": []})
     state_object = {"version_id": "fixture"}
     payload = {"plan.bin": b"synthetic-plan", "plan.json": c.canonical(plan), "inputs.json": c.canonical(inputs),
-               "checkpoint.json": c.canonical({"owner": owner, "state": c.state_identity(raw_state), "state_object": state_object})}
+               "checkpoint.json": c.canonical({"owner": owner, "state": c.state_identity(raw_state), "state_object": state_object,
+                                                "phase_a_originals": carrier})}
     approval = {"version": 1, "owner": owner, "purpose": step["purpose"], "direction": step["direction"],
                 "plan_sha256": c.sha(payload["plan.bin"]), "inputs_sha256": c.sha(payload["inputs.json"]),
                 "checkpoint_sha256": c.sha(payload["checkpoint.json"]), "readbacks": {"before": [], "after": []}, "drift_matrix": {},
                 "delta": {"purpose": "application-prepare", "direction": "advance", "mode": "operational", "before": {},
                           "original": {}, "created": {}, "expected_changes_sha256": c.sha(c.canonical(plan["resource_changes"])), **delta_change}}
     payload["approval.json"] = c.canonical(approval)
-    store.value["lifecycle"] = {"checkpoint_sha256": c.sha(payload["checkpoint.json"])}
+    store.value["lifecycle"] = {"checkpoint_sha256": c.sha(payload["checkpoint.json"]),
+                                "predecessor_sha256": c.sha(c.canonical(carrier["origin"]))}
     monkeypatch.chdir(tmp_path)
     root = tmp_path / "product/infra/opentofu/env/prod"
     (root / ".terraform").mkdir(parents=True)
@@ -392,7 +403,10 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         {"id": owner["run_id"], "run_attempt": owner["run_attempt"]}, {"prepared": {}}))
     monkeypatch.setattr(lr, "AWS", lambda _: SimpleNamespace(get_state=lambda: (raw_state, state_object)))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
-    monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: {})
+    monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace(
+        application_fragment={"application_role_arn": original_phase["canary_trusted_principal_arn"]}))
+    monkeypatch.setattr(lr, "authenticate_predecessor", lambda *args: carrier["origin"])
+    monkeypatch.setattr(lr, "keeper_transport", lambda **kwargs: {"phase_a_originals": carrier})
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
     monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: ({"step": "prepared", "owner_sha256": owner["owner_sha256"],

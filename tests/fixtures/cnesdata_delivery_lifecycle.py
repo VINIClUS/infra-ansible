@@ -571,7 +571,7 @@ def mode_source_case():
 MODE_CONTEXT_CODEC_VECTORS = [{'canonical_utf8': '{"label":"ação","schema_version":2}\n', 'scope': 'codec-only; semantic manifest acceptance not asserted', 'sha256': '5c5791a8324903d5a5ba10f3ff8f58dea87214151cc6407f1001d3beb004e27d'}, {'canonical_utf8': '{"owner":{"run_attempt":1,"run_id":123},"schema_version":2}\n', 'scope': 'codec-only; semantic manifest acceptance not asserted', 'sha256': '9b3238c6a46c92bf0d9e004123c200f98d26b8cdb09a7c76f618de7c35c64582'}]
 
 
-def fence_projection_case():
+def fence_projection_case(*, probe=False):
     """Synthetic current plan/state; exact integrated promotion.tf, finite HCL inputs.
 
     This tests resolver mechanics, not a real applied product or native plan.
@@ -602,6 +602,13 @@ def fence_projection_case():
     }'''
     sources = {"infra/opentofu/env/prod/main.tf": root, "infra/opentofu/modules/runtime-iam/canary.tf": canary,
                "infra/opentofu/modules/runtime-iam/promotion.tf": b'resource "aws_iam_role" "promotion_fence_operator" {\n  count = local.canary_count\n\n  name                 = "${var.name_prefix}-promotion-fence-operator"\n  assume_role_policy   = local.canary_principal_trust["operator"]\n  max_session_duration = local.canary_max_session_duration\n  tags                 = local.canary_tags\n}\n\nresource "aws_iam_role_policy" "promotion_fence_operator" {\n  count = local.canary_count\n\n  name = "${var.name_prefix}-promotion-fence-operator-gate"\n  role = aws_iam_role.promotion_fence_operator[0].id\n  policy = jsonencode({\n    Version = "2012-10-17"\n    Statement = [\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:GetItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = {\n            "dynamodb:LeadingKeys" = ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]\n          }\n          Null = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:UpdateItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["ENV#prod#FENCE"] }\n          Null                        = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:ConditionCheckItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["ENV#prod#SEMAPHORE"] }\n          Null                        = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n    ]\n  })\n}\n'}
+    machine = f"arn:aws:states:us-east-2:{account}:stateMachine:cnesdata-prod-processor"
+    if probe:
+        # Exact #500 integrated source bytes; synthetic plan/state/readbacks.
+        root = root.replace(b'  runtime_grants =', ('  state_machine_arn = "' + machine + '"\n  runtime_grants =').encode())
+        sources["infra/opentofu/env/prod/main.tf"] = root
+        sources["infra/opentofu/modules/runtime-iam/promotion.tf"] = b'resource "aws_iam_role" "promotion_fence_operator" {\n  count = local.canary_count\n\n  name                 = "${var.name_prefix}-promotion-fence-operator"\n  assume_role_policy   = local.canary_principal_trust["operator"]\n  max_session_duration = local.canary_max_session_duration\n  tags                 = local.canary_tags\n}\n\nresource "aws_iam_role_policy" "promotion_fence_operator" {\n  count = local.canary_count\n\n  name = "${var.name_prefix}-promotion-fence-operator-gate"\n  role = aws_iam_role.promotion_fence_operator[0].id\n  policy = jsonencode({\n    Version = "2012-10-17"\n    Statement = [\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:GetItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = {\n            "dynamodb:LeadingKeys" = ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]\n          }\n          Null = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:UpdateItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["ENV#prod#FENCE"] }\n          Null                        = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n      {\n        Effect   = "Allow"\n        Action   = "dynamodb:ConditionCheckItem"\n        Resource = var.runtime_grants.table_arn\n        Condition = {\n          "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["ENV#prod#SEMAPHORE"] }\n          Null                        = { "dynamodb:LeadingKeys" = "false" }\n        }\n      },\n      {\n        Effect   = "Allow"\n        Action   = "states:DescribeExecution"\n        Resource = "${replace(var.state_machine_arn, ":stateMachine:", ":execution:")}:*"\n      },\n    ]\n  })\n}\n'
+        assert c.sha(sources["infra/opentofu/modules/runtime-iam/promotion.tf"]) == "2c1122e6ffebc349a56d3aabf5d16f3d0935d4a86b31b901f36027eebe1d5c05"
     def expression(raw):
         node = parse(raw, Budget())
         required, allowed = reference_sets(node)
@@ -622,6 +629,8 @@ def fence_projection_case():
     for action, keys in (("GetItem", ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]), ("UpdateItem", ["ENV#prod#FENCE"]), ("ConditionCheckItem", ["ENV#prod#SEMAPHORE"])):
         statements.append({"Effect": "Allow", "Action": "dynamodb:" + action, "Resource": table,
             "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": keys}, "Null": {"dynamodb:LeadingKeys": "false"}}})
+    if probe:
+        statements.append({"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": machine.replace(":stateMachine:", ":execution:") + ":*"})
     policy = {"Version": "2012-10-17", "Statement": statements}
     name = "cnesdata-prod-promotion-fence-operator"
     role = {"name": name, "arn": f"arn:aws:iam::{account}:role/{name}", "id": name, "unique_id": "AROAORIGINAL",

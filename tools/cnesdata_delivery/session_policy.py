@@ -14,6 +14,73 @@ STATE_KEYS = (
 LIFECYCLE_DELETES = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup",
                      "events:DeleteRule", "cloudwatch:DeleteAlarms"]
 
+ACTIVATION_BUCKET_READS = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
+ACTIVATION_SLOTS = ("payload", "signature", "receipt")
+
+
+def activation_ceiling(governance):
+    """Closed root-owned ceiling; its original owner commitment is checked separately."""
+    value = governance.get("activation_read")
+    c.closed(value, "ceiling ordinary_bucket_denies plan_role_arn identity_sha256 session_sha256")
+    ceiling = c.closed(value["ceiling"], "bucket_arn cipher_kms_key_arn keys")
+    c.require(type(ceiling["bucket_arn"]) is str and re.fullmatch(r"arn:aws:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", ceiling["bucket_arn"]), "activation bucket")
+    c.require(type(ceiling["cipher_kms_key_arn"]) is str and re.fullmatch(
+        "arn:aws:kms:us-east-2:" + re.escape(governance["account_id"]) + r":key/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}", ceiling["cipher_kms_key_arn"]), "activation cipher")
+    c.closed(ceiling["keys"], "payload signature receipt")
+    from tools.cnesdata_delivery.evidence import key_valid
+    keys = list(ceiling["keys"].values())
+    c.require(all(type(key) is str and key_valid(key) and len(key.encode()) <= 1024 for key in keys)
+              and len(set(keys)) == 3, "activation exact distinct keys")
+    for key in keys:
+        c.require(not key.startswith(_prefix(governance) + "lifecycle/")
+                  and key not in STATE_KEYS, "activation/lifecycle/state disjoint")
+    denies = value["ordinary_bucket_denies"]
+    c.require(type(denies) is list and len(set(denies)) == len(denies)
+              and all(action in ACTIVATION_BUCKET_READS for action in denies), "activation original bucket denial")
+    c.require(value["plan_role_arn"] == governance["roles"]["plan"], "activation plan role")
+    c.digest(value["identity_sha256"])
+    c.digest(value["session_sha256"])
+    return ceiling
+
+
+def activation_ordinary_denies(governance, role):
+    if role != "plan" or governance.get("activation_read") is None:
+        return []
+    ceiling = activation_ceiling(governance)
+    result = [{"Effect": "Deny", "Action": ["s3:GetObjectVersion", "s3:GetObjectRetention"], "Resource": "*"}]
+    if governance["activation_read"]["ordinary_bucket_denies"]:
+        result.append({"Effect": "Deny", "Action": governance["activation_read"]["ordinary_bucket_denies"], "Resource": ceiling["bucket_arn"]})
+    return result
+
+
+def activation_request(governance, versions, *, deadline):
+    """Two internal read scopes; exact encoded bytes must fit before either STS call."""
+    ceiling = activation_ceiling(governance)
+    c.require(type(versions) is dict and set(versions) in ({"receipt"}, set(ACTIVATION_SLOTS)), "activation version slots")
+    for version in versions.values():
+        c.require(type(version) is str and 0 < len(version) <= 1024 and version != "null"
+                  and all(ord(ch) >= 32 and ord(ch) != 127 for ch in version), "activation version identity")
+    c.require(type(deadline) is str and re.fullmatch(r"20\d\d-\d\d-\d\dT\d\d:\d\d:\d\dZ", deadline), "activation original deadline")
+    c.instant(deadline)
+    objects = {slot: ceiling["bucket_arn"] + "/" + ceiling["keys"][slot] for slot in ACTIVATION_SLOTS}
+    statements = [
+        {"Effect": "Deny", "NotAction": ["s3:GetObjectVersion", "s3:GetObjectRetention", *ACTIVATION_BUCKET_READS,
+            "kms:Decrypt", "kms:GenerateDataKey", "sts:GetCallerIdentity"], "Resource": "*"},
+        {"Effect": "Deny", "Action": "*", "Resource": "*", "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": deadline}}},
+    ]
+    statements += [{"Effect": "Deny", "Action": "s3:GetObjectVersion", "Resource": objects[slot],
+        "Condition": {"StringNotEquals": {"s3:VersionId": versions[slot]}}} for slot in ACTIVATION_SLOTS if slot in versions]
+    if set(versions) == {"receipt"}:
+        statements.append({"Effect": "Deny", "Action": ["s3:GetObjectVersion", "s3:GetObjectRetention"],
+            "Resource": [objects["payload"], objects["signature"]]})
+    statements += [
+        {"Effect": "Deny", "Action": ["s3:GetBucket*", "s3:GetEncryptionConfiguration", "kms:*"],
+            "NotResource": [ceiling["bucket_arn"], ceiling["cipher_kms_key_arn"]]},
+        {"Effect": "Deny", "Action": "kms:*", "Resource": "*", "Condition": {"StringNotEquals": {
+            "kms:EncryptionContext:aws:s3:arn": objects["receipt"] if set(versions) == {"receipt"} else list(objects.values())}}},
+    ]
+    return {"Policy": _encode(governance, "plan", statements), "PolicyArns": [{"arn": managed_arn(governance, "plan")}]}
+
 
 def predecessor_keys(governance, selector):
     """The reviewed historical union derives keys; a caller never supplies paths."""
@@ -93,7 +160,7 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
                                   + re.escape(governance["account_id"]) + r":[A-Za-z0-9_./:-]+", arn)
                       and "cnesdata-prod" in arn, "inverse exact same-product ARN")
         statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "NotResource": list(delete_resources)})
-    return {"Policy": _encode(governance, role, statements), "PolicyArns": [{"arn": managed_arn(governance, role)}]}
+    return {"Policy": _encode(governance, role, statements + activation_ordinary_denies(governance, role)), "PolicyArns": [{"arn": managed_arn(governance, role)}]}
 
 
 def application_request(governance, source, run_id, attempt, step, *, application_purpose, delegations=(), sessions=None):
@@ -294,7 +361,7 @@ def build(governance, source, run_id, attempt, role, read_keys):
         statements.append(
             {"Effect": "Deny", "Action": "s3:PutObject", "Resource": historical}
         )
-    return _encode(governance, role, statements)
+    return _encode(governance, role, statements + activation_ordinary_denies(governance, role))
 
 
 def request(governance, source, run_id, attempt, role, read_keys):

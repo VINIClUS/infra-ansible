@@ -23,6 +23,151 @@ APPLICATION_DELEGATIONS = {
 }
 
 
+def phase_a_originals(carrier):
+    """Decode private historical bytes; current provenance/custody is separate.
+
+    Historical timestamps remain original evidence. They are never compared to
+    a new wall clock or reissued as a current credential/freeze observation.
+    """
+    import base64
+    from tools.cnesdata_delivery.runtime import verify_drift_evidence
+    c.closed(carrier, "carrier_version origin files")
+    c.require(type(carrier["carrier_version"]) is int and carrier["carrier_version"] == 1,
+              "Phase A carrier version")
+    c.canonical(carrier, limit=196608)
+    origin = carrier["origin"]
+    c.closed(origin, "predecessor_version protocol repository source_sha run_id run_attempt owner_sha256 generation "
+             "session_sha256 checkpoint_sha256 artifact_id artifact_digest producer_job_id producer_name objects")
+    c.require(type(origin["predecessor_version"]) is int and origin["predecessor_version"] == 1
+              and origin["protocol"] == "legacy-infra" and origin["repository"] == c.REPOSITORY,
+              "Phase A original legacy custody")
+    c.digest(origin["source_sha"], 40)
+    for key in ("run_id", "run_attempt", "artifact_id", "producer_job_id"):
+        c.integer(origin[key])
+    if origin["generation"] is not None:
+        c.integer(origin["generation"])
+    for key in ("owner_sha256", "session_sha256", "checkpoint_sha256"):
+        c.digest(origin[key])
+    c.require(origin["artifact_digest"] == "sha256:" + c.digest(origin["artifact_digest"].removeprefix("sha256:"))
+              and type(origin["producer_name"]) is str and 1 <= len(origin["producer_name"]) <= 256,
+              "Phase A original artifact/job")
+    objects = origin["objects"]
+    names = {"envelope.json", "checkpoint.json", "drift.json", "lease.json", "ecr-before.json"}
+    c.require(type(objects) is list and len(objects) == len(names)
+              and {item["name"] for item in objects} == names, "Phase A full original H4 inventory")
+    indexed = {}
+    for item in objects:
+        c.closed(item, "name sha256 size")
+        c.digest(item["sha256"])
+        c.integer(item["size"], 1, 262144)
+        indexed[item["name"]] = item
+    entries = carrier["files"]
+    c.require(type(entries) is list and [item["name"] for item in entries] ==
+              ["checkpoint.json", "drift.json", "envelope.json"], "Phase A exact sorted raw inventory")
+    raw, total = {}, 0
+    for entry in entries:
+        c.closed(entry, "name sha256 size bytes_base64")
+        c.integer(entry["size"], 1, 131072)
+        c.require(type(entry["bytes_base64"]) is str, "Phase A base64 string")
+        body = base64.b64decode(entry["bytes_base64"], validate=True)
+        total += len(body)
+        c.require(total <= 131072 and len(body) == entry["size"] and c.sha(body) == c.digest(entry["sha256"])
+                  and {key: entry[key] for key in ("name", "sha256", "size")} == indexed[entry["name"]]
+                  and base64.b64encode(body).decode() == entry["bytes_base64"], "Phase A exact original raw bytes")
+        raw[entry["name"]] = body
+    envelope, checkpoint, drift = (c.loads(raw[name], canonical=True, limit=131072)
+                                  for name in ("envelope.json", "checkpoint.json", "drift.json"))
+    def private(value):
+        if type(value) is dict:
+            for key, item in value.items():
+                c.require(key.lower().replace("_", "").replace("-", "") not in {
+                    "credentials", "accesskeyid", "secretaccesskey", "sessiontoken", "accesstoken", "password",
+                    "privatekey", "authorization", "statejson", "terraformstate"}, "Phase A secret/raw state")
+                private(item)
+        elif type(value) is list:
+            for item in value:
+                private(item)
+        elif type(value) is str:
+            c.require(not re.search(r"BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", value),
+                      "Phase A secret value")
+    for value in (envelope, checkpoint, drift):
+        c._secrets(value)
+        private(value)
+    c.closed(envelope, "schema_version status plan apply plan_binding_sha256")
+    c.require(type(envelope["schema_version"]) is int and envelope["schema_version"] == 1
+              and envelope["status"] == "applied", "Phase A original applied envelope")
+    plan = c.closed(envelope["plan"], "repository source_sha producer package purpose created_at expires_at binary_sha256 json_sha256 "
+        "inputs_sha256 dependencies toolchain backend state_before policy cost drift release phase_a_inputs")
+    applied = c.closed(envelope["apply"], "producer consumed_plan_artifact plan_binding_sha256 started_at completed_at result lease principal state_after drift outputs")
+    c.require(plan["repository"] == origin["repository"] and plan["source_sha"] == origin["source_sha"]
+              and plan["purpose"] == "phase-a" and applied["result"] == "success"
+              and applied["plan_binding_sha256"] == envelope["plan_binding_sha256"] == c.sha(c.canonical(plan)),
+              "Phase A original source/plan/apply")
+    for producer, workflow in ((plan["producer"], ".github/workflows/infra-plan.yml"),
+                               (applied["producer"], ".github/workflows/infra-apply.yml")):
+        c.closed(producer, "workflow_path workflow_sha run_id run_attempt")
+        c.require(producer["workflow_path"] == workflow, "Phase A original producer workflow")
+        c.digest(producer["workflow_sha"], 40)
+        c.integer(producer["run_id"])
+        c.integer(producer["run_attempt"])
+    c.require(all(applied["producer"][key] == origin[key] for key in ("run_id", "run_attempt")), "Phase A original apply execution")
+    release = c.closed(plan["release"], "release_id source_sha candidate_sha256 canary_id binding_sha256 image_digest")
+    phase = c.closed(plan["phase_a_inputs"], "image_digest processor_active_unit_task_definition_arn processor_retained_unit_task_definition_arns "
+                     "canary_storage_enabled canary_release_id canary_trusted_principal_arn")
+    c.require(release["source_sha"] == origin["source_sha"] and phase["canary_storage_enabled"] is True
+              and phase["canary_release_id"] == release["canary_id"] and phase["image_digest"] == release["image_digest"]
+              and re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+", phase["canary_trusted_principal_arn"]),
+              "Phase A original release/principal")
+    for key in ("candidate_sha256", "binding_sha256"):
+        c.digest(release[key])
+    c.closed(checkpoint, "state_after state_object outputs readbacks drift_sha256 operation_completed_at")
+    _fence_state(checkpoint["state_after"])
+    _fence_state({key: value for key, value in c.closed(applied["state_after"], "lineage serial state_sha256 outputs_sha256").items()
+                  if key != "outputs_sha256"})
+    state_object = c.closed(checkpoint["state_object"], "status version_id etag_sha256")
+    c.require(state_object["status"] == "present" and type(state_object["version_id"]) is str
+              and state_object["version_id"] not in {"", "null"}, "Phase A original versioned state identity")
+    c.digest(state_object["etag_sha256"])
+    outputs = c.closed(checkpoint["outputs"], "processor_task_definition_arns image_digest active_before retained_before retained_after canary_id "
+                       "binding_sha256 resource_fingerprints grant_fingerprints route_fingerprints")
+    c.require(c.canonical(outputs) == c.canonical(applied["outputs"])
+              and c.sha(c.canonical(outputs)) == applied["state_after"]["outputs_sha256"]
+              and outputs["canary_id"] == release["canary_id"] and outputs["binding_sha256"] == release["binding_sha256"]
+              and outputs["image_digest"] == release["image_digest"]
+              and checkpoint["state_after"] == {key: applied["state_after"][key] for key in checkpoint["state_after"]},
+              "Phase A original outputs/state")
+    lease = applied["lease"]
+    c.closed(lease, "protocol owner_sha256 repository run_id run_attempt session_sha256 acquired_at released_at ttl_seconds "
+             "renew_interval_seconds safety_margin_seconds acquire_etag_sha256 release_etag_sha256 renewal_count checkpoint_sha256 evidence_sha256 terminal_status")
+    c.require(lease["protocol"] == "s3-cas-v1" and lease["terminal_status"] == "released"
+              and all(c.canonical(lease[key]) == c.canonical(origin[key]) for key in
+                      ("repository", "run_id", "run_attempt", "owner_sha256", "session_sha256", "checkpoint_sha256"))
+              and origin["checkpoint_sha256"] == indexed["checkpoint.json"]["sha256"]
+              and lease["evidence_sha256"] == indexed["lease.json"]["sha256"], "Phase A original lease/checkpoint")
+    ecr_raw = c.canonical(drift["ecr_before"])
+    c.require(len(ecr_raw) == indexed["ecr-before.json"]["size"] and c.sha(ecr_raw) == indexed["ecr-before.json"]["sha256"],
+              "Phase A retained ECR original commitment")
+    verify_drift_evidence(envelope, raw["drift.json"], ecr_raw)
+    c.require(checkpoint["drift_sha256"] == c.sha(raw["drift.json"])
+              and c.canonical(checkpoint["readbacks"]) == c.canonical(drift["post_readbacks"]), "Phase A original readbacks")
+    c.require(c.instant(plan["created_at"]) <= c.instant(applied["started_at"])
+              <= c.instant(checkpoint["operation_completed_at"]) <= c.instant(applied["completed_at"])
+              < c.instant(plan["expires_at"]), "Phase A original temporal order")
+    return {"envelope": envelope, "checkpoint": checkpoint, "drift": drift,
+            "predecessor_reference": origin, "raw": raw}
+
+
+def phase_a_carrier(origin, files):
+    import base64
+    c.require(type(files) is dict and set(files) == {"checkpoint.json", "drift.json", "envelope.json"},
+              "Phase A three original raw files")
+    carrier = {"carrier_version": 1, "origin": origin, "files": [
+        {"name": name, "sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
+        for name, raw in sorted(files.items())]}
+    phase_a_originals(carrier)
+    return carrier
+
+
 MODE_SESSION_OPERATIONS = {
     "unit-seed": ("us", "mode_seed", "promotion", "unit"),
     "unit-start": ("ux", "mode_dispatch", "promotion", "unit"),
@@ -159,14 +304,69 @@ def _fence_readback_document(value, role, preparation):
     c.require(previous == preparation["observed_at"], "fence original completed observation")
 
 
-def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, anchor_sha256, original_state):
+def _fence_producer(producer, owner):
+    c.closed(producer, "repository source_sha workflow_sha run_id run_attempt job_id " + " ".join(FENCE_PREPARE_PRODUCER))
+    c.require(all(producer[key] == value for key, value in FENCE_PREPARE_PRODUCER.items())
+              and all(c.canonical(producer[key]) == c.canonical(owner[key])
+                      for key in ("repository", "source_sha", "run_id", "run_attempt")), "fence protected deploy producer")
+    c.digest(producer["workflow_sha"], 40)
+    for key in ("run_id", "run_attempt", "job_id"):
+        c.integer(producer[key])
+
+
+def fence_current_origin(producer, checkpoint_raw):
+    """A current producer has no enclosing artifact digest before publication."""
+    return {key: producer[key] for key in ("repository", "source_sha", "run_id", "run_attempt", "job_id")} | {
+        "producer_name": producer["job_name"], "step": producer["step"], "name": "checkpoint.json",
+        "sha256": c.sha(checkpoint_raw), "size": len(checkpoint_raw)}
+
+
+def fence_predecessor_baseline(raw, reference, carrier):
+    """Validate the external predecessor baseline, without relabelling it as an entry."""
+    history = phase_a_originals(carrier)
+    c.closed(reference, "predecessor_version protocol repository source_sha run_id run_attempt owner_sha256 generation "
+             "session_sha256 checkpoint_sha256 artifact_id artifact_digest producer_job_id producer_name objects")
+    c.require(type(reference["predecessor_version"]) is int and reference["predecessor_version"] == 1
+              and reference["repository"] == c.REPOSITORY and reference["protocol"] in {"legacy-infra", "lifecycle"}
+              and c.sha(raw) == c.digest(reference["checkpoint_sha256"]), "fence original predecessor raw commitment")
+    prior = c.loads(raw, canonical=True, limit=262144)
+    if reference["protocol"] == "legacy-infra":
+        c.require(c.canonical(reference) == c.canonical(history["predecessor_reference"])
+                  and raw == history["raw"]["checkpoint.json"], "fence initial original Phase A checkpoint")
+        state = prior["state_after"]
+    else:
+        c.closed(prior, "version owner state state_object previous_checkpoint_sha256 assessment_sha256 inputs window phase_a_originals")
+        c.require(type(prior["version"]) is int and prior["version"] == 2
+                  and c.canonical(prior["phase_a_originals"]) == c.canonical(carrier), "fence terminal v2 original Phase A custody")
+        for key in ("run_id", "run_attempt", "generation", "artifact_id", "producer_job_id"):
+            c.integer(reference[key])
+        c.require(all(c.canonical(prior["owner"][key]) == c.canonical(reference[key]) for key in
+                      ("repository", "source_sha", "run_id", "run_attempt", "owner_sha256", "generation", "session_sha256")),
+                  "fence predecessor original terminal owner")
+        state = prior["state"]
+    _fence_state(state)
+    original = history["checkpoint"]["state_after"]
+    c.require(state["lineage"] == original["lineage"] and state["serial"] >= original["serial"], "fence predecessor Phase A lineage/progression")
+    state_object = c.closed(prior["state_object"], "status version_id etag_sha256")
+    c.require(state_object["status"] == "present" and type(state_object["version_id"]) is str
+              and state_object["version_id"] not in {"", "null"}, "fence predecessor original state object")
+    c.digest(state_object["etag_sha256"])
+    return state, state_object
+
+
+def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, predecessor_raw, predecessor_reference, producer):
     """Validate a chain whose original bytes/producer are independently protected."""
     c.closed(chain, FENCE_SCHEMAS["fence-chain.json"])
-    c.require(type(chain["schema_version"]) is int and chain["schema_version"] == 1, "fence chain schema")
+    c.require(type(chain["schema_version"]) is int and chain["schema_version"] == 3, "fence chain schema")
+    _fence_producer(producer, owner)
     c.require(chain["owner_sha256"] == owner["owner_sha256"] and type(chain["generation"]) is int and chain["generation"] == owner["generation"]
               and type(chain["entries"]) is list and 1 <= len(chain["entries"]) <= 256, "fence current keeper ancestry")
+    checkpoint = c.loads(checkpoint_raw, canonical=True)
+    c.closed(checkpoint, "state state_object owner purpose plan_sha256 readbacks phase_a_originals")
+    original_state, _ = fence_predecessor_baseline(predecessor_raw, predecessor_reference, checkpoint["phase_a_originals"])
     previous, serial = c.digest(chain["anchor_sha256"]), original_state["serial"]
-    c.require(previous == anchor_sha256, "fence original historical anchor")
+    c.require(previous == c.sha(predecessor_raw) == predecessor_reference["checkpoint_sha256"], "fence original selected predecessor anchor")
+    seen = {previous}
     for sequence, entry in enumerate(chain["entries"]):
         c.closed(entry, "sequence checkpoint_sha256 previous_checkpoint_sha256 state state_object origin")
         c.require(type(entry["sequence"]) is int and entry["sequence"] == sequence and entry["previous_checkpoint_sha256"] == previous, "fence ordered checkpoint ancestry")
@@ -175,13 +375,18 @@ def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, anchor_sha2
         c.require(entry["state_object"]["status"] == "present" and type(entry["state_object"]["version_id"]) is str
                   and bool(entry["state_object"]["version_id"]) and entry["state_object"]["version_id"] != "null", "fence current state object")
         c.digest(entry["state_object"]["etag_sha256"])
-        _fence_origin(entry["origin"])
+        if sequence == len(chain["entries"]) - 1:
+            expected = fence_current_origin(producer, checkpoint_raw)
+            c.closed(entry["origin"], " ".join(expected))
+            c.require(c.canonical(entry["origin"]) == c.canonical(expected), "fence current original producer/checkpoint")
+        else:
+            _fence_origin(entry["origin"])
         c.require(entry["state"]["lineage"] == original_state["lineage"] and entry["state"]["serial"] >= serial
                   and all(entry["origin"][key] == owner[key] for key in ("source_sha", "run_id", "run_attempt"))
                   and entry["origin"]["sha256"] == entry["checkpoint_sha256"], "fence current lineage/original checkpoint")
         previous, serial = c.digest(entry["checkpoint_sha256"]), entry["state"]["serial"]
-    checkpoint = c.loads(checkpoint_raw, canonical=True)
-    c.closed(checkpoint, "state state_object owner purpose plan_sha256 readbacks")
+        c.require(previous not in seen, "fence checkpoint cycle")
+        seen.add(previous)
     _fence_state(checkpoint["state"])
     c.require(chain["head_sha256"] == previous == c.sha(checkpoint_raw)
               and c.canonical(checkpoint["owner"]) == c.canonical(owner)
@@ -190,7 +395,8 @@ def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, anchor_sha2
     return checkpoint
 
 
-def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256, producer, preparation, originals):
+def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256, producer, preparation, originals,
+                                   predecessor_raw, predecessor_reference):
     """Closed codec against protected originals; never a provenance/capability API.
 
     The protected producer must authenticate the arguments and derive original
@@ -222,7 +428,8 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
         if name != "fence-prepared.json":
             c.require(raw == originals[name], "fence original producer bytes")
         if "schema_version" in values[name]:
-            c.require(type(values[name]["schema_version"]) is int and values[name]["schema_version"] == 1, "fence document schema")
+            version = 3 if name == "fence-chain.json" else 1
+            c.require(type(values[name]["schema_version"]) is int and values[name]["schema_version"] == version, "fence document schema")
     manifest = values["fence-prepared.json"]
     c.require(manifest["proof_kind"] == "iam-readback-and-evaluation" and manifest["operation"] == "closed-ready"
               and manifest["application_purpose"] == manifest["context_kind"] == "promotion"
@@ -232,11 +439,8 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
               and manifest["activation_sha256"] == c.digest(activation_sha256)
               and manifest["application_fragment_sha256"] == c.sha(c.canonical(fragment)), "fence original current binding")
     c.closed(manifest["producer"], "repository source_sha workflow_sha run_id run_attempt job_id " + " ".join(FENCE_PREPARE_PRODUCER))
-    c.require(c.canonical(manifest["producer"]) == c.canonical(producer) and all(producer[key] == value for key, value in FENCE_PREPARE_PRODUCER.items())
-              and all(producer[key] == owner[key] for key in ("repository", "source_sha", "run_id", "run_attempt")), "fence protected deploy producer")
-    c.digest(producer["workflow_sha"], 40)
-    for key in ("run_id", "run_attempt", "job_id"):
-        c.integer(producer[key])
+    c.require(c.canonical(manifest["producer"]) == c.canonical(producer), "fence protected deploy producer")
+    _fence_producer(producer, owner)
     c.closed(manifest["preparation"], "admitted_at deadline observed_at")
     c.require(c.canonical(manifest["preparation"]) == c.canonical(preparation), "fence original preparation window")
     for value in preparation.values():
@@ -296,7 +500,40 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
     projection = {key: role[key] for key in ("role_arn", "role_name", "role_id", "policy_name", "trust", "policy", "max_session_duration", "tags")}
     c.require(role["original_projection_sha256"] == role["current_projection_sha256"] == c.sha(c.canonical(projection)), "fence role projection, not entire historical state")
     checkpoint = validate_fence_checkpoint_chain(chain, files["checkpoint.json"], owner,
-        anchor_sha256=old["files"]["checkpoint.json"]["sha256"], original_state=old["state"])
+        predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference, producer=producer)
+    original = phase_a_originals(checkpoint["phase_a_originals"])
+    original_plan, original_apply = original["envelope"]["plan"], original["envelope"]["apply"]
+    reference = original["predecessor_reference"]
+    expected_history = {"source_sha": original_plan["source_sha"], "release_id": original_plan["release"]["release_id"],
+        "canary_id": original_plan["release"]["canary_id"], "candidate_sha256": original_plan["release"]["candidate_sha256"],
+        "plan_binary_sha256": original_plan["binary_sha256"], "plan_json_sha256": original_plan["json_sha256"], "inputs_sha256": original_plan["inputs_sha256"],
+        "plan_receipt": {"plan_binding_sha256": original_apply["plan_binding_sha256"], "consumed_plan_artifact": original_apply["consumed_plan_artifact"]},
+        "state": original["checkpoint"]["state_after"]}
+    c.require(all(c.canonical(old[key]) == c.canonical(value) for key, value in expected_history.items()),
+              "fence Phase A metadata matches original carrier bytes")
+    indexed = {entry["name"]: entry for entry in reference["objects"]}
+    for name in FENCE_PHASE_A_FILES:
+        expected_origin = {key: reference[key] for key in ("repository", "source_sha", "run_id", "run_attempt", "artifact_id", "artifact_digest")}
+        expected_origin |= {"job_id": reference["producer_job_id"], "producer_name": reference["producer_name"], "step": "applied", **indexed[name]}
+        c.require(c.canonical(old["files"][name]) == c.canonical(expected_origin), "fence Phase A original public/private origin")
+    observed = {}
+    for report in original["checkpoint"]["readbacks"]:
+        if report["service"] == "iam" and report["operation"] in {"get_role", "get_role_policy"}:
+            body = report["observed"]
+            name = body.get("Role", {}).get("RoleName") if report["operation"] == "get_role" else body.get("RoleName")
+            if name == role["role_name"]:
+                c.require(report["operation"] not in observed, "fence unique original role readback")
+                observed[report["operation"]] = body
+    c.require(set(observed) == {"get_role", "get_role_policy"}, "fence complete original role readbacks")
+    native_role, native_policy = observed["get_role"]["Role"], observed["get_role_policy"]
+    c.require(native_role["Arn"] == role["role_arn"] and native_role["RoleId"] == role["role_id"]
+              and native_role["MaxSessionDuration"] == role["max_session_duration"] and not native_role.get("PermissionsBoundary")
+              and native_role["Tags"] == [{"Key": "ReleaseId", "Value": old["canary_id"]}]
+              and c.canonical(native_role["AssumeRolePolicyDocument"]) == c.canonical(role["trust"])
+              and native_policy["PolicyName"] == role["policy_name"]
+              and c.canonical(native_policy["PolicyDocument"]) == c.canonical(role["policy"])
+              and original_plan["phase_a_inputs"]["canary_trusted_principal_arn"] == fragment["application_role_arn"],
+              "fence role projection matches original carried IAM bytes")
     c.require(current_plan["plan_binary_sha256"] == checkpoint["plan_sha256"], "fence current applied saved plan")
     approval = values["approval.json"]
     c.require(current_plan["inputs_sha256"] == approval["inputs_sha256"], "fence current original inputs")
@@ -305,6 +542,7 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
     c.require(type(approval["version"]) is int and approval["version"] == 1 and c.canonical(approval["owner"]) == c.canonical(owner)
               and approval["purpose"] == checkpoint["purpose"] == "application-prepare" and approval["direction"] == "advance"
               and approval["plan_sha256"] == checkpoint["plan_sha256"]
+              and approval["checkpoint_sha256"] == chain["entries"][-1]["previous_checkpoint_sha256"]
               and all(approval["delta"][key] == FENCE_PREPARE_PRODUCER[key] for key in ("purpose", "direction", "mode")), "fence original applied deploy branch")
     _fence_readback_document(values["fence-readbacks.json"], role, preparation)
     evaluation = values["fence-evaluation.json"]
