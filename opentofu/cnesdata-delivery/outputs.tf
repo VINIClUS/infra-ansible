@@ -13,6 +13,52 @@ output "roles_anywhere" {
   }
 }
 
+output "application_promotion" {
+  description = "Private application_promotion fragment4: exact purpose callers, ten aliases and governed predecessor reads; never a shared_outputs/v2 leaf or activation receipt."
+  sensitive   = true
+  value = var.application_promotion == null ? null : merge({
+    fragment_version      = 4
+    account_id            = var.account_id
+    region                = var.region
+    application_role_arn  = aws_iam_role.application[0].arn
+    application_role_name = aws_iam_role.application[0].name
+    producer = {
+      repository            = "VINIClUS/infra-ansible"
+      workflow_path         = ".github/workflows/reusable-cnesdata-application-gate.yml"
+      workflow_sha          = var.application_promotion.workflow_sha
+      source_closure_sha256 = var.application_promotion.source_closure_sha256
+    }
+    caller_by_purpose = {
+      for purpose, workflow in { promotion = "promote-production.yml", mode-readiness-drill = "readiness-production.yml" } : purpose => {
+        repository                         = "VINIClUS/CnesData"
+        workflow_path                      = ".github/workflows/${workflow}"
+        ref                                = "refs/heads/develop"
+        environment                        = "production"
+      }
+    }
+    provider_arn = var.github_delivery.provider_arn
+    lease = {
+      bucket_arn  = var.github_delivery.state_bucket_arn
+      key         = "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
+      kms_key_arn = var.github_delivery.state_kms_arn
+    }
+    evidence = {
+      bucket_arn  = var.github_delivery.evidence_bucket_arn
+      prefix      = "${var.github_delivery.evidence_prefix}lifecycle/"
+      kms_key_arn = var.github_delivery.evidence_kms_arn
+    }
+    delegations   = local.application_delegations
+    trust_sha256  = sha256(aws_iam_role.application[0].assume_role_policy)
+    policy_sha256 = sha256(aws_iam_role_policy.application[0].policy)
+    enabled_until = var.application_promotion.enabled_until
+    }, { for key, value in {
+      predecessor_reads = local.application_predecessor == null ? null : merge(local.application_predecessor, {
+        object_arns   = local.application_history_arns
+        policy_sha256 = sha256(aws_iam_role_policy.application_history[0].policy)
+      })
+  } : key => value if value != null })
+}
+
 output "initialization" {
   description = "Identifiers for the controlled CRL import/readback only; never a consumer-ready shared_outputs object."
   value = {

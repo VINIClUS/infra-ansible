@@ -28,6 +28,7 @@ class Lease:
         self.failed = False
         self.deadline = 0
         self.renewals = []
+        self.checkpoints = []
         self.acquire_event = None
         self.release_event = None
         self.acquired_at = None
@@ -42,8 +43,16 @@ class Lease:
     def acquire(self):
         value, etag = self.store.get()
         require(value is None or (value.get("status") == "released" and self.previous_success(value)), "held/recovery_required")
+        require("generation" not in self.binding, "generation belongs to the CAS owner")
+        if self.binding.get("lifecycle_version") == 1 or value and "generation" in value:
+            previous_generation = value.get("generation", 0) if value else 0
+            require(type(previous_generation) is int and 0 <= previous_generation < 2**53 - 1,
+                    "persisted generation")
+            self.binding = self.binding | {"generation": previous_generation + 1}
         now = self.clock()
         data = self.binding | {"owner": self.token, "status": "held", "expires_at": int(now + 300)}
+        if self.binding.get("lifecycle_version") == 1:
+            data["acquired_at"] = utc(now)
         self.etag = self.store.put(data, etag)
         observed, observed_etag = self.store.get()
         require(observed == data and observed_etag == self.etag, "acquire readback")
@@ -51,6 +60,23 @@ class Lease:
         self.acquired_at = utc(now)
         self.acquire_event = self._event(etag, self.etag, data["expires_at"])
         return self
+
+    def checkpoint(self, lifecycle):
+        """Only the original writer commits lifecycle progress; never refresh F."""
+        from tools.cnesdata_delivery.lifecycle_contract import checkpoint_transition
+        try:
+            value = self.check()
+            checkpoint_transition(value.get("lifecycle"), lifecycle)
+            value["lifecycle"] = lifecycle
+            previous = self.etag
+            self.etag = self.store.put(value, previous)
+            observed, etag = self.store.get()
+            require(observed == value and etag == self.etag, "checkpoint readback")
+            self.checkpoints.append(self._event(previous, self.etag, value["expires_at"]) | {
+                "sequence": lifecycle["sequence"], "lifecycle_sha256": sha(canonical(lifecycle))})
+        except Exception:
+            self.failed = True
+            raise
 
     def check(self):
         require(not self.failed and self.etag is not None and self.monotonic() + 157 < self.deadline, "lease safety margin plus IO/termination budget")
@@ -87,10 +113,13 @@ class Lease:
     def evidence(self, checkpoint, child):
         require(self.release_event is not None, "no release proof")
         # Frozen at release; NEVER include final envelope/index/publication observations.
-        return {"protocol": "s3-cas-v1", "owner_sha256": sha(self.token.encode()),
-                **self.binding, "acquire": self.acquire_event, "renewals": self.renewals,
-                "release": self.release_event, "watchdog_until_release": child,
-                "checkpoint_sha256": digest(checkpoint)}
+        result = {"protocol": "s3-cas-v1", "owner_sha256": sha(self.token.encode()),
+                  **self.binding, "acquire": self.acquire_event, "renewals": self.renewals,
+                  "release": self.release_event, "watchdog_until_release": child,
+                  "checkpoint_sha256": digest(checkpoint)}
+        if self.binding.get("lifecycle_version") == 1:
+            result["checkpoints"] = self.checkpoints
+        return result
 
 
 class Watchdog:

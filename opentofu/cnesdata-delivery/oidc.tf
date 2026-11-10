@@ -22,6 +22,8 @@ locals {
     "wafv2:GetWebACL", "wafv2:ListTagsForResource"
   ]
   delivery_product_writes = [
+    "states:CreateStateMachine", "states:DeleteStateMachine", "scheduler:CreateSchedule", "scheduler:CreateScheduleGroup",
+    "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup", "events:DeleteRule", "cloudwatch:DeleteAlarms",
     "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate",
     "athena:UpdateWorkGroup", "athena:TagResource", "athena:UntagResource",
     "cloudfront:UpdateDistribution", "cloudfront:UpdateCachePolicy", "cloudfront:UpdateOriginAccessControl", "cloudfront:UpdateResponseHeadersPolicy", "cloudfront:UpdateFunction", "cloudfront:PublishFunction", "cloudfront:TagResource", "cloudfront:UntagResource",
@@ -94,6 +96,8 @@ resource "aws_iam_role_policy" "delivery" {
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.evidence_bucket_arn, Condition = { StringLike = { "s3:prefix" = "${var.github_delivery.evidence_prefix}*" } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = ["${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate*", "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"] } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.evidence_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}*" } } }
+      ], var.application_promotion == null ? [] : [
+      { Effect = "Allow", Action = ["scheduler:ListSchedules"], Resource = "*" }
       ], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
       { Effect = "Allow", Action = concat(tolist(setsubtract(toset(local.delivery_product_reads), toset(local.delivery_global_reads))), local.delivery_bucket_reads), Resource = var.github_delivery.read_resource_arns }
       ], [for statement in concat([

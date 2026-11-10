@@ -4,10 +4,10 @@ import re
 import subprocess
 
 from tools.cnesdata_delivery import contract as c
-from tools.cnesdata_delivery.iam_source import SourceResolver
+from tools.cnesdata_delivery.iam_source import MODE_POLICIES, SourceResolver
 
 DIRECTORIES = {"env/prod", *("modules/" + name for name in (
-    "runtime-iam", "processing", "processor-registry", "control-plane", "schedulers", "athena", "data-buckets"))}
+    "runtime-iam", "processing", "processor-registry", "control-plane", "schedulers", "athena", "data-buckets", "static-web"))}
 
 
 def authenticate_sources(product: Path, source: str) -> dict[str, bytes]:
@@ -35,13 +35,21 @@ def authenticate_sources(product: Path, source: str) -> dict[str, bytes]:
     return sources
 
 
-def prepare(plan, inputs, account, purpose, sources):
+def prepare(plan, inputs, account, purpose, sources, *, mode=None):
     addresses = sorted(item["address"] for item in plan["resource_changes"]
                        if item["type"] == "aws_iam_role_policy" and item["change"]["actions"] != ["no-op"])
+    if mode == "mode-canary":
+        c.require(purpose == "application-prepare", "iam=mode_prepare_purpose")
+        c.require(inputs.get("mode_canary") is not None
+                  and plan.get("variables", {}).get("mode_canary", {}).get("value") == inputs["mode_canary"],
+                  "iam=mode_exact_generated_input")
+        present = {item["address"] for item in plan["resource_changes"] if item["type"] == "aws_iam_role_policy"}
+        c.require(set(MODE_POLICIES) <= present and set(addresses) <= set(MODE_POLICIES), "iam=mode_policy_inventory")
+        addresses = sorted(MODE_POLICIES)
     if not addresses:
         return None
     resolver = SourceResolver(plan, sources, {"generated_inputs": inputs, "account_id": account,
-                                             "region": "us-east-2", "purpose": purpose})
+                                             "region": "us-east-2", "purpose": purpose, "mode": mode})
     for address in addresses:
         resolver.precheck(address)
     return resolver

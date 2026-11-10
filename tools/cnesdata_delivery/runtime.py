@@ -377,6 +377,10 @@ def previous_success(aws, api, governance, previous, *, details=False):
     """Released is not sufficient: authenticate the prior successful publication."""
     try:
         c.require(previous["status"] == "released" and previous["repository"] == c.REPOSITORY, "terminal lease")
+        if previous.get("lifecycle_version") == 1:
+            from tools.cnesdata_delivery.application_gate import previous_terminal
+            result = previous_terminal(aws, api, governance, previous)
+            return result if details else True
         run_id, attempt = previous["run_id"], previous["run_attempt"]
         run, status, receipt, index = _published_receipt(api, governance, run_id, attempt)
         c.require(receipt["checkpoint_sha256"] == previous["checkpoint_sha256"], "previous coordinator receipt binding")
@@ -412,6 +416,10 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     """Return an authenticated original receipt; never mint a retry receipt."""
     previous, etag = lease.store.get()
     if previous is None or previous.get("status") != "released":
+        return False
+    if previous.get("lifecycle_version") == 1:
+        # A terminal is not a saved legacy plan. Normal acquisition still
+        # authenticates its original publication before any new owner CAS.
         return False
     result = previous_success(aws, api, governance, previous, details=True)
     if not result or result["envelope"]["status"] != "applied":
@@ -862,6 +870,10 @@ def main(role):
     parser.add_argument("operation", choices=("preflight", "credentials", "execute"))
     args = parser.parse_args()
     try:
+        from tools.cnesdata_delivery.lifecycle_contract import PURPOSES
+        if os.environ.get("PURPOSE") in PURPOSES:
+            from tools.cnesdata_delivery.lifecycle_runtime import main as lifecycle_main
+            return lifecycle_main(role, args.operation)
         if args.operation == "preflight":
             admission(role)
         elif args.operation == "credentials":

@@ -9,6 +9,23 @@ locals {
   }
 }
 
+resource "aws_iam_policy" "application_session" {
+  count       = var.application_promotion == null ? 0 : 1
+  name        = "${var.application_promotion.role_name}-session"
+  description = "Application session restriction only; never attach as identity or permissions boundary."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      { Effect = "Allow", Action = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:GetPolicy", "iam:GetPolicyVersion", "sts:AssumeRole"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
+      { Effect    = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn,
+        Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" } }
+      },
+      { Effect = "Deny", Action = ["iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicyVersion", "iam:DeletePolicy", "iam:Attach*Policy", "iam:Put*PermissionsBoundary"], Resource = "*" }
+    ], flatten([for history in aws_iam_role_policy.application_history : jsondecode(history.policy).Statement]))
+  })
+}
+
 resource "aws_iam_policy" "delivery_session" {
   for_each    = local.delivery_roles
   name        = "${each.value.name}-session"

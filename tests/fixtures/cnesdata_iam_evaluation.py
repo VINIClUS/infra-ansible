@@ -1,5 +1,6 @@
 """Small independent IAM evaluator for the policy subset emitted by these gates."""
 from fnmatch import fnmatchcase
+from datetime import datetime
 
 
 def decision(policy, action, resource, context=None):
@@ -20,6 +21,26 @@ def decision(policy, action, resource, context=None):
         passed = True
         for operator, conditions in statement.get("Condition", {}).items():
             for key, patterns in conditions.items():
+                if operator == "ForAllValues:StringEquals":
+                    values = context.get(key)
+                    values = [] if values is None else values
+                    values = [values] if isinstance(values, str) else values
+                    permitted = [patterns] if isinstance(patterns, str) else patterns
+                    passed &= all(value in permitted for value in values)
+                    continue
+                if operator == "Null":
+                    missing = key not in context or context[key] is None or context[key] == []
+                    passed &= missing == (patterns == "true")
+                    continue
+                if operator == "DateLessThan":
+                    if key not in context:
+                        passed = False
+                    else:
+                        current = datetime.fromisoformat(context[key].replace("Z", "+00:00"))
+                        deadline = datetime.fromisoformat(patterns.replace("Z", "+00:00"))
+                        assert current.tzinfo is not None and deadline.tzinfo is not None
+                        passed &= current < deadline
+                    continue
                 found = key in context and matches(context[key], patterns)
                 if operator in {"StringEquals", "StringLike", "ArnEquals", "ArnLike"}:
                     passed &= found

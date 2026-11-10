@@ -1,3 +1,44 @@
+variable "application_promotion" {
+  description = "Private reviewed application principal configuration. Null creates no application role or operational capability."
+  # Keep the raw shape: object coercion would silently discard unreviewed fields.
+  type     = any
+  default  = null
+  nullable = true
+  validation {
+    condition = var.application_promotion == null ? true : try(
+      var.github_delivery != null &&
+      contains([toset(["role_name", "workflow_sha", "source_closure_sha256", "enabled_until", "delegations"]),
+      toset(["role_name", "workflow_sha", "source_closure_sha256", "enabled_until", "delegations", "predecessor_read"])], toset(keys(var.application_promotion))) &&
+      can(regex("^cnesdata-[a-z0-9-]+-application$", var.application_promotion.role_name)) &&
+      can(regex("^[0-9a-f]{40}$", var.application_promotion.workflow_sha)) &&
+      can(regex("^[0-9a-f]{64}$", var.application_promotion.source_closure_sha256)) &&
+      can(timecmp(var.application_promotion.enabled_until, "1970-01-01T00:00:00Z")) &&
+      toset(keys(var.application_promotion.delegations)) == toset(["observer", "normal", "recovery", "seeder", "verifier", "fence_operator", "mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe"]) &&
+      length(distinct(values(var.application_promotion.delegations))) == 10 &&
+      alltrue([for role, arn in var.application_promotion.delegations :
+    arn == "arn:aws:iam::${var.account_id}:role/cnesdata-prod-${lookup({ observer = "static-observer", normal = "static-normal", recovery = "static-recovery", seeder = "canary-seeder", verifier = "canary-verifier", fence_operator = "promotion-fence-operator", mode_seed = "mode-seed", mode_dispatch = "mode-dispatch", mode_audit_launch = "mode-audit-launch", mode_observe = "mode-observe" }, role, "invalid")}"]), false)
+    error_message = "Application requires the existing provider, immutable producer, expiry and ten exact same-product delegation ARNs."
+  }
+  validation {
+    condition = try(var.application_promotion.predecessor_read, null) == null ? true : try(
+      toset(keys(var.application_promotion.predecessor_read)) == toset(["protocol", "source_sha", "run_id", "run_attempt", "status", "purpose"]) &&
+      can(regex("^[1-9][0-9]*$", jsonencode(var.application_promotion.predecessor_read.run_id))) &&
+      can(regex("^[1-9][0-9]*$", jsonencode(var.application_promotion.predecessor_read.run_attempt))) &&
+      can(regex("^[0-9a-f]{40}$", var.application_promotion.predecessor_read.source_sha)) &&
+      var.application_promotion.predecessor_read.run_id >= 1 &&
+      var.application_promotion.predecessor_read.run_id == floor(var.application_promotion.predecessor_read.run_id) &&
+      var.application_promotion.predecessor_read.run_attempt >= 1 &&
+      var.application_promotion.predecessor_read.run_attempt == floor(var.application_promotion.predecessor_read.run_attempt) &&
+      ((var.application_promotion.predecessor_read.protocol == "legacy-infra" &&
+        contains(["planned", "applied"], var.application_promotion.predecessor_read.status) &&
+        contains(["acm-certificate", "bootstrap", "phase-a"], var.application_promotion.predecessor_read.purpose)) ||
+        (var.application_promotion.predecessor_read.protocol == "lifecycle" &&
+          var.application_promotion.predecessor_read.status == "terminal" &&
+    var.application_promotion.predecessor_read.purpose == "application")), false)
+    error_message = "Predecessor read requires one exact original legacy or lifecycle run; no free keys, prefixes or wildcard authority."
+  }
+}
+
 variable "account_id" {
   type     = string
   nullable = false
