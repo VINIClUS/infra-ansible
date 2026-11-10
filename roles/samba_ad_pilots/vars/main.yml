@@ -1,0 +1,11 @@
+---
+samba_ad_pilots_wire:
+  schema: samba-ad-pilot-wire/v1
+  request: >-
+    {{ samba_ad_pilots_request | combine({'enabled': true,
+       'apply': samba_ad_pilots_apply and not ansible_check_mode}) }}
+  manifest: "{{ samba_ad_pilots_manifest }}"
+  credentials: null
+  dc_records: []
+  directory: null
+  probe: null
