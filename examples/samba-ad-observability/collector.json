@@ -1,0 +1,65 @@
+{
+  "samba_ad_observability_enabled": false,
+  "samba_ad_observability_apply": false,
+  "samba_ad_observability_activate": false,
+  "samba_ad_observability_config": {
+    "schema": "samba-ad-observability/v1",
+    "mode": "collector",
+    "machine_id": "22222222222222222222222222222222",
+    "ca_file": "/etc/samba-ad-pki/root.pem",
+    "allowed_sans": [
+      "dc02.example.test",
+      "pilot.example.test"
+    ],
+    "bind_address": "192.0.2.20",
+    "expected_nodes": [
+      {
+        "name": "dc02",
+        "sources": [
+          "pki_dc02",
+          "pki_telemetry_dc02",
+          "timer_dc02",
+          "timer_telemetry_dc02",
+          "sysvol",
+          "timer_sysvol",
+          "drs",
+          "log_audit",
+          "log_samba_json",
+          "journal"
+        ]
+      },
+      {
+        "name": "pilot",
+        "sources": [
+          "windows_channel_0",
+          "windows_channel_1",
+          "windows_channel_2",
+          "windows_channel_3",
+          "windows_rotation_task",
+          "windows_certificate"
+        ]
+      }
+    ],
+    "privileged_group_pattern": "(?i)CN=(Domain Admins|Enterprise Admins|Schema Admins|Administrators),.*",
+    "policy_dn_pattern": "(?i)(DC=example,DC=test|.*CN=Policies,CN=System,DC=example,DC=test|.*CN=Password Settings Container,.*)",
+    "pki_active": "/var/lib/samba-ad-pki/observability_gateway/active.conf",
+    "server_name": "collector.example.test"
+  },
+  "samba_ad_observability_assets": {
+    "prometheus": {
+      "path": "/srv/verified-public/prometheus",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "version": "3.8.0"
+    },
+    "promtool": {
+      "path": "/srv/verified-public/promtool",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "version": "3.8.0"
+    },
+    "loki": {
+      "path": "/srv/verified-public/loki",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "version": "3.6.0"
+    }
+  }
+}

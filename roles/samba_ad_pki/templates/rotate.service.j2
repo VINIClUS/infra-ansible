@@ -5,7 +5,11 @@ After=network.target
 Type=oneshot
 WorkingDirectory=/usr/libexec/samba-ad-pki
 ExecStart=/usr/bin/python3 -B -m tools.samba_ad.pki_runtime --execute --request-file /etc/samba-ad-pki/requests/{{ samba_ad_pki_request.profile }}.json
+{% if samba_ad_pki_request.adapter.kind == 'telemetry' %}
+TimeoutStartSec=300s
+{% else %}
 TimeoutStartSec=90s
+{% endif %}
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict

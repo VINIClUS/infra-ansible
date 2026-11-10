@@ -47,7 +47,7 @@ def validate_ca_bundle(envelope: dict, target: dict) -> dict:
     require(data["target_sha256"] == evidence.sha({k: target[k] for k in
                                                  ["owner", "scope", "resource", "template", "firewall"]}))
     manifest = data["manifest"]
-    fields(manifest, "schema stage enabled apply owner execution domain network resources software secret_refs "
+    fields({k: v for k, v in manifest.items() if k != 'telemetry_collector'}, "schema stage enabled apply owner execution domain network resources software secret_refs "
                      "certificate_profiles split_dns")
     require(type(manifest["schema"]) is int and manifest["schema"] == 1 and manifest["stage"] == "S0")
     require(manifest["enabled"] is False and manifest["apply"] is False and manifest["owner"] == "samba-ad")

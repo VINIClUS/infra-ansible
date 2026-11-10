@@ -4,6 +4,7 @@ Initial signing support is RSA 3072/4096 + SHA256, not arbitrary algorithms.
 Trust fingerprints come from reviewed private configuration, never a fetched CA.
 """
 from __future__ import annotations
+from tools.samba_ad.pki_profiles import SUPPORTED
 
 import hashlib
 
@@ -74,7 +75,7 @@ def verify_leaf(cert_pem: bytes, issuer_pem: bytes, root_pem: bytes, key_pem: by
     path builder or an assertion of online revocation status.
     """
     try:
-        require(profile in PROFILES and type(now) is int)
+        require(profile in SUPPORTED and type(now) is int)
         leafs = x509.load_pem_x509_certificates(cert_pem)
         issuers = x509.load_pem_x509_certificates(issuer_pem)
         roots = x509.load_pem_x509_certificates(root_pem)

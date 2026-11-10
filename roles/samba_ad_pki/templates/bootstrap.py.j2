@@ -1,7 +1,7 @@
 import json, sys, types
 try:
     sources = {
-{% for name in ['compatibility', 'ca_substrate', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'pki_material', 'pki_ca'] %}
+{% for name in ['compatibility', 'ca_substrate', 'pki_profiles', 'pki', 'pki_contract', 'pki_files', 'pki_runtime', 'pki_material', 'pki_ca', 'pki_telemetry'] %}
         {{ name | to_json }}: {{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/' ~ name ~ '.py') | to_json }},
 {% endfor %}
     }

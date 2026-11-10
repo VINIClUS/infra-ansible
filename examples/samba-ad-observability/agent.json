@@ -1,0 +1,43 @@
+{
+  "samba_ad_observability_enabled": false,
+  "samba_ad_observability_apply": false,
+  "samba_ad_observability_activate": false,
+  "samba_ad_observability_config": {
+    "schema": "samba-ad-observability/v1",
+    "mode": "agent",
+    "machine_id": "11111111111111111111111111111111",
+    "platform": "linux",
+    "node": "dc02",
+    "endpoint": "https://collector.example.test",
+    "server_name": "collector.example.test",
+    "telemetry_profile": "telemetry_dc02",
+    "pki_active": "/var/lib/samba-ad-pki/telemetry_dc02/active.conf",
+    "canary_file": "/var/lib/samba-ad-observability/canary.log",
+    "sysvol_consumer": true,
+    "drs_neighbours": [
+      {
+        "nc": "DC=example,DC=test",
+        "peer": "CN=NTDS Settings,CN=DC01,CN=Servers,CN=Example-Site,CN=Sites,CN=Configuration,DC=example,DC=test"
+      }
+    ],
+    "sid": "S-1-5-21-111111111-222222222-333333333",
+    "pki_profiles": [
+      "dc02",
+      "telemetry_dc02"
+    ],
+    "log_files": {
+      "audit": "/var/log/audit/audit.log",
+      "samba_json": "/var/log/samba/ad-audit.json"
+    },
+    "samba_json_enabled": true,
+    "samba_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "token_file": "/var/lib/samba-ad-observability/token"
+  },
+  "samba_ad_observability_assets": {
+    "alloy": {
+      "path": "/srv/verified-public/alloy-linux-amd64",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "version": "1.18.1"
+    }
+  }
+}

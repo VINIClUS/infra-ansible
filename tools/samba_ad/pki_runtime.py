@@ -55,6 +55,8 @@ def prepare_nginx_runtime():
 
 def consumer_conf(r, generation):
     cert, key = str(generation / "fullchain.pem"), str(generation / "key.pem")
+    if r["adapter"]["kind"] in ['telemetry', 'observability_gateway']:
+        return json.dumps({"cert_file": cert, "key_file": key, "ca_file": r["trust"]["root_file"]}).encode()
     if r["adapter"]["kind"] == "nginx":
         return f"ssl_certificate {cert};\nssl_certificate_key {key};\n".encode()
     require(r["adapter"]["kind"] in ["samba", "pending"])
@@ -331,6 +333,9 @@ class LocalOps:
 
     def preflight(self, r):
         self.identity_tools(r)
+        if r["adapter"]["kind"] in ['telemetry', 'observability_gateway']:
+            from tools.samba_ad.pki_telemetry import configuration
+            configuration(r)
         for field in ["root_file", "issuer_file"]:
             cert = x509.load_pem_x509_certificate(secure_file(r["trust"][field]).read_bytes())
             require(cert.fingerprint(hashes.SHA256()).hex() == r["trust"][field.replace("_file", "_sha256")])
@@ -388,7 +393,13 @@ class LocalOps:
             conn.close()
 
     def reload(self, r):
-        if r["adapter"]["kind"] == "nginx":
+        if r["adapter"]["kind"] == 'observability_gateway':
+            _command(['systemctl', 'restart', 'samba-ad-observability-gateway.service'])
+        elif r["adapter"]["kind"] == "telemetry":
+            _command(["systemctl", "start", "--no-block", "samba-ad-observability-exporter.service"])
+            _command(["systemctl", "restart", "samba-ad-observability-forwarder.service"])
+            _command(["systemctl", "start", "samba-ad-observability-agent.service"])
+        elif r["adapter"]["kind"] == "nginx":
             prepare_nginx_runtime()
             _command([r["tools"]["nginx"]["path"], "-t", "-c", "/etc/samba-ad-pki/nginx.conf"])
             _command(["systemctl", "reload-or-restart", "samba-ad-pki-nginx.service"])
@@ -397,13 +408,26 @@ class LocalOps:
             _command(["systemctl", "restart", "samba-ad-dc.service"])
 
     def observe(self, r, _expected):
+        if r["adapter"]["kind"] == "telemetry":
+            from tools.samba_ad.pki_telemetry import observe
+            return observe(r, _expected)
         context = ssl.create_default_context(cafile=r["trust"]["root_file"])
         context.minimum_version = ssl.TLSVersion.TLSv1_2
+        if r['adapter']['kind'] == 'observability_gateway':
+            # TLS 1.3 exposes the authenticated server CertificateVerify before the
+            # server rejects the absent client certificate. No HTTP request is sent.
+            context.minimum_version = ssl.TLSVersion.TLSv1_3
         with socket.create_connection((r["target"]["address"], r["adapter"]["port"]), timeout=5) as raw:
             with context.wrap_socket(raw, server_hostname=r["target"]["fqdn"]) as peer:
                 return hashlib.sha256(peer.getpeercert(binary_form=True)).hexdigest()
 
     def stop(self, r):
+        if r['adapter']['kind'] == 'observability_gateway':
+            _command(['systemctl', 'stop', 'samba-ad-observability-gateway.service'])
+            return
+        if r["adapter"]["kind"] == "telemetry":
+            _command(["systemctl", "stop", "samba-ad-observability-forwarder.service"])
+            return
         # Never stop a DC with no managed previous generation.
         require(r["adapter"]["kind"] == "nginx")
         _command(["systemctl", "stop", "samba-ad-pki-nginx.service"])
