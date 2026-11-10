@@ -33,6 +33,11 @@ network_router_forward_rules: []
 
 network_router_dns_forwarders: []
 network_router_dns_domain: ""
+# Split-horizon answers for the VNets: exact names answered with a private
+# address instead of the public one (the LAN router has no hairpin NAT, so a
+# public address of our own edge never connects from inside). Example:
+#   - {name: app.example.com, address: 192.168.1.139}
+network_router_dns_host_records: []
 
 # The nftables dead-man restores the previous ruleset unless the change is
 # confirmed by a fresh SSH connection from the controller.
