@@ -33,6 +33,9 @@ network_router_forward_rules: []
 
 network_router_dns_forwarders: []
 network_router_dns_domain: ""
+# Exact DNS answers for selected names; no wildcard or subdomain override.
+# Each entry has only name (lowercase FQDN) and address (canonical IPv4).
+network_router_dns_host_records: []
 
 # The nftables dead-man restores the previous ruleset unless the change is
 # confirmed by a fresh SSH connection from the controller.

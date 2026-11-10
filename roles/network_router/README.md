@@ -107,3 +107,19 @@ Fluxos dessa zona não são emitidos novamente no loop genérico de forward; o
 render não cria um ACCEPT incondicional por quebra de linha. A política legada
 fora da zona restrita permanece no seu caminho existente. A prova S1 também
 verifica o AST carregado contra a matriz e os jumps, além do fingerprint aprovado.
+
+## Exact DNS host records
+
+`network_router_dns_host_records` defaults to `[]`, preserving the existing
+dnsmasq output. Each entry must contain only `name` (a lowercase FQDN with
+labels of at most 63 characters and at most 253 characters overall) and
+`address` (one canonical dotted-decimal IPv4 address, with octets 0–255).
+The role validates the list and every record before changing network files.
+It emits `host-record=name,address`, so only that exact name is answered;
+subdomains retain their normal forwarding behavior. For example:
+
+```yaml
+network_router_dns_host_records:
+  - name: app.example.internal
+    address: 192.0.2.139
+```
