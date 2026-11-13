@@ -388,11 +388,7 @@ its ARN; no grant was added for this. The operator must list the plan role ARN
 in the protected `read_resource_arns` (the only accepted path); an own-role
 statement in the identity policy was declined as a widening.
 
-Unproven before Ready: the activation sessions carry Deny-only inline policies
-and `effective_iam` models managed and inline documents as a union. Real STS may
-require an Allow in every session policy, so the intersection must be confirmed
-against actual behavior. No owner-proof output for the ceiling digests exists;
-none is invented here.
+Not yet proven: see "Merge scope and not-yet-proven" below.
 
 ## Operational inputs carrier (version 2)
 
@@ -401,11 +397,32 @@ operational preparation plan: original owner, original preparation window, Terra
 and the original EXT2 activation members, each with strict base64 and size/hash. The
 deploy of `application-prepare` / `operational` has no bare-JSON fallback: it unwraps the
 carrier, confronts the three object references with the protected `activation_read`
-ceiling, passes only the Terraform bytes to the var-file and derives `activation_sha256`
-from the carried activation. The audit still commits the whole envelope. The plan side
-that produces the carrier (original EXT2 authentication through two read sessions) is not
-implemented, so this deploy path refuses every plan published today.
+ceiling, passes only the Terraform bytes to the var-file. `activation_sha256` is the sha256 of the
+raw signed payload bytes, equal to `activation.payload.sha256` and to the product's
+Phase B comparison over the activation bytes; the hash of the whole `activation` object is
+`activation_carrier_sha256`, internal only. The audit still commits the whole envelope.
+The plan side that produces the carrier (original EXT2 authentication through two read
+sessions) is not implemented: a plan whose step mode is `operational` refuses explicitly
+before publishing, and the deploy refuses every bare `inputs.json`.
 
-## Paused implementation checkpoint — 2026-11-10
+## Merge scope and not-yet-proven
 
-This draft remains incomplete and disabled. The existing application/lifecycle/OIDC checkpoint passed 751 tests before the activation-policy changes. The adopted activation transport has only its exact session-policy constructor, ordinary-scope restrictions, and deadline evaluator started; two new focused tests pass. Native activation IAM rendering, original EXT2 verification and inputs transport, connected prepared production/capability/dispatcher/keeper, and the complete purpose/mode execution matrix remain unfinished. No operational readiness or applied IAM is implied. The full current patch still requires final verification and an independent code review. Work was stopped at the user’s request; no AWS operation, merge or deployment was performed.
+Controller amendment of 2026-11-13 (issue #55, item 11) lets this PR merge as disabled code
+with `Refs #55` (it does not close the issue). In scope: raw-payload `activation_sha256`,
+the fail-closed operational plan, the mode-canary v2 record byte vector shared with the
+product (schema `cnesdata.mode-canary/v2`, `MODECANARY` entity, sorted compact UTF-8 JSON
+with one trailing LF, `record_sha256` over the payload text; no materializer), and this
+document. `execute` remains refused for every operational purpose and mode.
+
+Follow-up, not in this PR: effective fence scope and evaluation documents, the
+`application_coordination_policy` output, the pinned historical-source reader and the
+Phase A `source_closure_sha256` codec check, the producer job_id check, the
+closed-ready capability factory, the terminal-proof validator registry, the EXT2
+transport in the plan, and the keeper loop. Issue #55 closes only with them.
+
+Not yet proven: the product adapter; real STS with Deny-only inline session policies
+(real STS may require an Allow in every session policy, and `effective_iam` models managed
+and inline documents as a union); the global NotResource premise; quotas with real
+VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
+IAM; static binding #498. No operational readiness, applied IAM, production acceptance or
+integrated-code status is implied.
