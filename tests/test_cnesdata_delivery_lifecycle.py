@@ -1,5 +1,6 @@
 """Continuous original owner, bounded phases and exact checkpoint transitions."""
 import copy
+import hashlib
 import importlib
 
 import pytest
@@ -784,8 +785,16 @@ def test_inputs_envelope_aceita_o_exemplar_fechado_e_entrega_somente_bytes_terra
     lc, value, owner, window, terraform = _envelope_case()
     result = lc.inputs_envelope(c.canonical(value), owner=owner, window=window)
     assert result["terraform"] == terraform
-    assert result["activation_sha256"] == c.sha(c.canonical(value["activation"]))
     assert result["activation"]["payload"] == b"p" * 40 and result["activation"]["signing_spki"] == b"k" * 91
+
+
+def test_activation_sha256_is_raw_payload_hash_matching_product_phase_b():
+    lc, value, owner, window, _ = _envelope_case()
+    result = lc.inputs_envelope(c.canonical(value), owner=owner, window=window)
+    assert result["activation_sha256"] == hashlib.sha256(result["activation"]["payload"]).hexdigest()
+    assert result["activation_sha256"] == value["activation"]["payload"]["sha256"]
+    assert result["activation_carrier_sha256"] == c.sha(c.canonical(value["activation"]))
+    assert result["activation_carrier_sha256"] != result["activation_sha256"]
 
 
 @pytest.mark.parametrize("mutation", [
