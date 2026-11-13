@@ -109,8 +109,8 @@ jobs:
           assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin and pin == gov["gate_shas"]["application"]
           files = ["contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py", "runtime.py",
                    "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py", "session_policy.py",
-                   "iam_expression.py", "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py",
-                   "plan_gate.py", "apply_gate.py", "runtime-requirements.txt"]
+                   "evidence.py", "iam_expression.py", "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py",
+                   "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
           root.mkdir(parents=True, exist_ok=True)
           for name in files:
