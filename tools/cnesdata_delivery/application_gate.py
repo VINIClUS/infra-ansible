@@ -1081,6 +1081,15 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
         c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
                   "capability scope recomputed from prepared policy")
+        # Item 3: the evaluated fence_session is the shared constructor at the preparation deadline
+        # min(observed_at + 180, frozen_until); _assume_fence_session builds the API session with the same
+        # constructor and scope, so the two differ only in DateLessThan and its effective_iam checks stay live.
+        from tools.cnesdata_delivery.session_policy import fence_session_policy
+        frozen = c.instant(cases["freeze-expired"]["context"]["aws:CurrentTime"])
+        prepared_session = fence_session_policy(control_table_arn=table, execution_prefix=prefix,
+                                                deadline=int(min(manifest["preparation"]["observed_at"] + 180, frozen)))
+        c.require(evaluation["documents"]["fence_session"] == c.sha(c.canonical(prepared_session)),
+                  "prepared fence session equals API session except DateLessThan")
         described = [row["observed"] for row in b_checkpoint["readbacks"]
                      if row["service"] == "stepfunctions" and row["operation"] == "describe_state_machine"]
         c.require(len(described) == 1 and described[0].get("stateMachineArn") == machine, "B DescribeStateMachine readback")

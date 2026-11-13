@@ -3571,7 +3571,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
 def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutation):
     ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, mutation)
     if mutation:
-        with pytest.raises(ValueError):
+        expected = "except DateLessThan" if mutation == "session-document" else None
+        with pytest.raises(ValueError, match=expected):
             ag.closed_ready_capability(**args)
         assert sts_calls == [] and journal._failed is True
         assert keeper.uncertainty() == [{"kind": "context-failed"}]
