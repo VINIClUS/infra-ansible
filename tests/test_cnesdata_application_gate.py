@@ -3869,3 +3869,61 @@ def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch)
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     with pytest.raises(ValueError, match="terminal validator unavailable; lifecycle disabled"):
         ag.main(["execute"])
+
+
+def test_execute_with_both_registries_supplied_still_refuses_before_any_effect(monkeypatch):
+    """Inactive by design: even with validators and an event producer, keeper construction is not connected."""
+    from tools.cnesdata_delivery import application_gate as ag, aws_boundary, lifecycle_runtime as lr
+    for module, name in ((lr, "AWS"), (aws_boundary, "AWS"), (lr, "S3LeaseStore"), (aws_boundary, "S3LeaseStore"),
+                         (lr, "oidc_credentials"), (ag, "Keeper"), (ag, "Lease"), (ag, "KeeperGuard"), (ag, "keeper_loop"),
+                         (ag, "run_closed_ready"), (ag, "closed_ready_capability"), (ag, "invoke_adapter")):
+        monkeypatch.setattr(module, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached while lifecycle is disabled"))
+    closures = []
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *args: closures.append(args))
+    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64}
+    events = []
+    with pytest.raises(ValueError, match="keeper construction from protected binding not connected; lifecycle disabled"):
+        ag.execute((governance, {"source_sha": "b" * 40}, {}, None, {}, {}),
+                   validators={"quiescence": object(), "routing": object()}, event_source=events.append, product="product")
+    assert closures == [("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)] and events == []
+
+
+def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
+    """Static proof: the only production path to the keeper is main -> execute(admitted), which refuses."""
+    import ast
+    from pathlib import Path
+    from tools.cnesdata_delivery import application_gate as ag
+    root = Path(__file__).resolve().parents[1]
+    guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
+               "ClosedReadyBroker"}
+    sites, gate_execute = set(), []
+    for path in sorted((root / "tools").rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        relative = path.relative_to(root).as_posix()
+        def visit(node, scope):
+            for child in ast.iter_child_nodes(node):
+                inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else scope
+                if isinstance(child, ast.Call):
+                    func = child.func
+                    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+                    if name in guarded:
+                        sites.add((relative, scope, name))
+                    if relative.endswith("application_gate.py") and isinstance(func, ast.Name) and func.id == "execute":
+                        gate_execute.append((scope, child))
+                if isinstance(child, ast.ImportFrom) and (child.module or "").endswith("application_gate"):
+                    assert not {alias.name for alias in child.names} & (guarded | {"execute"}), (relative, ast.dump(child))
+                if (isinstance(child, ast.Attribute) and child.attr in guarded | {"execute", "TERMINAL_VALIDATORS", "KEEPER_EVENT_SOURCE"}
+                        and isinstance(child.value, ast.Name) and child.value.id in {"application_gate", "ag"}):
+                    pytest.fail(f"{relative}: application_gate.{child.attr} referenced outside the gate")
+                visit(child, inner)
+        visit(tree, "<module>")
+    gate = "tools/cnesdata_delivery/application_gate.py"
+    assert sites == {
+        (gate, "run_closed_ready", "KeeperGuard"),              # run_closed_ready itself has no production caller
+        (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
+        (gate, "closed_ready_capability", "ClosedReadyBroker"),
+    }, sites
+    assert [scope for scope, _ in gate_execute] == ["main"]
+    call = gate_execute[0][1]
+    assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
+    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None

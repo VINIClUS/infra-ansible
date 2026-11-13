@@ -515,6 +515,31 @@ def test_plan_operational_refuses_until_activation_transport_exists(monkeypatch)
         lr.execute("plan")
 
 
+def test_plan_operational_transport_needs_a_same_run_keeper_lease(monkeypatch):
+    """Item 9 is connected but inert: only Keeper.acquire writes a lifecycle lease and application_gate.execute
+    refuses before constructing a Keeper, so a plan run never owns one and refuses before EXT2 reads or STS."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, session_owner
+    step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance", "input_jobs": {},
+            "activation_selection": {"selection_version": 1, "ext2_post_upload_receipt_v1": {"fixture": "isolated"}}}
+    store, _, _ = held()
+    store.value.update(application_purpose="promotion", context_kind=lc.APPLICATION_CONTEXTS["promotion"], caller_binding_sha256="e" * 64)
+    owner = lc.owner_binding(store.value)
+    governance = {"context_kind": owner["context_kind"]}
+    request = {"source_sha": owner["source_sha"], "application_purpose": "promotion", "caller_binding_sha256": "e" * 64}
+    current_run = {"id": owner["run_id"] + 1, "run_attempt": owner["run_attempt"]}  # Not the run whose keeper holds the lease.
+    monkeypatch.setattr(lr, "admission", lambda role: (governance, request, step, None, current_run, {}))
+    monkeypatch.setattr(lr, "AWS", lambda _: SimpleNamespace())
+    monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
+    monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
+    monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
+    for name in ("plan_activation_carrier", "activation_session_factory", "oidc_credentials", "private_payload", "LifecycleWatchdog"):
+        monkeypatch.setattr(lr, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached without a same-run keeper lease"))
+    with pytest.raises(ValueError, match="original owner run/caller"):
+        lr.execute("plan")
+
+
 @pytest.mark.parametrize("mutation", [None, "role-replaced", "trust", "policy", "extra-inline", "attached", "truncated",
                                       "boundary", "metadata", "stale-date", "guard", "expired", "spacing", "fractional-spacing"])
 def test_fence_prepared_role_readbacks_are_finite_original_and_do_not_admit_sts(mutation):
