@@ -138,6 +138,32 @@ def application_fragment(governance, now):
     return value
 
 
+def application_identity_document(governance, fragment):
+    """Application identity for the prepared fence evaluation (amendment 2026-11-13 item 3).
+
+    The deploy never reads the application role IAM: the protected
+    `application_coordination_policy` must match the fragment policy_sha256 and
+    is concatenated with the independently derived predecessor policy.
+    """
+    from tools.cnesdata_delivery import session_policy
+    raw = governance.get("application_coordination_policy")
+    c.require(type(raw) is str and 0 < len(raw) <= 65536, "protected application coordination policy")
+    document = _iam_document(raw)
+    c.require(_terraform_document_digest(document) == c.digest(fragment["policy_sha256"]), "application coordination policy commitment")
+    c.closed(document, "Version Statement")
+    c.require(document["Version"] == "2012-10-17" and type(document["Statement"]) is list and document["Statement"],
+              "application coordination statements")
+    statements = list(document["Statement"])
+    history = governance.get("predecessor_read")
+    c.require(("predecessor_reads" in fragment) == (history is not None), "application predecessor policy composition")
+    if history is not None:
+        predecessor = session_policy.predecessor_policy(governance, history)
+        c.require(_terraform_document_digest(predecessor) == fragment["predecessor_reads"]["policy_sha256"],
+                  "application predecessor policy commitment")
+        statements += predecessor["Statement"]
+    return c.loads(c.canonical({"Version": "2012-10-17", "Statement": statements}), canonical=True)
+
+
 def _iam_document(value):
     if type(value) is str:
         value = c.loads(unquote(value).encode(), limit=65536)

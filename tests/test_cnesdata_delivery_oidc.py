@@ -102,6 +102,7 @@ def test_application_is_absent_by_default(native):
     resources, outputs = render(native, variables(), "application-disabled")
     assert not any(k.startswith("aws_iam_role.application") for k in resources)
     assert outputs.get("application_promotion", {}).get("value") is None
+    assert outputs.get("application_coordination_policy", {}).get("value") is None
 
 
 def test_application_owns_coordination_and_only_exact_product_delegation(native):
@@ -383,6 +384,26 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
     assert authority.application_fragment == fragment
     assert authority.application_fragment is not fragment
+    # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.
+    coordination = outputs["application_coordination_policy"]
+    assert coordination["sensitive"] is True
+    assert coordination["value"] == resources["aws_iam_role_policy.application[0]"]["policy"]
+    gov["application_coordination_policy"] = coordination["value"]
+    identity = session_owner.application_identity_document(gov, fragment)
+    expected = json.loads(coordination["value"])["Statement"]
+    if with_history:
+        from tools.cnesdata_delivery.session_policy import predecessor_policy
+        expected = expected + predecessor_policy(gov, gov["predecessor_read"])["Statement"]
+    assert identity == {"Version": "2012-10-17", "Statement": expected}
+    for broken in (None, json.dumps({"Version": "2012-10-17", "Statement": []}),
+                   coordination["value"].replace("s3:GetObject", "s3:GetObjectVersion", 1)):
+        bad = copy.deepcopy(gov)
+        if broken is None:
+            bad.pop("application_coordination_policy")
+        else:
+            bad["application_coordination_policy"] = broken
+        with pytest.raises((ValueError, KeyError)):
+            session_owner.application_identity_document(bad, fragment)
     # Infra lifecycle credentials must authenticate the application fragment too,
     # before reaching their own plan/deploy token exchange.
     from tools.cnesdata_delivery import lifecycle_runtime
