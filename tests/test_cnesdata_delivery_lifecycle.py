@@ -458,6 +458,15 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert commands == ["init"]
 
 
+def test_plan_operational_refuses_until_activation_transport_exists(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance", "input_jobs": {}}
+    monkeypatch.setattr(lr, "admission", lambda role: ({}, {}, step, None, {}, {}))
+    monkeypatch.setattr(lr, "AWS", lambda _: pytest.fail("operational plan must refuse before any AWS access"))
+    with pytest.raises(ValueError, match="operational plan requires activation transport"):
+        lr.execute("plan")
+
+
 @pytest.mark.parametrize("mutation", [None, "role-replaced", "trust", "policy", "extra-inline", "attached", "truncated",
                                       "boundary", "metadata", "stale-date", "guard", "expired", "spacing", "fractional-spacing"])
 def test_fence_prepared_role_readbacks_are_finite_original_and_do_not_admit_sts(mutation):
