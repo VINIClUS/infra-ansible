@@ -384,7 +384,15 @@ access still comes only from the ephemeral sessions of `activation_request`.
 Native tests prove the default documents are unchanged, no version or
 retention Allow exists outside the keys, and the session intersections. The
 plan identity reads its own role only if the governed `read_resource_arns` list
-its ARN; no grant was added for this.
+its ARN; no grant was added for this. The operator must list the plan role ARN
+in the protected `read_resource_arns` (the only accepted path); an own-role
+statement in the identity policy was declined as a widening.
+
+Unproven before Ready: the activation sessions carry Deny-only inline policies
+and `effective_iam` models managed and inline documents as a union. Real STS may
+require an Allow in every session policy, so the intersection must be confirmed
+against actual behavior. No owner-proof output for the ceiling digests exists;
+none is invented here.
 
 ## Paused implementation checkpoint — 2026-11-10
 

@@ -87,16 +87,20 @@ jobs:
           assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
           assert type(gov.get("application_configuration")) is dict
           fragment = gov.get("application_fragment")
-          assert type(fragment) is dict and type(fragment.get("fragment_version")) is int and fragment["fragment_version"] == 4
-          callers = {"promotion": ("promote-production.yml", "promotion"), "mode-readiness-drill": ("readiness-production.yml", "readiness")}
+          assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                  and fragment["fragment_version"] == 4)
+          callers = {"promotion": ("promote-production.yml", "promotion"),
+                     "mode-readiness-drill": ("readiness-production.yml", "readiness")}
           caller, context = callers[gov["application_purpose"]]
           assert gov["context_kind"] == context
           def get(path):
               request = urllib.request.Request("https://api.github.com/repos/" + path,
-                  headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"], "Accept": "application/vnd.github+json"})
+                  headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                          "Accept": "application/vnd.github+json"})
               with urllib.request.urlopen(request, timeout=20) as response:
                   return json.loads(response.read(2097152))
-          run = get(repo + "/actions/runs/" + os.environ["GITHUB_RUN_ID"] + "/attempts/" + os.environ["GITHUB_RUN_ATTEMPT"])
+          run = get(repo + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
+                  + "/attempts/" + os.environ["GITHUB_RUN_ATTEMPT"])
           assert run["head_sha"] == os.environ["EXPECTED_SOURCE_SHA"]
           assert run["run_attempt"] == int(os.environ["GITHUB_RUN_ATTEMPT"])
           assert run["repository"]["full_name"] == repo and run["event"] == "workflow_dispatch"
@@ -106,11 +110,12 @@ jobs:
           refs = [r for r in run.get("referenced_workflows", []) if r["path"].startswith(path + "@")]
           assert len(refs) == 1
           pin = refs[0]["sha"]
-          assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin and pin == gov["gate_shas"]["application"]
+          assert (re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
+                  and pin == gov["gate_shas"]["application"])
           files = ["contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py", "runtime.py",
-                   "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py", "session_policy.py",
-                   "evidence.py", "iam_expression.py", "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py",
-                   "runtime-requirements.txt"]
+                   "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
+                   "session_policy.py", "evidence.py", "iam_expression.py", "iam_source.py",
+                   "iam_boundary.py", "session_owner.py", "session_grouping.py", "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
           root.mkdir(parents=True, exist_ok=True)
           for name in files:

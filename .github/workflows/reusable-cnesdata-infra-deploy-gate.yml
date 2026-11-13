@@ -95,7 +95,8 @@ jobs:
               assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
               assert type(gov.get("application_configuration")) is dict
               fragment = gov.get("application_fragment")
-              assert type(fragment) is dict and type(fragment.get("fragment_version")) is int and fragment["fragment_version"] == 4
+              assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                      and fragment["fragment_version"] == 4)
               callers = {"promotion": ("promote-production.yml", "promotion"),
                          "mode-readiness-drill": ("readiness-production.yml", "readiness")}
               name, context = callers[gov["application_purpose"]]
@@ -169,7 +170,8 @@ jobs:
               assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
               assert type(gov.get("application_configuration")) is dict
               fragment = gov.get("application_fragment")
-              assert type(fragment) is dict and type(fragment.get("fragment_version")) is int and fragment["fragment_version"] == 4
+              assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                      and fragment["fragment_version"] == 4)
               callers = {"promotion": ("promote-production.yml", "promotion"),
                          "mode-readiness-drill": ("readiness-production.yml", "readiness")}
               name, context = callers[gov["application_purpose"]]
