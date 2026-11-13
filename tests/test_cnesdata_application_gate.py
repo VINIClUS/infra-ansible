@@ -3568,6 +3568,28 @@ def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutat
     assert keeper.uncertainty() == []
 
 
+def test_fence_scope_has_one_derivation_shared_by_prepare_and_capability(monkeypatch):
+    """Amendment 2026-11-13 item 2: the capability recomputes the scope from the same policy with the same symbol."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    original, seen = lr.fence_policy_scope, []
+    def spy(governance, policy):
+        result = original(governance, policy)
+        seen.append((c.sha(c.canonical(policy)), dict(result)))
+        return result
+    monkeypatch.setattr(lr, "fence_policy_scope", spy)
+    ag, args, sts_calls, _, _ = _closed_ready_capability_case(monkeypatch)
+    assert len(seen) == 1, "prepare derives the scope once, through the shared symbol"
+    role = c.loads(args["prepared"]["fence-role.json"], canonical=True)
+    assert seen[0][0] == c.sha(c.canonical(role["policy"]))
+    ag.closed_ready_capability(**args)
+    assert len(seen) == 2 and seen[1] == seen[0] and len(sts_calls) == 1
+    derived = seen[0][1]
+    assert set(derived) == {"control_table_arn", "execution_prefix", "machine_arn"}
+    cases = {case["case_id"]: case["resource"] for case in c.loads(args["prepared"]["fence-evaluation.json"], canonical=True)["cases"]}
+    assert cases["get-fence"] == derived["control_table_arn"] and cases["probe-own"] == derived["execution_prefix"] + "0" * 16
+    assert derived["machine_arn"] == derived["execution_prefix"].replace(":execution:", ":stateMachine:")[:-1]
+
+
 @pytest.mark.parametrize("operation", ["inventory"])
 def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, operation):
     from types import SimpleNamespace
