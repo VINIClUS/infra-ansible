@@ -1342,6 +1342,85 @@ class Keeper:
         return {"checkpoint.json": final_raw, "terminal.json": c.canonical(terminal), "lease.json": c.canonical(evidence)}
 
 
+# Closed production registries. They are code constants, never read from
+# governance, environment or request. Both are empty until the product adapter
+# (CnesData #473/#474) and an authorized keeper event producer exist, so execute
+# refuses before any AWS construction, lease write or STS call.
+TERMINAL_VALIDATORS = {}
+KEEPER_EVENT_SOURCE = None
+KEEPER_EVENTS = ("closed-ready", "terminal")
+
+
+class KeeperGuard:
+    """Guard handed to journals/brokers: every check is a keeper tick.
+
+    `_adapter_exchange` calls journal.guard() every five seconds even while a
+    child is quiet, so a long adapter run renews the lease (TTL 300s) instead of
+    letting it lapse. It never acquires, releases or rearms a window.
+    """
+    def __init__(self, keeper):
+        c.require(type(keeper) is Keeper, "original keeper guard")
+        self.keeper = keeper
+
+    def check(self, seconds=0):
+        c.require(type(seconds) in (int, float) and 0 <= seconds <= 907, "bounded guard reservation")
+        self.keeper.tick()
+        self.keeper.lease.check()
+
+
+def run_closed_ready(*, keeper, request_raw, owner, window, inputs, activation_sha256, capability, product, source,
+                     manifest, manifest_sha256, timeout):
+    """Closed-ready dispatch: journal under the keeper guard, capability before any child, then the fixed adapter."""
+    guard = KeeperGuard(keeper)
+    journal = AdapterJournal(request_raw, operation="closed-ready", owner=owner, window=window, inputs=inputs,
+                             activation_sha256=activation_sha256, guard=guard)
+    keeper.attach(journal)
+    capability(journal=journal, keeper=keeper, guard=guard)  # Poisons the journal and holds the lease on failure.
+    c.require(type(getattr(journal, "_broker", None)) is ClosedReadyBroker, "closed-ready broker admitted before adapter")
+    return invoke_adapter(product=product, source=source, manifest=manifest, manifest_sha256=manifest_sha256,
+                          journal=journal, timeout=timeout)
+
+
+def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sleep):
+    """The single keeper polling loop over a closed event set; no finally-release.
+
+    next_event is the authenticated event producer; handlers holds only the
+    closed-ready dispatch. Stage advancement (close-drain, B, API) is not an
+    event here: close-drain stays rejected by the 2026-11-13 amendment item 7.
+    Any exception leaves the lease held; finish() refuses under uncertainty.
+    """
+    c.require(type(handlers) is dict and set(handlers) == {"closed-ready"}, "closed keeper handlers")
+    c.integer(poll, 1, 25)
+    while True:
+        keeper.tick()
+        event = next_event(keeper.lease.check()["lifecycle"])
+        if event is None:
+            sleep(poll)
+            continue
+        c.closed(event, "kind reference")
+        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event; stage advancement not connected")
+        if event["kind"] == "closed-ready":
+            handlers["closed-ready"](keeper, event["reference"])
+            continue
+        files = keeper.finish(event["reference"])
+        return publish(files)
+
+
+def execute(admitted, *, validators=None, event_source=None, product=None):
+    """Operational keeper entry, disabled by default before any effect."""
+    from pathlib import Path
+    validators = TERMINAL_VALIDATORS if validators is None else validators
+    event_source = KEEPER_EVENT_SOURCE if event_source is None else event_source
+    c.require(type(validators) is dict and {"quiescence", "routing"} <= set(validators) <= set(TERMINAL_VALIDATOR_FACTS),
+              "terminal validator unavailable; lifecycle disabled")
+    c.require(callable(event_source), "keeper event producer not connected; lifecycle disabled")
+    governance, request, step, api, run, _ = admitted
+    product = Path.cwd() / "product" if product is None else product
+    authenticate_adapter_closure(product, request["source_sha"], governance["application_product_source_manifest"],
+                                 governance["application_product_source_closure_sha256"])
+    raise ValueError("keeper construction from protected binding not connected; lifecycle disabled")
+
+
 def credentials(admitted, *, product=None):
     """Bootstrap own-role credentials with no product delegation authority.
 
@@ -1388,7 +1467,8 @@ def main(argv=None):
     session_owner.application_fragment(admitted[0], time.time())
     if args.operation == "credentials":
         return credentials(admitted)
-    c.require(args.operation == "preflight", "application effect boundary not connected; execution disabled")
+    if args.operation == "execute":
+        return execute(admitted)
     return admitted
 
 

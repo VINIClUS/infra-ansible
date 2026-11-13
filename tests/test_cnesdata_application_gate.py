@@ -3626,3 +3626,159 @@ def test_keeper_terminal_validators_receive_registered_journal_observations():
     files = keeper.finish(_terminal_reference(keeper))
     assert seen == [{"a" * 64: b'{"observed":true}\n'}]
     assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+
+
+def _keeper_loop_case(*, attach=None):
+    """Connected keeper loop over the real Keeper/Lease/finish chain.
+
+    The API window is reached only through keeper.lease.checkpoint validated by
+    checkpoint_transition (inside _accepted_terminal_case); the event producer,
+    publication and closed-ready handler are external fakes. Terminal validators
+    are the SYNTHETIC labelled ones (item 8).
+    """
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store = _accepted_terminal_case()
+    reference = _terminal_reference(keeper)
+    events = [{"kind": "closed-ready", "reference": {"fixture": "closed-ready"}}, None, {"kind": "terminal", "reference": reference}]
+    seen, handled, published, slept = [], [], [], []
+    def next_event(window):
+        seen.append(window["stage"])
+        return events.pop(0)
+    def handler(current, event_reference):
+        assert current is keeper and event_reference == {"fixture": "closed-ready"}
+        handled.append(event_reference)
+        if attach is not None:
+            current.attach(attach)
+    run = lambda: ag.keeper_loop(keeper, next_event=next_event, handlers={"closed-ready": handler},
+                                 publish=lambda files: published.append(files) or "receipt", sleep=slept.append)
+    return ag, keeper, store, run, seen, handled, published, slept
+
+
+def test_keeper_loop_dispatches_closed_ready_then_publishes_original_terminal():
+    ag, keeper, store, run, seen, handled, published, slept = _keeper_loop_case(attach=_journal_with())
+    assert run() == "receipt"
+    assert handled == [{"fixture": "closed-ready"}] and slept == [5] and seen[0] == "final"
+    assert store.get()[0]["status"] == "released" and len(published) == 1
+    assert set(published[0]) == {"checkpoint.json", "terminal.json", "lease.json"}
+    assert c.loads(published[0]["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+
+
+@pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed"])
+def test_keeper_loop_keeps_lease_held_while_dispatch_is_uncertain(context):
+    journal = _journal_with(**{"pending": {"pending": [{"kind": "intent"}]}, "unknown": {"unknown": [{"kind": "lost"}]},
+                               "inflight": {"inflight": {"kind": "call"}}, "failed": {"failed": True}}[context])
+    ag, keeper, store, run, _, handled, published, _ = _keeper_loop_case(attach=journal)
+    with pytest.raises(ValueError, match="unresolved SDK uncertainty; lease remains held"):
+        run()
+    assert handled and published == [] and store.get()[0]["status"] == "held"
+
+
+def test_keeper_loop_capability_failure_holds_lease_and_never_publishes():
+    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+    def failing(current, reference):
+        journal = _journal_with()
+        current.attach(journal)
+        journal._failed = True
+        raise ValueError("closed-ready capability refused before STS")
+    events = [{"kind": "closed-ready", "reference": {}}, {"kind": "terminal", "reference": {}}]
+    with pytest.raises(ValueError, match="capability refused"):
+        ag.keeper_loop(keeper, next_event=lambda window: events.pop(0), handlers={"closed-ready": failing},
+                       publish=published.append, sleep=lambda s: None)
+    assert store.get()[0]["status"] == "held" and published == [] and keeper.uncertainty() == [{"kind": "context-failed"}]
+    with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
+        keeper.finish(_terminal_reference(keeper))
+
+
+@pytest.mark.parametrize("event", [{"kind": "advance", "reference": {}}, {"kind": "close-drain", "reference": {}},
+                                   {"kind": "terminal"}, {"kind": "terminal", "reference": {}, "extra": 1}])
+def test_keeper_loop_refuses_stage_advancement_and_open_events(event):
+    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+    with pytest.raises(ValueError):
+        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
+                       publish=published.append, sleep=lambda s: None)
+    assert store.get()[0]["status"] == "held" and published == []
+
+
+@pytest.mark.parametrize("handlers", [{}, {"closed-ready": None, "close-drain": None}, {"close-drain": None}])
+def test_keeper_loop_connects_only_closed_ready(handlers):
+    ag, keeper, store, _, _, _, _, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match="closed keeper handlers"):
+        ag.keeper_loop(keeper, next_event=lambda window: pytest.fail("no event before handler check"), handlers=handlers,
+                       publish=None, sleep=None)
+
+
+def test_keeper_guard_renews_lease_during_quiet_adapter_run():
+    """A quiet child only gets the five-second journal.guard(); each one is a keeper tick."""
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store = _accepted_terminal_case()
+    moments = iter(range(1000, 1000 + 5 * 200, 5))
+    now = [1000]
+    def advance():
+        now[0] = next(moments)
+        return now[0]
+    keeper.monotonic = keeper.lease.monotonic = lambda: now[0]
+    keeper.clock = keeper.lease.clock = lambda: now[0]
+    guard = ag.KeeperGuard(keeper)
+    before = store.get()[0]["expires_at"]
+    for _ in range(120):  # 600 quiet seconds, twice the 300s TTL.
+        advance()
+        guard.check()
+    record = store.get()[0]
+    assert record["status"] == "held" and record["expires_at"] > before + 500 and record["expires_at"] > now[0] + 200
+    with pytest.raises(ValueError, match="bounded guard reservation"):
+        guard.check(908)
+
+
+def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    ag_mod, args, sts_calls, _, journal = _closed_ready_capability_case(monkeypatch)
+    keeper, _ = _accepted_terminal_case()
+    order = []
+    def capability(*, journal, keeper, guard):
+        assert type(guard) is ag.KeeperGuard and journal._guard is guard and any(item is journal for item in keeper._contexts)
+        order.append("capability")
+        journal._broker = ag.ClosedReadyBroker.__new__(ag.ClosedReadyBroker)
+    monkeypatch.setattr(ag, "invoke_adapter", lambda **kwargs: order.append("adapter") or kwargs["journal"])
+    request_raw = c.canonical(journal._request)
+    result = ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
+        window=journal._request["stage"] | journal._identity, inputs=journal._inputs, activation_sha256=journal._request["activation_sha256"],
+        capability=capability, product="product", source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
+    assert order == ["capability", "adapter"] and type(result) is ag.AdapterJournal
+    def refusing(*, journal, keeper, guard):
+        journal._failed = True
+        raise ValueError("capability refused")
+    order.clear()
+    with pytest.raises(ValueError, match="capability refused"):
+        ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
+            window=journal._request["stage"] | journal._identity, inputs=journal._inputs,
+            activation_sha256=journal._request["activation_sha256"], capability=refusing, product="product",
+            source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
+    assert order == [] and {"kind": "context-failed"} in keeper.uncertainty()
+
+
+@pytest.mark.parametrize("validators,events,message", [
+    (None, None, "terminal validator unavailable; lifecycle disabled"),
+    ({"quiescence": object()}, None, "terminal validator unavailable; lifecycle disabled"),
+    ({"quiescence": object(), "routing": object(), "foreign": object()}, None, "terminal validator unavailable"),
+    ({"quiescence": object(), "routing": object()}, None, "keeper event producer not connected; lifecycle disabled"),
+])
+def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch, validators, events, message):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
+    monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
+    monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
+    monkeypatch.setattr(ag, "Keeper", lambda *a, **kw: pytest.fail("execute must refuse before the keeper"))
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *a: pytest.fail("enablement precedes adapter reads"))
+    with pytest.raises(ValueError, match=message):
+        ag.execute(({}, {"source_sha": "b" * 40}, {}, None, {}, {}), validators=validators, event_source=events)
+
+
+def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
+    admitted = ({}, {"source_sha": "b" * 40}, {}, None, {}, {})
+    monkeypatch.setattr(lr, "admission", lambda role: admitted)
+    monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
+    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
+    with pytest.raises(ValueError, match="terminal validator unavailable; lifecycle disabled"):
+        ag.main(["execute"])
