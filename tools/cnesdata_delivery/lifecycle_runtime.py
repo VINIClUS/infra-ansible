@@ -880,6 +880,7 @@ def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
     governance, request, step, api, run, public = admission(role)
+    c.require(not (role == "plan" and step["mode"] == "operational"), "operational plan requires activation transport")
     aws = AWS(governance)
     from tools.cnesdata_delivery import session_owner
     application_authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"], "application", "application-prepare", time.time())
