@@ -3486,7 +3486,20 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
     activation = b"original-ext2-payload-bytes"
     kwargs["activation_sha256"] = c.sha(activation)
-    files = lr.fence_prepare_package(**kwargs)
+    if mutation == "session-document":
+        # A producer whose evaluated fence session differs beyond DateLessThan (one more leading key):
+        # the package stays internally consistent, the evaluation still passes, only item 3 can tell.
+        from tools.cnesdata_delivery import session_policy
+        shared = session_policy.fence_session_policy
+        def drifted(**arguments):
+            policy = shared(**arguments)
+            policy["Statement"][0]["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"].append("ENV#prod#DRIFT")
+            return policy
+        monkeypatch.setattr(session_policy, "fence_session_policy", drifted)
+        files = lr.fence_prepare_package(**kwargs)
+        monkeypatch.setattr(session_policy, "fence_session_policy", shared)
+    else:
+        files = lr.fence_prepare_package(**kwargs)
     prepared = lr.PreparedFence(files)
     owner, carrier = kwargs["owner"], kwargs["carrier"]
     ag_mod, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
@@ -3553,7 +3566,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     return ag, args, sts_calls, keeper, journal
 
 
-@pytest.mark.parametrize("mutation", [None, "activation", "preparation", "delegation", "ancestry", "machine", "membership"])
+@pytest.mark.parametrize("mutation", [None, "activation", "preparation", "delegation", "ancestry", "machine", "membership",
+                                      "session-document"])
 def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutation):
     ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, mutation)
     if mutation:
