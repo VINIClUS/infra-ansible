@@ -468,6 +468,46 @@ def fence_prepared_files(*, originals, owner, fragment, activation_sha256, produ
     return files
 
 
+def fence_producer_job(api, run, source):
+    """Identify the running producer job before publication (amendment 2026-11-13 item 5).
+
+    Exactly one current-attempt job with the fixed name, in progress on this
+    runner, at the source, with the gate step running after eight completed-success
+    steps in order. Anything else refuses before any private publication.
+    """
+    runner = os.environ.get("RUNNER_NAME")
+    c.require(type(runner) is str and 0 < len(runner) <= 256, "producer RUNNER_NAME")
+    c.digest(source, 40)
+    root = f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"
+    jobs, total = [], None
+    for page in range(1, 21):
+        value = api.read(root + f"?per_page=100&page={page}")
+        c.integer(value["total_count"], 0, 2000)
+        total = value["total_count"] if total is None else total
+        c.require(value["total_count"] == total and type(value["jobs"]) is list, "stable producer job inventory")
+        jobs.extend(value["jobs"])
+        if len(jobs) >= total or not value["jobs"]:
+            break
+    c.require(len(jobs) == total and len({job["id"] for job in jobs}) == total, "complete producer job inventory")
+    named = [job for job in jobs if job["name"] == lc.FENCE_PREPARE_PRODUCER["job_name"]]
+    c.require(len(named) == 1, "unique fixed producer job")
+    job = named[0]
+    c.integer(job["id"])
+    c.require(job["status"] == "in_progress" and job["head_sha"] == source and job["runner_name"] == runner,
+              "running producer job on this runner")
+    steps = job.get("steps")
+    c.require(type(steps) is list, "producer job steps")
+    numbers = []
+    for index, name in enumerate(lc.FENCE_PREPARE_STEPS):
+        found = [item for item in steps if item.get("name") == name]
+        last = index == len(lc.FENCE_PREPARE_STEPS) - 1
+        c.require(len(found) == 1 and (found[0]["status"] == "in_progress" if last else
+                  found[0]["status"] == "completed" and found[0]["conclusion"] == "success"), "producer step state")
+        numbers.append(c.integer(found[0]["number"]))
+    c.require(numbers == sorted(set(numbers)), "producer step order")
+    return job
+
+
 class PreparedFence(dict):
     """Private bytes obtained from the completed, authenticated deploy producer."""
 
@@ -497,13 +537,7 @@ def fence_prepared_payload(api, aws, governance, request, run, reference, *, own
     c.closed(reference, "artifact_id artifact_digest job_id")
     c.integer(reference["job_id"])
     job = api.read(f"repos/{c.REPOSITORY}/actions/jobs/{reference['job_id']}")
-    names = (
-        "Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
-        "Check out authenticated exact product source", "Check out pinned artifact SDK bundle",
-        "Set pinned Node runtime for the artifact SDK", "Install checksum-locked protected runtime",
-        "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
-        producer["step_name"],
-    )
+    names = lc.FENCE_PREPARE_STEPS
     steps = job.get("steps")
     c.require(type(steps) is list, "fence original producer steps")
     selected = []

@@ -3259,3 +3259,62 @@ def test_historical_sources_pins_phase_a_source_from_authenticated_carrier():
     forged["origin"]["source_sha"] = "b" * 40
     with pytest.raises(ValueError):
         historical_sources(_HistoricalSourceAPI("b" * 40, "a" * 40, files), forged, current_source="a" * 40, paths=sorted(files))
+
+
+def _producer_jobs_case(source="a" * 40, *, runner="runner-7"):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    steps = [{"name": name, "number": number, "status": "completed", "conclusion": "success"}
+             for number, name in enumerate(lc.FENCE_PREPARE_STEPS[:-1], start=1)]
+    steps.append({"name": lc.FENCE_PREPARE_STEPS[-1], "number": len(steps) + 1, "status": "in_progress", "conclusion": None})
+    job = {"id": 4242, "name": lc.FENCE_PREPARE_PRODUCER["job_name"], "status": "in_progress", "head_sha": source,
+           "runner_name": runner, "steps": steps, "run_id": 7, "run_attempt": 2}
+    other = {"id": 11, "name": "application-prepare-operational / audit", "status": "completed", "head_sha": source,
+             "runner_name": "other", "steps": [], "run_id": 7, "run_attempt": 2}
+    return [other, job]
+
+
+class _JobsAPI:
+    def __init__(self, jobs, *, total=None):
+        self.jobs, self.total, self.calls = jobs, len(jobs) if total is None else total, []
+
+    def read(self, path, **_):
+        self.calls.append(path)
+        assert path.startswith(f"repos/{c.REPOSITORY}/actions/runs/7/attempts/2/jobs?per_page=100&page=")
+        page = int(path.rsplit("=", 1)[1])
+        return {"total_count": self.total, "jobs": self.jobs[(page - 1) * 100:page * 100]}
+
+
+@pytest.mark.parametrize("mutation", [None, "zero", "two", "runner-absent", "runner-other", "status", "head", "gate-done",
+                                      "prior-failed", "prior-order", "prior-missing", "incomplete-inventory"])
+def test_fence_producer_job_requires_single_running_gate_on_this_runner(monkeypatch, mutation):
+    from tools.cnesdata_delivery.lifecycle_runtime import fence_producer_job
+    jobs = _producer_jobs_case()
+    job = jobs[1]
+    monkeypatch.setenv("RUNNER_NAME", "runner-7")
+    total = None
+    if mutation == "zero": jobs.pop(1)
+    if mutation == "two": jobs.append(dict(job, id=4243))
+    if mutation == "runner-absent": monkeypatch.delenv("RUNNER_NAME")
+    if mutation == "runner-other": job["runner_name"] = "runner-8"
+    if mutation == "status": job["status"] = "completed"
+    if mutation == "head": job["head_sha"] = "b" * 40
+    if mutation == "gate-done": job["steps"][-1].update(status="completed", conclusion="success")
+    if mutation == "prior-failed": job["steps"][3]["conclusion"] = "failure"
+    if mutation == "prior-order": job["steps"][2]["number"], job["steps"][3]["number"] = 4, 3
+    if mutation == "prior-missing": job["steps"].pop(5)
+    if mutation == "incomplete-inventory": total = 3
+    api = _JobsAPI(jobs, total=total)
+    run = {"id": 7, "run_attempt": 2, "head_sha": "a" * 40}
+    if mutation is None:
+        assert fence_producer_job(api, run, "a" * 40)["id"] == 4242
+    else:
+        with pytest.raises((ValueError, KeyError)):
+            fence_producer_job(api, run, "a" * 40)
+
+
+def test_fence_consumer_and_producer_share_the_nine_named_steps():
+    import inspect
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    assert len(lc.FENCE_PREPARE_STEPS) == 9 and lc.FENCE_PREPARE_STEPS[-1] == lc.FENCE_PREPARE_PRODUCER["step_name"]
+    source = inspect.getsource(lr.fence_prepared_payload)
+    assert "FENCE_PREPARE_STEPS" in source and "Install checksum-locked protected runtime" not in source

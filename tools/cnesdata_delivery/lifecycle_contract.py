@@ -211,6 +211,14 @@ FENCE_PREPARE_PRODUCER = {
     "step_name": "Execute under CAS watchdog and verify final publication", "step": "application-prepare-operational",
     "job_name": "application-prepare-operational / execute", "purpose": "application-prepare", "mode": "operational", "direction": "advance",
 }
+# Amendment 2026-11-13 item 5: one tuple for producer (eight completed + gate running) and consumer (nine completed).
+FENCE_PREPARE_STEPS = (
+    "Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
+    "Check out authenticated exact product source", "Check out pinned artifact SDK bundle",
+    "Set pinned Node runtime for the artifact SDK", "Install checksum-locked protected runtime",
+    "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
+    FENCE_PREPARE_PRODUCER["step_name"],
+)
 FENCE_PREPARE_FILES = frozenset({"checkpoint.json", "approval.json", "fence-prepared.json", "fence-role.json",
                                "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json"})
 FENCE_ORIGIN_FIELDS = "repository source_sha run_id run_attempt job_id artifact_id artifact_digest producer_name step name sha256 size"
