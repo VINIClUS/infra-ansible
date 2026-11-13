@@ -1182,7 +1182,7 @@ def inputs_envelope(raw, *, owner, window):
     """Decode the closed version2 inputs.json carrier of the operational preparation plan.
 
     Args: canonical bytes, original owner, original keeper preparation window.
-    Returns: Terraform bytes, raw activation members and their commitment.
+    Returns: Terraform bytes, raw activation members, sha256 of the raw payload, carrier hash.
     Raises: ValueError on any deviation; no legacy fallback exists.
     """
     from tools.cnesdata_delivery.ext2_transport import validate_reference
@@ -1211,4 +1211,5 @@ def inputs_envelope(raw, *, owner, window):
     c.require(type(retained) is list and 1 <= len(retained) <= 128 and targets["processor_active_unit_task_definition_arn"] in retained
               and all(type(item) is str and 0 < len(item) <= 2048 for item in singles + retained), "envelope rendered targets")
     return {"terraform": terraform, "activation": raws, "objects": activation["objects"],
-            "activation_sha256": c.sha(c.canonical(activation))}
+            "activation_sha256": c.sha(raws["payload"]),
+            "activation_carrier_sha256": c.sha(c.canonical(activation))}

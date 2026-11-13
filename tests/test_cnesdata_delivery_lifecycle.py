@@ -864,6 +864,7 @@ def test_operational_inputs_confronta_objetos_com_o_teto_protegido_e_nao_tem_fal
     governance = _activation_governance(value)
     result = lr.operational_inputs(c.canonical(value), governance=governance, owner=owner, window=window)
     assert result["terraform"] == terraform
+    assert result["activation_sha256"] == value["activation"]["payload"]["sha256"]
     with pytest.raises(ValueError, match="closed object fields"):
         lr.operational_inputs(c.canonical({"canary_release_id": "r1"}), governance=governance, owner=owner, window=window)
     with pytest.raises(ValueError):
