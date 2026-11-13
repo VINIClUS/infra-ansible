@@ -888,3 +888,46 @@ def test_operational_inputs_confronta_objetos_com_o_teto_protegido_e_nao_tem_fal
     foreign["activation_read"]["ceiling"]["bucket_arn"] = "arn:aws:s3:::other-bucket"
     with pytest.raises(ValueError, match="protected activation ceiling"):
         lr.operational_inputs(c.canonical(value), governance=foreign, owner=owner, window=window)
+
+
+_MODE_CANARY_RECORD = {
+    "schema": "cnesdata.mode-canary/v2", "activation_sha256": "a" * 64, "candidate_sha256": "b" * 64, "source_sha": "c" * 40,
+    "release_id": "liberação-é", "canary_id": "0123456789abcdef0123456789abcdef", "owner_sha256": "d" * 64,
+    "promotion_id": "promoção-1", "promotion_generation": 3, "phase_receipt_sha256": "e" * 64,
+    "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:m",
+    "revisions": {"unit": "1", "recovery": "2", "audit": "3"}, "run_ids": ["r1", "r2"],
+    "fixture_manifest_sha256": "1" * 64, "seed_manifest_sha256": "2" * 64, "fixed_deadline": "2026-11-13T12:00:00+00:00",
+    "stage_deadline": "2026-11-13T12:30:00+00:00", "canary_deadline": "2026-11-13T11:45:00+00:00",
+    "phase": "unit", "freeze_policy_sha256": "3" * 64, "expires_at": "2026-11-13T13:00:00+00:00",
+    "context_kind": "promotion", "context_manifest_sha256": "4" * 64, "scenario": "unit_wave", "fault": "none", "mode": "unit"}
+_MODE_CANARY_RECORD_TEXT = (
+    '{"activation_sha256":"' + "a" * 64 + '","canary_deadline":"2026-11-13T11:45:00+00:00",'
+    '"canary_id":"0123456789abcdef0123456789abcdef","candidate_sha256":"' + "b" * 64 + '",'
+    '"context_kind":"promotion","context_manifest_sha256":"' + "4" * 64 + '","expires_at":"2026-11-13T13:00:00+00:00",'
+    '"fault":"none","fixed_deadline":"2026-11-13T12:00:00+00:00","fixture_manifest_sha256":"' + "1" * 64 + '",'
+    '"freeze_policy_sha256":"' + "3" * 64 + '","machine_arn":"arn:aws:states:us-east-2:111122223333:stateMachine:m",'
+    '"mode":"unit","owner_sha256":"' + "d" * 64 + '","phase":"unit","phase_receipt_sha256":"' + "e" * 64 + '",'
+    '"promotion_generation":3,"promotion_id":"promoção-1","release_id":"liberação-é",'
+    '"revisions":{"audit":"3","recovery":"2","unit":"1"},"run_ids":["r1","r2"],"scenario":"unit_wave",'
+    '"schema":"cnesdata.mode-canary/v2","seed_manifest_sha256":"' + "2" * 64 + '","source_sha":"' + "c" * 40 + '",'
+    '"stage_deadline":"2026-11-13T12:30:00+00:00"}\n')
+_MODE_CANARY_RECORD_SHA256 = "09ea5e922b648bfeedb1cbb5fd8ea724202707b888427e1bd9c30d032b5e7063"
+
+
+def test_mode_canary_v2_record_vectors_byte_compatible_with_product():
+    raw = c.canonical(_MODE_CANARY_RECORD)
+    assert raw == _MODE_CANARY_RECORD_TEXT.encode("utf-8")
+    assert b"\\u" not in raw and "liberação-é".encode("utf-8") in raw
+    assert raw.endswith(b"}\n") and not raw.endswith(b"\n\n")
+    assert hashlib.sha256(raw).hexdigest() == _MODE_CANARY_RECORD_SHA256
+    tenant = "prod-canary-" + _MODE_CANARY_RECORD["canary_id"]
+    item = {"pk": "TENANT#" + tenant.encode().hex(),
+            "sk": "PROD_CANARY#" + _MODE_CANARY_RECORD["owner_sha256"] + "#" + _MODE_CANARY_RECORD["phase"],
+            "entity": "MODECANARY", "payload": raw.decode("utf-8")}
+    assert item["pk"] == "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+    assert item["sk"] == "PROD_CANARY#" + "d" * 64 + "#unit"
+    assert "PROD_CANARY_CONTROL#" + "d" * 64 == "PROD_CANARY_CONTROL#" + _MODE_CANARY_RECORD["owner_sha256"]
+    assert _MODE_CANARY_RECORD["schema"] == "cnesdata.mode-canary/v2"
+    assert item["payload"] == _MODE_CANARY_RECORD_TEXT
+    control = {"schema": "cnesdata.mode-canary-control/v1", "owner_sha256": "d" * 64}
+    assert c.canonical(control) == b'{"owner_sha256":"' + b"d" * 64 + b'","schema":"cnesdata.mode-canary-control/v1"}\n'
