@@ -865,6 +865,17 @@ def authenticate_infrastructure_closure(product, source, expected):
               "complete infrastructure closure")
     return result
 
+def operational_inputs(raw, *, governance, owner, window):
+    """Unwrap the operational preparation carrier against the protected read ceiling; no fallback."""
+    from tools.cnesdata_delivery import session_policy
+    ceiling = session_policy.activation_ceiling(governance)
+    decoded = lc.inputs_envelope(raw, owner=owner, window=window)
+    for slot, reference in decoded["objects"].items():
+        c.require(reference["bucket_arn"] == ceiling["bucket_arn"] and reference["cipher_kms_key_arn"] == ceiling["cipher_kms_key_arn"]
+                  and reference["key"] == ceiling["keys"][slot], "envelope object within protected activation ceiling")
+    return decoded
+
+
 def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
@@ -931,7 +942,11 @@ def execute(role):
             c.require(c.canonical(checkpoint["owner"]) == c.canonical(owner), "same-owner checkpoint")
     c.require(checkpoint_state == before and checkpoint["state_object"] == before_object
               and c.sha(payload["checkpoint.json"]) == guard.window["checkpoint_sha256"], "real predecessor checkpoint")
-    inputs = c.loads(payload["inputs.json"], canonical=True)
+    terraform_raw, activation_sha256 = payload["inputs.json"], None
+    if role == "deploy" and step["purpose"] == "application-prepare" and step["mode"] == "operational":
+        unwrapped = operational_inputs(terraform_raw, governance=governance, owner=owner, window=guard.window)
+        terraform_raw, activation_sha256 = unwrapped["terraform"], unwrapped["activation_sha256"]
+    inputs = c.loads(terraform_raw, canonical=True)
     original_phase = historical["envelope"]["plan"]["phase_a_inputs"]
     c.require(all(c.canonical(inputs.get(key)) == c.canonical(original_phase[key]) for key in
                   ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")), "original Phase A release/principal inputs")
@@ -940,7 +955,7 @@ def execute(role):
     with tempfile.TemporaryDirectory(prefix="cnesdata-lifecycle-") as directory:
         temp = Path(directory)
         temp.chmod(0o700)
-        (temp / "inputs.json").write_bytes(payload["inputs.json"])
+        (temp / "inputs.json").write_bytes(terraform_raw)
         backend = dict(baseline["backend"]["configuration"])
         c.require(backend.pop("workspace") == "default" and backend.pop("type") == "s3", "backend kind/workspace")
         (temp / "backend.json").write_bytes(c.canonical(backend))

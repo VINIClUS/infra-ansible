@@ -3,6 +3,7 @@
 The legacy plan/apply envelopes and 1980-second initial admission remain separate.
 No credentials, network, caller commands or lifecycle side effects in this module.
 """
+import base64
 import time
 import re
 
@@ -1139,3 +1140,75 @@ def terminal_result(value, *, now, deadline):
               and (restored["static"] is True or restored["first_static_absent"] is True), "original recovery incomplete")
     c.require(value["fence"] == "CLOSED" or value["kind"] == "failed-prepare-quiescent", "failed promotion must remain CLOSED")
     return "failed"
+
+
+ENVELOPE_LIMIT = 786432
+ENVELOPE_BLOBS = {"payload": (1, 262144), "signature": (8, 72), "receipt": (1, 65536), "signing_spki": (91, 91)}
+RENDERED_TARGETS = ("processor_active_unit_task_definition_arn processor_retained_unit_task_definition_arns "
+                    "scheduler_recovery_task_definition_arn scheduler_audit_task_definition_arn")
+
+
+def _blob(value, low, high):
+    c.closed(value, "sha256 size bytes_base64")
+    c.integer(value["size"], low, high)
+    c.digest(value["sha256"])
+    encoded = value["bytes_base64"]
+    c.require(type(encoded) is str and re.fullmatch(r"[A-Za-z0-9+/]*={0,2}", encoded) is not None, "envelope base64 alphabet")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except ValueError as error:
+        raise ValueError("envelope base64 round trip") from error
+    c.require(base64.b64encode(raw).decode() == encoded and len(raw) == value["size"] and c.sha(raw) == value["sha256"],
+              "envelope raw bytes commitment")
+    return raw
+
+
+def _envelope_objects(objects, raws):
+    from tools.cnesdata_delivery.evidence import REFERENCE_FIELDS, key_valid
+    c.require(type(objects) is dict and set(objects) == {"payload", "signature", "receipt"}, "envelope exact object slots")
+    shared = {(row["bucket_arn"], row["cipher_kms_key_arn"]) for row in objects.values()}
+    c.require(len(shared) == 1 and len({row["key"] for row in objects.values()}) == 3, "envelope one bucket/cipher, distinct keys")
+    for name, row in objects.items():
+        c.closed(row, " ".join(sorted(REFERENCE_FIELDS)))
+        c.require(key_valid(row["key"]) and row["server_side_encryption"] == "aws:kms" and row["bucket_key_enabled"] is False
+                  and type(row["version_id"]) is str and 0 < len(row["version_id"]) <= 1024 and row["version_id"] != "null"
+                  and not any(ord(ch) < 32 for ch in row["version_id"])
+                  and type(row["bucket_arn"]) is str and type(row["cipher_kms_key_arn"]) is str
+                  and row["content_length"] is not True and row["content_length"] == len(raws[name])
+                  and row["content_sha256"] == c.sha(raws[name]), "envelope original object reference " + name)
+
+
+def inputs_envelope(raw, *, owner, window):
+    """Decode the closed version2 inputs.json carrier of the operational preparation plan.
+
+    Args: canonical bytes, original owner, original keeper preparation window.
+    Returns: Terraform bytes, raw activation members and their commitment.
+    Raises: ValueError on any deviation; no legacy fallback exists.
+    """
+    from tools.cnesdata_delivery.ext2_transport import validate_reference
+    value = c.loads(raw, canonical=True, limit=ENVELOPE_LIMIT)
+    c._secrets(value)
+    c.closed(value, "lifecycle_inputs_version owner preparation terraform activation")
+    c.require(type(value["lifecycle_inputs_version"]) is int and value["lifecycle_inputs_version"] == 2, "envelope version")
+    c.require(c.canonical(value["owner"]) == c.canonical(owner), "envelope original owner")
+    prepared = c.closed(value["preparation"], "admitted_at deadline observed_at")
+    for key in prepared:
+        c.integer(prepared[key])
+    c.require(prepared["admitted_at"] == window["admitted_at"] and prepared["deadline"] == window["deadline"]
+              and prepared["admitted_at"] <= prepared["observed_at"] < prepared["deadline"] <= prepared["admitted_at"] + 900,
+              "envelope original preparation window")
+    terraform = _blob(value["terraform"], 1, 131072)
+    activation = c.closed(value["activation"], "carrier_version ext2_reference ext2_governance_sha256 payload signature receipt "
+                          "signing_spki objects rendered_targets")
+    c.require(type(activation["carrier_version"]) is int and activation["carrier_version"] == 1, "envelope carrier version")
+    validate_reference(activation["ext2_reference"])
+    c.digest(activation["ext2_governance_sha256"])
+    raws = {name: _blob(activation[name], *bounds) for name, bounds in ENVELOPE_BLOBS.items()}
+    _envelope_objects(activation["objects"], raws)
+    targets = c.closed(activation["rendered_targets"], RENDERED_TARGETS)
+    retained = targets["processor_retained_unit_task_definition_arns"]
+    singles = [targets[key] for key in targets if key != "processor_retained_unit_task_definition_arns"]
+    c.require(type(retained) is list and 1 <= len(retained) <= 128 and targets["processor_active_unit_task_definition_arn"] in retained
+              and all(type(item) is str and 0 < len(item) <= 2048 for item in singles + retained), "envelope rendered targets")
+    return {"terraform": terraform, "activation": raws, "objects": activation["objects"],
+            "activation_sha256": c.sha(c.canonical(activation))}

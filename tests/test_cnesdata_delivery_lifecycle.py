@@ -341,6 +341,7 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({"mode": "observer-bootstrap"}, {}, False),
     ({"purpose": "phase-b"}, {}, False),
     ({"direction": "converge"}, {}, False),
+    ({"bare_inputs": True}, {}, False),
     ({}, {}, True),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
@@ -375,7 +376,12 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     owner = lc.owner_binding(store.value)
     raw_state = c.canonical({"lineage": "fixture", "serial": 1, "resources": []})
     state_object = {"version_id": "fixture"}
-    payload = {"plan.bin": b"synthetic-plan", "plan.json": c.canonical(plan), "inputs.json": c.canonical(inputs),
+    window = {"admitted_at": 1000, "deadline": 1900}
+    wrapped = (step["mode"] == "operational" and step["purpose"] == "application-prepare"
+               and not step.get("bare_inputs"))
+    envelope = _envelope_case(owner, window, c.canonical(inputs))[1] if wrapped else None
+    payload = {"plan.bin": b"synthetic-plan", "plan.json": c.canonical(plan),
+               "inputs.json": c.canonical(envelope) if wrapped else c.canonical(inputs),
                "checkpoint.json": c.canonical({"owner": owner, "state": c.state_identity(raw_state), "state_object": state_object,
                                                 "phase_a_originals": carrier})}
     approval = {"version": 1, "owner": owner, "purpose": step["purpose"], "direction": step["direction"],
@@ -384,7 +390,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                 "delta": {"purpose": "application-prepare", "direction": "advance", "mode": "operational", "before": {},
                           "original": {}, "created": {}, "expected_changes_sha256": c.sha(c.canonical(plan["resource_changes"])), **delta_change}}
     payload["approval.json"] = c.canonical(approval)
-    store.value["lifecycle"] = {"checkpoint_sha256": c.sha(payload["checkpoint.json"]),
+    store.value["lifecycle"] = {"checkpoint_sha256": c.sha(payload["checkpoint.json"]), **window,
                                 "predecessor_sha256": c.sha(c.canonical(carrier["origin"]))}
     monkeypatch.chdir(tmp_path)
     root = tmp_path / "product/infra/opentofu/env/prod"
@@ -393,7 +399,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     (root / ".terraform/terraform.tfstate").write_bytes(c.canonical({"backend": {"type": "s3", "config": {}}}))
     tofu = tmp_path / "fixture-tofu"
     tofu.write_bytes(b"never-executed")
-    governance = {"context_kind": owner["context_kind"], "account_id": "111122223333", "source_closure": {}, "cost": {},
+    governance = {**(_activation_governance(envelope) if wrapped else {}),
+                  "context_kind": owner["context_kind"], "account_id": "111122223333", "source_closure": {}, "cost": {},
                   "baseline": {"toolchain": {"opentofu": {"binary_sha256": c.sha(tofu.read_bytes())},
                                              "lock_sha256": c.sha((root / ".terraform.lock.hcl").read_bytes())},
                                "cost_context": {}, "cost_evidence": {}, "cost_manifest": {},
@@ -436,6 +443,10 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         with pytest.raises(ApplyBoundary):
             lr.execute("deploy")
         assert commands == ["init", "show", "apply"]
+    elif step.get("bare_inputs"):
+        with pytest.raises(ValueError, match="closed object fields"):
+            lr.execute("deploy")
+        assert commands == []
     else:
         expected_error = ("mode-canary executable oracle unavailable" if step["mode"] == approval["delta"]["mode"]
                           else "independent protected step discriminants")
@@ -723,3 +734,138 @@ def test_application_prepare_role_chain_uses_selected_static_inventory(alias):
     resolver = prepare(plan, inputs, "111122223333", "application-prepare", sources, mode="operational")
     address = "module.runtime_iam.aws_iam_role_policy." + alias + "[0]"
     assert resolver.role_producer(address) == address.replace("aws_iam_role_policy", "aws_iam_role")
+
+
+def _envelope_case(owner=None, window=None, terraform=b'{"canary_release_id":"r1"}'):
+    import base64
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    blobs = {"payload": b"p" * 40, "signature": b"s" * 70, "receipt": b"r" * 30, "signing_spki": b"k" * 91}
+    keys = {"payload": "cnesdata/prod/ext2/current/payload.json", "signature": "cnesdata/prod/ext2/current/payload.sig", "receipt": "cnesdata/prod/ext2/current/receipt.json"}
+
+    def blob(raw):
+        return {"sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
+    objects = {name: {"bucket_arn": "arn:aws:s3:::synthetic-ext2", "key": keys[name], "version_id": "v-" + name,
+                      "content_sha256": c.sha(blobs[name]), "content_length": len(blobs[name]),
+                      "server_side_encryption": "aws:kms", "bucket_key_enabled": False,
+                      "cipher_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/" + "1" * 8 + "-1111-1111-1111-" + "1" * 12}
+               for name in keys}
+    reference = {"repository": c.REPOSITORY, "run_id": "11", "run_attempt": "1", "artifact_id": "12",
+                 "artifact_digest": "sha256:" + "a" * 64, "publisher_job_id": "13", "publisher_step_number": 4,
+                 "source_sha": "d" * 40, "caller_workflow_path": ".github/workflows/publish.yml", "reusable_workflow_sha": "e" * 40}
+    targets = {"processor_active_unit_task_definition_arn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-unit:1",
+               "processor_retained_unit_task_definition_arns": ["arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-unit:1"],
+               "scheduler_recovery_task_definition_arn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-recovery:1",
+               "scheduler_audit_task_definition_arn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-audit:1"}
+    owner = owner or {"repository": c.REPOSITORY, "run_id": 41, "run_attempt": 1, "source_sha": "b" * 40, "owner_sha256": "f" * 64, "generation": 1}
+    window = window or {"admitted_at": 1000, "deadline": 1900}
+    value = {"lifecycle_inputs_version": 2, "owner": dict(owner), "preparation": {"admitted_at": window["admitted_at"], "deadline": window["deadline"], "observed_at": window["admitted_at"] + 100},
+             "terraform": blob(terraform),
+             "activation": {"carrier_version": 1, "ext2_reference": reference, "ext2_governance_sha256": "9" * 64,
+                            "payload": blob(blobs["payload"]), "signature": blob(blobs["signature"]), "receipt": blob(blobs["receipt"]),
+                            "signing_spki": blob(blobs["signing_spki"]), "objects": objects, "rendered_targets": targets}}
+    return lc, value, owner, window, terraform
+
+
+def _activation_governance(value):
+    objects = value["activation"]["objects"]
+    return {"account_id": "111122223333", "evidence_prefix": "cnesdata/prod/evidence/", "roles": {"plan": "arn:aws:iam::111122223333:role/plan"},
+            "activation_read": {"ceiling": {"bucket_arn": objects["payload"]["bucket_arn"], "cipher_kms_key_arn": objects["payload"]["cipher_kms_key_arn"],
+                                            "keys": {name: objects[name]["key"] for name in ("payload", "signature", "receipt")}},
+                                "ordinary_bucket_denies": [], "plan_role_arn": "arn:aws:iam::111122223333:role/plan",
+                                "identity_sha256": "1" * 64, "session_sha256": "2" * 64}}
+
+
+def _envelope_check(value, owner, window, raw=None):
+    lc = api()
+    return lc.inputs_envelope(c.canonical(value) if raw is None else raw, owner=owner, window=window)
+
+
+def test_inputs_envelope_aceita_o_exemplar_fechado_e_entrega_somente_bytes_terraform():
+    lc, value, owner, window, terraform = _envelope_case()
+    result = lc.inputs_envelope(c.canonical(value), owner=owner, window=window)
+    assert result["terraform"] == terraform
+    assert result["activation_sha256"] == c.sha(c.canonical(value["activation"]))
+    assert result["activation"]["payload"] == b"p" * 40 and result["activation"]["signing_spki"] == b"k" * 91
+
+
+@pytest.mark.parametrize("mutation", [
+    "version", "bool-version", "extra-top", "extra-activation", "owner", "window-admitted", "window-deadline", "observed-late",
+    "preparation-over-900", "terraform-hash", "terraform-size", "base64-padding", "base64-whitespace", "payload-hash", "spki-length",
+    "signature-short", "receipt-large", "object-slot-missing", "object-extra-slot", "object-hash", "object-length", "object-null-version",
+    "object-key-duplicate", "object-bucket-mixed", "object-cipher-mixed", "object-bucket-key-enabled", "targets-extra", "targets-missing",
+    "reference-int-id", "reference-extra", "governance-digest", "secret-field", "noncanonical", "bool-size", "carrier-version",
+])
+def test_inputs_envelope_recusa_adulteracao_antes_de_qualquer_consumo(mutation):
+    lc, value, owner, window, _ = _envelope_case()
+    activation, objects = value["activation"], value["activation"]["objects"]
+    raw = None
+    change = {
+        "version": lambda: value.update(lifecycle_inputs_version=3),
+        "bool-version": lambda: value.update(lifecycle_inputs_version=True),
+        "extra-top": lambda: value.update(extra=1),
+        "extra-activation": lambda: activation.update(extra=1),
+        "owner": lambda: value["owner"].update(generation=2),
+        "window-admitted": lambda: value["preparation"].update(admitted_at=1001),
+        "window-deadline": lambda: value["preparation"].update(deadline=1800),
+        "observed-late": lambda: value["preparation"].update(observed_at=1900),
+        "preparation-over-900": lambda: value["preparation"].update(deadline=1901),
+        "terraform-hash": lambda: value["terraform"].update(sha256="0" * 64),
+        "terraform-size": lambda: value["terraform"].update(size=value["terraform"]["size"] + 1),
+        "base64-padding": lambda: value["terraform"].update(bytes_base64=value["terraform"]["bytes_base64"].rstrip("=")),
+        "base64-whitespace": lambda: value["terraform"].update(bytes_base64=value["terraform"]["bytes_base64"][:4] + "\n" + value["terraform"]["bytes_base64"][4:]),
+        "payload-hash": lambda: activation["payload"].update(sha256="0" * 64),
+        "spki-length": lambda: activation.update(signing_spki=_blob_of(b"k" * 90)),
+        "signature-short": lambda: activation.update(signature=_blob_of(b"s" * 7)),
+        "receipt-large": lambda: activation.update(receipt=_blob_of(b"r" * 65537)),
+        "object-slot-missing": lambda: objects.pop("receipt"),
+        "object-extra-slot": lambda: objects.update(extra=dict(objects["receipt"])),
+        "object-hash": lambda: objects["payload"].update(content_sha256="0" * 64),
+        "object-length": lambda: objects["payload"].update(content_length=41),
+        "object-null-version": lambda: objects["payload"].update(version_id="null"),
+        "object-key-duplicate": lambda: objects["signature"].update(key=objects["payload"]["key"]),
+        "object-bucket-mixed": lambda: objects["signature"].update(bucket_arn="arn:aws:s3:::other"),
+        "object-cipher-mixed": lambda: objects["signature"].update(cipher_kms_key_arn="arn:aws:kms:us-east-2:111122223333:key/other"),
+        "object-bucket-key-enabled": lambda: objects["payload"].update(bucket_key_enabled=True),
+        "targets-extra": lambda: activation["rendered_targets"].update(extra="x"),
+        "targets-missing": lambda: activation["rendered_targets"].pop("scheduler_audit_task_definition_arn"),
+        "reference-int-id": lambda: activation["ext2_reference"].update(run_id=11),
+        "reference-extra": lambda: activation["ext2_reference"].update(extra="x"),
+        "governance-digest": lambda: activation.update(ext2_governance_sha256="G" * 64),
+        "secret-field": lambda: value.update(owner=value["owner"] | {"password": "x"}),
+        "noncanonical": lambda: None,
+        "bool-size": lambda: value["terraform"].update(size=True),
+        "carrier-version": lambda: activation.update(carrier_version=2),
+    }[mutation]
+    change()
+    if mutation == "noncanonical":
+        import json
+        raw = json.dumps(value, indent=1).encode()
+    with pytest.raises(ValueError):
+        lc.inputs_envelope(c.canonical(value) if raw is None else raw, owner=owner, window=window)
+
+
+def _blob_of(raw):
+    import base64
+    return {"sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
+
+
+def test_operational_inputs_confronta_objetos_com_o_teto_protegido_e_nao_tem_fallback():
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    lc, value, owner, window, terraform = _envelope_case()
+    governance = _activation_governance(value)
+    result = lr.operational_inputs(c.canonical(value), governance=governance, owner=owner, window=window)
+    assert result["terraform"] == terraform
+    with pytest.raises(ValueError, match="closed object fields"):
+        lr.operational_inputs(c.canonical({"canary_release_id": "r1"}), governance=governance, owner=owner, window=window)
+    with pytest.raises(ValueError):
+        lr.operational_inputs(c.canonical(value), governance={k: v for k, v in governance.items() if k != "activation_read"},
+                              owner=owner, window=window)
+    swapped = _activation_governance(value)
+    keys = swapped["activation_read"]["ceiling"]["keys"]
+    keys["payload"], keys["signature"] = keys["signature"], keys["payload"]
+    with pytest.raises(ValueError, match="protected activation ceiling"):
+        lr.operational_inputs(c.canonical(value), governance=swapped, owner=owner, window=window)
+    foreign = _activation_governance(value)
+    foreign["activation_read"]["ceiling"]["bucket_arn"] = "arn:aws:s3:::other-bucket"
+    with pytest.raises(ValueError, match="protected activation ceiling"):
+        lr.operational_inputs(c.canonical(value), governance=foreign, owner=owner, window=window)

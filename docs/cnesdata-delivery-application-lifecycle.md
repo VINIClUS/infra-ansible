@@ -394,6 +394,18 @@ require an Allow in every session policy, so the intersection must be confirmed
 against actual behavior. No owner-proof output for the ceiling digests exists;
 none is invented here.
 
+## Operational inputs carrier (version 2)
+
+`lifecycle_contract.inputs_envelope` decodes the closed version2 `inputs.json` of the
+operational preparation plan: original owner, original preparation window, Terraform bytes
+and the original EXT2 activation members, each with strict base64 and size/hash. The
+deploy of `application-prepare` / `operational` has no bare-JSON fallback: it unwraps the
+carrier, confronts the three object references with the protected `activation_read`
+ceiling, passes only the Terraform bytes to the var-file and derives `activation_sha256`
+from the carried activation. The audit still commits the whole envelope. The plan side
+that produces the carrier (original EXT2 authentication through two read sessions) is not
+implemented, so this deploy path refuses every plan published today.
+
 ## Paused implementation checkpoint — 2026-11-10
 
 This draft remains incomplete and disabled. The existing application/lifecycle/OIDC checkpoint passed 751 tests before the activation-policy changes. The adopted activation transport has only its exact session-policy constructor, ordinary-scope restrictions, and deadline evaluator started; two new focused tests pass. Native activation IAM rendering, original EXT2 verification and inputs transport, connected prepared production/capability/dispatcher/keeper, and the complete purpose/mode execution matrix remain unfinished. No operational readiness or applied IAM is implied. The full current patch still requires final verification and an independent code review. Work was stopped at the user’s request; no AWS operation, merge or deployment was performed.
