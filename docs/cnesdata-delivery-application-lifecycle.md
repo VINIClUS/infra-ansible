@@ -435,17 +435,29 @@ capability ancestry is strictly direct preparation -> B -> API (longer chains re
 membership input uses a minimal shared codec (`frozen_membership_sha256`, `members`); the
 expected IAM readback bodies are the historical Phase A `get_role` bodies; the evaluation
 `evidence_arn` is the closed-ready intent key with the prepared checkpoint and sequence 0.
+The effective fence scope has one derivation, `fence_policy_scope`, used by the prepared
+evaluation and recomputed by the closed-ready capability from the same projected policy
+(item 2). Before STS, the capability rebuilds the evaluated `fence_session` with the single
+constructor at the preparation deadline `min(observed_at + 180, frozen_until)` and requires its
+digest to equal the evaluation's; the API session then differs from it only in `DateLessThan`
+(item 3).
 
-Keeper loop and execute: `keeper_loop` accepts only the closed events `closed-ready` and
-`terminal`; every guard check of a journal or broker is a keeper tick, so a quiet adapter
-child still renews the lease. `application_gate execute` refuses before any AWS client,
-lease store, STS call or Keeper construction while the code-constant registries
+Keeper loop and execute are inactive by design. `keeper_loop` accepts only the closed events
+`closed-ready` and `terminal`; every guard check of a journal or broker is a keeper tick, so a
+quiet adapter child still renews the lease. `application_gate execute` refuses before any AWS
+client, lease store, STS call or Keeper construction while the code-constant registries
 `TERMINAL_VALIDATORS` and `KEEPER_EVENT_SOURCE` are empty; they are never read from
-governance, environment or request. Keeper stage advancement (application-prepare -> close
--> B -> API) is refused: the close transition requires the `close-drain` adapter operation,
-which amendment item 7 keeps rejected, and no ratified source fixes the concrete
-"authenticated input expiration" behind `input_deadline`. Construction of the operational
-Keeper from the protected binding inside `execute` is likewise not connected.
+governance, environment or request, and even with both supplied the construction of the
+operational Keeper from the protected binding is not connected. `keeper_loop`,
+`run_closed_ready` and `closed_ready_capability` have no production call site. Only
+`Keeper.acquire` writes a lifecycle lease, so the operational plan and deploy (items 6 and 9)
+refuse on the owner check before any EXT2 read, STS or apply.
+
+Second slice, after CnesData #473/#474 and a new amendment, not in this PR: the `close-drain`
+capability (amendment item 7 keeps it rejected); the authenticated trigger of each stage
+transition (application-prepare -> close -> B -> API); the source of the "authenticated
+input expiration" behind `input_deadline`; the real terminal validators; the real
+`KEEPER_EVENT_SOURCE`; and the binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
@@ -453,5 +465,5 @@ and inline documents as a union); the global NotResource premise; quotas with re
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
 IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
 present on the plan and deploy runners (which may use another image than the EXT2 gate);
-keeper stage advancement and its event producer; the product terminal validators. No operational readiness, applied IAM, production acceptance or
-integrated-code status is implied.
+keeper stage advancement and its event producer; the product terminal validators. No
+operational readiness, applied IAM, production acceptance or integrated-code status is implied.
