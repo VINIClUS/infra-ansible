@@ -194,6 +194,74 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     return keeper, owner
 
 
+def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False):
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    journal = AdapterJournal.__new__(AdapterJournal)
+    journal._pending, journal._unknown, journal._inflight, journal._failed = list(pending), list(unknown), inflight, failed
+    return journal
+
+
+def _accepted_terminal_case():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    class Store:
+        def __init__(self):
+            self.value, self.etag, self.writes = None, None, 0
+        def get(self):
+            return copy.deepcopy(self.value), self.etag
+        def put(self, value, etag):
+            assert etag == self.etag
+            self.writes += 1
+            self.value, self.etag = copy.deepcopy(value), str(self.writes)
+            return self.etag
+    historical = {"state_after": {"lineage": "original-lineage", "serial": 1, "state_sha256": "a" * 64}, "state_object": {"VersionId": "prior"}}
+    store = Store()
+    store.put({"status": "released", "checkpoint_sha256": c.sha(c.canonical(historical)), "run_id": 1}, None)
+    binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
+               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+    proof = {}
+    keeper, owner = _admitted_terminal_keeper(store, binding, historical, proof)
+    checkpoint = {"owner": owner, "state": historical["state_after"], "state_object": historical["state_object"],
+                  "phase_a_originals": keeper.phase_a_originals}
+    window = store.get()[0]["lifecycle"]
+    for stage, (duration, _) in lc.STAGES.items():
+        window = window | {"sequence": window["sequence"] + 1, "close": 1000, "fixed_deadline": 2800,
+                           "input_deadline": 3000, "stage": stage, "admitted_at": 1000, "deadline": 1000 + duration,
+                           "checkpoint_sha256": c.sha(c.canonical(checkpoint))}
+        keeper.lease.checkpoint(window)
+    proof.update(assessment={"kind": "accepted-open", "fence": "OPEN", "accepted_modes": ["unit", "recovery", "audit"],
+                             "routes_match": True, "state_clean": True, "quiescent": True, "pending": [], "unknown": [], "observed_at": 1000},
+                 checkpoint=checkpoint,
+                 inputs={name: "e" * 64 for name in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence")})
+    return keeper, store
+
+
+@pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed", "foreign", "again"])
+def test_keeper_retem_o_lease_enquanto_um_contexto_sdk_for_incerto(context):
+    keeper, store = _accepted_terminal_case()
+    reference = {"kind": "sdk-call", "reference_sha256": "f" * 64}
+    if context == "foreign":
+        with pytest.raises(ValueError, match="original adapter context"):
+            keeper.attach(object())
+        return
+    settled = _journal_with()
+    keeper.attach(settled)
+    uncertain = {"pending": _journal_with(pending=[reference]), "unknown": _journal_with(unknown=[reference]),
+                 "inflight": _journal_with(inflight=("t" * 64, {})), "failed": _journal_with(failed=True),
+                 "again": settled}.get(context)
+    keeper.attach(uncertain)
+    before = store.get()
+    if context == "again":
+        files = keeper.finish({"artifact_id": 1})
+        assert c.loads(files["terminal.json"], canonical=True)["coordination_status"] == "quiescent-released"
+        return
+    assert keeper.uncertainty()
+    with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
+        keeper.finish({"artifact_id": 1})
+    assert store.get() == before and store.get()[0]["status"] != "released"
+    keeper.tick()
+    assert store.get()[0]["status"] != "released"
+
+
 @pytest.mark.parametrize("case", ["accepted", "unknown", "unit-closed", "failed-without-decision"])
 def test_keeper_terminal_release_requires_full_original_decision(case):
     from tools.cnesdata_delivery import lifecycle_contract as lc

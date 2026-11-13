@@ -1020,6 +1020,22 @@ class Keeper:
         self.transport_raw = None
         self.lease = Lease(store, binding, clock=clock, monotonic=monotonic, previous_success=self._previous)
         self.last_renewed = None
+        self._contexts = []
+
+    def attach(self, context):
+        """Register an original journal/broker; its uncertainty keeps the lease held."""
+        c.require(type(context) in (AdapterJournal, ClosedReadyBroker), "original adapter context")
+        if not any(item is context for item in self._contexts):
+            self._contexts.append(context)
+
+    def uncertainty(self):
+        """Pending, unknown, in-flight or failed SDK state across every attached context."""
+        journals = [item.journal if type(item) is ClosedReadyBroker else item for item in self._contexts]
+        found = [{"kind": "context-failed"} for journal in journals if journal._failed]
+        found += [{"kind": "sdk-inflight"} for journal in journals if journal._inflight is not None]
+        found += [entry for journal in journals for entry in journal.pending + journal.unknown]
+        found += [entry for item in self._contexts if type(item) is ClosedReadyBroker for entry in item.uncertainty]
+        return found
 
     def _previous(self, previous):
         details = self.authenticate_previous(previous)
@@ -1119,6 +1135,7 @@ class Keeper:
         retroactively turn promotion failure into accepted promotion.
         """
         c.require(callable(self.authenticate_terminal), "terminal validator unavailable; lifecycle disabled")
+        c.require(not self.uncertainty(), "unresolved SDK uncertainty; lease remains held")
         record = self.lease.check()
         owner, window = lc.owner_binding(record), record["lifecycle"]
         proof = self.authenticate_terminal(reference, owner, dict(window))
