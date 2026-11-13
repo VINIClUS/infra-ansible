@@ -343,7 +343,7 @@ def historical_sources(api, carrier, *, current_source, paths, guard=None):
 
 def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, original_sources, source_sha,
                                   activation_source_sha, current_index, checkpoint, chain, historical, owner, fragment, producer,
-                                  predecessor_raw, predecessor_reference):
+                                  predecessor_raw, predecessor_reference, terraform_raw=None):
     """Derive one existing role from current plan/source and authenticated history.
 
     Infra producer only: supplied index/history/source closures and schema4 owner
@@ -373,7 +373,10 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
     c.integer(indexed["plan.bin"]["size"])
     for name, raw in (("plan.json", plan_raw), ("inputs.json", inputs_raw)):
         c.require(name in indexed and indexed[name]["sha256"] == c.sha(raw) and indexed[name]["size"] == len(raw), "fence original current plan/input bytes")
-    plan, inputs, state = c.loads(plan_raw, state=True), c.loads(inputs_raw, canonical=True), c.loads(state_raw, state=True)
+    # The operational plan publishes the version2 carrier as inputs.json; its hash is the
+    # current commitment while the unwrapped Terraform bytes feed the resolver.
+    inputs = c.loads(inputs_raw if terraform_raw is None else terraform_raw, canonical=True)
+    plan, state = c.loads(plan_raw, state=True), c.loads(state_raw, state=True)
     c.require(c.canonical(checkpoint["owner"]) == c.canonical(owner) and checkpoint["purpose"] == "application-prepare"
               and c.canonical(checkpoint["state"]) == c.canonical(c.state_identity(state_raw)), "fence full current state checkpoint")
     envelope, old_checkpoint, reference = historical["envelope"], historical["checkpoint"], historical["predecessor_reference"]
@@ -583,6 +586,81 @@ def fence_producer_job(api, run, source):
         numbers.append(c.integer(found[0]["number"]))
     c.require(numbers == sorted(set(numbers)), "producer step order")
     return job
+
+
+def fence_phase_a_origin(history, projection_source_files):
+    """fence-origins.json phase_a from the authenticated original carrier only."""
+    plan, applied, reference = history["envelope"]["plan"], history["envelope"]["apply"], history["predecessor_reference"]
+    indexed = {entry["name"]: entry for entry in reference["objects"]}
+    files = {name: {key: reference[key] for key in ("repository", "source_sha", "run_id", "run_attempt", "artifact_id", "artifact_digest")}
+             | {"job_id": reference["producer_job_id"], "producer_name": reference["producer_name"], "step": "applied", **indexed[name]}
+             for name in sorted(lc.FENCE_PHASE_A_FILES)}
+    return {"source_sha": plan["source_sha"], "source_closure_sha256": lc.fence_source_closure(projection_source_files),
+            "release_id": plan["release"]["release_id"], "canary_id": plan["release"]["canary_id"],
+            "candidate_sha256": plan["release"]["candidate_sha256"], "plan_binary_sha256": plan["binary_sha256"],
+            "plan_json_sha256": plan["json_sha256"], "inputs_sha256": plan["inputs_sha256"],
+            "plan_receipt": {"plan_binding_sha256": applied["plan_binding_sha256"], "consumed_plan_artifact": applied["consumed_plan_artifact"]},
+            "state": history["checkpoint"]["state_after"], "files": files}
+
+
+def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, authority, predecessor, carrier, plan_index,
+                          plan_raw, inputs_raw, terraform_raw, approval_raw, previous_raw, checkpoint_raw, state_raw,
+                          sources, activation_sha256, clock=time.time, sleep=time.sleep):
+    """Eight-file prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6).
+
+    Only protected inputs already authenticated by execute: owner/lease, schema4
+    authority, H4 predecessor and carrier, the plan index read by private_payload,
+    the audited approval, the applied checkpoint/state and product sources.
+    Returns bytes to publish; it never grants a capability.
+    """
+    from tools.cnesdata_delivery.iam_boundary import fence_effective_evaluation
+    producer_step = lc.FENCE_PREPARE_PRODUCER
+    c.require(request["step"] == producer_step["step"], "fence producer step")
+    fragment = authority.application_fragment
+    c.require(type(fragment) is dict, "fence schema4 application authority")
+    job = fence_producer_job(api, run, request["source_sha"])
+    producer = producer_step | {"repository": c.REPOSITORY, "source_sha": request["source_sha"],
+        "workflow_sha": c.digest(governance["gate_shas"]["deploy"], 40), "run_id": run["id"],
+        "run_attempt": run["run_attempt"], "job_id": job["id"]}
+    chain, baseline = current_checkpoint_chain(api, aws, governance, request, run, owner=owner, predecessor=predecessor,
+        current_raw=checkpoint_raw, approval_raw=approval_raw, previous_raw=previous_raw, producer=producer, guard=guard, now=clock())
+    history = lc.phase_a_originals(carrier)
+    original_sources = historical_sources(api, carrier, current_source=request["source_sha"], paths=sorted(sources), guard=guard)
+    checkpoint = c.loads(checkpoint_raw, canonical=True)
+    projection = fence_current_role_projection(plan_raw=plan_raw, inputs_raw=inputs_raw, terraform_raw=terraform_raw,
+        state_raw=state_raw, sources=sources, original_sources=original_sources, source_sha=request["source_sha"],
+        activation_source_sha=request["source_sha"], current_index=plan_index, checkpoint=checkpoint, chain=chain,
+        historical=history, owner=owner, fragment=fragment, producer=producer, predecessor_raw=baseline,
+        predecessor_reference=predecessor)
+    role = projection["role"]
+    observed = {row["operation"]: row["observed"] for row in history["checkpoint"]["readbacks"]
+                if row["service"] == "iam" and row["operation"] in {"get_role", "get_role_policy"}
+                and (row["observed"].get("Role", {}).get("RoleName") == role["role_name"] or row["observed"].get("RoleName") == role["role_name"])}
+    expected = {"role": {"Role": observed["get_role"]["Role"]},
+                "policy": {"RoleName": role["role_name"], "PolicyName": role["policy_name"], "PolicyDocument": role["policy"]}}
+    window = guard.window
+    readbacks = fence_role_readbacks(aws, account=governance["account_id"], expected=expected,
+        preparation_admitted_at=window["admitted_at"], preparation_deadline=window["preparation_deadline"],
+        guard=guard, clock=clock, sleep=sleep)
+    preparation = {"admitted_at": window["admitted_at"], "deadline": window["preparation_deadline"],
+                   "observed_at": readbacks["readbacks"][-1]["observed_at"]}
+    terraform = c.loads(terraform_raw, canonical=True)
+    scope, execution_prefix = fence_evaluation_scope(governance=governance, role=role,
+        control_table_arn=terraform["shared_outputs"]["control_table_arn"], owner=owner, checkpoint_sha256=c.sha(checkpoint_raw))
+    documents = fence_evaluation_documents(governance=governance, pin=authority.pin, fragment=fragment, owner=owner, role=role,
+        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"])
+    evaluation = fence_effective_evaluation(documents, scope, evaluator_source_sha=producer["workflow_sha"],
+                                            observed_at=c.utc(preparation["observed_at"]))
+    origins = {"schema_version": 1, "phase_a": fence_phase_a_origin(history, projection["source_files"]),
+               "current_source_sha": request["source_sha"],
+               "current_source_closure_sha256": c.sha(c.canonical(governance["source_closure"])),
+               "current_plan": projection["current_plan"], "projection_source_files": projection["source_files"]}
+    originals = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw, "fence-role.json": c.canonical(role),
+                 "fence-readbacks.json": c.canonical(readbacks), "fence-origins.json": c.canonical(origins),
+                 "fence-chain.json": c.canonical(chain), "fence-evaluation.json": c.canonical(evaluation)}
+    guard.check()
+    return fence_prepared_files(originals=originals, owner=owner, fragment=fragment, activation_sha256=activation_sha256,
+        producer=producer, preparation=preparation, predecessor_raw=baseline, predecessor_reference=predecessor)
 
 
 class PreparedFence(dict):
@@ -1069,13 +1147,15 @@ def execute(role):
     historical = lc.phase_a_originals(carrier)
     c.require(historical["envelope"]["plan"]["phase_a_inputs"]["canary_trusted_principal_arn"] ==
               application_authority.application_fragment["application_role_arn"], "original Phase A/current application principal")
-    payload = {}
+    payload, plan_indexes = {}, []
     for input_name, public_files in public.items():
         index, files = private_payload(aws, governance, request, run, public_files, guard=guard)
         c.require(index["step"] == step["input_jobs"][input_name]["step"], "private original producer step")
         c.require(index["owner_sha256"] == owner["owner_sha256"] and index["generation"] == owner["generation"], "payload original owner")
         c.require(not set(files) & set(payload), "ambiguous private payload")
         payload.update(files)
+        if "plan.json" in files:
+            plan_indexes.append(index)
     product = Path.cwd() / "product"
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=product, capture_output=True, text=True, check=True, timeout=5).stdout.strip()
     c.require(source == request["source_sha"], "immutable product checkout")
@@ -1177,6 +1257,15 @@ def execute(role):
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}
             result_files = {"checkpoint.json": c.canonical(checkpoint), "approval.json": payload["approval.json"]}
+            if step["purpose"] == "application-prepare" and step["mode"] == "operational":
+                # Amendment 2026-11-13 item 6: the eight-file observation is produced inside this running gate.
+                c.require(len(plan_indexes) == 1, "fence single authenticated current plan index")
+                result_files = fence_prepare_package(api=api, aws=aws, governance=governance, request=request, run=run,
+                    owner=owner, guard=guard, authority=application_authority, predecessor=predecessor, carrier=carrier,
+                    plan_index=plan_indexes[0], plan_raw=payload["plan.json"], inputs_raw=payload["inputs.json"],
+                    terraform_raw=terraform_raw, approval_raw=payload["approval.json"], previous_raw=payload["checkpoint.json"],
+                    checkpoint_raw=result_files["checkpoint.json"], state_raw=after_raw, sources=sources,
+                    activation_sha256=activation_sha256)
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)

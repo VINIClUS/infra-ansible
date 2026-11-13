@@ -344,6 +344,7 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({"direction": "converge"}, {}, False),
     ({"bare_inputs": True}, {}, False),
     ({}, {}, True),
+    ({"after_apply": True}, {}, True),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
     """Unit regression for execute's step/delta checks, not operational admission.
@@ -426,7 +427,15 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(runtime, "_environment", lambda: {})
     monkeypatch.setattr(c, "validate_cost", lambda *args, **kwargs: None)
     monkeypatch.setattr(c, "drift_coverage", lambda *args, **kwargs: None)
-    commands = []
+    commands, produced, published = [], [], []
+    after_apply = step.pop("after_apply", False)
+    if after_apply:
+        # Item 6 wiring only: the composition itself is tested in test_cnesdata_application_gate.
+        monkeypatch.setattr(c, "applied_state", lambda *args: None)
+        monkeypatch.setattr(iam_boundary, "bind_state", lambda *args: None)
+        monkeypatch.setattr(lr, "readbacks", lambda *args: [])
+        monkeypatch.setattr(lr, "fence_prepare_package", lambda **kwargs: produced.append(kwargs) or {"fence-prepared.json": b"{}\n"})
+        monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
     class ApplyBoundary(Exception):
         pass
     class Guard:
@@ -435,12 +444,21 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
             pass
         def run(self, command, **kwargs):
             commands.append(command[1])
-            if command[1] == "apply":
+            if command[1] == "apply" and not after_apply:
                 raise ApplyBoundary()
             if command[1] == "show":
                 Path(kwargs["output"]).write_bytes(payload["plan.json"])
     monkeypatch.setattr(lr, "LifecycleWatchdog", lambda *args: Guard())
-    if allowed:
+    if after_apply:
+        lr.execute("deploy")
+        assert commands == ["init", "show", "apply"] and len(produced) == len(published) == 1
+        kwargs = produced[0]
+        assert kwargs["inputs_raw"] == payload["inputs.json"] and kwargs["terraform_raw"] == c.canonical(inputs)
+        assert kwargs["previous_raw"] == payload["checkpoint.json"] and kwargs["approval_raw"] == payload["approval.json"]
+        assert kwargs["activation_sha256"] == c.sha(b"p" * 40) and kwargs["plan_index"]["step"] == "prepared"
+        assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
+        assert published[0][5] == {"fence-prepared.json": b"{}\n"}
+    elif allowed:
         with pytest.raises(ApplyBoundary):
             lr.execute("deploy")
         assert commands == ["init", "show", "apply"]

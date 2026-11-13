@@ -3344,3 +3344,109 @@ def test_fence_session_policy_rejects_non_exact_scope(mutation):
     if mutation == "deadline-bool": kwargs["deadline"] = True
     with pytest.raises(ValueError):
         session_policy.fence_session_policy(**kwargs)
+
+
+def _fence_prepare_package_case(monkeypatch, mutation=None):
+    """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
+    import base64
+    import hashlib
+    from email.utils import formatdate
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.session_owner import _terraform_document_digest
+    args = _current_fence_projection_case(probe=True)
+    owner, fragment, carrier = args["owner"], copy.deepcopy(args["fragment"]), args["checkpoint"]["phase_a_originals"]
+    account, role_name = "111122223333", "cnesdata-prod-promotion-fence-operator"
+    fence_arn = fragment["delegations"]["fence_operator"]
+    lifecycle = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/"
+    coordination = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
+        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": lifecycle + ("*" if mutation != "evaluation" else "keeper/*")}]}
+    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn}]}
+    fragment["policy_sha256"] = _terraform_document_digest(coordination)
+    pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": c.utc(5000)}
+    governance = {"account_id": account, "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/",
+        "state_bucket": "synthetic-state", "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/synthetic",
+        "gate_shas": {"deploy": "c" * 40}, "source_closure": {"infra/opentofu/env/prod/main.tf": "1" * 64},
+        "application_coordination_policy": c.canonical(coordination).decode().strip(),
+        "application_delegations": fragment["delegations"], "roles": {"application": fragment["application_role_arn"]}}
+    history = lc.phase_a_originals(carrier)
+    previous_raw = history["raw"]["checkpoint.json"]
+    checkpoint_raw = c.canonical(args["checkpoint"])
+    approval = {"version": 1, "owner": owner, "purpose": "application-prepare", "direction": "advance",
+        "plan_sha256": args["checkpoint"]["plan_sha256"], "inputs_sha256": c.sha(args["inputs_raw"]), "checkpoint_sha256": c.sha(previous_raw),
+        "delta": {"purpose": "application-prepare", "direction": "advance", "mode": "operational", "before": {}, "original": {},
+                  "created": {}, "expected_changes_sha256": "f" * 64}, "drift_matrix": {}, "readbacks": {"before": [], "after": []}}
+    request = {"source_sha": owner["source_sha"], "step": lc.FENCE_PREPARE_PRODUCER["step"],
+               "application_purpose": "promotion", "caller_binding_sha256": owner["caller_binding_sha256"]}
+    run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"]}
+    jobs = _producer_jobs_case(owner["source_sha"])
+    monkeypatch.setenv("RUNNER_NAME", "runner-7" if mutation != "runner" else "runner-8")
+    historical_source = carrier["origin"]["source_sha"]
+    blob = lambda raw: hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+    old_sources = dict(args["original_sources"])
+    if mutation == "historical-source":
+        old_sources["infra/opentofu/modules/runtime-iam/promotion.tf"] += b"# drift\n"
+    calls = []
+    class API:
+        def read(self, path, **_):
+            calls.append(("github", path))
+            root = f"repos/{c.REPOSITORY}/"
+            if "/jobs?per_page=100&page=" in path:
+                return {"total_count": len(jobs), "jobs": jobs}
+            if path == root + f"compare/{historical_source}...{owner['source_sha']}":
+                return {"status": "ahead", "merge_base_commit": {"sha": historical_source}}
+            if path == root + f"git/trees/{historical_source}?recursive=1":
+                return {"truncated": False, "tree": [{"path": k, "type": "blob", "mode": "100644", "sha": blob(v)} for k, v in old_sources.items()]}
+            name = path.removeprefix(root + "contents/").removesuffix("?ref=" + historical_source)
+            raw = old_sources[name]
+            return {"type": "file", "path": name, "encoding": "base64", "size": len(raw), "sha": blob(raw), "content": base64.b64encode(raw).decode()}
+    now = [1000.0]
+    observed_role = copy.deepcopy(next(r["observed"] for r in history["checkpoint"]["readbacks"] if r["operation"] == "get_role"))
+    observed_policy = copy.deepcopy(next(r["observed"] for r in history["checkpoint"]["readbacks"] if r["operation"] == "get_role_policy"))
+    responses = {"get_role": observed_role, "list_role_policies": {"PolicyNames": [role_name + "-gate"], "IsTruncated": False},
+                 "list_attached_role_policies": {"AttachedPolicies": [], "IsTruncated": False}, "get_role_policy": observed_policy}
+    class AWS:
+        def call(self, service, operation, **parameters):
+            calls.append((service, operation))
+            assert service == "iam" and parameters["RoleName"] == role_name
+            now[0] += 0.5
+            body = copy.deepcopy(responses[operation])
+            if mutation == "readback" and operation == "get_role" and len([x for x in calls if x[1] == "get_role"]) == 2:
+                body["Role"]["RoleId"] = "AROAREPLACED"
+            return body | {"ResponseMetadata": {"RequestId": f"req-{len(calls)}", "HTTPStatusCode": 200,
+                                                "HTTPHeaders": {"date": formatdate(now[0], usegmt=True)}}}
+    class Guard:
+        window = {"admitted_at": 1000, "preparation_deadline": 1900}
+        def check(self, seconds=0): pass
+    kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
+        authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
+        plan_index=args["current_index"], plan_raw=args["plan_raw"], inputs_raw=args["inputs_raw"], terraform_raw=args["inputs_raw"],
+        approval_raw=c.canonical(approval), previous_raw=previous_raw, checkpoint_raw=checkpoint_raw, state_raw=args["state_raw"],
+        sources=args["sources"], activation_sha256="1" * 64, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s))
+    return kwargs, calls, fragment
+
+
+@pytest.mark.parametrize("mutation", [None, "runner", "historical-source", "readback", "evaluation"])
+def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(monkeypatch, mutation):
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    kwargs, calls, fragment = _fence_prepare_package_case(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError):
+            lr.fence_prepare_package(**kwargs)
+        if mutation == "runner":
+            assert all(kind == "github" for kind, _ in calls) and len(calls) == 1
+        return
+    files = lr.fence_prepare_package(**kwargs)
+    assert set(files) == lc.FENCE_PREPARE_FILES
+    manifest = c.loads(files["fence-prepared.json"], canonical=True)
+    assert manifest["producer"]["job_id"] == 4242 and manifest["outcome"] == "observed"
+    origins = c.loads(files["fence-origins.json"], canonical=True)
+    assert origins["phase_a"]["source_closure_sha256"] == c.sha(c.canonical(origins["projection_source_files"]))
+    evaluation = c.loads(files["fence-evaluation.json"], canonical=True)
+    assert all(case["observed"] is case["expected"] for case in evaluation["cases"])
+    assert len([1 for kind, _ in calls if kind == "iam"]) == 8
+    lc.validate_fence_prepared_package(files, owner=kwargs["owner"], fragment=fragment, activation_sha256="1" * 64,
+        producer=manifest["producer"], preparation=manifest["preparation"],
+        originals={name: raw for name, raw in files.items() if name != "fence-prepared.json"},
+        predecessor_raw=kwargs["previous_raw"], predecessor_reference=kwargs["predecessor"])
