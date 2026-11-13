@@ -3536,6 +3536,9 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
     activation = b"original-ext2-payload-bytes"
     kwargs["activation_sha256"] = c.sha(activation)
+    if mutation == "frozen":
+        # Positive variant: the freeze falls between observed_at and observed_at + 180.
+        kwargs["authority"].pin["frozen_until"] = c.utc(1100)
     if mutation == "session-document":
         # A producer whose evaluated fence session differs beyond DateLessThan (one more leading key):
         # the package stays internally consistent, the evaluation still passes, only item 3 can tell.
@@ -3632,6 +3635,25 @@ def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutat
     assert len(sts_calls) == 1 and sts_calls[0][2]["RoleSessionName"] == "promotion-fence-r1"
     assert keeper.uncertainty() == []
 
+
+def test_closed_ready_capability_rebuilds_the_prepared_session_at_the_freeze_deadline(monkeypatch):
+    """Item 3, frozen branch: min(observed_at + 180, frozen_until) resolves to frozen_until and still matches."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, "frozen")
+    prepared = args["prepared"]
+    manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+    assert manifest["preparation"]["observed_at"] < 1100 < manifest["preparation"]["observed_at"] + 180
+    evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+    cases = {case["case_id"]: case for case in evaluation["cases"]}
+    assert cases["freeze-expired"]["context"]["aws:CurrentTime"] == c.utc(1100)
+    role = c.loads(prepared["fence-role.json"], canonical=True)
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    derived = lr.fence_policy_scope(args["governance"], role["policy"])
+    at_freeze = session_policy.fence_session_policy(control_table_arn=derived["control_table_arn"],
+        execution_prefix=derived["execution_prefix"], deadline=1100)
+    assert evaluation["documents"]["fence_session"] == c.sha(c.canonical(at_freeze))
+    broker = ag.closed_ready_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and len(sts_calls) == 1 and keeper.uncertainty() == []
 
 def test_fence_scope_has_one_derivation_shared_by_prepare_and_capability(monkeypatch):
     """Amendment 2026-11-13 item 2: the capability recomputes the scope from the same policy with the same symbol."""
