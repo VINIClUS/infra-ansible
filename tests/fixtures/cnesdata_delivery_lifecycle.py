@@ -2,6 +2,7 @@
 
 Source package606daf93; session-vectors schema v2 and caller-vectors schema v4.
 Only immutable inputs and independently reviewed expected bytes/digests below.
+Vectors still match CnesData develop f06cc7dd (#503); d58a7e4f is a synthetic binding value.
 """
 
 MODE_SESSION_VECTORS = [{'alias': 'mode_seed',
