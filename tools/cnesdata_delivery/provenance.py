@@ -21,6 +21,105 @@ BASE_CHECKS = {"source-develop-checks", "artifact-origin-attempt-expiry", "depen
                "cost-ledger-purpose-scope", "drift-baseline"}
 
 
+def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer_name, artifact_name, application_purpose="promotion"):
+    """Authenticate a completed producer job while its keeper run remains live."""
+    from tools.cnesdata_delivery.lifecycle_contract import APPLICATION_CALLERS
+    require(application_purpose in APPLICATION_CALLERS, "closed lifecycle artifact caller")
+    closed(reference, "artifact_id artifact_digest job_id")
+    integer(reference["artifact_id"])
+    integer(reference["job_id"])
+    digest(source, 40)
+    require(reference["artifact_digest"] == "sha256:" + digest(reference["artifact_digest"].removeprefix("sha256:")), "lifecycle artifact digest")
+    prefix = f"repos/{REPOSITORY}"
+    run = api.read(f"{prefix}/actions/runs/{run_id}/attempts/{attempt}")
+    require(run["id"] == run_id and run["run_attempt"] == attempt and run["head_sha"] == source
+            and run["event"] == "workflow_dispatch" and run["repository"]["full_name"] == REPOSITORY
+            and run["path"].split("@")[0] == APPLICATION_CALLERS[application_purpose]["workflow_path"], "lifecycle producer run")
+    job = api.read(f"{prefix}/actions/jobs/{reference['job_id']}")
+    require(job["run_id"] == run_id and job["run_attempt"] == attempt and job["head_sha"] == source
+            and job["name"] == producer_name and job["status"] == "completed" and job["conclusion"] == "success",
+            "completed original producer job required")
+    path = f"{prefix}/actions/artifacts/{reference['artifact_id']}"
+    metadata = api.read(path)
+    require(metadata["id"] == reference["artifact_id"] and metadata["digest"] == reference["artifact_digest"]
+            and metadata["name"] == artifact_name
+            and metadata["workflow_run"]["id"] == run_id and metadata["workflow_run"]["head_sha"] == source
+            and metadata.get("expired") is False and instant(metadata["expires_at"]) > now
+            and instant(job["started_at"]) < instant(metadata["created_at"]) < instant(job["completed_at"]),
+            "artifact exact job interval/attempt")
+    raw = api.read(path + "/zip", raw=True)
+    require("sha256:" + sha(raw) == reference["artifact_digest"], "artifact original archive bytes")
+    return unzip(raw)
+
+
+def application_caller(api, governance, run, role, step, *, include_job=False):
+    """Original caller source and running job, independent of future receipts."""
+    import base64
+    from tools.cnesdata_delivery import contract as c, lifecycle_contract as lc
+    purpose = governance["application_purpose"]
+    c.require(purpose in lc.APPLICATION_CONTEXTS and governance["context_kind"] == lc.APPLICATION_CONTEXTS[purpose],
+              "application purpose/context")
+    caller = lc.APPLICATION_CALLERS[purpose]
+    source = c.digest(governance["source_sha"], 40)
+    c.require(run["repository"]["full_name"] == caller["repository"] and run["path"].split("@")[0] == caller["workflow_path"]
+              and run["head_sha"] == source and run["head_branch"] == "develop"
+              and run["event"] == "workflow_dispatch" and run["status"] == "in_progress", "original purpose caller run")
+    c.require(os.environ.get("GITHUB_WORKFLOW_REF") == caller["repository"] + "/" + caller["workflow_path"] + "@" + caller["ref"]
+              and os.environ.get("GITHUB_WORKFLOW_SHA") == source and os.environ.get("GITHUB_JOB") == step["producer_job"],
+              "original caller workflow/job environment")
+    manifest = governance["application_product_source_manifest"]
+    c.closed(manifest, "version source_sha files")
+    c.require(type(manifest["version"]) is int and manifest["version"] == 1 and manifest["source_sha"] == source
+              and type(manifest["files"]) is dict and 1 <= len(manifest["files"]) <= 16384
+              and c.sha(c.canonical(manifest, limit=4 * 1024**2)) == c.digest(governance["application_product_source_closure_sha256"]),
+              "original caller source closure")
+    document = api.read(f"repos/{c.REPOSITORY}/contents/{caller['workflow_path']}?ref={source}", maximum=2 * 1024**2)
+    c.require(document["encoding"] == "base64", "caller original source encoding")
+    raw = base64.b64decode(document["content"].replace("\n", ""), validate=True)
+    c.require(len(raw) <= 1024**2 and c.sha(raw) == c.digest(manifest["files"][caller["workflow_path"]]), "caller original workflow bytes")
+    path = (".github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
+            else f".github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
+    expected = "VINIClUS/infra-ansible/" + path + "@" + c.digest(governance["gate_shas"][role], 40)
+    # GitHub authenticates the executed reusable reference, including its literal
+    # @ref. Measuring the source bytes plus this exact @SHA avoids an unpinned
+    # YAML parser in preflight and does not accept a branch resolved to that SHA.
+    references = [item for item in run.get("referenced_workflows", [])
+                  if item["path"].startswith("VINIClUS/infra-ansible/" + path + "@")]
+    c.require(len(references) == 1 and references[0]["path"] == expected
+              and references[0]["sha"] == governance["gate_shas"][role], "caller original reusable invocation")
+    jobs, total = [], None
+    for page in range(1, 21):
+        response = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page={page}")
+        c.integer(response["total_count"], 0, 2000)
+        if total is None:
+            total = response["total_count"]
+        c.require(response["total_count"] == total and type(response["jobs"]) is list, "original job inventory changed")
+        jobs.extend(response["jobs"])
+        if len(jobs) >= total:
+            break
+    c.require(len(jobs) == total and len({j["id"] for j in jobs}) == total, "complete original job inventory")
+    matches = [job for job in jobs if job["name"] == step["job_name"]]
+    c.require(len(matches) == 1, "unique original current job")
+    job = matches[0]
+    c.integer(job["id"])
+    c.require(job["run_id"] == run["id"] and job["run_attempt"] == run["run_attempt"] and job["head_sha"] == source
+              and job["status"] == "in_progress" and job["conclusion"] is None, "original running caller job")
+    c.require(type(step["admission_steps"]) is list and 1 <= len(step["admission_steps"]) <= 4
+              and all(type(name) is str and 1 <= len(name) <= 128 for name in step["admission_steps"])
+              and len(set(step["admission_steps"])) == len(step["admission_steps"]), "closed original admission steps")
+    active = [item for item in job["steps"] if item["status"] == "in_progress"]
+    c.require(len(active) == 1 and active[0]["name"] in step["admission_steps"], "original current admission step")
+    producer = {"workflow_sha": governance["gate_shas"]["application"],
+                "source_closure_sha256": governance["application_source_closure_sha256"]}
+    binding = lc.application_caller_binding({"application_purpose": purpose, "context_kind": governance["context_kind"],
+        **caller, "source_sha": source, "run_id": run["id"], "run_attempt": run["run_attempt"],
+        "producer_workflow_sha": producer["workflow_sha"], "producer_source_closure_sha256": producer["source_closure_sha256"],
+        "event": run["event"], "fragment_version": 4}, producer)
+    original_job = {"repository": caller["repository"], "source_sha": source, "run_id": run["id"],
+                    "run_attempt": run["run_attempt"], "job_id": job["id"], "producer_name": job["name"]}
+    return (binding, original_job) if include_job else binding
+
+
 def historical_plan_governance(governance, purpose):
     """The earlier input proof cannot contain the artifact it later produces."""
     current = set(governance["artifact_purposes"])

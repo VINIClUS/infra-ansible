@@ -1,4 +1,15 @@
 locals {
+  delivery_activation = var.github_delivery == null ? null : var.github_delivery.activation_read
+  delivery_activation_objects = local.delivery_activation == null ? [] : [
+    for slot in ["payload", "signature", "receipt"] : "${local.delivery_activation.bucket_arn}/${local.delivery_activation.keys[slot]}"
+  ]
+  delivery_activation_bucket_reads = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
+  delivery_activation_allows = concat(
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = ["s3:GetObjectVersion", "s3:GetObjectRetention"], Resource = local.delivery_activation_objects }],
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = local.delivery_activation_bucket_reads, Resource = local.delivery_activation.bucket_arn }],
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = local.delivery_activation.cipher_kms_key_arn,
+    Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = local.delivery_activation_objects } } }]
+  )
   delivery_roles = var.github_delivery == null ? {} : {
     plan   = { name = var.github_delivery.plan_role_name, sha = var.github_delivery.plan_workflow_sha }
     deploy = { name = var.github_delivery.deploy_role_name, sha = var.github_delivery.deploy_workflow_sha }
@@ -22,6 +33,8 @@ locals {
     "wafv2:GetWebACL", "wafv2:ListTagsForResource"
   ]
   delivery_product_writes = [
+    "states:CreateStateMachine", "states:DeleteStateMachine", "scheduler:CreateSchedule", "scheduler:CreateScheduleGroup",
+    "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup", "events:DeleteRule", "cloudwatch:DeleteAlarms",
     "acm:AddTagsToCertificate", "acm:RemoveTagsFromCertificate",
     "athena:UpdateWorkGroup", "athena:TagResource", "athena:UntagResource",
     "cloudfront:UpdateDistribution", "cloudfront:UpdateCachePolicy", "cloudfront:UpdateOriginAccessControl", "cloudfront:UpdateResponseHeadersPolicy", "cloudfront:UpdateFunction", "cloudfront:PublishFunction", "cloudfront:TagResource", "cloudfront:UntagResource",
@@ -94,12 +107,14 @@ resource "aws_iam_role_policy" "delivery" {
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.evidence_bucket_arn, Condition = { StringLike = { "s3:prefix" = "${var.github_delivery.evidence_prefix}*" } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = ["${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate*", "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"] } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.evidence_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}*" } } }
+      ], var.application_promotion == null ? [] : [
+      { Effect = "Allow", Action = ["scheduler:ListSchedules"], Resource = "*" }
       ], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
       { Effect = "Allow", Action = concat(tolist(setsubtract(toset(local.delivery_product_reads), toset(local.delivery_global_reads))), local.delivery_bucket_reads), Resource = var.github_delivery.read_resource_arns }
       ], [for statement in concat([
         { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
         ], [for statement in var.github_delivery.product_permissions : { Effect = "Allow", Action = statement.actions, Resource = statement.resources }],
         [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }]
-    ) : statement if each.key == "deploy"])
+    ) : statement if each.key == "deploy"], [for statement in local.delivery_activation_allows : statement if each.key == "plan"])
   })
 }

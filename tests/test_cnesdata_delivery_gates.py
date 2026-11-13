@@ -119,40 +119,55 @@ def test_actionlint_executes_pinned_workflows():
                              for gate in ("plan", "deploy")]], check=True)
 
 
-def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
+def _import_closure(entries):
     import ast
-    import re
-    import yaml
     package = "tools.cnesdata_delivery"
     directory = ROOT / "tools/cnesdata_delivery"
-    required, pending = set(), {"plan_gate", "apply_gate"}
+    required, pending = set(), set(entries)
     while pending:
-        module = pending.pop()
-        name = module + ".py"
+        name = pending.pop() + ".py"
         if name in required:
             continue
         required.add(name)
         for node in ast.walk(ast.parse((directory / name).read_text())):
-            if isinstance(node, ast.ImportFrom):
-                if node.module == package:
-                    pending.update(alias.name for alias in node.names)
-                elif node.module and node.module.startswith(package + "."):
-                    pending.add(node.module.removeprefix(package + ".").split(".", 1)[0])
-    required.add("runtime-requirements.txt")
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module == package:
+                pending.update(alias.name for alias in node.names)
+            elif node.module and node.module.startswith(package + "."):
+                pending.add(node.module.removeprefix(package + ".").split(".", 1)[0])
+    return required | {"runtime-requirements.txt"}
+
+
+def _fetch_lists(workflow_name):
+    import ast
+    import re
+    raw = (ROOT / f".github/workflows/{workflow_name}").read_text()
+    return raw, [ast.literal_eval(value) for value in re.findall(r"files = (\[[\s\S]*?\])", raw)]
+
+
+def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
+    import yaml
+    required = _import_closure({"plan_gate", "apply_gate"})
     lists = []
     for gate in ("plan", "deploy"):
-        raw = (ROOT / f".github/workflows/reusable-cnesdata-infra-{gate}-gate.yml").read_text()
-        workflow = yaml.safe_load(raw)
-        assert set(workflow["on"]["workflow_call"]["inputs"]) == {
+        raw, found = _fetch_lists(f"reusable-cnesdata-infra-{gate}-gate.yml")
+        assert set(yaml.safe_load(raw)["on"]["workflow_call"]["inputs"]) == {
             "request_descriptor", "request_descriptor_sha256", "contract_repository", "contract_source_sha",
             "contract_path", "contract_sha256", "expected_source_sha", "purpose"}
-        values = re.findall(r"files = (\[[\s\S]*?\])", raw)
-        assert len(values) == 2
-        lists.extend(ast.literal_eval(value) for value in values)
+        assert len(found) == 2
+        lists.extend(found)
     assert len(lists) == 4
     for names in lists:
         assert len(names) == len(set(names))
         assert set(names) == required
+
+
+def test_application_gate_bootstrap_fetches_complete_runtime_import_closure():
+    _, found = _fetch_lists("reusable-cnesdata-application-gate.yml")
+    assert len(found) == 1
+    assert len(found[0]) == len(set(found[0]))
+    assert set(found[0]) == _import_closure({"application_gate"})
 
 
 def test_purpose_cost_pre_requires_real_guardrail_context(contract):

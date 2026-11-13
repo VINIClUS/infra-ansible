@@ -1,0 +1,171 @@
+---
+name: CnesData application gate
+
+"on":
+  workflow_call:
+    inputs:
+      request_descriptor:
+        required: true
+        type: string
+      request_descriptor_sha256:
+        required: true
+        type: string
+      contract_repository:
+        required: true
+        type: string
+      contract_source_sha:
+        required: true
+        type: string
+      contract_path:
+        required: true
+        type: string
+      contract_sha256:
+        required: true
+        type: string
+      expected_source_sha:
+        required: true
+        type: string
+      purpose:
+        required: true
+        type: string
+    outputs:
+      evidence_run_id:
+        value: ${{ jobs.execute.outputs.evidence_run_id }}
+      evidence_artifact_id:
+        value: ${{ jobs.execute.outputs.evidence_artifact_id }}
+      evidence_artifact_digest:
+        value: ${{ jobs.execute.outputs.evidence_artifact_digest }}
+      evidence_status:
+        value: ${{ jobs.execute.outputs.evidence_status }}
+
+permissions: {}
+
+env:
+  REQUEST_DESCRIPTOR: ${{ inputs.request_descriptor }}
+  REQUEST_DESCRIPTOR_SHA256: ${{ inputs.request_descriptor_sha256 }}
+  CONTRACT_REPOSITORY: ${{ inputs.contract_repository }}
+  CONTRACT_SOURCE_SHA: ${{ inputs.contract_source_sha }}
+  CONTRACT_PATH: ${{ inputs.contract_path }}
+  CONTRACT_SHA256: ${{ inputs.contract_sha256 }}
+  EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+  PURPOSE: ${{ inputs.purpose }}
+  DELIVERY_ROLE: application
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+    outputs:
+      evidence_run_id: ${{ steps.gate.outputs.evidence_run_id }}
+      evidence_artifact_id: ${{ steps.gate.outputs.evidence_artifact_id }}
+      evidence_artifact_digest: ${{ steps.gate.outputs.evidence_artifact_digest }}
+      evidence_status: ${{ steps.gate.outputs.evidence_status }}
+    steps:
+      - name: Load actual immutable producer from authenticated run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYBOOT'
+          import base64, json, os, re, urllib.request
+          from pathlib import Path
+          repo = "VINIClUS/CnesData"
+          assert os.environ["DELIVERY_ROLE"] == "application"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          assert re.fullmatch("[0-9a-f]{40}", os.environ["EXPECTED_SOURCE_SHA"])
+          gov = json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"])
+          assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
+          assert type(gov.get("application_configuration")) is dict
+          fragment = gov.get("application_fragment")
+          assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                  and fragment["fragment_version"] == 4)
+          callers = {"promotion": ("promote-production.yml", "promotion"),
+                     "mode-readiness-drill": ("readiness-production.yml", "readiness")}
+          caller, context = callers[gov["application_purpose"]]
+          assert gov["context_kind"] == context
+          def get(path):
+              request = urllib.request.Request("https://api.github.com/repos/" + path,
+                  headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                          "Accept": "application/vnd.github+json"})
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.loads(response.read(2097152))
+          run = get(repo + "/actions/runs/" + os.environ["GITHUB_RUN_ID"]
+                  + "/attempts/" + os.environ["GITHUB_RUN_ATTEMPT"])
+          assert run["head_sha"] == os.environ["EXPECTED_SOURCE_SHA"]
+          assert run["run_attempt"] == int(os.environ["GITHUB_RUN_ATTEMPT"])
+          assert run["repository"]["full_name"] == repo and run["event"] == "workflow_dispatch"
+          assert run["head_branch"] == "develop" and run["status"] == "in_progress"
+          assert run["path"].split("@")[0] == ".github/workflows/" + caller
+          path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml"
+          refs = [r for r in run.get("referenced_workflows", []) if r["path"].startswith(path + "@")]
+          assert len(refs) == 1
+          pin = refs[0]["sha"]
+          assert (re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
+                  and pin == gov["gate_shas"]["application"])
+          files = ["contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py", "runtime.py",
+                   "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
+                   "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
+                   "iam_boundary.py", "session_owner.py", "session_grouping.py", "runtime-requirements.txt"]
+          root = Path("tools/cnesdata_delivery")
+          root.mkdir(parents=True, exist_ok=True)
+          for name in files:
+              item = get("VINIClUS/infra-ansible/contents/tools/cnesdata_delivery/" + name + "?ref=" + pin)
+              assert item["type"] == "file" and item["encoding"] == "base64" and item["size"] <= 262144
+              raw = base64.b64decode(item["content"].replace("\n", ""), validate=True)
+              assert len(raw) == item["size"]
+              (root / name).write_bytes(raw)
+          PYBOOT
+      - name: Verify complete public source and admission proof
+        run: python3 -m tools.cnesdata_delivery.application_gate preflight
+      - name: Check out authenticated exact product source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: VINIClUS/CnesData
+          ref: ${{ inputs.expected_source_sha }}
+          path: product
+          persist-credentials: false
+      - name: Check out pinned artifact SDK bundle
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: actions/upload-artifact
+          ref: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+          path: .delivery-uploader
+          persist-credentials: false
+      - name: Set pinned Node runtime for the artifact SDK
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.11.1"
+          package-manager-cache: false
+      - name: Install checksum-locked protected runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/delivery-python"
+          "${RUNNER_TEMP}/delivery-python/bin/pip" install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
+          echo "${RUNNER_TEMP}/delivery-python/bin" >> "${GITHUB_PATH}"
+      - name: Bridge masked artifact runtime from Node action handler
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            for (const name of ["ACTIONS_RUNTIME_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RESULTS_URL"]) {
+              const value = process.env[name];
+              if (!value) throw new Error("Artifact runtime unavailable: " + name);
+              core.setSecret(value);
+              core.exportVariable(name, value);
+            }
+      - name: Repeat source gate then request exact OIDC role
+        run: python3 -m tools.cnesdata_delivery.application_gate credentials
+      - name: Execute under CAS watchdog and verify final publication
+        id: gate
+        run: python3 -m tools.cnesdata_delivery.application_gate execute

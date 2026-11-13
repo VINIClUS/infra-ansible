@@ -88,7 +88,19 @@ jobs:
           assert run["run_attempt"] == int(os.environ["GITHUB_RUN_ATTEMPT"])
           assert run["repository"]["full_name"] == repo
           assert run["event"] == "workflow_dispatch"
+          lifecycle = {"application-prepare", "phase-b", "phase-c-recovery", "phase-c-audit", "static-maintenance"}
           name = "infra-plan.yml" if role == "plan" else "infra-apply.yml"
+          if os.environ["PURPOSE"] in lifecycle:
+              gov = json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"])
+              assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
+              assert type(gov.get("application_configuration")) is dict
+              fragment = gov.get("application_fragment")
+              assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                      and fragment["fragment_version"] == 4)
+              callers = {"promotion": ("promote-production.yml", "promotion"),
+                         "mode-readiness-drill": ("readiness-production.yml", "readiness")}
+              name, context = callers[gov["application_purpose"]]
+              assert gov["context_kind"] == context
           assert run["path"].split("@")[0] == ".github/workflows/" + name
           path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-" + role + "-gate.yml"
           refs = [r for r in run.get("referenced_workflows", []) if r["path"].startswith(path + "@")]
@@ -96,7 +108,8 @@ jobs:
           pin = refs[0]["sha"]
           assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
           files = ["contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py",
-                   "runtime.py", "outputs.py", "session_policy.py", "iam_expression.py",
+                   "runtime.py", "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py",
+                   "outputs.py", "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py",
                    "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py",
                    "plan_gate.py", "apply_gate.py", "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
@@ -150,7 +163,19 @@ jobs:
           assert run["run_attempt"] == int(os.environ["GITHUB_RUN_ATTEMPT"])
           assert run["repository"]["full_name"] == repo
           assert run["event"] == "workflow_dispatch"
+          lifecycle = {"application-prepare", "phase-b", "phase-c-recovery", "phase-c-audit", "static-maintenance"}
           name = "infra-plan.yml" if role == "plan" else "infra-apply.yml"
+          if os.environ["PURPOSE"] in lifecycle:
+              gov = json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"])
+              assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
+              assert type(gov.get("application_configuration")) is dict
+              fragment = gov.get("application_fragment")
+              assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
+                      and fragment["fragment_version"] == 4)
+              callers = {"promotion": ("promote-production.yml", "promotion"),
+                         "mode-readiness-drill": ("readiness-production.yml", "readiness")}
+              name, context = callers[gov["application_purpose"]]
+              assert gov["context_kind"] == context
           assert run["path"].split("@")[0] == ".github/workflows/" + name
           path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-" + role + "-gate.yml"
           refs = [r for r in run.get("referenced_workflows", []) if r["path"].startswith(path + "@")]
@@ -158,7 +183,8 @@ jobs:
           pin = refs[0]["sha"]
           assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
           files = ["contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py",
-                   "runtime.py", "outputs.py", "session_policy.py", "iam_expression.py",
+                   "runtime.py", "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py",
+                   "outputs.py", "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py",
                    "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py",
                    "plan_gate.py", "apply_gate.py", "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")

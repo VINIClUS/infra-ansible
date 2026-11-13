@@ -434,3 +434,11 @@ GetObjectVersion/ListBucketVersions às roles delivery e não se leem outros sta
 Versões do state compartilhado continuam responsabilidade dos respectivos owners.
 A dispensa de migração/preservação dos dados de aplicação dos protótipos não dispensa
 este controle de state/plan de infraestrutura, identidade e proveniência.
+
+## Application lifecycle extension
+
+The continuous owner application lifecycle is documented separately in
+[cnesdata-delivery-application-lifecycle.md](cnesdata-delivery-application-lifecycle.md).
+Its new purposes retain these initial interfaces and the original 1980-second
+guard; application activation remains disabled until the separately governed
+product ABI, predecessor transport and integration proofs are complete.

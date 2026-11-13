@@ -24,6 +24,9 @@ from tools.cnesdata_delivery.iam_expression import (
 
 type Node = dict[str, Any]
 ROOT = "infra/opentofu/env/prod"
+MODE_POLICIES = {f"module.runtime_iam.aws_iam_role_policy.{name}[0]":
+                 f"module.runtime_iam.aws_iam_role.{name}[0]"
+                 for name in ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")}
 POLICIES = {
     f"module.runtime_iam.aws_iam_role_policy.{name}[0]": name
     for name in (
@@ -66,7 +69,7 @@ class Identity:
 
 
 class SourceResolver:
-    def __init__(self, plan: Node, sources: dict[str, bytes], bindings: Node):
+    def __init__(self, plan: Node, sources: dict[str, bytes], bindings: Node, *, projection=None):
         require(
             all(type(data) is bytes and len(data) <= 256 * 1024 for data in sources.values()),
             "iam=source_size",
@@ -84,8 +87,27 @@ class SourceResolver:
                 require(canonical_bytes(value) == canonical_bytes(variables[name]["value"]), "iam=approved_input_binding")
         require(variables.get("shared_outputs", {}).get("value", {}).get("account_id") == bindings["account_id"], "iam=account_binding")
         purpose = bindings.get("purpose", "phase-a")
-        require(purpose in {"phase-a", "bootstrap", "acm-certificate"}, "iam=purpose")
-        self.policies = (POLICIES if purpose == "phase-a" else BOOTSTRAP_POLICIES if purpose == "bootstrap" else {})
+        mode = bindings.get("mode")
+        require(mode != "mode-canary" or purpose == "application-prepare", "iam=mode_prepare_purpose")
+        from tools.cnesdata_delivery.lifecycle_contract import PURPOSES
+        require(purpose in {"phase-a", "bootstrap", "acm-certificate"} | PURPOSES, "iam=purpose")
+        lifecycle_policies = {
+            "phase-b": {"module.runtime_iam.aws_iam_role_policy.api[0]": None},
+            **{f"phase-c-{mode}": {f'module.schedulers.aws_iam_role_policy.run["{mode}"]':
+                f'module.schedulers.aws_iam_role.scheduler["{mode}"]'} for mode in ("recovery", "audit")},
+            "application-prepare": {f"module.runtime_iam.aws_iam_role_policy.static_{name}[0]":
+                f"module.runtime_iam.aws_iam_role.static_{name}[0]" for name in ("observer", "normal", "recovery")},
+            "static-maintenance": {},
+        }
+        self.policies = (POLICIES if purpose == "phase-a" else BOOTSTRAP_POLICIES if purpose == "bootstrap"
+                         else lifecycle_policies.get(purpose, {}))
+        if mode == "mode-canary":
+            self.policies = MODE_POLICIES
+        require(projection in {None, "fence-noop"}, "iam=projection_scope")
+        if projection == "fence-noop":
+            require(purpose == "application-prepare" and mode == "operational", "iam=fence_projection_context")
+            self.policies = {"module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]":
+                             "module.runtime_iam.aws_iam_role.promotion_fence_operator[0]"}
         self.budget = Budget()
         self.changes = {item["address"]: item for item in plan["resource_changes"]}
         require(len(self.changes) == len(plan["resource_changes"]), "iam=duplicate_resource")
@@ -118,6 +140,13 @@ class SourceResolver:
     def resource_file(self, module: str, name: str) -> str:
         if module == "runtime_iam":
             base = name.rsplit(".", 1)[-1]
+            if base in {"mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe"}:
+                require(self.bindings.get("purpose") == "application-prepare" and self.bindings.get("mode") == "mode-canary"
+                        and name.startswith(("aws_iam_role.", "aws_iam_role_policy.")), "iam=mode_resource_scope")
+                return "mode-canary.tf"
+            if base in {"static_observer", "static_normal", "static_recovery"}:
+                require(name.startswith(("aws_iam_role.", "aws_iam_role_policy.")), "iam=static_resource_scope")
+                return "static-promotion.tf"
             require(
                 base in set(POLICIES.values()) | {"task", "execution", "runtime", "api"}
                 and name.startswith(("aws_iam_role.", "aws_iam_role_policy.")),
@@ -129,6 +158,8 @@ class SourceResolver:
                 return "task-roles.tf"
             return "step-functions.tf" if base == "step_functions" else "canary.tf"
         profiles = {
+            ("static_web", "aws_s3_bucket.this"): "main.tf",
+            ("static_web", "aws_cloudfront_distribution.this"): "main.tf",
             ("schedulers", "aws_iam_role.scheduler"): "iam.tf",
             ("schedulers", "aws_iam_role_policy.run"): "iam.tf",
             ("athena", "aws_iam_role.cutoff"): "main.tf",
@@ -157,6 +188,12 @@ class SourceResolver:
             require(not module, "iam=nested_module_unsupported")
             file = "main.tf"
         elif kind == "locals":
+            if module == "runtime_iam" and field.startswith("mode_canary"):
+                require(self.bindings.get("purpose") == "application-prepare" and self.bindings.get("mode") == "mode-canary",
+                        "iam=mode_local_scope")
+                return directory + "/mode-canary.tf"
+            if module == "runtime_iam" and field.startswith("static_"):
+                return directory + "/static-promotion.tf"
             files = {"": "providers.tf", "runtime_iam": "canary.tf", "processing": "canary.tf", "schedulers": "main.tf", "athena": "main.tf", "data_buckets": "main.tf", "control_plane": "main.tf", "processor_registry": "main.tf"}
             require(module in files, "iam=local_scope")
             file = "ecs.tf" if module == "processing" and field == "commands" else "task-roles.tf" if module == "runtime_iam" and field in {"data_prefixes", "publish_prefixes", "runtime_shared_statements", "runtime_statements", "api_data_statements", "api_sfn_statements"} else (
@@ -212,7 +249,13 @@ class SourceResolver:
             require(expected <= observed <= allowed, "iam=source_configuration_expression")
             if not expected:
                 value = self.evaluate(module, node)
-                require(configured.get("constant_value") == value, "iam=constant_binding")
+                # Native OpenTofu leaves reference-free jsonencode expressions
+                # empty in configuration. The evaluated full source document is
+                # still compared to the planned value by the mode oracle.
+                encoded_mode_document = (self.bindings.get("mode") == "mode-canary" and configured == {}
+                    and field in {"policy", "assume_role_policy"} and node[0:2] == ("call", "jsonencode")
+                    and len(node[2]) == 1 and node[2][0][0] == "object")
+                require(configured.get("constant_value") == value or encoded_mode_document, "iam=constant_binding")
 
     def evaluate(self, module: str, node: Expr, scope: Node | None = None) -> Any:
         return Evaluator(lambda path, values: self.lookup(module, path, values), self.budget).value(
@@ -463,7 +506,8 @@ class SourceResolver:
             value = self.evaluate(
                 module, self.attribute(module, ("resource", local.split("[", 1)[0], "role")), self.instance_scope(address)
             )
-            expected = BOOTSTRAP_POLICIES[address] if address in BOOTSTRAP_POLICIES else "module.runtime_iam.aws_iam_role." + POLICIES[address] + "[0]"
+            expected = ("module.runtime_iam.aws_iam_role." + POLICIES[address] + "[0]"
+                        if self.bindings.get("purpose", "phase-a") == "phase-a" else self.policies[address])
             if expected is None:
                 arn = self.variable(module, ("runtime_grants", "api_role_arn"))
                 require(type(arn) is str and re.fullmatch(r"arn:aws:iam::" + self.bindings["account_id"] + r":role/(?:[A-Za-z0-9_+=,.@-]+/)*[A-Za-z0-9_+=,.@-]+", arn), "iam=external_role_arn")
@@ -483,6 +527,8 @@ class SourceResolver:
         self.trace = set()
         expected = self.policy(address)
         change = self.changes[address]["change"]
+        if self.bindings.get("mode") == "mode-canary":
+            require(not pending(expected) and not change.get("after_unknown", {}).get("policy"), "iam=mode_unknown_policy")
         if not pending(expected) and not change.get("after_unknown", {}).get("policy"):
             require(canonical_bytes(expected, 65536) == canonical_bytes(decode_json(change["after"]["policy"].encode(), limit=65536), 65536), "iam=known_source_policy")
         self.role_producer(address)
