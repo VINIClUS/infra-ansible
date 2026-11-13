@@ -39,6 +39,10 @@ def resources(values):
     return {r["address"]: r for r in values["root_module"].get("resources", [])}
 
 
+def output(values, name):
+    return values["outputs"][name]["value"]
+
+
 def by_type(values, kind):
     found = [r for r in resources(values).values() if r["type"] == kind]
     assert len(found) == 1, kind
@@ -48,7 +52,8 @@ def by_type(values, kind):
 def test_padrao_desligado_nao_planeja_nenhum_recurso(native):
     values = planned(native, {}, "disabled")
     assert resources(values) == {}
-    assert values["outputs"] == {"github_oidc_provider": None, "evidence_storage": None}
+    assert output(values, "github_oidc_provider") is None
+    assert output(values, "evidence_storage") is None
 
 
 def test_provider_oidc_unico_com_audience_sts(native):
@@ -57,13 +62,13 @@ def test_provider_oidc_unico_com_audience_sts(native):
     provider = by_type(values, "aws_iam_openid_connect_provider")
     assert provider["url"] == "https://token.actions.githubusercontent.com"
     assert provider["client_id_list"] == ["sts.amazonaws.com"]
-    assert values["outputs"]["evidence_storage"] is None
+    assert output(values, "evidence_storage") is None
 
 
 def test_evidencia_cria_somente_bucket_cmk_e_configuracoes(native):
     values = planned(native, EVIDENCE, "evidence")
     assert {r["type"] for r in resources(values).values()} == EVIDENCE_TYPES
-    assert values["outputs"]["github_oidc_provider"] is None
+    assert output(values, "github_oidc_provider") is None
 
 
 def test_bucket_tem_object_lock_versionamento_e_nome_exato(native):
@@ -124,7 +129,8 @@ def test_lifecycle_so_aborta_multipart_e_nunca_expira_versoes(native):
 def test_outputs_entregam_fragmentos_consumidos_por_ext1_e_ext2(native):
     values = planned(native, {**OIDC, **EVIDENCE}, "both")
     assert len(resources(values)) == 1 + len(EVIDENCE_TYPES)
-    storage = values["outputs"]["evidence_storage"]
+    storage = output(values, "evidence_storage")
+    assert output(values, "github_oidc_provider")["client_id_list"] == ["sts.amazonaws.com"]
     assert storage["evidence_bucket_name"] == BUCKET
     assert storage["evidence_bucket_arn"] == f"arn:aws:s3:::{BUCKET}"
     text = (ROOT / "outputs.tf").read_text()
