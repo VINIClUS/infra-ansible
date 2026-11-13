@@ -3318,3 +3318,29 @@ def test_fence_consumer_and_producer_share_the_nine_named_steps():
     assert len(lc.FENCE_PREPARE_STEPS) == 9 and lc.FENCE_PREPARE_STEPS[-1] == lc.FENCE_PREPARE_PRODUCER["step_name"]
     source = inspect.getsource(lr.fence_prepared_payload)
     assert "FENCE_PREPARE_STEPS" in source and "Install checksum-locked protected runtime" not in source
+
+
+def test_fence_sts_policy_is_the_single_pure_fence_session_policy(monkeypatch):
+    from tools.cnesdata_delivery import session_policy
+    ag, args, calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    ag._assume_fence_session(**args)
+    scope, deadline = args["scope"], args["journal"]._request["stage"]["deadline"]
+    expected = session_policy.fence_session_policy(
+        control_table_arn=scope["control_table_arn"],
+        execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=deadline)
+    assert calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+    assert expected["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": c.utc(deadline)}
+
+
+@pytest.mark.parametrize("mutation", ["prefix-wildcard", "prefix-colon", "table", "deadline-bool"])
+def test_fence_session_policy_rejects_non_exact_scope(mutation):
+    from tools.cnesdata_delivery import session_policy
+    kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:", deadline=1480)
+    session_policy.fence_session_policy(**kwargs)
+    if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
+    if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]
+    if mutation == "table": kwargs["control_table_arn"] += "*"
+    if mutation == "deadline-bool": kwargs["deadline"] = True
+    with pytest.raises(ValueError):
+        session_policy.fence_session_policy(**kwargs)

@@ -548,12 +548,9 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
     for member in scope["members"]:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    condition = {"DateLessThan": {"aws:CurrentTime": c.utc(stage["deadline"])}}
-    policy = {"Version": "2012-10-17", "Statement": [
-        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": scope["control_table_arn"], "Condition": condition | {
-            "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]},
-            "Null": {"dynamodb:LeadingKeys": "false"}}},
-        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": probe_prefix + "*", "Condition": condition}]}
+    from tools.cnesdata_delivery.session_policy import fence_session_policy
+    policy = fence_session_policy(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix,
+                                  deadline=stage["deadline"])
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
     context = {"aws:CurrentTime": c.utc(clock())}

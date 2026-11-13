@@ -82,6 +82,25 @@ def activation_request(governance, versions, *, deadline):
     return {"Policy": _encode(governance, "plan", statements), "PolicyArns": [{"arn": managed_arn(governance, "plan")}]}
 
 
+def fence_session_policy(*, control_table_arn, execution_prefix, deadline):
+    """Single pure closed-ready fence session (amendment 2026-11-13 item 3).
+
+    Shared by the prepared evaluation and the real STS call; only the
+    DateLessThan value differs between preparation and the API stage.
+    """
+    c.require(type(control_table_arn) is str and re.fullmatch(
+        r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
+    c.require(type(execution_prefix) is str and re.fullmatch(
+        r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod-[A-Za-z0-9_-]+:", execution_prefix), "fence session execution prefix")
+    c.integer(deadline)
+    condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": control_table_arn, "Condition": condition | {
+            "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]},
+            "Null": {"dynamodb:LeadingKeys": "false"}}},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": execution_prefix + "*", "Condition": condition}]}
+
+
 def predecessor_keys(governance, selector):
     """The reviewed historical union derives keys; a caller never supplies paths."""
     c.closed(selector, "protocol source_sha run_id run_attempt status purpose")
