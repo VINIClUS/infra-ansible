@@ -355,6 +355,11 @@ def fence_predecessor_baseline(raw, reference, carrier):
     return state, state_object
 
 
+def fence_source_closure(projection_source_files):
+    """Amendment 2026-11-13 item 4: commitment of the traversed projection source files."""
+    return c.sha(c.canonical(projection_source_files))
+
+
 def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, predecessor_raw, predecessor_reference, producer):
     """Validate a chain whose original bytes/producer are independently protected."""
     c.closed(chain, FENCE_SCHEMAS["fence-chain.json"])
@@ -470,6 +475,7 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
         c.digest(item["sha256"])
         paths.append(item["path"])
     c.require(paths == sorted(set(paths)), "fence exact projection source inventory")
+    c.require(old["source_closure_sha256"] == fence_source_closure(source_files), "fence historical projection source closure")
     c.digest(old["source_sha"], 40)
     for key in ("source_closure_sha256", "candidate_sha256", "plan_binary_sha256", "plan_json_sha256", "inputs_sha256"):
         c.digest(old[key])

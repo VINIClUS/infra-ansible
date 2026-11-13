@@ -1437,7 +1437,8 @@ def _fence_contract_case(*, original_serial=1, probe=False):
     old = {name: c.loads(raw, canonical=True) for name, raw in old_raw.items()}
     old_plan, old_apply = old["envelope.json"]["plan"], old["envelope.json"]["apply"]
     origin_reference = carrier["origin"]
-    phase_a = {"source_sha": old_plan["source_sha"], "source_closure_sha256": "9" * 64,
+    projection_source_files = [{"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "e" * 64}]
+    phase_a = {"source_sha": old_plan["source_sha"], "source_closure_sha256": c.sha(c.canonical(projection_source_files)),
         "release_id": old_plan["release"]["release_id"], "canary_id": old_plan["release"]["canary_id"],
         "candidate_sha256": old_plan["release"]["candidate_sha256"], "plan_binary_sha256": old_plan["binary_sha256"],
         "plan_json_sha256": old_plan["json_sha256"], "inputs_sha256": old_plan["inputs_sha256"],
@@ -1494,7 +1495,7 @@ def _fence_contract_case(*, original_serial=1, probe=False):
         "fence-origins.json": {"schema_version": 1, "phase_a": phase_a, "current_source_sha": owner["source_sha"], "current_source_closure_sha256": "b" * 64,
             "current_plan": {"source_sha": owner["source_sha"], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"], "step": "prepare-plan",
                 "index_sha256": "d" * 64, "plan_binary_sha256": "a" * 64, "plan_json_sha256": "c" * 64, "inputs_sha256": "b" * 64},
-            "projection_source_files": [{"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "e" * 64}]},
+            "projection_source_files": projection_source_files},
         "fence-chain.json": chain, "fence-readbacks.json": {"proof_kind": "iam-readback-and-evaluation", "readbacks": rounds},
         "fence-evaluation.json": {"schema_version": 1, "evaluator_source_sha": producer["workflow_sha"],
             "documents": {key: "e" * 64 for key in ("application_identity", "application_managed", "application_session", "fence_identity", "fence_session", "freeze")},
@@ -1513,7 +1514,8 @@ def _fence_contract_case(*, original_serial=1, probe=False):
 
 
 @pytest.mark.parametrize("mutation", [None, "old-fragment", "owner-bool", "plan-producer", "source", "extra-file", "missing-original",
-    "history-file", "history-hash", "history-valid-hash", "history-role", "chain-anchor", "lineage", "trust", "readbacks", "evaluation"])
+    "history-file", "history-hash", "history-valid-hash", "history-role", "chain-anchor", "lineage", "trust", "readbacks", "evaluation",
+    "closure-fixed", "closure-other-files"])
 def test_fence_package_contract_separates_historical_source_and_current_owner(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     payloads, manifest, kwargs, encode = _fence_contract_case()
@@ -1538,6 +1540,11 @@ def test_fence_package_contract_separates_historical_source_and_current_owner(mu
     if mutation == "trust": payloads["fence-role.json"]["trust"]["Statement"][0]["Principal"]["AWS"] += "-historical"
     if mutation == "readbacks": payloads["fence-readbacks.json"]["readbacks"] = []
     if mutation == "evaluation": payloads["fence-evaluation.json"]["cases"][0]["observed"] = True
+    # Item 4 of the 2026-11-13 amendment: the historical closure commits the traversed projection files.
+    if mutation == "closure-fixed": payloads["fence-origins.json"]["phase_a"]["source_closure_sha256"] = "9" * 64
+    if mutation == "closure-other-files":
+        payloads["fence-origins.json"]["projection_source_files"] = [
+            {"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "f" * 64}]
     files, originals = encode()
     if mutation == "extra-file": files["state.json"] = b'{}\n'
     if mutation == "missing-original": originals.pop("approval.json")
