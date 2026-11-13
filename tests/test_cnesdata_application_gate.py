@@ -3450,3 +3450,110 @@ def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(m
         producer=manifest["producer"], preparation=manifest["preparation"],
         originals={name: raw for name, raw in files.items() if name != "fence-prepared.json"},
         predecessor_raw=kwargs["previous_raw"], predecessor_reference=kwargs["predecessor"])
+
+
+def _closed_ready_capability_case(monkeypatch, mutation=None):
+    """Connected item-7 composition: real prepared producer/codec, real broker; GitHub/S3/STS are external fakes."""
+    import io
+    import zipfile
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
+    activation = b"original-ext2-payload-bytes"
+    kwargs["activation_sha256"] = c.sha(activation)
+    files = lr.fence_prepare_package(**kwargs)
+    prepared = lr.PreparedFence(files)
+    owner, carrier = kwargs["owner"], kwargs["carrier"]
+    ag_mod, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    scope = sts_args["scope"]
+    b_checkpoint = {"state": {"lineage": "original-lineage", "serial": 3, "state_sha256": "6" * 64},
+        "state_object": {"status": "present", "version_id": "v3", "etag_sha256": "5" * 64}, "owner": owner, "purpose": "phase-b",
+        "plan_sha256": "9" * 64, "readbacks": [{"service": "stepfunctions", "operation": "describe_state_machine",
+            "observed": {"stateMachineArn": scope["machine_arn"] + ("-other" if mutation == "machine" else ""), "status": "ACTIVE"}}],
+        "phase_a_originals": carrier}
+    b_approval = {"version": 1, "owner": owner, "purpose": "phase-b", "direction": "advance", "plan_sha256": "9" * 64,
+        "inputs_sha256": "8" * 64, "checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"]),
+        "delta": {}, "drift_matrix": {}, "readbacks": {"before": [], "after": []}}
+    b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
+    members = scope["members"]
+    membership = {"frozen_membership_sha256": c.sha(c.canonical(members)), "members": members}
+    if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
+    inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": c.canonical({"fixture_only": "close"}),
+              "phase-b": b_files["checkpoint.json"], "membership": c.canonical(membership)}
+    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api", "admitted_at": 1300, "deadline": 1480,
+              "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
+              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
+    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
+               "activation_sha256": c.sha(inputs["activation"]),
+               "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="closed-ready", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = dict(sts_args["governance"])
+    if mutation == "delegation":
+        governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
+    governance["context_kind"] = "promotion"
+    governance["lifecycle_steps"] = {"phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "operational", "job_name": "phase-b / execute"}}
+    run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"]}
+    root = f"repos/{c.REPOSITORY}"
+    index = {"version": 1, "source_sha": owner["source_sha"], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
+             "step": "phase-b-advance", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"], **lc.application_identity(owner),
+             "files": [{"name": name, "size": len(raw), "sha256": c.sha(raw)} for name, raw in sorted(b_files.items())]}
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr(zipfile.ZipInfo("index.json", date_time=(2026, 1, 1, 0, 0, 0)), c.canonical(index))
+    job = {"id": 77, "run_id": run["id"], "run_attempt": run["run_attempt"], "head_sha": run["head_sha"], "name": "phase-b / execute",
+           "status": "completed", "conclusion": "success", "started_at": c.utc(1100), "completed_at": c.utc(1250)}
+    metadata = {"id": 78, "name": "lifecycle-phase-b-advance", "digest": "sha256:" + c.sha(archive.getvalue()),
+                "workflow_run": {"id": run["id"], "head_sha": run["head_sha"]}, "expired": False, "expires_at": c.utc(9000), "created_at": c.utc(1200)}
+    responses = {root + "/actions/jobs/77": job, root + "/actions/artifacts/78": metadata, root + "/actions/artifacts/78/zip": archive.getvalue(),
+                 root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1": {"jobs": [job], "total_count": 1},
+                 root + f"/actions/runs/{run['id']}/artifacts?per_page=100&page=1": {"artifacts": [metadata], "total_count": 1},
+                 root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}": run | {"event": "workflow_dispatch",
+                     "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml"}}
+    class API:
+        def read(self, path, **kw): return responses[path]
+    req = {"source_sha": owner["source_sha"], "step": "closed-ready", "application_purpose": "promotion", "caller_binding_sha256": owner["caller_binding_sha256"]}
+    objects = {lr.namespace(governance | {"evidence_prefix": "cnesdata/prod/evidence/"}, req, run, "phase-b-advance") + name: raw for name, raw in b_files.items()}
+    class Store:
+        def get(self, bucket, key, **kw): return objects[key], None
+        def call(self, *args, **kw): return sts_args["aws"].call(*args, **kw)
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {"held": True})
+    args = dict(aws=Store(), api=API(), governance=governance, request=req, run=run, journal=journal, keeper=keeper,
+                prepared=prepared, credential_limit=3000, guard=Guard(), clock=lambda: 1300)
+    return ag, args, sts_calls, keeper, journal
+
+
+@pytest.mark.parametrize("mutation", [None, "activation", "preparation", "delegation", "ancestry", "machine", "membership"])
+def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutation):
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError):
+            ag.closed_ready_capability(**args)
+        assert sts_calls == [] and journal._failed is True
+        assert keeper.uncertainty() == [{"kind": "context-failed"}]
+        return
+    broker = ag.closed_ready_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker]
+    assert len(sts_calls) == 1 and sts_calls[0][2]["RoleSessionName"] == "promotion-fence-r1"
+    assert keeper.uncertainty() == []
+
+
+@pytest.mark.parametrize("operation", ["inventory"])
+def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, operation):
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {})
+    with pytest.raises(ValueError, match="closed-ready only"):
+        ag.closed_ready_capability(aws=None, api=None, governance={}, request={}, run={}, journal=journal, keeper=keeper,
+                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard())

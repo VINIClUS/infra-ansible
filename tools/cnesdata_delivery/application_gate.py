@@ -3,6 +3,7 @@
 Operational execution remains disabled until complete capability admission and
 the protected producer/keeper dispatch are connected. Defaults grant no access.
 """
+import re
 import time
 
 from tools.cnesdata_delivery import contract as c
@@ -993,6 +994,103 @@ class ClosedReadyBroker:
                         journal._unknown.append(item)
             journal._failed = True
             raise
+
+
+def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
+    """Completed same-run phase-b advance deploy publication (checkpoint + approval)."""
+    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
+    from tools.cnesdata_delivery.provenance import lifecycle_artifact
+    steps = [(name, step) for name, step in governance["lifecycle_steps"].items()
+             if step["role"] == "deploy" and step["purpose"] == "phase-b" and step["direction"] == "advance"]
+    c.require(len(steps) == 1, "unique protected phase-b advance step")
+    name, step = steps[0]
+    root = f"repos/{c.REPOSITORY}/actions/runs/{run['id']}"
+    guard.check(20)
+    jobs = api.read(root + f"/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
+    artifacts = api.read(root + "/artifacts?per_page=100&page=1")
+    guard.check()
+    c.require(jobs["total_count"] == len(jobs["jobs"]) <= 100 and artifacts["total_count"] == len(artifacts["artifacts"]) <= 100,
+              "complete phase-b publication inventory")
+    found = [job for job in jobs["jobs"] if job["name"] == step["job_name"]]
+    c.require(len(found) == 1 and found[0]["status"] == "completed" and found[0]["conclusion"] == "success", "completed phase-b producer")
+    job = found[0]
+    candidates = [item for item in artifacts["artifacts"] if item["name"] == "lifecycle-" + name
+                  and c.instant(job["started_at"]) < c.instant(item["created_at"]) < c.instant(job["completed_at"])]
+    c.require(len(candidates) == 1, "unique phase-b publication in job interval")
+    reference = {"job_id": job["id"], "artifact_id": candidates[0]["id"], "artifact_digest": candidates[0]["digest"]}
+    public = lifecycle_artifact(api, reference, now, source=owner["source_sha"], run_id=owner["run_id"],
+                                attempt=owner["run_attempt"], producer_name=step["job_name"], artifact_name="lifecycle-" + name)
+    index, files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})
+    c.require(index["step"] == name and index["owner_sha256"] == owner["owner_sha256"]
+              and type(index["generation"]) is int and index["generation"] == owner["generation"], "phase-b original owner")
+    return files
+
+
+def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
+                            guard, clock=time.time):
+    """The only connected capability factory (amendment 2026-11-13 item 7).
+
+    Composes the authenticated PreparedFence, fence role, effective scope (item 2),
+    membership, the finite STS boundary and ClosedReadyBroker, attached to the
+    keeper. Every check precedes STS; any failure poisons the journal, keeps the
+    lease held and mints no credential. Other operations/modes stay rejected.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper and type(prepared) is lr.PreparedFence,
+              "closed-ready original journal/keeper/prepared authority")
+    c.require(journal._request["operation"] == "closed-ready" and getattr(journal, "_broker", None) is None,
+              "closed-ready only; every other operation remains rejected")
+    try:
+        stage = journal._request["stage"]
+        keeper.lease.check()  # The original keeper still holds the lease; nothing here can renew or release it.
+        owner = journal._request["owner"] | journal._identity
+        manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+        role = c.loads(prepared["fence-role.json"], canonical=True)
+        evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+        activation = journal._inputs["activation"]
+        c.require(manifest["activation_sha256"] == journal._request["activation_sha256"] == c.sha(activation),
+                  "prepared/request/input activation_sha256")
+        c.require(manifest["preparation"]["deadline"] == stage["preparation_deadline"]
+                  and manifest["preparation"]["admitted_at"] < stage["admitted_at"], "original preparation before API stage")
+        c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
+        c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
+        files = _phase_b_publication(api, aws, governance, request, run, owner, guard, clock())
+        b_checkpoint = c.loads(files["checkpoint.json"], canonical=True)
+        b_approval = c.loads(files["approval.json"], canonical=True)
+        c.require(b_approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"])
+                  and b_approval["plan_sha256"] == b_checkpoint["plan_sha256"] and b_checkpoint["purpose"] == "phase-b"
+                  and c.canonical(b_checkpoint["owner"]) == c.canonical(owner)
+                  and c.sha(files["checkpoint.json"]) == stage["checkpoint_sha256"] == journal._request["checkpoint_sha256"]
+                  and journal._inputs["phase-b"] == files["checkpoint.json"], "preparation -> B -> API checkpoint ancestry")
+        cases = {case["case_id"]: case for case in evaluation["cases"]}
+        table = lr._allowed_resources(role["policy"], "dynamodb:GetItem")
+        match = re.fullmatch(r"(arn:aws:states:us-east-2:" + re.escape(governance["account_id"])
+                             + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*", lr._allowed_resources(role["policy"], "states:DescribeExecution"))
+        c.require(match is not None and cases["get-fence"]["resource"] == table
+                  and cases["probe-own"]["resource"] == match[1] + "0" * 16, "capability scope recomputed from prepared policy")
+        machine = match[1].replace(":execution:", ":stateMachine:")[:-1]
+        described = [row["observed"] for row in b_checkpoint["readbacks"]
+                     if row["service"] == "stepfunctions" and row["operation"] == "describe_state_machine"]
+        c.require(len(described) == 1 and described[0].get("stateMachineArn") == machine, "B DescribeStateMachine readback")
+        membership = c.loads(journal._inputs["membership"], canonical=True)
+        c.closed(membership, "frozen_membership_sha256 members")
+        c.require(type(membership["members"]) is list and membership["frozen_membership_sha256"] == c.sha(c.canonical(membership["members"])),
+                  "frozen membership commitment")
+        scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine, "members": membership["members"]}
+        for member in scope["members"]:
+            lc.validate_closed_ready_call(request=journal._request, role="fence_operator", service="stepfunctions",
+                operation="describe_execution", parameters={"executionArn": match[1] + member["dispatch_id"],
+                "includedData": "METADATA_ONLY"}, **scope)
+        prepared_sha256 = c.sha(prepared["fence-prepared.json"])
+        session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
+        broker = ClosedReadyBroker(aws, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
 
 
 class Keeper:
