@@ -286,6 +286,61 @@ def current_checkpoint_chain(api, aws, governance, request, run, *, owner, prede
 
 
 
+HISTORICAL_SOURCE_PATH = r"infra/opentofu/(?:env/prod|modules/[a-z0-9-]+)/[a-z0-9_.-]+\.tf"
+
+
+def historical_sources(api, carrier, *, current_source, paths, guard=None):
+    """Pinned read of original Phase A source blobs (amendment 2026-11-13 item 4).
+
+    The commit is the authenticated Phase A source_sha only; ancestry uses the
+    admission compare. Absence is decided from the complete tree, never from a
+    failed read. Limits equal authenticate_sources: 64 paths, 256 KiB, 2 MiB.
+    """
+    import hashlib
+    history = lc.phase_a_originals(carrier)
+    plan = history["envelope"]["plan"]
+    source = history["predecessor_reference"]["source_sha"]
+    c.require(source == plan["source_sha"] == plan["release"]["source_sha"], "historical Phase A source pin")
+    c.digest(source, 40)
+    c.digest(current_source, 40)
+    c.require(type(paths) is list and 1 <= len(paths) <= 64 and paths == sorted(set(paths))
+              and all(type(path) is str and re.fullmatch(HISTORICAL_SOURCE_PATH, path) for path in paths), "historical source path inventory")
+
+    def read(path):
+        if guard is not None:
+            guard.check(20)
+        value = api.read(path)
+        if guard is not None:
+            guard.check()
+        return value
+
+    comparison = read(f"repos/{c.REPOSITORY}/compare/{source}...{current_source}")
+    c.require(comparison["status"] in {"ahead", "identical"} and comparison["merge_base_commit"]["sha"] == source,
+              "historical source ancestry")
+    tree = read(f"repos/{c.REPOSITORY}/git/trees/{source}?recursive=1")
+    c.require(tree["truncated"] is False and type(tree["tree"]) is list, "historical complete source tree")
+    blobs = {}
+    for entry in tree["tree"]:
+        if entry.get("path") in paths:
+            c.require(entry["path"] not in blobs and entry["type"] == "blob" and entry["mode"] in {"100644", "100755"},
+                      "historical source tree entry")
+            blobs[entry["path"]] = c.digest(entry["sha"], 40)
+    result, total = {}, 0
+    for path in paths:
+        if path not in blobs:
+            continue
+        item = read(f"repos/{c.REPOSITORY}/contents/{path}?ref={source}")
+        c.require(item["type"] == "file" and item["path"] == path and item["encoding"] == "base64"
+                  and type(item["size"]) is int and 0 <= item["size"] <= 256 * 1024, "historical source file")
+        raw = base64.b64decode(item["content"], validate=False)
+        blob = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+        c.require(len(raw) == item["size"] and blob == item["sha"] == blobs[path], "historical source blob sha1")
+        total += len(raw)
+        c.require(total <= 2 * 1024**2, "historical source total")
+        result[path] = raw
+    return result
+
+
 def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, original_sources, source_sha,
                                   activation_source_sha, current_index, checkpoint, chain, historical, owner, fragment, producer,
                                   predecessor_raw, predecessor_reference):

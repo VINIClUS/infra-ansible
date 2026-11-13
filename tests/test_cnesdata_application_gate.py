@@ -3182,3 +3182,80 @@ def test_complete_phase_a_carrier_feeds_real_fence_projection_within_all_caps():
     assert len(c.canonical(carrier)) <= 196608
     assert len(c.canonical(wrapper)) <= 262144 and len(terminal["checkpoint.json"]) <= 262144
     assert c.loads(terminal["checkpoint.json"], canonical=True)["phase_a_originals"] == carrier
+
+
+class _HistoricalSourceAPI:
+    """External GitHub fake for the pinned historical source reader (amendment 2026-11-13 item 4)."""
+    def __init__(self, source, current, files, *, status="ahead", truncated=False):
+        import base64
+        import hashlib
+        self.source, self.current, self.files, self.status, self.truncated = source, current, dict(files), status, truncated
+        self.blob = lambda raw: hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+        self.contents = {path: {"type": "file", "path": path, "size": len(raw), "encoding": "base64",
+                                "sha": self.blob(raw), "content": base64.b64encode(raw).decode()} for path, raw in self.files.items()}
+        self.calls = []
+
+    def read(self, path, **_):
+        self.calls.append(path)
+        if path == f"repos/{c.REPOSITORY}/compare/{self.source}...{self.current}":
+            return {"status": self.status, "merge_base_commit": {"sha": self.source}}
+        if path == f"repos/{c.REPOSITORY}/git/trees/{self.source}?recursive=1":
+            return {"sha": "f" * 40, "truncated": self.truncated, "tree": [
+                {"path": name, "type": "blob", "mode": "100644", "sha": self.blob(raw), "size": len(raw)} for name, raw in self.files.items()]}
+        prefix = f"repos/{c.REPOSITORY}/contents/"
+        assert path.startswith(prefix) and path.endswith("?ref=" + self.source), path
+        return self.contents[path[len(prefix):-len("?ref=" + self.source)]]
+
+
+def _historical_sources_case():
+    carrier, raw = _phase_a_carrier_case()
+    source = carrier["origin"]["source_sha"]
+    files = {"infra/opentofu/modules/runtime-iam/promotion.tf": b'resource "aws_iam_role" "x" {}\n',
+             "infra/opentofu/env/prod/main.tf": b'module "runtime_iam" {}\n'}
+    return carrier, source, files
+
+
+@pytest.mark.parametrize("mutation", [None, "diverged", "merge-base", "truncated", "blob-sha", "content", "type",
+                                      "large", "too-many", "unsorted", "path", "absent-selected"])
+def test_historical_sources_reads_exact_phase_a_commit_by_path(mutation):
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, files = _historical_sources_case()
+    current = "a" * 40
+    api = _HistoricalSourceAPI(source, current, files, status="diverged" if mutation == "diverged" else "ahead",
+                               truncated=mutation == "truncated")
+    paths = sorted([*files, "infra/opentofu/modules/runtime-iam/new.tf"])
+    if mutation == "merge-base":
+        original = api.read
+        api.read = lambda path, **kw: (original(path) | {"merge_base_commit": {"sha": "b" * 40}}) if "/compare/" in path else original(path)
+    if mutation == "blob-sha": api.contents[paths[0]]["sha"] = "0" * 40
+    if mutation == "content": api.contents[paths[0]]["content"] = __import__("base64").b64encode(b"tampered\n").decode()
+    if mutation == "type": api.contents[paths[0]]["type"] = "symlink"
+    if mutation == "large":
+        big = b"#" * (256 * 1024 + 1)
+        api = _HistoricalSourceAPI(source, current, {**files, paths[0]: big})
+    if mutation == "too-many": paths = [f"infra/opentofu/modules/runtime-iam/f{i:02d}.tf" for i in range(65)]
+    if mutation == "unsorted": paths = list(reversed(paths))
+    if mutation == "path": paths = ["infra/opentofu/../secrets.tf"]
+    if mutation == "absent-selected":
+        # A historical inventory without a path is absence only via the complete tree, never via a failed read.
+        api.files.pop(paths[0])
+        api.contents.pop(paths[0])
+    if mutation in {None, "absent-selected"}:
+        result = historical_sources(api, carrier, current_source=current, paths=paths)
+        expected = dict(files)
+        expected.pop(paths[0]) if mutation else None
+        assert result == expected
+        assert "infra/opentofu/modules/runtime-iam/new.tf" not in result
+        assert api.calls[0].endswith(f"/compare/{source}...{current}")
+    else:
+        with pytest.raises(ValueError):
+            historical_sources(api, carrier, current_source=current, paths=paths)
+
+
+def test_historical_sources_pins_phase_a_source_from_authenticated_carrier():
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, files = _historical_sources_case()
+    forged = c.loads(c.canonical(carrier), canonical=True)
+    forged["origin"]["source_sha"] = "b" * 40
+    with pytest.raises(ValueError):
+        historical_sources(_HistoricalSourceAPI("b" * 40, "a" * 40, files), forged, current_source="a" * 40, paths=sorted(files))
