@@ -950,3 +950,65 @@ def test_native_plan_identity_reads_its_own_role_only_when_governed_read_arns_li
         assert decision(managed, action, own) == "Allow"
     for action in ("iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:AttachRolePolicy", "iam:DeleteRolePolicy"):
         assert decision(identity, action, own) != "Allow", action
+
+
+@pytest.mark.parametrize("mutation", [None, "table-output", "two-tables", "prefix-exact", "prefix-two-wildcards", "coordination"])
+def test_native_prepared_scope_and_documents_come_from_protected_sources(native, mutation):
+    """Amendment 2026-11-13 items 2/3: synthetic fence policy, native shared documents."""
+    import copy
+    from tools.cnesdata_delivery import contract as c, iam_boundary, lifecycle_contract as lc, lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import _terraform_document_digest
+    data = application_values()
+    resources, outputs = render(native, data, "application-prepared-scope")
+    coordination = resources["aws_iam_role_policy.application[0]"]["policy"]
+    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    settings, roles = data["github_delivery"], data["application_promotion"]["delegations"]
+    gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
+           "evidence_prefix": settings["evidence_prefix"], "evidence_kms_key_arn": settings["evidence_kms_arn"],
+           "roles": {"application": "arn:aws:iam::111122223333:role/cnesdata-prod-application"}, "application_delegations": roles,
+           "application_coordination_policy": coordination}
+    if mutation == "coordination": gov["application_coordination_policy"] = coordination.replace("s3:GetObject", "s3:GetObjectAcl", 1)
+    fragment = {"policy_sha256": _terraform_document_digest(coordination), "enabled_until": "2030-01-01T00:00:00Z"}
+    pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": "2029-12-31T23:59:00Z"}
+    table = "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control"
+    prefix = "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:"
+    policy = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table,
+         "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]}, "Null": {"dynamodb:LeadingKeys": "false"}}},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": prefix + "*"}]}
+    if mutation == "two-tables": policy["Statement"].append({"Effect": "Allow", "Action": ["dynamodb:GetItem"], "Resource": table + "-other"})
+    if mutation == "prefix-exact": policy["Statement"][1]["Resource"] = prefix + "original"
+    if mutation == "prefix-two-wildcards": policy["Statement"][1]["Resource"] = prefix.replace("processor", "proc*") + "*"
+    role = {"role_arn": roles["fence_operator"], "session_name": "promotion-fence-r1", "policy": policy}
+    owner = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1, "release_sha256": "1" * 64,
+             "generation": 3, "session_sha256": "2" * 64, "owner_sha256": "3" * 64, "application_purpose": "promotion",
+             "context_kind": "promotion", "caller_binding_sha256": "4" * 64}
+    shared_table = table + ("-drift" if mutation == "table-output" else "")
+    observed = int(c.instant("2029-12-31T23:50:00Z"))
+    def produce():
+        scope, execution_prefix = lr.fence_evaluation_scope(governance=gov, role=role, control_table_arn=shared_table,
+                                                            owner=owner, checkpoint_sha256="5" * 64)
+        documents = lr.fence_evaluation_documents(governance=gov, pin=pin, fragment=fragment, owner=owner, role=role,
+            control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=observed)
+        return scope, execution_prefix, documents
+    if mutation:
+        with pytest.raises(ValueError):
+            produce()
+        return
+    scope, execution_prefix, documents = produce()
+    assert execution_prefix == prefix and scope["execution_arn"] == prefix + "0" * 16
+    assert scope["foreign_execution_arn"] == prefix.replace("cnesdata-prod-processor:", "cnesdata-prod-processor-foreign:") + "0" * 16
+    keys = lr.closed_ready_evidence_keys(gov, owner={k: owner[k] for k in [*lc.OWNER_FIELDS, "owner_sha256"]},
+        caller=lc.application_identity(owner, required=True), checkpoint_sha256="5" * 64, sequence=0)
+    assert scope["evidence_arn"] == "arn:aws:s3:::synthetic-evidence/" + keys["intent"]
+    assert keys["intent"].startswith(settings["evidence_prefix"] + "lifecycle/" + "b" * 40 + "/44/1/closed-ready/sdk-")
+    assert documents["fence_session"]["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": "2029-12-31T23:53:00Z"}
+    assert documents["freeze"]["frozen_until"] == "2029-12-31T23:59:00Z"
+    assert documents["application_identity"]["Statement"] == json.loads(coordination)["Statement"]
+    report = iam_boundary.fence_effective_evaluation(documents, scope, evaluator_source_sha="c" * 40, observed_at=c.utc(observed))
+    assert {item["case_id"] for item in report["cases"]} == set(lc.FENCE_EVALUATION_CASES)
+    assert all(item["observed"] is item["expected"] for item in report["cases"])
+    late = copy.deepcopy(documents)
+    late["fence_session"] = lr.fence_evaluation_documents(governance=gov, pin=pin | {"frozen_until": "2029-12-31T23:51:00Z"},
+        fragment=fragment, owner=owner, role=role, control_table_arn=table, execution_prefix=prefix, observed_at=observed)["fence_session"]
+    assert late["fence_session"]["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": "2029-12-31T23:51:00Z"}

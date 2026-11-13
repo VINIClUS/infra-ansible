@@ -776,7 +776,7 @@ class ClosedReadyEvidence:
     SUFFIXES = ("intent", "response", "receipt")
 
     def __init__(self, aws, governance, journal, native_raw, *, prepared_sha256, role_session_sha256, scope):
-        from tools.cnesdata_delivery.lifecycle_runtime import namespace
+        from tools.cnesdata_delivery.lifecycle_runtime import closed_ready_evidence_keys
         c.require(type(journal) is AdapterJournal and governance["role"] == "application", "shared closed-ready journal")
         c.closed(scope, "account control_table_arn machine_arn members")
         c.require(scope["account"] == governance["account_id"], "original journal account")
@@ -796,12 +796,10 @@ class ClosedReadyEvidence:
         self.intent_sha256 = c.sha(self._intent_raw)
         # Proof/session/activation changes collide at the same operation locus;
         # they cannot mint another ticket after an unresolved native call.
-        operation_sha256 = c.sha(c.canonical({key: intent[key] for key in ("schema_version", "operation", "owner", "caller", "checkpoint_sha256", "sequence")}))
         self._sequence, self._previous = sequence, previous
-        owner = request["owner"]
-        prefix = namespace(governance, {"source_sha": request["source_sha"], "step": "closed-ready"},
-                           {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
-        self._keys = {name: prefix + "sdk-" + operation_sha256[:40] + "-" + name + ".json" for name in self.SUFFIXES}
+        c.require(request["source_sha"] == request["owner"]["source_sha"], "closed-ready evidence source")
+        self._keys = closed_ready_evidence_keys(governance, owner=request["owner"], caller=journal._identity,
+                                                checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence)
         self._aws, self._bucket, self._journal = aws, governance["evidence_bucket"], journal
         self._native_sha256, self._session_sha256 = c.sha(native_raw), role_session_sha256
         self._binding = c.sha(c.canonical({key: request[key] for key in ("owner", "checkpoint_sha256", "activation_sha256", "stage")}))

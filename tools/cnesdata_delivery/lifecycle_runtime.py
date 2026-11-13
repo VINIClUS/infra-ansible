@@ -451,6 +451,83 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
+def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence):
+    """Single derivation of own-run closed-ready intent/response/receipt keys.
+
+    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2).
+    """
+    c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
+    c.integer(sequence, 0, 8191)
+    operation = c.sha(c.canonical({"schema_version": 2, "operation": "closed-ready", "owner": owner, "caller": caller,
+                                   "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
+    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": "closed-ready"},
+                       {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
+    return {name: prefix + "sdk-" + operation[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
+
+
+def _allowed_resources(policy, action):
+    found = []
+    for statement in policy["Statement"]:
+        actions = statement.get("Action", [])
+        actions = [actions] if type(actions) is str else actions
+        if statement.get("Effect") == "Allow" and action in actions:
+            c.require("Resource" in statement, "fence policy exact resource")
+            resource = statement["Resource"]
+            found.extend([resource] if type(resource) is str else resource)
+    c.require(len(found) == 1 and type(found[0]) is str, "fence policy single resource for " + action)
+    return found[0]
+
+
+def fence_evaluation_scope(*, governance, role, control_table_arn, owner, checkpoint_sha256):
+    """Effective fence scope from the authenticated projected role policy (item 2).
+
+    The table must be the single GetItem Resource and equal the authenticated
+    Terraform shared_outputs value; executions come from the single trailing
+    wildcard of DescribeExecution. State is never consulted. Evidence is the
+    own-run closed-ready intent for (owner, caller, checkpoint, sequence 0).
+    """
+    from tools.cnesdata_delivery.coordination_lease import KEY
+    policy = role["policy"]
+    table = _allowed_resources(policy, "dynamodb:GetItem")
+    c.require(table == control_table_arn and re.fullmatch(
+        r"arn:aws:dynamodb:us-east-2:" + re.escape(governance["account_id"]) + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
+        "fence table equals authenticated shared output")
+    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + re.escape(governance["account_id"])
+                         + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*", _allowed_resources(policy, "states:DescribeExecution"))
+    c.require(match is not None, "fence execution prefix single final wildcard")
+    prefix, machine = match[1], match[2]
+    identity = lc.application_identity(owner, required=True)
+    request_owner = {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}
+    keys = closed_ready_evidence_keys(governance, owner=request_owner, caller=identity, checkpoint_sha256=checkpoint_sha256, sequence=0)
+    scope = {"role_arn": role["role_arn"], "session_name": role["session_name"], "control_table_arn": table,
+             "execution_arn": prefix + "0" * 16,
+             "foreign_execution_arn": prefix.replace(":" + machine + ":", ":" + machine + "-foreign:") + "0" * 16,
+             "evidence_arn": "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + keys["intent"],
+             "lease_arn": "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY}
+    return scope, prefix
+
+
+def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at):
+    """Six evaluation documents from protected sources (amendment 2026-11-13 item 3)."""
+    from tools.cnesdata_delivery import session_owner, session_policy
+    c.integer(observed_at)
+    frozen = min(c.instant(pin["frozen_until"]), c.instant(fragment["enabled_until"]))
+    c.require(type(frozen) in (int, float) and observed_at < frozen, "fence evaluation before freeze")
+    session = session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+        "closed-ready", application_purpose="promotion", delegations=("fence_operator",),
+        sessions={"fence_operator": role["session_name"]})
+    return {
+        "application_identity": session_owner.application_identity_document(governance, fragment),
+        "application_managed": c.loads(c.canonical(pin["document"]), canonical=True),
+        "application_session": c.loads(session["Policy"].encode()),
+        "fence_identity": role["policy"],
+        "fence_session": session_policy.fence_session_policy(control_table_arn=control_table_arn,
+            execution_prefix=execution_prefix, deadline=int(min(observed_at + 180, frozen))),
+        "freeze": {"frozen_until": c.utc(frozen), "application_fragment_sha256": c.sha(c.canonical(fragment)),
+                   "owner_policy_sha256": c.digest(pin["document_sha256"])},
+    }
+
+
 def fence_prepared_files(*, originals, owner, fragment, activation_sha256, producer, preparation, predecessor_raw, predecessor_reference):
     """Build before upload; enclosing artifact provenance remains external."""
     c.require(type(originals) is dict and set(originals) == lc.FENCE_PREPARE_FILES - {"fence-prepared.json"},
