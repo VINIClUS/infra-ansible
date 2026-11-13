@@ -3477,6 +3477,56 @@ def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(m
         predecessor_raw=kwargs["previous_raw"], predecessor_reference=kwargs["predecessor"])
 
 
+@pytest.mark.parametrize("mutation,message", [
+    (None, None),
+    ("index-attempt", "fence current plan owner/caller"),
+    ("index-plan", "fence applied current saved-plan commitment"),
+    ("index-inputs", "fence original current plan/input bytes"),
+    ("previous", "current deploy immediate predecessor bytes"),
+    ("predecessor", "fence initial original Phase A checkpoint"),
+])
+def test_fence_prepare_package_connects_index_chain_and_predecessor_without_new_sources(monkeypatch, mutation, message):
+    """Amendment 2026-11-13 item 6: current_index is the plan index read by private_payload, chain/predecessor_raw
+    the pair returned by current_checkpoint_chain, predecessor_reference the authenticate_predecessor reference.
+    A mismatch in any of them refuses before the first IAM call; nothing else is read."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    kwargs, calls, _ = _fence_prepare_package_case(monkeypatch)
+    index = copy.deepcopy(kwargs["plan_index"])
+    if mutation == "index-attempt":
+        index["run_attempt"] += 1
+    if mutation in {"index-plan", "index-inputs"}:
+        name = "plan.bin" if mutation == "index-plan" else "inputs.json"
+        next(item for item in index["files"] if item["name"] == name)["sha256"] = "0" * 64
+    kwargs["plan_index"] = index
+    if mutation == "previous":
+        kwargs["previous_raw"] += b" "
+    if mutation == "predecessor":
+        kwargs["predecessor"] = dict(kwargs["predecessor"], artifact_digest="sha256:" + "0" * 64)
+    if mutation:
+        with pytest.raises(ValueError, match=message):
+            lr.fence_prepare_package(**kwargs)
+        assert [kind for kind, _ in calls if kind != "github"] == []
+        return
+    files = lr.fence_prepare_package(**kwargs)
+    origins = c.loads(files["fence-origins.json"], canonical=True)
+    assert origins["current_plan"]["index_sha256"] == c.sha(c.canonical(kwargs["plan_index"]))
+    assert origins["current_plan"]["step"] == kwargs["plan_index"]["step"]
+    plan_bin = next(item for item in kwargs["plan_index"]["files"] if item["name"] == "plan.bin")
+    assert origins["current_plan"]["plan_binary_sha256"] == plan_bin["sha256"]
+    chain = c.loads(files["fence-chain.json"], canonical=True)
+    assert chain["anchor_sha256"] == kwargs["predecessor"]["checkpoint_sha256"] == c.sha(kwargs["previous_raw"])
+    assert chain["head_sha256"] == c.sha(kwargs["checkpoint_raw"])
+    assert chain["entries"][-1]["previous_checkpoint_sha256"] == c.sha(kwargs["previous_raw"])
+    # No new source: GitHub reads are the producer job inventory and the pinned historical reader only.
+    historical = kwargs["carrier"]["origin"]["source_sha"]
+    root = f"repos/{c.REPOSITORY}/"
+    for kind, path in calls:
+        assert kind in {"github", "iam"}
+        if kind == "github":
+            assert ("/jobs?per_page=100&page=" in path or path.startswith(root + "compare/" + historical + "...")
+                    or path == root + f"git/trees/{historical}?recursive=1" or path.endswith("?ref=" + historical)), path
+
+
 def _closed_ready_capability_case(monkeypatch, mutation=None):
     """Connected item-7 composition: real prepared producer/codec, real broker; GitHub/S3/STS are external fakes."""
     import io

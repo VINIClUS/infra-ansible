@@ -418,12 +418,16 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
     monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace(
         application_fragment={"application_role_arn": original_phase["canary_trusted_principal_arn"]}))
-    monkeypatch.setattr(lr, "authenticate_predecessor", lambda *args: carrier["origin"])
-    monkeypatch.setattr(lr, "keeper_transport", lambda **kwargs: {"phase_a_originals": carrier})
+    # Distinct objects per call so item 6 wiring can be asserted by identity, not by equal values.
+    returned = {"predecessor": [], "transport": [], "index": []}
+    monkeypatch.setattr(lr, "authenticate_predecessor", lambda *args: returned["predecessor"].append(
+        copy.deepcopy(carrier["origin"])) or returned["predecessor"][-1])
+    monkeypatch.setattr(lr, "keeper_transport", lambda **kwargs: returned["transport"].append(
+        {"phase_a_originals": copy.deepcopy(carrier)}) or returned["transport"][-1])
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
-    monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: ({"step": "prepared", "owner_sha256": owner["owner_sha256"],
-        "generation": owner["generation"]}, payload))
+    monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: returned["index"].append({"step": "prepared",
+        "owner_sha256": owner["owner_sha256"], "generation": owner["generation"]}) or (returned["index"][-1], payload))
     monkeypatch.setattr(lr.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=owner["source_sha"]))
     monkeypatch.setattr(lr, "authenticate_infrastructure_closure", lambda *args: None)
     monkeypatch.setattr(iam_boundary, "authenticate_sources", lambda *args: sources)
@@ -480,6 +484,10 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert kwargs["activation_sha256"] == c.sha(b"p" * 40) and kwargs["plan_index"]["step"] == "prepared"
         assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
         assert published[0][5] == {"fence-prepared.json": b"{}\n"}
+        # Item 6: exactly the objects private_payload, authenticate_predecessor and keeper_transport returned.
+        assert len(returned["predecessor"]) == len(returned["transport"]) == len(returned["index"]) == 1
+        assert kwargs["plan_index"] is returned["index"][0] and kwargs["predecessor"] is returned["predecessor"][0]
+        assert kwargs["carrier"] is returned["transport"][0]["phase_a_originals"]
     elif allowed:
         with pytest.raises(ApplyBoundary):
             lr.execute("deploy")
