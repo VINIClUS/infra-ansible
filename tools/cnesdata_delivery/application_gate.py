@@ -3,7 +3,6 @@
 Operational execution remains disabled until complete capability admission and
 the protected producer/keeper dispatch are connected. Defaults grant no access.
 """
-import re
 import time
 
 from tools.cnesdata_delivery import contract as c
@@ -1078,12 +1077,10 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
                   and c.sha(files["checkpoint.json"]) == stage["checkpoint_sha256"] == journal._request["checkpoint_sha256"]
                   and journal._inputs["phase-b"] == files["checkpoint.json"], "preparation -> B -> API checkpoint ancestry")
         cases = {case["case_id"]: case for case in evaluation["cases"]}
-        table = lr._allowed_resources(role["policy"], "dynamodb:GetItem")
-        match = re.fullmatch(r"(arn:aws:states:us-east-2:" + re.escape(governance["account_id"])
-                             + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*", lr._allowed_resources(role["policy"], "states:DescribeExecution"))
-        c.require(match is not None and cases["get-fence"]["resource"] == table
-                  and cases["probe-own"]["resource"] == match[1] + "0" * 16, "capability scope recomputed from prepared policy")
-        machine = match[1].replace(":execution:", ":stateMachine:")[:-1]
+        derived = lr.fence_policy_scope(governance, role["policy"])  # The same symbol the prepared evaluation used.
+        table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
+        c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
+                  "capability scope recomputed from prepared policy")
         described = [row["observed"] for row in b_checkpoint["readbacks"]
                      if row["service"] == "stepfunctions" and row["operation"] == "describe_state_machine"]
         c.require(len(described) == 1 and described[0].get("stateMachineArn") == machine, "B DescribeStateMachine readback")
@@ -1094,7 +1091,7 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine, "members": membership["members"]}
         for member in scope["members"]:
             lc.validate_closed_ready_call(request=journal._request, role="fence_operator", service="stepfunctions",
-                operation="describe_execution", parameters={"executionArn": match[1] + member["dispatch_id"],
+                operation="describe_execution", parameters={"executionArn": prefix + member["dispatch_id"],
                 "includedData": "METADATA_ONLY"}, **scope)
         prepared_sha256 = c.sha(prepared["fence-prepared.json"])
         session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,

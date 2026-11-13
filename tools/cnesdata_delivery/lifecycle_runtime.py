@@ -481,24 +481,37 @@ def _allowed_resources(policy, action):
     return found[0]
 
 
+def fence_policy_scope(governance, policy):
+    """The single derivation of the effective fence scope from the projected role policy (item 2).
+
+    Shared by the prepared evaluation and the closed-ready capability. The table is
+    the single GetItem Resource; executions come from the single trailing wildcard
+    of DescribeExecution; both are bound to the protected account. State is never
+    consulted.
+    """
+    account = re.escape(governance["account_id"])
+    table = _allowed_resources(policy, "dynamodb:GetItem")
+    c.require(re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
+              "fence policy protected table")
+    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*",
+                         _allowed_resources(policy, "states:DescribeExecution"))
+    c.require(match is not None, "fence execution prefix single final wildcard")
+    return {"control_table_arn": table, "execution_prefix": match[1],
+            "machine_arn": match[1].replace(":execution:", ":stateMachine:")[:-1]}
+
+
 def fence_evaluation_scope(*, governance, role, control_table_arn, owner, checkpoint_sha256):
     """Effective fence scope from the authenticated projected role policy (item 2).
 
-    The table must be the single GetItem Resource and equal the authenticated
-    Terraform shared_outputs value; executions come from the single trailing
-    wildcard of DescribeExecution. State is never consulted. Evidence is the
-    own-run closed-ready intent for (owner, caller, checkpoint, sequence 0).
+    The table derived by fence_policy_scope must equal the authenticated
+    Terraform shared_outputs value. Evidence is the own-run closed-ready intent
+    for (owner, caller, checkpoint, sequence 0).
     """
     from tools.cnesdata_delivery.coordination_lease import KEY
-    policy = role["policy"]
-    table = _allowed_resources(policy, "dynamodb:GetItem")
-    c.require(table == control_table_arn and re.fullmatch(
-        r"arn:aws:dynamodb:us-east-2:" + re.escape(governance["account_id"]) + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
-        "fence table equals authenticated shared output")
-    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + re.escape(governance["account_id"])
-                         + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*", _allowed_resources(policy, "states:DescribeExecution"))
-    c.require(match is not None, "fence execution prefix single final wildcard")
-    prefix, machine = match[1], match[2]
+    derived = fence_policy_scope(governance, role["policy"])
+    table, prefix = derived["control_table_arn"], derived["execution_prefix"]
+    c.require(table == control_table_arn, "fence table equals authenticated shared output")
+    machine = derived["machine_arn"].rsplit(":", 1)[1]
     identity = lc.application_identity(owner, required=True)
     request_owner = {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}
     keys = closed_ready_evidence_keys(governance, owner=request_owner, caller=identity, checkpoint_sha256=checkpoint_sha256, sequence=0)
