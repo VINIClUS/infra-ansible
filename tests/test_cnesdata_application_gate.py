@@ -169,8 +169,8 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     """Terminal unit setup only; real historical admission is tested separately."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
     keeper = Keeper(store, binding, lambda previous: pytest.fail("terminal fixture must not enter history"),
-                    api=None, governance=None, authenticate_terminal=lambda reference, owner, window: proof,
-                    clock=lambda: 1000, monotonic=lambda: 1000)
+                    api=None, governance=None, clock=lambda: 1000, monotonic=lambda: 1000)
+    _register_synthetic_terminal_validators(keeper, proof)
     previous = store.get()[0]
     keeper.predecessor = {"lease": previous, "checkpoint": historical, "raw": c.canonical(historical)}
     keeper.lease.previous_success = lambda previous: True  # Test-only already-admitted lease setup.
@@ -194,10 +194,35 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     return keeper, owner
 
 
+def _register_synthetic_terminal_validators(keeper, proof):
+    """SYNTHETIC labelled validators (item 8): the product adapter belongs to CnesData #473/#474."""
+    def facts(kind, assessment):
+        if kind in {"unit", "recovery", "audit"}: return {"accepted": kind in assessment["accepted_modes"]}
+        if kind in {"host", "static"}: return {"accepted": True}
+        if kind == "routing": return {key: assessment[key] for key in ("fence", "routes_match")}
+        if kind == "membership": return {"resolved": True}
+        if kind == "quiescence": return {key: assessment[key] for key in ("quiescent", "state_clean", "pending", "unknown", "observed_at")}
+        if kind == "restoration": return dict(assessment["restoration"])
+        return {}
+    for kind in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence", "decision", "restoration"):
+        def validator(source, *, owner, window, observations, kind=kind):
+            assert source == "synthetic-" + kind
+            return {"sha256": proof["inputs"][kind], "facts": facts(kind, proof["assessment"])}
+        keeper.register_terminal_validator(kind, validator, label="synthetic-test-" + kind)
+    keeper._synthetic_terminal_proof = proof
+
+
+def _terminal_reference(keeper):
+    proof = keeper._synthetic_terminal_proof
+    return {"kind": proof["assessment"]["kind"], "checkpoint_raw": c.canonical(proof["checkpoint"]),
+            "sources": {name: "synthetic-" + name for name in proof["inputs"]}}
+
+
 def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False):
     from tools.cnesdata_delivery.application_gate import AdapterJournal
     journal = AdapterJournal.__new__(AdapterJournal)
     journal._pending, journal._unknown, journal._inflight, journal._failed = list(pending), list(unknown), inflight, failed
+    journal._observation_bytes = {}
     return journal
 
 
@@ -251,12 +276,12 @@ def test_keeper_retem_o_lease_enquanto_um_contexto_sdk_for_incerto(context):
     keeper.attach(uncertain)
     before = store.get()
     if context == "again":
-        files = keeper.finish({"artifact_id": 1})
+        files = keeper.finish(_terminal_reference(keeper))
         assert c.loads(files["terminal.json"], canonical=True)["coordination_status"] == "quiescent-released"
         return
     assert keeper.uncertainty()
     with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
-        keeper.finish({"artifact_id": 1})
+        keeper.finish(_terminal_reference(keeper))
     assert store.get() == before and store.get()[0]["status"] != "released"
     keeper.tick()
     assert store.get()[0]["status"] != "released"
@@ -299,18 +324,18 @@ def test_keeper_terminal_release_requires_full_original_decision(case):
                  inputs={name: "e" * 64 for name in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence")})
     before = store.get()
     if case != "accepted":
-        with pytest.raises(ValueError): keeper.finish({"artifact_id": 1})
+        with pytest.raises(ValueError): keeper.finish(_terminal_reference(keeper))
 
         assert store.get() == before
     else:
-        files = keeper.finish({"artifact_id": 1})
+        files = keeper.finish(_terminal_reference(keeper))
         terminal = c.loads(files["terminal.json"], canonical=True)
         assert terminal["promotion_status"] == "accepted"
         assert terminal["coordination_status"] == "quiescent-released"
         assert store.get()[0]["status"] == "released"
         assert store.get()[0]["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
         assert c.loads(files["lease.json"], canonical=True)["generation"] == 1
-        with pytest.raises(ValueError): keeper.finish({"artifact_id": 1})
+        with pytest.raises(ValueError): keeper.finish(_terminal_reference(keeper))
 
 
 def _terminal_fixture(*, failed=False, prepare_failure=False, current_caller=False, carrier=None):
@@ -360,7 +385,7 @@ def _terminal_fixture(*, failed=False, prepare_failure=False, current_caller=Fal
         checkpoint = historical
         names = ("restoration", "routing", "quiescence")
     proof.update(assessment=assessment, checkpoint=checkpoint, inputs={name: "e" * 64 for name in names})
-    files = keeper.finish({"artifact_id": 1})
+    files = keeper.finish(_terminal_reference(keeper))
     return store, files
 
 
@@ -3557,3 +3582,47 @@ def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, oper
     with pytest.raises(ValueError, match="closed-ready only"):
         ag.closed_ready_capability(aws=None, api=None, governance={}, request={}, run={}, journal=journal, keeper=keeper,
                                    prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard())
+
+
+@pytest.mark.parametrize("mutation", ["empty", "missing-one", "unknown-type", "duplicate", "unlabelled", "extra-fact",
+                                      "caller-assessment", "free-callable"])
+def test_keeper_terminal_proof_only_through_closed_validator_registry(mutation):
+    import inspect
+    from tools.cnesdata_delivery.application_gate import Keeper
+    if mutation == "free-callable":
+        assert "authenticate_terminal" not in inspect.signature(Keeper).parameters
+        with pytest.raises(TypeError):
+            Keeper(None, {"lifecycle_version": 1}, None, api=None, governance=None, authenticate_terminal=lambda *a: {})
+        return
+    keeper, store = _accepted_terminal_case()
+    before = store.get()
+    reference = _terminal_reference(keeper)
+    if mutation == "empty": keeper._terminal_validators.clear()
+    if mutation == "missing-one": keeper._terminal_validators.pop("quiescence")
+    if mutation in {"unknown-type", "duplicate", "unlabelled"}:
+        kind, label = {"unknown-type": ("assessment", "x"), "duplicate": ("unit", "x"), "unlabelled": ("unit", "")}[mutation]
+        if mutation == "unlabelled": keeper._terminal_validators.pop("unit")
+        with pytest.raises(ValueError, match="closed terminal validator registry"):
+            keeper.register_terminal_validator(kind, lambda *a, **k: {}, label=label)
+        return
+    if mutation == "extra-fact":
+        label, original = keeper._terminal_validators["routing"]
+        keeper._terminal_validators["routing"] = (label, lambda *a, **k: original(*a, **k) | {"facts": {"fence": "OPEN", "routes_match": True, "accepted": True}})
+    if mutation == "caller-assessment":
+        reference["assessment"] = {"kind": "accepted-open"}
+    with pytest.raises(ValueError):
+        keeper.finish(reference)
+    assert store.get() == before and store.get()[0]["status"] != "released"
+
+
+def test_keeper_terminal_validators_receive_registered_journal_observations():
+    keeper, _ = _accepted_terminal_case()
+    journal = _journal_with()
+    journal._observation_bytes = {"a" * 64: b'{"observed":true}\n'}
+    keeper.attach(journal)
+    seen = []
+    label, original = keeper._terminal_validators["routing"]
+    keeper._terminal_validators["routing"] = (label, lambda source, **kw: seen.append(kw["observations"]) or original(source, **kw))
+    files = keeper.finish(_terminal_reference(keeper))
+    assert seen == [{"a" * 64: b'{"observed":true}\n'}]
+    assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"

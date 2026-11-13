@@ -57,22 +57,37 @@ def authenticate_adapter_closure(product, source, manifest, manifest_sha256):
     return result
 
 
+# Amendment 2026-11-13 item 8: the closed registry of terminal validator types. The
+# accepted-open eight are the amendment list; decision/restoration are the failure
+# proofs already required by the closed _terminal_inputs branches.
+TERMINAL_VALIDATOR_FACTS = {
+    "unit": "accepted", "recovery": "accepted", "audit": "accepted", "host": "accepted", "static": "accepted",
+    "routing": "fence routes_match", "membership": "resolved",
+    "quiescence": "quiescent state_clean pending unknown observed_at",
+    "decision": "", "restoration": "unit recovery audit api static first_static_absent",
+}
+
+
 def _terminal_inputs(assessment, window, inputs):
     c.require(type(inputs) is dict, "original terminal inputs")
     for digest in inputs.values():
         c.digest(digest)
-    if assessment["kind"] == "accepted-open":
+    c.require(set(inputs) == _terminal_required(assessment["kind"], window), "complete original terminal proofs")
+
+
+def _terminal_required(kind, window):
+    if kind == "accepted-open":
         c.require(window["stage"] == "final" and window["decision"] is None, "accepted terminal phase")
         required = {"unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence"}
-    elif assessment["kind"] == "failed-closed-quiescent":
+    elif kind == "failed-closed-quiescent":
         c.require(window["stage"] == "recovery" and window["decision"] is not None, "original recovery terminal decision")
         required = {"decision", "restoration", "routing", "membership", "quiescence"}
     else:
-        c.require(assessment["kind"] == "failed-prepare-quiescent" and window["close"] is None
+        c.require(kind == "failed-prepare-quiescent" and window["close"] is None
                   and window["stage"] == "application-prepare" and window["decision"] is None,
                   "closed terminal kind/phase")
         required = {"restoration", "routing", "quiescence"}
-    c.require(set(inputs) == required, "complete original terminal proofs")
+    return required
 
 
 def _verify_cas_chain(evidence, released):
@@ -1100,13 +1115,13 @@ class Keeper:
     returning its authenticated private checkpoint and protected full reference.
     Admission independently authenticates the reference before any lease write.
     """
-    def __init__(self, store, binding, authenticate_previous, *, api, governance, authenticate_terminal=None, evidence_aws=None, clock=time.time, monotonic=time.monotonic):
+    def __init__(self, store, binding, authenticate_previous, *, api, governance, evidence_aws=None, clock=time.time, monotonic=time.monotonic):
         c.require(binding.get("lifecycle_version") == 1, "lifecycle keeper binding")
         self.store, self.clock, self.monotonic = store, clock, monotonic
         self.authenticate_previous = authenticate_previous
         self.api, self.governance = api, governance
         self.predecessor_reference = None
-        self.authenticate_terminal = authenticate_terminal
+        self._terminal_validators = {}  # Closed registry, empty by default: finish() refuses.
         self.predecessor = None
         self.evidence_aws = evidence_aws if evidence_aws is not None else getattr(store, "aws", None)
         self.phase_a_originals = None
@@ -1211,6 +1226,44 @@ class Keeper:
             raise
         return owner
 
+    def register_terminal_validator(self, kind, validator, *, label):
+        """Register one validator per closed type; it reads journal observations or authenticated artifacts."""
+        c.require(kind in TERMINAL_VALIDATOR_FACTS and kind not in self._terminal_validators and callable(validator)
+                  and type(label) is str and 0 < len(label) <= 128, "closed terminal validator registry")
+        self._terminal_validators[kind] = (label, validator)
+
+    def _terminal_proof(self, reference, owner, window):
+        """Assemble the assessment from registered validator results, never from caller JSON."""
+        c.closed(reference, "kind checkpoint_raw sources")
+        c.require(type(reference["checkpoint_raw"]) is bytes and type(reference["sources"]) is dict, "terminal reference shape")
+        required = _terminal_required(reference["kind"], window)
+        c.require(set(reference["sources"]) == required and required <= set(self._terminal_validators),
+                  "terminal validator unavailable; lifecycle disabled")
+        observations = {}
+        for context in self._contexts:
+            journal = context.journal if type(context) is ClosedReadyBroker else context
+            observations.update(journal.observation_bytes)
+        inputs, facts = {}, {}
+        for kind in sorted(required):
+            label, validator = self._terminal_validators[kind]
+            result = validator(reference["sources"][kind], owner=dict(owner), window=dict(window), observations=dict(observations))
+            c.closed(result, "sha256 facts")
+            c.closed(result["facts"], TERMINAL_VALIDATOR_FACTS[kind])
+            inputs[kind], facts[kind] = c.digest(result["sha256"]), result["facts"]
+        quiet, routing = facts["quiescence"], facts["routing"]
+        assessment = {"kind": reference["kind"], "fence": routing["fence"], "routes_match": routing["routes_match"],
+                      "state_clean": quiet["state_clean"], "quiescent": quiet["quiescent"], "pending": quiet["pending"],
+                      "unknown": quiet["unknown"], "observed_at": quiet["observed_at"]}
+        if reference["kind"] == "accepted-open":
+            c.require(all(facts[kind]["accepted"] is True for kind in ("host", "static"))
+                      and facts["membership"]["resolved"] is True, "terminal host/static/membership acceptance")
+            assessment["accepted_modes"] = [mode for mode in ("unit", "recovery", "audit") if facts[mode]["accepted"] is True]
+        else:
+            if "membership" in facts:
+                c.require(facts["membership"]["resolved"] is True, "terminal membership resolution")
+            assessment |= {"accepted_modes": [], "restoration": facts["restoration"]}
+        return {"assessment": assessment, "checkpoint": c.loads(reference["checkpoint_raw"], canonical=True), "inputs": inputs}
+
     def tick(self):
         """Called by the keeper polling loop; never by delegated jobs."""
         c.require(self.last_renewed is not None, "keeper not acquired")
@@ -1227,11 +1280,11 @@ class Keeper:
         No finally-release. Publication happens after this method and cannot
         retroactively turn promotion failure into accepted promotion.
         """
-        c.require(callable(self.authenticate_terminal), "terminal validator unavailable; lifecycle disabled")
+        c.require(bool(self._terminal_validators), "terminal validator unavailable; lifecycle disabled")
         c.require(not self.uncertainty(), "unresolved SDK uncertainty; lease remains held")
         record = self.lease.check()
         owner, window = lc.owner_binding(record), record["lifecycle"]
-        proof = self.authenticate_terminal(reference, owner, dict(window))
+        proof = self._terminal_proof(reference, owner, window)
         c.closed(proof, "assessment checkpoint inputs")
         c.require(type(proof["inputs"]) is dict and 1 <= len(proof["inputs"]) <= 32, "original terminal inputs")
         for digest in proof["inputs"].values():
