@@ -1,4 +1,15 @@
 locals {
+  delivery_activation = var.github_delivery == null ? null : var.github_delivery.activation_read
+  delivery_activation_objects = local.delivery_activation == null ? [] : [
+    for slot in ["payload", "signature", "receipt"] : "${local.delivery_activation.bucket_arn}/${local.delivery_activation.keys[slot]}"
+  ]
+  delivery_activation_bucket_reads = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
+  delivery_activation_allows = concat(
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = ["s3:GetObjectVersion", "s3:GetObjectRetention"], Resource = local.delivery_activation_objects }],
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = local.delivery_activation_bucket_reads, Resource = local.delivery_activation.bucket_arn }],
+    local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = local.delivery_activation.cipher_kms_key_arn,
+    Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = local.delivery_activation_objects } } }]
+  )
   delivery_roles = var.github_delivery == null ? {} : {
     plan   = { name = var.github_delivery.plan_role_name, sha = var.github_delivery.plan_workflow_sha }
     deploy = { name = var.github_delivery.deploy_role_name, sha = var.github_delivery.deploy_workflow_sha }
@@ -104,6 +115,6 @@ resource "aws_iam_role_policy" "delivery" {
         { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
         ], [for statement in var.github_delivery.product_permissions : { Effect = "Allow", Action = statement.actions, Resource = statement.resources }],
         [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }]
-    ) : statement if each.key == "deploy"])
+    ) : statement if each.key == "deploy"], [for statement in local.delivery_activation_allows : statement if each.key == "plan"])
   })
 }

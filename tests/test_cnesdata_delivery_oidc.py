@@ -735,3 +735,197 @@ def test_finite_iam_date_less_than_has_no_other_deny_condition(now, expected):
     policy = {"Statement": [{"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": "*",
                "Condition": {"DateLessThan": {"aws:CurrentTime": "2030-01-01T00:00:00Z"}}}]}
     assert allowed(policy, "states:DescribeExecution", "*", {} if now is None else {"aws:CurrentTime": now}) is expected
+
+
+DEFAULT_DOCUMENT_SHA256 = {
+    "plain": {
+        'aws_iam_policy.delivery_session["deploy"]': "6497b5ab56ae82eaf7e858fc51896adbc6e06ba1306470d9ecf43cebf447a31c",
+        'aws_iam_policy.delivery_session["plan"]': "ca5ae44e46b8715434f07b249ca64605a14c3cf9fc5044f0bb47dfb04732f1b8",
+        'aws_iam_role_policy.delivery["deploy"]': "036bc7f5250a6401a8ec821536afdc870baecc1da65dca2cfa628cbdd3d178f2",
+        'aws_iam_role_policy.delivery["plan"]': "d2b25e6982d8ad1c398f61d755b2678eae286c3f4943653aa5e4843153e49710",
+    },
+    "app": {
+        "aws_iam_policy.application_session[0]": "596fd2354b4afad50d2071add537d85452efe7f9be5c058b0fa0849db0bb3352",
+        'aws_iam_policy.delivery_session["deploy"]': "6497b5ab56ae82eaf7e858fc51896adbc6e06ba1306470d9ecf43cebf447a31c",
+        'aws_iam_policy.delivery_session["plan"]': "ca5ae44e46b8715434f07b249ca64605a14c3cf9fc5044f0bb47dfb04732f1b8",
+        "aws_iam_role_policy.application[0]": "fab8f192233733cbaa93b39491fdce01a01161803c8f821264d9080f2b32fe9b",
+        'aws_iam_role_policy.delivery["deploy"]': "69e36e8bf7c3c37e4d8e08600122f800755b5b160365176c5b43b9bacb3eb951",
+        'aws_iam_role_policy.delivery["plan"]': "480eeea36fb8f95844966a0e3030ca7cb8848668c46f9402c18703e9c3b567c2",
+    },
+}
+EVIDENCE_BUCKET = "arn:aws:s3:::synthetic-evidence"
+EXT2_PREFIX = "cnesdata/prod/evidence/ext2/" + "a" * 40 + "/42448000000/1/"
+EXT2_KEYS = {"payload": EXT2_PREFIX + "activation.json", "signature": EXT2_PREFIX + "signature.der",
+             "receipt": EXT2_PREFIX + "receipt.json"}
+EXT2_OBJECTS = {slot: EVIDENCE_BUCKET + "/" + key for slot, key in EXT2_KEYS.items()}
+VERSION_RETENTION_ACTIONS = ["s3:GetObjectVersion", "s3:GetObjectRetention", "s3:PutObjectRetention",
+                             "s3:DeleteObjectVersion", "s3:GetObjectVersionAcl", "s3:PutObjectVersionAcl",
+                             "s3:GetObjectVersionTagging", "s3:PutObjectVersionTagging",
+                             "s3:GetObjectVersionAttributes", "s3:GetObjectVersionForReplication"]
+
+
+def activation_input(values):
+    values["github_delivery"]["activation_read"] = {
+        "bucket_arn": EVIDENCE_BUCKET, "cipher_kms_key_arn": values["github_delivery"]["evidence_kms_arn"],
+        "keys": dict(EXT2_KEYS)}
+    return values
+
+
+def documents(resources):
+    import hashlib
+    return {address: hashlib.sha256(value["policy"].encode()).hexdigest() for address, value in resources.items()
+            if address.startswith(("aws_iam_role_policy.", "aws_iam_policy."))}
+
+
+def rendered_policies(resources, role):
+    return (json.loads(resources[f'aws_iam_role_policy.delivery["{role}"]']["policy"]),
+            json.loads(resources[f'aws_iam_policy.delivery_session["{role}"]']["policy"]))
+
+
+def test_native_activation_read_null_preserves_every_default_document(native):
+    plain, _ = render(native, variables(), "activation-default-plain")
+    assert documents(plain) == DEFAULT_DOCUMENT_SHA256["plain"]
+    explicit = variables()
+    explicit["github_delivery"]["activation_read"] = None
+    nulled, _ = render(native, explicit, "activation-explicit-null")
+    assert documents(nulled) == DEFAULT_DOCUMENT_SHA256["plain"]
+    application, _ = render(native, application_values(), "activation-default-application")
+    assert documents(application) == DEFAULT_DOCUMENT_SHA256["app"]
+
+
+def test_native_default_documents_grant_no_version_or_retention_outside_opt_in(native):
+    from fixtures.cnesdata_iam_evaluation import decision
+    for values, name in ((variables(), "premise-plain"), (application_values(), "premise-application")):
+        resources, _ = render(native, values, name)
+        for role in ("plan", "deploy"):
+            for document in rendered_policies(resources, role):
+                for action in VERSION_RETENTION_ACTIONS:
+                    for resource in (EXT2_OBJECTS["receipt"], EVIDENCE_BUCKET + "/other/key",
+                                     "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate", "*"):
+                        assert decision(document, action, resource) != "Allow", (role, action, resource)
+
+
+def test_native_activation_read_changes_only_plan_and_only_for_exact_reads(native):
+    from fixtures.cnesdata_iam_evaluation import decision
+    default, _ = render(native, application_values(), "activation-compare-default")
+    enabled, _ = render(native, activation_input(application_values()), "activation-compare-enabled")
+    changed = {key for key in default if default[key] != enabled[key]}
+    assert changed == {'aws_iam_role_policy.delivery["plan"]', 'aws_iam_policy.delivery_session["plan"]'}
+    identity, managed = rendered_policies(enabled, "plan")
+    for document in (identity, managed):
+        for slot, resource in EXT2_OBJECTS.items():
+            for action in ("s3:GetObjectVersion", "s3:GetObjectRetention"):
+                assert decision(document, action, resource) == "Allow"
+            for action in ("s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectVersionAcl"):
+                assert decision(document, action, resource) != "Allow", (slot, action)
+            for action in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:PutObjectLegalHold"):
+                assert (decision(document, action, resource) == "Deny") is (document is managed), (slot, action)
+        for action in VERSION_RETENTION_ACTIONS:
+            for resource in (EVIDENCE_BUCKET + "/" + EXT2_PREFIX + "other.json", EVIDENCE_BUCKET + "/other",
+                             "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate"):
+                assert decision(document, action, resource) != "Allow", (action, resource)
+
+
+def test_native_activation_read_intersects_with_exact_receipt_then_three_version_sessions(native):
+    from tools.cnesdata_delivery import session_policy as sp
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    data = activation_input(application_values())
+    resources, _ = render(native, data, "activation-intersection")
+    identity, managed = rendered_policies(resources, "plan")
+    settings = data["github_delivery"]
+    gov = activation_governance()
+    gov["evidence_bucket"], gov["state_bucket"] = "synthetic-evidence", "synthetic-state"
+    gov["evidence_prefix"], gov["evidence_kms_key_arn"] = settings["evidence_prefix"], settings["evidence_kms_arn"]
+    gov["activation_read"]["ceiling"] = {"bucket_arn": EVIDENCE_BUCKET, "cipher_kms_key_arn": settings["evidence_kms_arn"],
+                                         "keys": dict(EXT2_KEYS)}
+    versions = {"payload": "P" * 32, "signature": "S" * 32, "receipt": "R" * 32}
+    early, late = "2030-01-01T00:14:59Z", "2030-01-01T00:15:00Z"
+    kms = settings["evidence_kms_arn"]
+
+    def permitted(inline, action, resource, context=None):
+        return effective_iam(identity, [managed, inline], action, resource, {"aws:CurrentTime": early} | (context or {}))
+
+    receipt_only = json.loads(sp.activation_request(gov, {"receipt": versions["receipt"]}, deadline=late)["Policy"])
+    full = json.loads(sp.activation_request(gov, versions, deadline=late)["Policy"])
+    receipt = EXT2_OBJECTS["receipt"]
+    assert permitted(receipt_only, "s3:GetObjectVersion", receipt, {"s3:VersionId": versions["receipt"]})
+    assert not permitted(receipt_only, "s3:GetObjectVersion", receipt, {"s3:VersionId": "wrong"})
+    assert not permitted(receipt_only, "s3:GetObjectVersion", EXT2_OBJECTS["payload"], {"s3:VersionId": versions["payload"]})
+    assert not permitted(receipt_only, "s3:GetObjectRetention", EXT2_OBJECTS["payload"])
+    for slot, resource in EXT2_OBJECTS.items():
+        version = {"s3:VersionId": versions[slot]}
+        context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": resource}
+        assert permitted(full, "s3:GetObjectVersion", resource, version)
+        assert not permitted(full, "s3:GetObjectVersion", resource, {"s3:VersionId": "wrong"})
+        assert permitted(full, "s3:GetObjectRetention", resource)
+        assert not permitted(full, "s3:GetObject", resource)
+        for action in ("s3:PutObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold"):
+            assert not permitted(full, action, resource, version), action
+        assert permitted(full, "kms:Decrypt", kms, context)
+        assert permitted(full, "kms:GenerateDataKey", kms, context)
+        assert not permitted(full, "kms:Encrypt", kms, context)
+        assert not permitted(full, "kms:Decrypt", kms, context | {"kms:ViaService": "ec2.us-east-2.amazonaws.com"})
+        assert not permitted(full, "kms:Decrypt", kms, context | {"kms:EncryptionContext:aws:s3:arn":
+            "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate"})
+    for action in ("s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"):
+        assert permitted(full, action, EVIDENCE_BUCKET)
+        assert not permitted(full, action, "arn:aws:s3:::synthetic-state")
+    assert not permitted(full, "s3:ListBucket", EVIDENCE_BUCKET, {"s3:prefix": EXT2_PREFIX})
+    assert not effective_iam(identity, [managed, full], "s3:GetObjectVersion", receipt,
+                             {"aws:CurrentTime": late, "s3:VersionId": versions["receipt"]})
+    ordinary = json.loads(sp.request(gov, "d" * 40, 10, 1, "plan", [])["Policy"])
+    for resource in EXT2_OBJECTS.values():
+        assert not permitted(ordinary, "s3:GetObjectVersion", resource, {"s3:VersionId": versions["receipt"]})
+        assert not permitted(ordinary, "s3:GetObjectRetention", resource)
+    assert not permitted(ordinary, "s3:GetBucketVersioning", EVIDENCE_BUCKET)
+
+
+def test_native_activation_read_documents_stay_inside_iam_quotas(native):
+    default, _ = render(native, variables(), "activation-quota-default")
+    enabled, _ = render(native, activation_input(variables()), "activation-quota-enabled")
+    for resources in (default, enabled):
+        for role in ("plan", "deploy"):
+            identity, managed = (resources[key]["policy"] for key in (
+                f'aws_iam_role_policy.delivery["{role}"]', f'aws_iam_policy.delivery_session["{role}"]'))
+            assert len("".join(identity.split())) <= 10240
+            assert len("".join(managed.split())) <= 6144
+
+
+@pytest.mark.parametrize("mutation", ["wildcard", "duplicate", "lifecycle", "state", "foreign-key-arn", "bad-bucket"])
+def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, mutation):
+    data = activation_input(variables())
+    ceiling = data["github_delivery"]["activation_read"]
+    if mutation == "wildcard":
+        ceiling["keys"]["receipt"] += "*"
+    elif mutation == "duplicate":
+        ceiling["keys"]["signature"] = ceiling["keys"]["payload"]
+    elif mutation == "lifecycle":
+        ceiling["keys"]["payload"] = "cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/1/1/x.json"
+    elif mutation == "state":
+        ceiling["keys"]["payload"] = "cnesdata/prod/opentofu.tfstate"
+    elif mutation == "foreign-key-arn":
+        ceiling["cipher_kms_key_arn"] = "arn:aws:kms:us-east-2:999988887777:key/00000000-0000-4000-8000-000000000009"
+    else:
+        ceiling["bucket_arn"] = "arn:aws:s3:::synthetic-evidence/prefix"
+    code, _, diagnostics = native.plan(data, "activation-invalid-" + mutation)
+    assert code != 0 and diagnostics
+
+
+OWN_ROLE_READS = ("iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies")
+
+
+@pytest.mark.parametrize("listed", [False, True])
+def test_native_plan_identity_reads_its_own_role_only_when_governed_read_arns_list_it(native, listed):
+    from fixtures.cnesdata_iam_evaluation import decision
+    own = "arn:aws:iam::111122223333:role/cnesdata-test-plan"
+    other = "arn:aws:iam::111122223333:role/cnesdata-test-deploy"
+    data = variables()
+    data["github_delivery"]["read_resource_arns"] = [own] if listed else []
+    resources, _ = render(native, data, f"own-role-readback-{listed}")
+    identity, managed = rendered_policies(resources, "plan")
+    for action in OWN_ROLE_READS:
+        assert (decision(identity, action, own) == "Allow") is listed, action
+        assert decision(identity, action, other) is None, action
+        assert decision(managed, action, own) == "Allow"
+    for action in ("iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:AttachRolePolicy", "iam:DeleteRolePolicy"):
+        assert decision(identity, action, own) != "Allow", action

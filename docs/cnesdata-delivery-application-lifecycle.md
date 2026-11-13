@@ -370,6 +370,22 @@ files and their aggregate are bounded to 131072 bytes; the canonical carrier to
 same carrier and a 262144-byte cap checked before release. Established acquisition
 uses the current predecessor provenance; old embedded timestamps stay historical.
 
+## Plan activation read ceiling
+
+`github_delivery.activation_read` is optional and null by default; null renders
+byte-identical identity and managed documents for every role. When set, only the
+plan identity and plan managed policy gain key-scoped GetObjectVersion and
+GetObjectRetention on the three exact objects, the three bucket readbacks on the
+exact bucket, and Decrypt/GenerateDataKey on the exact cipher key bound to
+ViaService and the three object contexts. The prefix-scoped version/retention
+Deny becomes a global NotResource Deny excluding only those objects, plus a
+NotAction Deny on them; deploy and application receive nothing. Version-exact
+access still comes only from the ephemeral sessions of `activation_request`.
+Native tests prove the default documents are unchanged, no version or
+retention Allow exists outside the keys, and the session intersections. The
+plan identity reads its own role only if the governed `read_resource_arns` list
+its ARN; no grant was added for this.
+
 ## Paused implementation checkpoint — 2026-11-10
 
 This draft remains incomplete and disabled. The existing application/lifecycle/OIDC checkpoint passed 751 tests before the activation-policy changes. The adopted activation transport has only its exact session-policy constructor, ordinary-scope restrictions, and deadline evaluator started; two new focused tests pass. Native activation IAM rendering, original EXT2 verification and inputs transport, connected prepared production/capability/dispatcher/keeper, and the complete purpose/mode execution matrix remain unfinished. No operational readiness or applied IAM is implied. The full current patch still requires final verification and an independent code review. Work was stopped at the user’s request; no AWS operation, merge or deployment was performed.

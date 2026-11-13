@@ -70,6 +70,11 @@ variable "github_delivery" {
       resources = list(string)
     }))
     pass_roles = list(object({ arn = string, service = string }))
+    activation_read = optional(object({
+      bucket_arn         = string
+      cipher_kms_key_arn = string
+      keys               = object({ payload = string, signature = string, receipt = string })
+    }), null)
   })
   default  = null
   nullable = true
@@ -103,6 +108,17 @@ variable "github_delivery" {
         can(regex("^arn:aws:iam::${var.account_id}:role/cnesdata-[a-z0-9-]+$", value.arn)) &&
     contains(["ecs-tasks.amazonaws.com", "lambda.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com"], value.service)]), false)
     error_message = "Exact shared provider, reviewed immutable gates, product-only resources, named actions and bounded trust are required; no wildcard writes or cross-assume."
+  }
+  validation {
+    condition = var.github_delivery == null || var.github_delivery.activation_read == null ? true : try(
+      can(regex("^arn:aws:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.github_delivery.activation_read.bucket_arn)) &&
+      can(regex("^arn:aws:kms:us-east-2:${var.account_id}:key/[0-9a-f-]{36}$", var.github_delivery.activation_read.cipher_kms_key_arn)) &&
+      length(distinct(values(var.github_delivery.activation_read.keys))) == 3 &&
+      alltrue([for key in values(var.github_delivery.activation_read.keys) :
+        length(key) > 0 && length(key) <= 1024 && !startswith(key, "/") && !strcontains(key, "..") &&
+        length(regexall("[?*]", key)) == 0 && !contains(local.delivery_state_keys, key) &&
+    !startswith(key, "${var.github_delivery.evidence_prefix}lifecycle/")]), false)
+    error_message = "Activation read ceiling needs one exact bucket and cipher key and three distinct wildcard-free keys disjoint from state, lease and lifecycle evidence."
   }
 }
 
