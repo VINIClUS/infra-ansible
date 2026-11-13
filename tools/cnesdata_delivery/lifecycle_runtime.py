@@ -1109,22 +1109,110 @@ def authenticate_infrastructure_closure(product, source, expected):
               "complete infrastructure closure")
     return result
 
+def _activation_profile(governance, reference):
+    """The single ext2.history profile whose reference equals the selection; ceiling-bound."""
+    from tools.cnesdata_delivery import evidence as e, session_policy, signing_gate
+    profile = signing_gate._selection(governance["ext2"], {"mode": "historical", "ext2_post_upload_receipt_v1": dict(reference)})
+    storage, ceiling = e.storage_config(profile), session_policy.activation_ceiling(governance)
+    c.require(storage["bucket_arn"] == ceiling["bucket_arn"] and storage["cipher_kms_key_arn"] == ceiling["cipher_kms_key_arn"]
+              and list(storage["current_keys"]) == [ceiling["keys"][slot] for slot in session_policy.ACTIVATION_SLOTS],
+              "activation profile equals protected read ceiling")
+    return profile, storage
+
+
 def operational_inputs(raw, *, governance, owner, window):
-    """Unwrap the operational preparation carrier against the protected read ceiling; no fallback."""
+    """Unwrap the operational preparation carrier against the protected read ceiling; no fallback.
+
+    Item 9: the deploy revalidates SPKI, profile hash and signature locally; it reads no EXT2 object.
+    """
     from tools.cnesdata_delivery import session_policy
     ceiling = session_policy.activation_ceiling(governance)
     decoded = lc.inputs_envelope(raw, owner=owner, window=window)
     for slot, reference in decoded["objects"].items():
         c.require(reference["bucket_arn"] == ceiling["bucket_arn"] and reference["cipher_kms_key_arn"] == ceiling["cipher_kms_key_arn"]
                   and reference["key"] == ceiling["keys"][slot], "envelope object within protected activation ceiling")
+    revalidate_activation(governance, c.loads(raw, canonical=True, limit=lc.ENVELOPE_LIMIT)["activation"], decoded["activation"])
     return decoded
+
+
+def revalidate_activation(governance, activation, decoded):
+    """Local deploy-side EXT2 revalidation: governed profile hash, SPKI and signature; no EXT2 read."""
+    from tools.cnesdata_delivery import signing_gate
+    profile, _ = _activation_profile(governance, activation["ext2_reference"])
+    c.require(activation["ext2_governance_sha256"] == c.sha(c.canonical(profile)), "envelope original EXT2 profile hash")
+    spki = decoded["signing_spki"]
+    c.require(spki == signing_gate._governed_signing_spki(profile), "envelope original EXT2 SPKI")
+    signing_gate.verify_signature(decoded["payload"], decoded["signature"], spki, governance=profile)
+
+
+ACTIVATION_POLICY_LIMIT = 2048
+
+
+def activation_session_factory(governance, run):
+    """Production read sessions: one OIDC exchange per activation_request scope, size-checked first."""
+    from tools.cnesdata_delivery import session_policy, signing_gate
+    def open_session(versions, deadline):
+        restriction = session_policy.activation_request(governance, versions, deadline=deadline)
+        c.require(len(restriction["Policy"].encode()) <= ACTIVATION_POLICY_LIMIT, "activation session policy size")
+        credentials = oidc_credentials(governance, "plan", restriction, run)
+        return signing_gate._sdk_clients(credentials)["s3"]
+    return open_session
+
+
+def plan_activation_carrier(*, governance, step, owner, window, terraform_raw, github, session_factory, now):
+    """Original EXT2 authentication inside the operational plan (amendment 2026-11-13 item 9).
+
+    Public reference, receipt-only session, receipt read, three-pair session,
+    complete historical verify_ext2_reference, then render_ext2 from the real
+    VerifiedActivation. The EXT2 gate configuration/invocation is never called.
+    """
+    import base64
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import evidence as e, ext2_transport as t, signing_gate
+    selection = step.get("activation_selection")
+    c.closed(selection, "selection_version ext2_post_upload_receipt_v1")
+    c.require(type(selection["selection_version"]) is int and selection["selection_version"] == 1, "activation selection version")
+    reference = dict(selection["ext2_post_upload_receipt_v1"])
+    t.validate_reference(reference)
+    profile, storage = _activation_profile(governance, reference)
+    moment = datetime.fromtimestamp(now, timezone.utc)
+    authenticated = t.authenticate_reference(reference, github=github, governance=profile, current_invocation=None, now=moment)
+    member = authenticated.receipt_reference
+    deadline = c.utc(window["preparation_deadline"])
+    receipt_s3 = session_factory({"receipt": member["receipt_version_id"]}, deadline)
+    receipt_object = e.read_version({"bucket_arn": storage["bucket_arn"], "key": storage["current_keys"][2],
+        "version_id": member["receipt_version_id"], "content_sha256": member["receipt_sha256"],
+        "content_length": member["receipt_size"], "server_side_encryption": "aws:kms",
+        "cipher_kms_key_arn": storage["cipher_kms_key_arn"], "bucket_key_enabled": False}, s3=receipt_s3, governance=profile)
+    receipt = t.loads(receipt_object.body, 65536)
+    versions = {"payload": receipt["object"]["version_id"], "signature": receipt["signature_object"]["version_id"],
+                "receipt": member["receipt_version_id"]}
+    verified = signing_gate.verify_ext2_reference(reference, github=github, s3=session_factory(versions, deadline),
+                                                  governance=profile, now=moment, historical=True)
+    request = {"request_version": 1, "mode": "historical", "inputs": None,
+               "source_sha": t.hex_digest(profile["invocation"]["source_sha"], 40), "ext2_post_upload_receipt_v1": dict(reference)}
+    rendered = signing_gate._load_consumer(profile, request, github).render(verified, profile)
+    def blob(raw):
+        return {"sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
+    objects = {slot: dict(item.reference()) | {"content_length": len(item.body)} for slot, item in
+               (("payload", verified.payload_object), ("signature", verified.signature_object), ("receipt", verified.receipt_object))}
+    carrier = {"lifecycle_inputs_version": 2, "owner": owner,
+        "preparation": {"admitted_at": window["admitted_at"], "deadline": window["deadline"], "observed_at": int(now)},
+        "terraform": blob(terraform_raw),
+        "activation": {"carrier_version": 1, "ext2_reference": reference, "ext2_governance_sha256": c.sha(c.canonical(profile)),
+            "payload": blob(verified.payload_bytes), "signature": blob(verified.signature_der), "receipt": blob(verified.receipt_bytes),
+            "signing_spki": blob(verified.signing_spki_der), "objects": objects, "rendered_targets": rendered}}
+    raw = c.canonical(carrier, limit=lc.ENVELOPE_LIMIT)
+    lc.inputs_envelope(raw, owner=owner, window=window)
+    return raw
 
 
 def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
     governance, request, step, api, run, public = admission(role)
-    c.require(not (role == "plan" and step["mode"] == "operational"), "operational plan requires activation transport")
+    c.require(not (role == "plan" and step["mode"] == "operational") or type(step.get("activation_selection")) is dict,
+              "operational plan requires activation transport")
     aws = AWS(governance)
     from tools.cnesdata_delivery import session_owner
     application_authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"], "application", "application-prepare", time.time())
@@ -1210,12 +1298,17 @@ def execute(role):
         guard.run([tofu, "init", "-input=false", "-lockfile=readonly", "-backend-config=" + str(temp / "backend.json")],
                   cwd=root, env=env, output=temp / "init.log", timeout=45, mutating=False)
         c.effective_backend(c.loads((root / ".terraform/terraform.tfstate").read_bytes(), state=True), "default", baseline["backend"]["configuration"])
+        published_inputs = payload["inputs.json"]
+        if role == "plan" and step["purpose"] == "application-prepare" and step["mode"] == "operational":
+            published_inputs = plan_activation_carrier(governance=governance, step=step, owner=owner, window=guard.window,
+                terraform_raw=terraform_raw, github=api, session_factory=activation_session_factory(governance, run), now=time.time())
+            guard.check()
         if role == "plan":
             guard.run([tofu, "plan", "-input=false", "-lock-timeout=20s", "-var-file=" + str(temp / "inputs.json"), "-out=" + str(temp / "plan.bin")],
                       cwd=root, env=env, output=temp / "plan.log", timeout=120)
             guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "plan.json", timeout=20, mutating=False)
             result_files = {"plan.bin": (temp / "plan.bin").read_bytes(), "plan.json": (temp / "plan.json").read_bytes(),
-                            "inputs.json": payload["inputs.json"], "checkpoint.json": payload["checkpoint.json"]}
+                            "inputs.json": published_inputs, "checkpoint.json": payload["checkpoint.json"]}
             # A saved plan is published unapproved; only the independent audit job
             # can authorize its digest for a subsequent deploy invocation.
             c._secrets(c.loads(result_files["plan.json"], state=True))
