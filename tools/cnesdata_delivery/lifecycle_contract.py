@@ -211,6 +211,14 @@ FENCE_PREPARE_PRODUCER = {
     "step_name": "Execute under CAS watchdog and verify final publication", "step": "application-prepare-operational",
     "job_name": "application-prepare-operational / execute", "purpose": "application-prepare", "mode": "operational", "direction": "advance",
 }
+# Amendment 2026-11-13 item 5: one tuple for producer (eight completed + gate running) and consumer (nine completed).
+FENCE_PREPARE_STEPS = (
+    "Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
+    "Check out authenticated exact product source", "Check out pinned artifact SDK bundle",
+    "Set pinned Node runtime for the artifact SDK", "Install checksum-locked protected runtime",
+    "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
+    FENCE_PREPARE_PRODUCER["step_name"],
+)
 FENCE_PREPARE_FILES = frozenset({"checkpoint.json", "approval.json", "fence-prepared.json", "fence-role.json",
                                "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json"})
 FENCE_ORIGIN_FIELDS = "repository source_sha run_id run_attempt job_id artifact_id artifact_digest producer_name step name sha256 size"
@@ -355,6 +363,11 @@ def fence_predecessor_baseline(raw, reference, carrier):
     return state, state_object
 
 
+def fence_source_closure(projection_source_files):
+    """Amendment 2026-11-13 item 4: commitment of the traversed projection source files."""
+    return c.sha(c.canonical(projection_source_files))
+
+
 def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, predecessor_raw, predecessor_reference, producer):
     """Validate a chain whose original bytes/producer are independently protected."""
     c.closed(chain, FENCE_SCHEMAS["fence-chain.json"])
@@ -470,6 +483,7 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
         c.digest(item["sha256"])
         paths.append(item["path"])
     c.require(paths == sorted(set(paths)), "fence exact projection source inventory")
+    c.require(old["source_closure_sha256"] == fence_source_closure(source_files), "fence historical projection source closure")
     c.digest(old["source_sha"], 40)
     for key in ("source_closure_sha256", "candidate_sha256", "plan_binary_sha256", "plan_json_sha256", "inputs_sha256"):
         c.digest(old[key])

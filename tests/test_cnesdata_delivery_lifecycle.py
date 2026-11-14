@@ -344,6 +344,8 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({"direction": "converge"}, {}, False),
     ({"bare_inputs": True}, {}, False),
     ({}, {}, True),
+    ({"after_apply": True}, {}, True),
+    ({"plan_operational": True}, {}, True),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
     """Unit regression for execute's step/delta checks, not operational admission.
@@ -378,8 +380,11 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     raw_state = c.canonical({"lineage": "fixture", "serial": 1, "resources": []})
     state_object = {"version_id": "fixture"}
     window = {"admitted_at": 1000, "deadline": 1900}
+    plan_operational = step.pop("plan_operational", False)
+    if plan_operational:
+        step["activation_selection"] = {"selection_version": 1, "ext2_post_upload_receipt_v1": {"fixture": "isolated"}}
     wrapped = (step["mode"] == "operational" and step["purpose"] == "application-prepare"
-               and not step.get("bare_inputs"))
+               and not step.get("bare_inputs") and not plan_operational)
     envelope = _envelope_case(owner, window, c.canonical(inputs))[1] if wrapped else None
     payload = {"plan.bin": b"synthetic-plan", "plan.json": c.canonical(plan),
                "inputs.json": c.canonical(envelope) if wrapped else c.canonical(inputs),
@@ -413,12 +418,16 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
     monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace(
         application_fragment={"application_role_arn": original_phase["canary_trusted_principal_arn"]}))
-    monkeypatch.setattr(lr, "authenticate_predecessor", lambda *args: carrier["origin"])
-    monkeypatch.setattr(lr, "keeper_transport", lambda **kwargs: {"phase_a_originals": carrier})
+    # Distinct objects per call so item 6 wiring can be asserted by identity, not by equal values.
+    returned = {"predecessor": [], "transport": [], "index": []}
+    monkeypatch.setattr(lr, "authenticate_predecessor", lambda *args: returned["predecessor"].append(
+        copy.deepcopy(carrier["origin"])) or returned["predecessor"][-1])
+    monkeypatch.setattr(lr, "keeper_transport", lambda **kwargs: returned["transport"].append(
+        {"phase_a_originals": copy.deepcopy(carrier)}) or returned["transport"][-1])
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
-    monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: ({"step": "prepared", "owner_sha256": owner["owner_sha256"],
-        "generation": owner["generation"]}, payload))
+    monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: returned["index"].append({"step": "prepared",
+        "owner_sha256": owner["owner_sha256"], "generation": owner["generation"]}) or (returned["index"][-1], payload))
     monkeypatch.setattr(lr.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=owner["source_sha"]))
     monkeypatch.setattr(lr, "authenticate_infrastructure_closure", lambda *args: None)
     monkeypatch.setattr(iam_boundary, "authenticate_sources", lambda *args: sources)
@@ -426,7 +435,21 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(runtime, "_environment", lambda: {})
     monkeypatch.setattr(c, "validate_cost", lambda *args, **kwargs: None)
     monkeypatch.setattr(c, "drift_coverage", lambda *args, **kwargs: None)
-    commands = []
+    commands, produced, published = [], [], []
+    after_apply = step.pop("after_apply", False)
+    if after_apply:
+        # Item 6 wiring only: the composition itself is tested in test_cnesdata_application_gate.
+        monkeypatch.setattr(c, "applied_state", lambda *args: None)
+        monkeypatch.setattr(iam_boundary, "bind_state", lambda *args: None)
+        monkeypatch.setattr(lr, "readbacks", lambda *args: [])
+        monkeypatch.setattr(lr, "fence_prepare_package", lambda **kwargs: produced.append(kwargs) or {"fence-prepared.json": b"{}\n"})
+        monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
+    carriers, var_files = [], []
+    if plan_operational:
+        # Item 9 wiring only: plan_activation_carrier itself is proven against the published EXT2 fixture.
+        monkeypatch.setattr(lr, "activation_session_factory", lambda governance, run: ("session-factory", run["id"]))
+        monkeypatch.setattr(lr, "plan_activation_carrier", lambda **kwargs: carriers.append(kwargs) or b"carrier-v2")
+        monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
     class ApplyBoundary(Exception):
         pass
     class Guard:
@@ -435,12 +458,37 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
             pass
         def run(self, command, **kwargs):
             commands.append(command[1])
-            if command[1] == "apply":
+            if command[1] == "apply" and not after_apply:
                 raise ApplyBoundary()
+            if command[1] == "plan":
+                var_files.append(Path(command[4].split("=", 1)[1]).read_bytes())
+                Path(command[5].split("=", 1)[1]).write_bytes(b"synthetic-plan")
             if command[1] == "show":
                 Path(kwargs["output"]).write_bytes(payload["plan.json"])
     monkeypatch.setattr(lr, "LifecycleWatchdog", lambda *args: Guard())
-    if allowed:
+    _isolate_ext2_revalidation(monkeypatch)
+    if plan_operational:
+        lr.execute("plan")
+        assert commands == ["init", "plan", "show"] and len(carriers) == len(published) == 1
+        assert carriers[0]["step"] is step and carriers[0]["terraform_raw"] == payload["inputs.json"] == var_files[0]
+        assert carriers[0]["owner"] == owner and carriers[0]["window"] is Guard.window
+        assert carriers[0]["session_factory"] == ("session-factory", owner["run_id"])
+        files = published[0][5]
+        assert files["inputs.json"] == b"carrier-v2" and files["checkpoint.json"] == payload["checkpoint.json"]
+    elif after_apply:
+        lr.execute("deploy")
+        assert commands == ["init", "show", "apply"] and len(produced) == len(published) == 1
+        kwargs = produced[0]
+        assert kwargs["inputs_raw"] == payload["inputs.json"] and kwargs["terraform_raw"] == c.canonical(inputs)
+        assert kwargs["previous_raw"] == payload["checkpoint.json"] and kwargs["approval_raw"] == payload["approval.json"]
+        assert kwargs["activation_sha256"] == c.sha(b"p" * 40) and kwargs["plan_index"]["step"] == "prepared"
+        assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
+        assert published[0][5] == {"fence-prepared.json": b"{}\n"}
+        # Item 6: exactly the objects private_payload, authenticate_predecessor and keeper_transport returned.
+        assert len(returned["predecessor"]) == len(returned["transport"]) == len(returned["index"]) == 1
+        assert kwargs["plan_index"] is returned["index"][0] and kwargs["predecessor"] is returned["predecessor"][0]
+        assert kwargs["carrier"] is returned["transport"][0]["phase_a_originals"]
+    elif allowed:
         with pytest.raises(ApplyBoundary):
             lr.execute("deploy")
         assert commands == ["init", "show", "apply"]
@@ -464,6 +512,31 @@ def test_plan_operational_refuses_until_activation_transport_exists(monkeypatch)
     monkeypatch.setattr(lr, "admission", lambda role: ({}, {}, step, None, {}, {}))
     monkeypatch.setattr(lr, "AWS", lambda _: pytest.fail("operational plan must refuse before any AWS access"))
     with pytest.raises(ValueError, match="operational plan requires activation transport"):
+        lr.execute("plan")
+
+
+def test_plan_operational_transport_needs_a_same_run_keeper_lease(monkeypatch):
+    """Item 9 is connected but inert: only Keeper.acquire writes a lifecycle lease and application_gate.execute
+    refuses before constructing a Keeper, so a plan run never owns one and refuses before EXT2 reads or STS."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, session_owner
+    step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance", "input_jobs": {},
+            "activation_selection": {"selection_version": 1, "ext2_post_upload_receipt_v1": {"fixture": "isolated"}}}
+    store, _, _ = held()
+    store.value.update(application_purpose="promotion", context_kind=lc.APPLICATION_CONTEXTS["promotion"], caller_binding_sha256="e" * 64)
+    owner = lc.owner_binding(store.value)
+    governance = {"context_kind": owner["context_kind"]}
+    request = {"source_sha": owner["source_sha"], "application_purpose": "promotion", "caller_binding_sha256": "e" * 64}
+    current_run = {"id": owner["run_id"] + 1, "run_attempt": owner["run_attempt"]}  # Not the run whose keeper holds the lease.
+    monkeypatch.setattr(lr, "admission", lambda role: (governance, request, step, None, current_run, {}))
+    monkeypatch.setattr(lr, "AWS", lambda _: SimpleNamespace())
+    monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
+    monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace())
+    monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
+    monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
+    for name in ("plan_activation_carrier", "activation_session_factory", "oidc_credentials", "private_payload", "LifecycleWatchdog"):
+        monkeypatch.setattr(lr, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached without a same-run keeper lease"))
+    with pytest.raises(ValueError, match="original owner run/caller"):
         lr.execute("plan")
 
 
@@ -867,12 +940,22 @@ def _blob_of(raw):
     return {"sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
 
 
-def test_operational_inputs_confronta_objetos_com_o_teto_protegido_e_nao_tem_fallback():
+def _isolate_ext2_revalidation(monkeypatch, calls=None):
+    """Synthetic envelopes carry no real EXT2 signature; the real revalidation is
+    proven by the published-case tests (test_deploy_revalidates_activation_locally)."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    calls = [] if calls is None else calls
+    monkeypatch.setattr(lr, "revalidate_activation", lambda governance, activation, decoded: calls.append(activation["ext2_reference"]))
+    return calls
+
+
+def test_operational_inputs_confronta_objetos_com_o_teto_protegido_e_nao_tem_fallback(monkeypatch):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     lc, value, owner, window, terraform = _envelope_case()
     governance = _activation_governance(value)
+    revalidated = _isolate_ext2_revalidation(monkeypatch)
     result = lr.operational_inputs(c.canonical(value), governance=governance, owner=owner, window=window)
-    assert result["terraform"] == terraform
+    assert result["terraform"] == terraform and revalidated == [value["activation"]["ext2_reference"]]
     assert result["activation_sha256"] == value["activation"]["payload"]["sha256"]
     with pytest.raises(ValueError, match="closed object fields"):
         lr.operational_inputs(c.canonical({"canary_release_id": "r1"}), governance=governance, owner=owner, window=window)
@@ -931,3 +1014,136 @@ def test_mode_canary_v2_record_vectors_byte_compatible_with_product():
     assert item["payload"] == _MODE_CANARY_RECORD_TEXT
     control = {"schema": "cnesdata.mode-canary-control/v1", "owner_sha256": "d" * 64}
     assert c.canonical(control) == b'{"owner_sha256":"' + b"d" * 64 + b'","schema":"cnesdata.mode-canary-control/v1"}\n'
+
+
+from test_cnesdata_delivery_signing import crypto, gate, published_case  # noqa: E402,F401 -- shared EXT2 fixtures
+
+
+def _plan_activation_case(gate, crypto, tmp_path, monkeypatch):
+    """Item 9: real EXT2 producer fixture (synthetic key/objects); GitHub and S3 are external fakes."""
+    import copy as copy_module
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    monkeypatch.chdir(tmp_path)
+    case, reference, _ = published_case(gate, crypto)
+    profile, api, _, s3, _, payload = case
+    profile = copy_module.deepcopy(profile)
+    storage = profile["storage"]
+    # The shared EXT2 fixture renders an empty retained list; the v2 envelope requires active ∈ retained.
+    import base64
+    import hashlib
+    source = profile["consumer"]["source_sha"]
+    url = f"repos/{c.REPOSITORY}/contents/release/build_activation.py?ref={source}"
+    builder = base64.b64decode(api.responses[url]["content"])
+    active = builder.split(b"'processor_active_unit_task_definition_arn': ")[1].split(b",")[0]
+    builder = builder.replace(b"'processor_retained_unit_task_definition_arns': []",
+                              b"'processor_retained_unit_task_definition_arns': [" + active + b"]")
+    api.responses[url] = dict(api.responses[url], size=len(builder), content=base64.b64encode(builder).decode(),
+                              sha=hashlib.sha1(b"blob " + str(len(builder)).encode() + b"\0" + builder).hexdigest())
+    for item in profile["consumer"]["files"]:
+        if item["path"] == "release/build_activation.py":
+            item["sha256"] = c.sha(builder)
+    profile["history"] = [{"reference": dict(reference), **{key: copy_module.deepcopy(profile[key])
+                           for key in ("storage", "provenance", "signing", "crypto", "consumer")}}]
+    owner = {"repository": c.REPOSITORY, "run_id": 41, "run_attempt": 1, "source_sha": "b" * 40, "owner_sha256": "f" * 64, "generation": 1}
+    admitted = int(datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp()) - 10
+    window = {"admitted_at": admitted, "deadline": admitted + 600, "preparation_deadline": admitted + 300}
+    governance = {"ext2": profile, "account_id": storage["account_id"], "evidence_prefix": "cnesdata/prod/evidence/",
+                  "roles": {"plan": "arn:aws:iam::" + storage["account_id"] + ":role/cnesdata-plan"},
+                  "activation_read": {"ceiling": {"bucket_arn": storage["bucket_arn"], "cipher_kms_key_arn": storage["cipher_kms_key_arn"],
+                      "keys": dict(zip(("payload", "signature", "receipt"), storage["current_keys"]))},
+                      "ordinary_bucket_denies": [], "plan_role_arn": "arn:aws:iam::" + storage["account_id"] + ":role/cnesdata-plan",
+                      "identity_sha256": "1" * 64, "session_sha256": "2" * 64}}
+    step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance",
+            "activation_selection": {"selection_version": 1, "ext2_post_upload_receipt_v1": dict(reference)}}
+    sessions = []
+    def session_factory(versions, deadline):
+        sessions.append((dict(versions), deadline))
+        return s3
+    return governance, step, owner, window, api, s3, session_factory, sessions, payload, lc
+
+
+def test_plan_activation_carrier_authenticates_original_ext2_in_two_sessions(gate, crypto, tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    governance, step, owner, window, api, s3, factory, sessions, payload, lc = _plan_activation_case(gate, crypto, tmp_path, monkeypatch)
+    now = datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp()
+    raw = lr.plan_activation_carrier(governance=governance, step=step, owner=owner, window=window,
+                                     terraform_raw=b'{"canary_release_id":"r1"}\n', github=api, session_factory=factory, now=now)
+    decoded = lc.inputs_envelope(raw, owner=owner, window=window)
+    assert decoded["activation_sha256"] == c.sha(payload) and decoded["terraform"] == b'{"canary_release_id":"r1"}\n'
+    assert [set(versions) for versions, _ in sessions] == [{"receipt"}, {"payload", "signature", "receipt"}]
+    assert all(deadline == c.utc(window["preparation_deadline"]) for _, deadline in sessions)
+    assert not any(op == "put" for op, _ in s3.calls)
+    # Deploy side: local SPKI/profile/signature revalidation with no EXT2 read.
+    s3.calls.clear()
+    assert lr.operational_inputs(raw, governance=governance, owner=owner, window=window)["activation_sha256"] == c.sha(payload)
+    assert s3.calls == []
+
+
+@pytest.mark.parametrize("mutation", ["selection-version", "foreign-reference", "ceiling-key", "ceiling-bucket"])
+def test_plan_activation_carrier_refuses_outside_selection_or_ceiling(gate, crypto, tmp_path, monkeypatch, mutation):
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    governance, step, owner, window, api, _, factory, sessions, _, _ = _plan_activation_case(gate, crypto, tmp_path, monkeypatch)
+    selection = step["activation_selection"]
+    if mutation == "selection-version": selection["selection_version"] = 2
+    if mutation == "foreign-reference": selection["ext2_post_upload_receipt_v1"]["run_id"] = "999"
+    if mutation == "ceiling-key": governance["activation_read"]["ceiling"]["keys"]["receipt"] = "cnesdata/prod/ext2/other.json"
+    if mutation == "ceiling-bucket": governance["activation_read"]["ceiling"]["bucket_arn"] = "arn:aws:s3:::other-bucket"
+    with pytest.raises(ValueError):
+        lr.plan_activation_carrier(governance=governance, step=step, owner=owner, window=window, terraform_raw=b"{}\n",
+                                   github=api, session_factory=factory, now=datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp())
+    assert sessions == []
+
+
+SIGNATURE_REJECTION = "ext2=signature_invalid"
+
+
+@pytest.mark.parametrize("mutation,message", [("profile-hash", "envelope original EXT2 profile hash"),
+                                              ("spki", "envelope original EXT2 SPKI"), ("signature", SIGNATURE_REJECTION)])
+def test_deploy_revalidates_activation_locally(gate, crypto, tmp_path, monkeypatch, mutation, message):
+    import base64
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    governance, step, owner, window, api, _, factory, _, _, _ = _plan_activation_case(gate, crypto, tmp_path, monkeypatch)
+    raw = lr.plan_activation_carrier(governance=governance, step=step, owner=owner, window=window, terraform_raw=b"{}\n",
+                                     github=api, session_factory=factory, now=datetime(2027, 1, 1, tzinfo=timezone.utc).timestamp())
+    carrier = c.loads(raw, canonical=True, limit=786432)
+    activation = carrier["activation"]
+    if mutation == "profile-hash": activation["ext2_governance_sha256"] = "0" * 64
+    if mutation in {"spki", "signature"}:
+        name = "signing_spki" if mutation == "spki" else "signature"
+        body = bytearray(base64.b64decode(activation[name]["bytes_base64"]))
+        body[-1] ^= 1
+        activation[name] = {"sha256": c.sha(bytes(body)), "size": len(body), "bytes_base64": base64.b64encode(bytes(body)).decode()}
+        if mutation == "signature":
+            activation["objects"]["signature"].update(content_sha256=c.sha(bytes(body)))
+    with pytest.raises(ValueError, match=message):
+        lr.operational_inputs(c.canonical(carrier), governance=governance, owner=owner, window=window)
+
+
+def test_activation_session_policy_size_is_measured_before_each_sts_call(monkeypatch):
+    """Item 9: 2048 encoded characters (inline + managed ARN) pass; 2049 refuses before OIDC/STS."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_policy, signing_gate
+    _, value, _, _, _ = _envelope_case()
+    governance = _activation_governance(value)
+    role = "arn:aws:iam::111122223333:role/cnesdata-prod-plan"
+    governance["roles"]["plan"] = governance["activation_read"]["plan_role_arn"] = role
+    calls = []
+    monkeypatch.setattr(lr, "oidc_credentials", lambda governance, role, restriction, run: calls.append(restriction) or {"fixture": True})
+    monkeypatch.setattr(signing_gate, "_sdk_clients", lambda credentials: {"s3": ("s3", credentials)})
+    factory = lr.activation_session_factory(governance, {"id": 41, "run_attempt": 1})
+    deadline = "2027-01-01T00:05:00Z"
+    def total(length):
+        try:
+            statements_policy = session_policy.activation_request(governance, {"receipt": "v" * length}, deadline=deadline)
+        except ValueError:
+            return None
+        return len(statements_policy["Policy"]) + sum(len(item["arn"]) for item in statements_policy["PolicyArns"])
+    fits = max(length for length in range(1, 1025) if total(length) is not None)
+    assert total(fits) == 2048
+    assert factory({"receipt": "v" * fits}, deadline) == ("s3", {"fixture": True}) and len(calls) == 1
+    with pytest.raises(ValueError, match="exceeds 2048 characters"):
+        factory({"receipt": "v" * (fits + 1)}, deadline)
+    assert len(calls) == 1

@@ -169,8 +169,8 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     """Terminal unit setup only; real historical admission is tested separately."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
     keeper = Keeper(store, binding, lambda previous: pytest.fail("terminal fixture must not enter history"),
-                    api=None, governance=None, authenticate_terminal=lambda reference, owner, window: proof,
-                    clock=lambda: 1000, monotonic=lambda: 1000)
+                    api=None, governance=None, clock=lambda: 1000, monotonic=lambda: 1000)
+    _register_synthetic_terminal_validators(keeper, proof)
     previous = store.get()[0]
     keeper.predecessor = {"lease": previous, "checkpoint": historical, "raw": c.canonical(historical)}
     keeper.lease.previous_success = lambda previous: True  # Test-only already-admitted lease setup.
@@ -194,10 +194,35 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     return keeper, owner
 
 
+def _register_synthetic_terminal_validators(keeper, proof):
+    """SYNTHETIC labelled validators (item 8): the product adapter belongs to CnesData #473/#474."""
+    def facts(kind, assessment):
+        if kind in {"unit", "recovery", "audit"}: return {"accepted": kind in assessment["accepted_modes"]}
+        if kind in {"host", "static"}: return {"accepted": True}
+        if kind == "routing": return {key: assessment[key] for key in ("fence", "routes_match")}
+        if kind == "membership": return {"resolved": True}
+        if kind == "quiescence": return {key: assessment[key] for key in ("quiescent", "state_clean", "pending", "unknown", "observed_at")}
+        if kind == "restoration": return dict(assessment["restoration"])
+        return {}
+    for kind in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence", "decision", "restoration"):
+        def validator(source, *, owner, window, observations, kind=kind):
+            assert source == "synthetic-" + kind
+            return {"sha256": proof["inputs"][kind], "facts": facts(kind, proof["assessment"])}
+        keeper.register_terminal_validator(kind, validator, label="synthetic-test-" + kind)
+    keeper._synthetic_terminal_proof = proof
+
+
+def _terminal_reference(keeper):
+    proof = keeper._synthetic_terminal_proof
+    return {"kind": proof["assessment"]["kind"], "checkpoint_raw": c.canonical(proof["checkpoint"]),
+            "sources": {name: "synthetic-" + name for name in proof["inputs"]}}
+
+
 def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False):
     from tools.cnesdata_delivery.application_gate import AdapterJournal
     journal = AdapterJournal.__new__(AdapterJournal)
     journal._pending, journal._unknown, journal._inflight, journal._failed = list(pending), list(unknown), inflight, failed
+    journal._observation_bytes = {}
     return journal
 
 
@@ -251,12 +276,12 @@ def test_keeper_retem_o_lease_enquanto_um_contexto_sdk_for_incerto(context):
     keeper.attach(uncertain)
     before = store.get()
     if context == "again":
-        files = keeper.finish({"artifact_id": 1})
+        files = keeper.finish(_terminal_reference(keeper))
         assert c.loads(files["terminal.json"], canonical=True)["coordination_status"] == "quiescent-released"
         return
     assert keeper.uncertainty()
     with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
-        keeper.finish({"artifact_id": 1})
+        keeper.finish(_terminal_reference(keeper))
     assert store.get() == before and store.get()[0]["status"] != "released"
     keeper.tick()
     assert store.get()[0]["status"] != "released"
@@ -299,18 +324,18 @@ def test_keeper_terminal_release_requires_full_original_decision(case):
                  inputs={name: "e" * 64 for name in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence")})
     before = store.get()
     if case != "accepted":
-        with pytest.raises(ValueError): keeper.finish({"artifact_id": 1})
+        with pytest.raises(ValueError): keeper.finish(_terminal_reference(keeper))
 
         assert store.get() == before
     else:
-        files = keeper.finish({"artifact_id": 1})
+        files = keeper.finish(_terminal_reference(keeper))
         terminal = c.loads(files["terminal.json"], canonical=True)
         assert terminal["promotion_status"] == "accepted"
         assert terminal["coordination_status"] == "quiescent-released"
         assert store.get()[0]["status"] == "released"
         assert store.get()[0]["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
         assert c.loads(files["lease.json"], canonical=True)["generation"] == 1
-        with pytest.raises(ValueError): keeper.finish({"artifact_id": 1})
+        with pytest.raises(ValueError): keeper.finish(_terminal_reference(keeper))
 
 
 def _terminal_fixture(*, failed=False, prepare_failure=False, current_caller=False, carrier=None):
@@ -360,7 +385,7 @@ def _terminal_fixture(*, failed=False, prepare_failure=False, current_caller=Fal
         checkpoint = historical
         names = ("restoration", "routing", "quiescence")
     proof.update(assessment=assessment, checkpoint=checkpoint, inputs={name: "e" * 64 for name in names})
-    files = keeper.finish({"artifact_id": 1})
+    files = keeper.finish(_terminal_reference(keeper))
     return store, files
 
 
@@ -1437,7 +1462,8 @@ def _fence_contract_case(*, original_serial=1, probe=False):
     old = {name: c.loads(raw, canonical=True) for name, raw in old_raw.items()}
     old_plan, old_apply = old["envelope.json"]["plan"], old["envelope.json"]["apply"]
     origin_reference = carrier["origin"]
-    phase_a = {"source_sha": old_plan["source_sha"], "source_closure_sha256": "9" * 64,
+    projection_source_files = [{"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "e" * 64}]
+    phase_a = {"source_sha": old_plan["source_sha"], "source_closure_sha256": c.sha(c.canonical(projection_source_files)),
         "release_id": old_plan["release"]["release_id"], "canary_id": old_plan["release"]["canary_id"],
         "candidate_sha256": old_plan["release"]["candidate_sha256"], "plan_binary_sha256": old_plan["binary_sha256"],
         "plan_json_sha256": old_plan["json_sha256"], "inputs_sha256": old_plan["inputs_sha256"],
@@ -1494,7 +1520,7 @@ def _fence_contract_case(*, original_serial=1, probe=False):
         "fence-origins.json": {"schema_version": 1, "phase_a": phase_a, "current_source_sha": owner["source_sha"], "current_source_closure_sha256": "b" * 64,
             "current_plan": {"source_sha": owner["source_sha"], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"], "step": "prepare-plan",
                 "index_sha256": "d" * 64, "plan_binary_sha256": "a" * 64, "plan_json_sha256": "c" * 64, "inputs_sha256": "b" * 64},
-            "projection_source_files": [{"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "e" * 64}]},
+            "projection_source_files": projection_source_files},
         "fence-chain.json": chain, "fence-readbacks.json": {"proof_kind": "iam-readback-and-evaluation", "readbacks": rounds},
         "fence-evaluation.json": {"schema_version": 1, "evaluator_source_sha": producer["workflow_sha"],
             "documents": {key: "e" * 64 for key in ("application_identity", "application_managed", "application_session", "fence_identity", "fence_session", "freeze")},
@@ -1513,7 +1539,8 @@ def _fence_contract_case(*, original_serial=1, probe=False):
 
 
 @pytest.mark.parametrize("mutation", [None, "old-fragment", "owner-bool", "plan-producer", "source", "extra-file", "missing-original",
-    "history-file", "history-hash", "history-valid-hash", "history-role", "chain-anchor", "lineage", "trust", "readbacks", "evaluation"])
+    "history-file", "history-hash", "history-valid-hash", "history-role", "chain-anchor", "lineage", "trust", "readbacks", "evaluation",
+    "closure-fixed", "closure-other-files"])
 def test_fence_package_contract_separates_historical_source_and_current_owner(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     payloads, manifest, kwargs, encode = _fence_contract_case()
@@ -1538,6 +1565,11 @@ def test_fence_package_contract_separates_historical_source_and_current_owner(mu
     if mutation == "trust": payloads["fence-role.json"]["trust"]["Statement"][0]["Principal"]["AWS"] += "-historical"
     if mutation == "readbacks": payloads["fence-readbacks.json"]["readbacks"] = []
     if mutation == "evaluation": payloads["fence-evaluation.json"]["cases"][0]["observed"] = True
+    # Item 4 of the 2026-11-13 amendment: the historical closure commits the traversed projection files.
+    if mutation == "closure-fixed": payloads["fence-origins.json"]["phase_a"]["source_closure_sha256"] = "9" * 64
+    if mutation == "closure-other-files":
+        payloads["fence-origins.json"]["projection_source_files"] = [
+            {"path": "infra/opentofu/modules/runtime-iam/promotion.tf", "sha256": "f" * 64}]
     files, originals = encode()
     if mutation == "extra-file": files["state.json"] = b'{}\n'
     if mutation == "missing-original": originals.pop("approval.json")
@@ -3175,3 +3207,745 @@ def test_complete_phase_a_carrier_feeds_real_fence_projection_within_all_caps():
     assert len(c.canonical(carrier)) <= 196608
     assert len(c.canonical(wrapper)) <= 262144 and len(terminal["checkpoint.json"]) <= 262144
     assert c.loads(terminal["checkpoint.json"], canonical=True)["phase_a_originals"] == carrier
+
+
+class _HistoricalSourceAPI:
+    """External GitHub fake for the pinned historical source reader (amendment 2026-11-13 item 4)."""
+    def __init__(self, source, current, files, *, status="ahead", truncated=False):
+        import base64
+        import hashlib
+        self.source, self.current, self.files, self.status, self.truncated = source, current, dict(files), status, truncated
+        self.blob = lambda raw: hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+        self.contents = {path: {"type": "file", "path": path, "size": len(raw), "encoding": "base64",
+                                "sha": self.blob(raw), "content": base64.b64encode(raw).decode()} for path, raw in self.files.items()}
+        self.calls = []
+
+    def read(self, path, **_):
+        self.calls.append(path)
+        if path == f"repos/{c.REPOSITORY}/compare/{self.source}...{self.current}":
+            return {"status": self.status, "merge_base_commit": {"sha": self.source}}
+        if path == f"repos/{c.REPOSITORY}/git/trees/{self.source}?recursive=1":
+            return {"sha": "f" * 40, "truncated": self.truncated, "tree": [
+                {"path": name, "type": "blob", "mode": "100644", "sha": self.blob(raw), "size": len(raw)} for name, raw in self.files.items()]}
+        prefix = f"repos/{c.REPOSITORY}/contents/"
+        assert path.startswith(prefix) and path.endswith("?ref=" + self.source), path
+        return self.contents[path[len(prefix):-len("?ref=" + self.source)]]
+
+
+def _historical_sources_case():
+    carrier, raw = _phase_a_carrier_case()
+    source = carrier["origin"]["source_sha"]
+    files = {"infra/opentofu/modules/runtime-iam/promotion.tf": b'resource "aws_iam_role" "x" {}\n',
+             "infra/opentofu/env/prod/main.tf": b'module "runtime_iam" {}\n'}
+    return carrier, source, files
+
+
+@pytest.mark.parametrize("mutation", [None, "diverged", "merge-base", "truncated", "blob-sha", "content", "type",
+                                      "large", "too-many", "unsorted", "path", "absent-selected"])
+def test_historical_sources_reads_exact_phase_a_commit_by_path(mutation):
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, files = _historical_sources_case()
+    current = "a" * 40
+    api = _HistoricalSourceAPI(source, current, files, status="diverged" if mutation == "diverged" else "ahead",
+                               truncated=mutation == "truncated")
+    paths = sorted([*files, "infra/opentofu/modules/runtime-iam/new.tf"])
+    if mutation == "merge-base":
+        original = api.read
+        api.read = lambda path, **kw: (original(path) | {"merge_base_commit": {"sha": "b" * 40}}) if "/compare/" in path else original(path)
+    if mutation == "blob-sha": api.contents[paths[0]]["sha"] = "0" * 40
+    if mutation == "content": api.contents[paths[0]]["content"] = __import__("base64").b64encode(b"tampered\n").decode()
+    if mutation == "type": api.contents[paths[0]]["type"] = "symlink"
+    if mutation == "large":
+        big = b"#" * (256 * 1024 + 1)
+        api = _HistoricalSourceAPI(source, current, {**files, paths[0]: big})
+    if mutation == "too-many": paths = [f"infra/opentofu/modules/runtime-iam/f{i:02d}.tf" for i in range(65)]
+    if mutation == "unsorted": paths = list(reversed(paths))
+    if mutation == "path": paths = ["infra/opentofu/../secrets.tf"]
+    if mutation == "absent-selected":
+        # A historical inventory without a path is absence only via the complete tree, never via a failed read.
+        api.files.pop(paths[0])
+        api.contents.pop(paths[0])
+    if mutation in {None, "absent-selected"}:
+        result = historical_sources(api, carrier, current_source=current, paths=paths)
+        expected = dict(files)
+        expected.pop(paths[0]) if mutation else None
+        assert result == expected
+        assert "infra/opentofu/modules/runtime-iam/new.tf" not in result
+        assert api.calls[0].endswith(f"/compare/{source}...{current}")
+    else:
+        with pytest.raises(ValueError):
+            historical_sources(api, carrier, current_source=current, paths=paths)
+
+
+def test_historical_sources_pins_phase_a_source_from_authenticated_carrier():
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, files = _historical_sources_case()
+    forged = c.loads(c.canonical(carrier), canonical=True)
+    forged["origin"]["source_sha"] = "b" * 40
+    with pytest.raises(ValueError):
+        historical_sources(_HistoricalSourceAPI("b" * 40, "a" * 40, files), forged, current_source="a" * 40, paths=sorted(files))
+
+
+def _producer_jobs_case(source="a" * 40, *, runner="runner-7"):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    steps = [{"name": name, "number": number, "status": "completed", "conclusion": "success"}
+             for number, name in enumerate(lc.FENCE_PREPARE_STEPS[:-1], start=1)]
+    steps.append({"name": lc.FENCE_PREPARE_STEPS[-1], "number": len(steps) + 1, "status": "in_progress", "conclusion": None})
+    job = {"id": 4242, "name": lc.FENCE_PREPARE_PRODUCER["job_name"], "status": "in_progress", "head_sha": source,
+           "runner_name": runner, "steps": steps, "run_id": 7, "run_attempt": 2}
+    other = {"id": 11, "name": "application-prepare-operational / audit", "status": "completed", "head_sha": source,
+             "runner_name": "other", "steps": [], "run_id": 7, "run_attempt": 2}
+    return [other, job]
+
+
+class _JobsAPI:
+    def __init__(self, jobs, *, total=None):
+        self.jobs, self.total, self.calls = jobs, len(jobs) if total is None else total, []
+
+    def read(self, path, **_):
+        self.calls.append(path)
+        assert path.startswith(f"repos/{c.REPOSITORY}/actions/runs/7/attempts/2/jobs?per_page=100&page=")
+        page = int(path.rsplit("=", 1)[1])
+        return {"total_count": self.total, "jobs": self.jobs[(page - 1) * 100:page * 100]}
+
+
+@pytest.mark.parametrize("mutation", [None, "zero", "two", "runner-absent", "runner-other", "status", "head", "gate-done",
+                                      "prior-failed", "prior-order", "prior-missing", "incomplete-inventory"])
+def test_fence_producer_job_requires_single_running_gate_on_this_runner(monkeypatch, mutation):
+    from tools.cnesdata_delivery.lifecycle_runtime import fence_producer_job
+    jobs = _producer_jobs_case()
+    job = jobs[1]
+    monkeypatch.setenv("RUNNER_NAME", "runner-7")
+    total = None
+    if mutation == "zero": jobs.pop(1)
+    if mutation == "two": jobs.append(dict(job, id=4243))
+    if mutation == "runner-absent": monkeypatch.delenv("RUNNER_NAME")
+    if mutation == "runner-other": job["runner_name"] = "runner-8"
+    if mutation == "status": job["status"] = "completed"
+    if mutation == "head": job["head_sha"] = "b" * 40
+    if mutation == "gate-done": job["steps"][-1].update(status="completed", conclusion="success")
+    if mutation == "prior-failed": job["steps"][3]["conclusion"] = "failure"
+    if mutation == "prior-order": job["steps"][2]["number"], job["steps"][3]["number"] = 4, 3
+    if mutation == "prior-missing": job["steps"].pop(5)
+    if mutation == "incomplete-inventory": total = 3
+    api = _JobsAPI(jobs, total=total)
+    run = {"id": 7, "run_attempt": 2, "head_sha": "a" * 40}
+    if mutation is None:
+        assert fence_producer_job(api, run, "a" * 40)["id"] == 4242
+    else:
+        with pytest.raises((ValueError, KeyError)):
+            fence_producer_job(api, run, "a" * 40)
+
+
+def test_fence_consumer_and_producer_share_the_nine_named_steps():
+    import inspect
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    assert len(lc.FENCE_PREPARE_STEPS) == 9 and lc.FENCE_PREPARE_STEPS[-1] == lc.FENCE_PREPARE_PRODUCER["step_name"]
+    source = inspect.getsource(lr.fence_prepared_payload)
+    assert "FENCE_PREPARE_STEPS" in source and "Install checksum-locked protected runtime" not in source
+
+
+def test_fence_sts_policy_is_the_single_pure_fence_session_policy(monkeypatch):
+    from tools.cnesdata_delivery import session_policy
+    ag, args, calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    ag._assume_fence_session(**args)
+    scope, deadline = args["scope"], args["journal"]._request["stage"]["deadline"]
+    expected = session_policy.fence_session_policy(
+        control_table_arn=scope["control_table_arn"],
+        execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=deadline)
+    assert calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+    assert expected["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": c.utc(deadline)}
+
+
+@pytest.mark.parametrize("mutation", ["prefix-wildcard", "prefix-colon", "table", "deadline-bool"])
+def test_fence_session_policy_rejects_non_exact_scope(mutation):
+    from tools.cnesdata_delivery import session_policy
+    kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:", deadline=1480)
+    session_policy.fence_session_policy(**kwargs)
+    if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
+    if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]
+    if mutation == "table": kwargs["control_table_arn"] += "*"
+    if mutation == "deadline-bool": kwargs["deadline"] = True
+    with pytest.raises(ValueError):
+        session_policy.fence_session_policy(**kwargs)
+
+
+def _fence_prepare_package_case(monkeypatch, mutation=None):
+    """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
+    import base64
+    import hashlib
+    from email.utils import formatdate
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.session_owner import _terraform_document_digest
+    args = _current_fence_projection_case(probe=True)
+    owner, fragment, carrier = args["owner"], copy.deepcopy(args["fragment"]), args["checkpoint"]["phase_a_originals"]
+    account, role_name = "111122223333", "cnesdata-prod-promotion-fence-operator"
+    fence_arn = fragment["delegations"]["fence_operator"]
+    lifecycle = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/"
+    coordination = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
+        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": lifecycle + ("*" if mutation != "evaluation" else "keeper/*")}]}
+    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn}]}
+    fragment["policy_sha256"] = _terraform_document_digest(coordination)
+    pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": c.utc(5000)}
+    governance = {"account_id": account, "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/",
+        "state_bucket": "synthetic-state", "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/synthetic",
+        "gate_shas": {"deploy": "c" * 40}, "source_closure": {"infra/opentofu/env/prod/main.tf": "1" * 64},
+        "application_coordination_policy": c.canonical(coordination).decode().strip(),
+        "application_delegations": fragment["delegations"], "roles": {"application": fragment["application_role_arn"]}}
+    history = lc.phase_a_originals(carrier)
+    previous_raw = history["raw"]["checkpoint.json"]
+    checkpoint_raw = c.canonical(args["checkpoint"])
+    approval = {"version": 1, "owner": owner, "purpose": "application-prepare", "direction": "advance",
+        "plan_sha256": args["checkpoint"]["plan_sha256"], "inputs_sha256": c.sha(args["inputs_raw"]), "checkpoint_sha256": c.sha(previous_raw),
+        "delta": {"purpose": "application-prepare", "direction": "advance", "mode": "operational", "before": {}, "original": {},
+                  "created": {}, "expected_changes_sha256": "f" * 64}, "drift_matrix": {}, "readbacks": {"before": [], "after": []}}
+    request = {"source_sha": owner["source_sha"], "step": lc.FENCE_PREPARE_PRODUCER["step"],
+               "application_purpose": "promotion", "caller_binding_sha256": owner["caller_binding_sha256"]}
+    run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"]}
+    jobs = _producer_jobs_case(owner["source_sha"])
+    monkeypatch.setenv("RUNNER_NAME", "runner-7" if mutation != "runner" else "runner-8")
+    historical_source = carrier["origin"]["source_sha"]
+    blob = lambda raw: hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+    old_sources = dict(args["original_sources"])
+    if mutation == "historical-source":
+        old_sources["infra/opentofu/modules/runtime-iam/promotion.tf"] += b"# drift\n"
+    calls = []
+    class API:
+        def read(self, path, **_):
+            calls.append(("github", path))
+            root = f"repos/{c.REPOSITORY}/"
+            if "/jobs?per_page=100&page=" in path:
+                return {"total_count": len(jobs), "jobs": jobs}
+            if path == root + f"compare/{historical_source}...{owner['source_sha']}":
+                return {"status": "ahead", "merge_base_commit": {"sha": historical_source}}
+            if path == root + f"git/trees/{historical_source}?recursive=1":
+                return {"truncated": False, "tree": [{"path": k, "type": "blob", "mode": "100644", "sha": blob(v)} for k, v in old_sources.items()]}
+            name = path.removeprefix(root + "contents/").removesuffix("?ref=" + historical_source)
+            raw = old_sources[name]
+            return {"type": "file", "path": name, "encoding": "base64", "size": len(raw), "sha": blob(raw), "content": base64.b64encode(raw).decode()}
+    now = [1000.0]
+    observed_role = copy.deepcopy(next(r["observed"] for r in history["checkpoint"]["readbacks"] if r["operation"] == "get_role"))
+    observed_policy = copy.deepcopy(next(r["observed"] for r in history["checkpoint"]["readbacks"] if r["operation"] == "get_role_policy"))
+    responses = {"get_role": observed_role, "list_role_policies": {"PolicyNames": [role_name + "-gate"], "IsTruncated": False},
+                 "list_attached_role_policies": {"AttachedPolicies": [], "IsTruncated": False}, "get_role_policy": observed_policy}
+    class AWS:
+        def call(self, service, operation, **parameters):
+            calls.append((service, operation))
+            assert service == "iam" and parameters["RoleName"] == role_name
+            now[0] += 0.5
+            body = copy.deepcopy(responses[operation])
+            if mutation == "readback" and operation == "get_role" and len([x for x in calls if x[1] == "get_role"]) == 2:
+                body["Role"]["RoleId"] = "AROAREPLACED"
+            return body | {"ResponseMetadata": {"RequestId": f"req-{len(calls)}", "HTTPStatusCode": 200,
+                                                "HTTPHeaders": {"date": formatdate(now[0], usegmt=True)}}}
+    class Guard:
+        window = {"admitted_at": 1000, "preparation_deadline": 1900}
+        def check(self, seconds=0): pass
+    kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
+        authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
+        plan_index=args["current_index"], plan_raw=args["plan_raw"], inputs_raw=args["inputs_raw"], terraform_raw=args["inputs_raw"],
+        approval_raw=c.canonical(approval), previous_raw=previous_raw, checkpoint_raw=checkpoint_raw, state_raw=args["state_raw"],
+        sources=args["sources"], activation_sha256="1" * 64, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s))
+    return kwargs, calls, fragment
+
+
+@pytest.mark.parametrize("mutation", [None, "runner", "historical-source", "readback", "evaluation"])
+def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(monkeypatch, mutation):
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    kwargs, calls, fragment = _fence_prepare_package_case(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError):
+            lr.fence_prepare_package(**kwargs)
+        if mutation == "runner":
+            assert all(kind == "github" for kind, _ in calls) and len(calls) == 1
+        return
+    files = lr.fence_prepare_package(**kwargs)
+    assert set(files) == lc.FENCE_PREPARE_FILES
+    manifest = c.loads(files["fence-prepared.json"], canonical=True)
+    assert manifest["producer"]["job_id"] == 4242 and manifest["outcome"] == "observed"
+    origins = c.loads(files["fence-origins.json"], canonical=True)
+    assert origins["phase_a"]["source_closure_sha256"] == c.sha(c.canonical(origins["projection_source_files"]))
+    evaluation = c.loads(files["fence-evaluation.json"], canonical=True)
+    assert all(case["observed"] is case["expected"] for case in evaluation["cases"])
+    assert len([1 for kind, _ in calls if kind == "iam"]) == 8
+    lc.validate_fence_prepared_package(files, owner=kwargs["owner"], fragment=fragment, activation_sha256="1" * 64,
+        producer=manifest["producer"], preparation=manifest["preparation"],
+        originals={name: raw for name, raw in files.items() if name != "fence-prepared.json"},
+        predecessor_raw=kwargs["previous_raw"], predecessor_reference=kwargs["predecessor"])
+
+
+@pytest.mark.parametrize("mutation,message", [
+    (None, None),
+    ("index-attempt", "fence current plan owner/caller"),
+    ("index-plan", "fence applied current saved-plan commitment"),
+    ("index-inputs", "fence original current plan/input bytes"),
+    ("previous", "current deploy immediate predecessor bytes"),
+    ("predecessor", "fence initial original Phase A checkpoint"),
+])
+def test_fence_prepare_package_connects_index_chain_and_predecessor_without_new_sources(monkeypatch, mutation, message):
+    """Amendment 2026-11-13 item 6: current_index is the plan index read by private_payload, chain/predecessor_raw
+    the pair returned by current_checkpoint_chain, predecessor_reference the authenticate_predecessor reference.
+    A mismatch in any of them refuses before the first IAM call; nothing else is read."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    kwargs, calls, _ = _fence_prepare_package_case(monkeypatch)
+    index = copy.deepcopy(kwargs["plan_index"])
+    if mutation == "index-attempt":
+        index["run_attempt"] += 1
+    if mutation in {"index-plan", "index-inputs"}:
+        name = "plan.bin" if mutation == "index-plan" else "inputs.json"
+        next(item for item in index["files"] if item["name"] == name)["sha256"] = "0" * 64
+    kwargs["plan_index"] = index
+    if mutation == "previous":
+        kwargs["previous_raw"] += b" "
+    if mutation == "predecessor":
+        kwargs["predecessor"] = dict(kwargs["predecessor"], artifact_digest="sha256:" + "0" * 64)
+    if mutation:
+        with pytest.raises(ValueError, match=message):
+            lr.fence_prepare_package(**kwargs)
+        assert [kind for kind, _ in calls if kind != "github"] == []
+        return
+    files = lr.fence_prepare_package(**kwargs)
+    origins = c.loads(files["fence-origins.json"], canonical=True)
+    assert origins["current_plan"]["index_sha256"] == c.sha(c.canonical(kwargs["plan_index"]))
+    assert origins["current_plan"]["step"] == kwargs["plan_index"]["step"]
+    plan_bin = next(item for item in kwargs["plan_index"]["files"] if item["name"] == "plan.bin")
+    assert origins["current_plan"]["plan_binary_sha256"] == plan_bin["sha256"]
+    chain = c.loads(files["fence-chain.json"], canonical=True)
+    assert chain["anchor_sha256"] == kwargs["predecessor"]["checkpoint_sha256"] == c.sha(kwargs["previous_raw"])
+    assert chain["head_sha256"] == c.sha(kwargs["checkpoint_raw"])
+    assert chain["entries"][-1]["previous_checkpoint_sha256"] == c.sha(kwargs["previous_raw"])
+    # No new source: GitHub reads are the producer job inventory and the pinned historical reader only.
+    historical = kwargs["carrier"]["origin"]["source_sha"]
+    root = f"repos/{c.REPOSITORY}/"
+    for kind, path in calls:
+        assert kind in {"github", "iam"}
+        if kind == "github":
+            assert ("/jobs?per_page=100&page=" in path or path.startswith(root + "compare/" + historical + "...")
+                    or path == root + f"git/trees/{historical}?recursive=1" or path.endswith("?ref=" + historical)), path
+
+
+def _closed_ready_capability_case(monkeypatch, mutation=None):
+    """Connected item-7 composition: real prepared producer/codec, real broker; GitHub/S3/STS are external fakes."""
+    import io
+    import zipfile
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
+    activation = b"original-ext2-payload-bytes"
+    kwargs["activation_sha256"] = c.sha(activation)
+    if mutation == "frozen":
+        # Positive variant: the freeze falls between observed_at and observed_at + 180.
+        kwargs["authority"].pin["frozen_until"] = c.utc(1100)
+    if mutation == "session-document":
+        # A producer whose evaluated fence session differs beyond DateLessThan (one more leading key):
+        # the package stays internally consistent, the evaluation still passes, only item 3 can tell.
+        from tools.cnesdata_delivery import session_policy
+        shared = session_policy.fence_session_policy
+        def drifted(**arguments):
+            policy = shared(**arguments)
+            policy["Statement"][0]["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"].append("ENV#prod#DRIFT")
+            return policy
+        monkeypatch.setattr(session_policy, "fence_session_policy", drifted)
+        files = lr.fence_prepare_package(**kwargs)
+        monkeypatch.setattr(session_policy, "fence_session_policy", shared)
+    else:
+        files = lr.fence_prepare_package(**kwargs)
+    prepared = lr.PreparedFence(files)
+    owner, carrier = kwargs["owner"], kwargs["carrier"]
+    ag_mod, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    scope = sts_args["scope"]
+    b_checkpoint = {"state": {"lineage": "original-lineage", "serial": 3, "state_sha256": "6" * 64},
+        "state_object": {"status": "present", "version_id": "v3", "etag_sha256": "5" * 64}, "owner": owner, "purpose": "phase-b",
+        "plan_sha256": "9" * 64, "readbacks": [{"service": "stepfunctions", "operation": "describe_state_machine",
+            "observed": {"stateMachineArn": scope["machine_arn"] + ("-other" if mutation == "machine" else ""), "status": "ACTIVE"}}],
+        "phase_a_originals": carrier}
+    b_approval = {"version": 1, "owner": owner, "purpose": "phase-b", "direction": "advance", "plan_sha256": "9" * 64,
+        "inputs_sha256": "8" * 64, "checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"]),
+        "delta": {}, "drift_matrix": {}, "readbacks": {"before": [], "after": []}}
+    b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
+    members = scope["members"]
+    membership = {"frozen_membership_sha256": c.sha(c.canonical(members)), "members": members}
+    if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
+    inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": c.canonical({"fixture_only": "close"}),
+              "phase-b": b_files["checkpoint.json"], "membership": c.canonical(membership)}
+    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api", "admitted_at": 1300, "deadline": 1480,
+              "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
+              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
+    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
+               "activation_sha256": c.sha(inputs["activation"]),
+               "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="closed-ready", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = dict(sts_args["governance"])
+    if mutation == "delegation":
+        governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
+    governance["context_kind"] = "promotion"
+    governance["lifecycle_steps"] = {"phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "operational", "job_name": "phase-b / execute"}}
+    run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"]}
+    root = f"repos/{c.REPOSITORY}"
+    index = {"version": 1, "source_sha": owner["source_sha"], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
+             "step": "phase-b-advance", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"], **lc.application_identity(owner),
+             "files": [{"name": name, "size": len(raw), "sha256": c.sha(raw)} for name, raw in sorted(b_files.items())]}
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr(zipfile.ZipInfo("index.json", date_time=(2026, 1, 1, 0, 0, 0)), c.canonical(index))
+    job = {"id": 77, "run_id": run["id"], "run_attempt": run["run_attempt"], "head_sha": run["head_sha"], "name": "phase-b / execute",
+           "status": "completed", "conclusion": "success", "started_at": c.utc(1100), "completed_at": c.utc(1250)}
+    metadata = {"id": 78, "name": "lifecycle-phase-b-advance", "digest": "sha256:" + c.sha(archive.getvalue()),
+                "workflow_run": {"id": run["id"], "head_sha": run["head_sha"]}, "expired": False, "expires_at": c.utc(9000), "created_at": c.utc(1200)}
+    responses = {root + "/actions/jobs/77": job, root + "/actions/artifacts/78": metadata, root + "/actions/artifacts/78/zip": archive.getvalue(),
+                 root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1": {"jobs": [job], "total_count": 1},
+                 root + f"/actions/runs/{run['id']}/artifacts?per_page=100&page=1": {"artifacts": [metadata], "total_count": 1},
+                 root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}": run | {"event": "workflow_dispatch",
+                     "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml"}}
+    class API:
+        def read(self, path, **kw): return responses[path]
+    req = {"source_sha": owner["source_sha"], "step": "closed-ready", "application_purpose": "promotion", "caller_binding_sha256": owner["caller_binding_sha256"]}
+    objects = {lr.namespace(governance | {"evidence_prefix": "cnesdata/prod/evidence/"}, req, run, "phase-b-advance") + name: raw for name, raw in b_files.items()}
+    class Store:
+        def get(self, bucket, key, **kw): return objects[key], None
+        def call(self, *args, **kw): return sts_args["aws"].call(*args, **kw)
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {"held": True})
+    args = dict(aws=Store(), api=API(), governance=governance, request=req, run=run, journal=journal, keeper=keeper,
+                prepared=prepared, credential_limit=3000, guard=Guard(), clock=lambda: 1300)
+    return ag, args, sts_calls, keeper, journal
+
+
+@pytest.mark.parametrize("mutation", [None, "activation", "preparation", "delegation", "ancestry", "machine", "membership",
+                                      "session-document"])
+def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutation):
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, mutation)
+    if mutation:
+        expected = "except DateLessThan" if mutation == "session-document" else None
+        with pytest.raises(ValueError, match=expected):
+            ag.closed_ready_capability(**args)
+        assert sts_calls == [] and journal._failed is True
+        assert keeper.uncertainty() == [{"kind": "context-failed"}]
+        return
+    broker = ag.closed_ready_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker]
+    assert len(sts_calls) == 1 and sts_calls[0][2]["RoleSessionName"] == "promotion-fence-r1"
+    assert keeper.uncertainty() == []
+
+
+def test_closed_ready_capability_rebuilds_the_prepared_session_at_the_freeze_deadline(monkeypatch):
+    """Item 3, frozen branch: min(observed_at + 180, frozen_until) resolves to frozen_until and still matches."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, "frozen")
+    prepared = args["prepared"]
+    manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+    assert manifest["preparation"]["observed_at"] < 1100 < manifest["preparation"]["observed_at"] + 180
+    evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+    cases = {case["case_id"]: case for case in evaluation["cases"]}
+    assert cases["freeze-expired"]["context"]["aws:CurrentTime"] == c.utc(1100)
+    role = c.loads(prepared["fence-role.json"], canonical=True)
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    derived = lr.fence_policy_scope(args["governance"], role["policy"])
+    at_freeze = session_policy.fence_session_policy(control_table_arn=derived["control_table_arn"],
+        execution_prefix=derived["execution_prefix"], deadline=1100)
+    assert evaluation["documents"]["fence_session"] == c.sha(c.canonical(at_freeze))
+    broker = ag.closed_ready_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and len(sts_calls) == 1 and keeper.uncertainty() == []
+
+def test_fence_scope_has_one_derivation_shared_by_prepare_and_capability(monkeypatch):
+    """Amendment 2026-11-13 item 2: the capability recomputes the scope from the same policy with the same symbol."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    original, seen = lr.fence_policy_scope, []
+    def spy(governance, policy):
+        result = original(governance, policy)
+        seen.append((c.sha(c.canonical(policy)), dict(result)))
+        return result
+    monkeypatch.setattr(lr, "fence_policy_scope", spy)
+    ag, args, sts_calls, _, _ = _closed_ready_capability_case(monkeypatch)
+    assert len(seen) == 1, "prepare derives the scope once, through the shared symbol"
+    role = c.loads(args["prepared"]["fence-role.json"], canonical=True)
+    assert seen[0][0] == c.sha(c.canonical(role["policy"]))
+    ag.closed_ready_capability(**args)
+    assert len(seen) == 2 and seen[1] == seen[0] and len(sts_calls) == 1
+    derived = seen[0][1]
+    assert set(derived) == {"control_table_arn", "execution_prefix", "machine_arn"}
+    cases = {case["case_id"]: case["resource"] for case in c.loads(args["prepared"]["fence-evaluation.json"], canonical=True)["cases"]}
+    assert cases["get-fence"] == derived["control_table_arn"] and cases["probe-own"] == derived["execution_prefix"] + "0" * 16
+    assert derived["machine_arn"] == derived["execution_prefix"].replace(":execution:", ":stateMachine:")[:-1]
+
+
+@pytest.mark.parametrize("operation", ["inventory"])
+def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, operation):
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {})
+    with pytest.raises(ValueError, match="closed-ready only"):
+        ag.closed_ready_capability(aws=None, api=None, governance={}, request={}, run={}, journal=journal, keeper=keeper,
+                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard())
+
+
+@pytest.mark.parametrize("mutation", ["empty", "missing-one", "unknown-type", "duplicate", "unlabelled", "extra-fact",
+                                      "caller-assessment", "free-callable"])
+def test_keeper_terminal_proof_only_through_closed_validator_registry(mutation):
+    import inspect
+    from tools.cnesdata_delivery.application_gate import Keeper
+    if mutation == "free-callable":
+        assert "authenticate_terminal" not in inspect.signature(Keeper).parameters
+        with pytest.raises(TypeError):
+            Keeper(None, {"lifecycle_version": 1}, None, api=None, governance=None, authenticate_terminal=lambda *a: {})
+        return
+    keeper, store = _accepted_terminal_case()
+    before = store.get()
+    reference = _terminal_reference(keeper)
+    if mutation == "empty": keeper._terminal_validators.clear()
+    if mutation == "missing-one": keeper._terminal_validators.pop("quiescence")
+    if mutation in {"unknown-type", "duplicate", "unlabelled"}:
+        kind, label = {"unknown-type": ("assessment", "x"), "duplicate": ("unit", "x"), "unlabelled": ("unit", "")}[mutation]
+        if mutation == "unlabelled": keeper._terminal_validators.pop("unit")
+        with pytest.raises(ValueError, match="closed terminal validator registry"):
+            keeper.register_terminal_validator(kind, lambda *a, **k: {}, label=label)
+        return
+    if mutation == "extra-fact":
+        label, original = keeper._terminal_validators["routing"]
+        keeper._terminal_validators["routing"] = (label, lambda *a, **k: original(*a, **k) | {"facts": {"fence": "OPEN", "routes_match": True, "accepted": True}})
+    if mutation == "caller-assessment":
+        reference["assessment"] = {"kind": "accepted-open"}
+    with pytest.raises(ValueError):
+        keeper.finish(reference)
+    assert store.get() == before and store.get()[0]["status"] != "released"
+
+
+def test_keeper_terminal_validators_receive_registered_journal_observations():
+    keeper, _ = _accepted_terminal_case()
+    journal = _journal_with()
+    journal._observation_bytes = {"a" * 64: b'{"observed":true}\n'}
+    keeper.attach(journal)
+    seen = []
+    label, original = keeper._terminal_validators["routing"]
+    keeper._terminal_validators["routing"] = (label, lambda source, **kw: seen.append(kw["observations"]) or original(source, **kw))
+    files = keeper.finish(_terminal_reference(keeper))
+    assert seen == [{"a" * 64: b'{"observed":true}\n'}]
+    assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+
+
+def _keeper_loop_case(*, attach=None):
+    """Connected keeper loop over the real Keeper/Lease/finish chain.
+
+    The API window is reached only through keeper.lease.checkpoint validated by
+    checkpoint_transition (inside _accepted_terminal_case); the event producer,
+    publication and closed-ready handler are external fakes. Terminal validators
+    are the SYNTHETIC labelled ones (item 8).
+    """
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store = _accepted_terminal_case()
+    reference = _terminal_reference(keeper)
+    events = [{"kind": "closed-ready", "reference": {"fixture": "closed-ready"}}, None, {"kind": "terminal", "reference": reference}]
+    seen, handled, published, slept = [], [], [], []
+    def next_event(window):
+        seen.append(window["stage"])
+        return events.pop(0)
+    def handler(current, event_reference):
+        assert current is keeper and event_reference == {"fixture": "closed-ready"}
+        handled.append(event_reference)
+        if attach is not None:
+            current.attach(attach)
+    run = lambda: ag.keeper_loop(keeper, next_event=next_event, handlers={"closed-ready": handler},
+                                 publish=lambda files: published.append(files) or "receipt", sleep=slept.append)
+    return ag, keeper, store, run, seen, handled, published, slept
+
+
+def test_keeper_loop_dispatches_closed_ready_then_publishes_original_terminal():
+    ag, keeper, store, run, seen, handled, published, slept = _keeper_loop_case(attach=_journal_with())
+    assert run() == "receipt"
+    assert handled == [{"fixture": "closed-ready"}] and slept == [5] and seen[0] == "final"
+    assert store.get()[0]["status"] == "released" and len(published) == 1
+    assert set(published[0]) == {"checkpoint.json", "terminal.json", "lease.json"}
+    assert c.loads(published[0]["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+
+
+@pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed"])
+def test_keeper_loop_keeps_lease_held_while_dispatch_is_uncertain(context):
+    journal = _journal_with(**{"pending": {"pending": [{"kind": "intent"}]}, "unknown": {"unknown": [{"kind": "lost"}]},
+                               "inflight": {"inflight": {"kind": "call"}}, "failed": {"failed": True}}[context])
+    ag, keeper, store, run, _, handled, published, _ = _keeper_loop_case(attach=journal)
+    with pytest.raises(ValueError, match="unresolved SDK uncertainty; lease remains held"):
+        run()
+    assert handled and published == [] and store.get()[0]["status"] == "held"
+
+
+def test_keeper_loop_capability_failure_holds_lease_and_never_publishes():
+    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+    def failing(current, reference):
+        journal = _journal_with()
+        current.attach(journal)
+        journal._failed = True
+        raise ValueError("closed-ready capability refused before STS")
+    events = [{"kind": "closed-ready", "reference": {}}, {"kind": "terminal", "reference": {}}]
+    with pytest.raises(ValueError, match="capability refused"):
+        ag.keeper_loop(keeper, next_event=lambda window: events.pop(0), handlers={"closed-ready": failing},
+                       publish=published.append, sleep=lambda s: None)
+    assert store.get()[0]["status"] == "held" and published == [] and keeper.uncertainty() == [{"kind": "context-failed"}]
+    with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
+        keeper.finish(_terminal_reference(keeper))
+
+
+@pytest.mark.parametrize("event", [{"kind": "advance", "reference": {}}, {"kind": "close-drain", "reference": {}},
+                                   {"kind": "terminal"}, {"kind": "terminal", "reference": {}, "extra": 1}])
+def test_keeper_loop_refuses_stage_advancement_and_open_events(event):
+    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+    with pytest.raises(ValueError):
+        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
+                       publish=published.append, sleep=lambda s: None)
+    assert store.get()[0]["status"] == "held" and published == []
+
+
+@pytest.mark.parametrize("handlers", [{}, {"closed-ready": None, "close-drain": None}, {"close-drain": None}])
+def test_keeper_loop_connects_only_closed_ready(handlers):
+    ag, keeper, store, _, _, _, _, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match="closed keeper handlers"):
+        ag.keeper_loop(keeper, next_event=lambda window: pytest.fail("no event before handler check"), handlers=handlers,
+                       publish=None, sleep=None)
+
+
+def test_keeper_guard_renews_lease_during_quiet_adapter_run():
+    """A quiet child only gets the five-second journal.guard(); each one is a keeper tick."""
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store = _accepted_terminal_case()
+    moments = iter(range(1000, 1000 + 5 * 200, 5))
+    now = [1000]
+    def advance():
+        now[0] = next(moments)
+        return now[0]
+    keeper.monotonic = keeper.lease.monotonic = lambda: now[0]
+    keeper.clock = keeper.lease.clock = lambda: now[0]
+    guard = ag.KeeperGuard(keeper)
+    before = store.get()[0]["expires_at"]
+    for _ in range(120):  # 600 quiet seconds, twice the 300s TTL.
+        advance()
+        guard.check()
+    record = store.get()[0]
+    assert record["status"] == "held" and record["expires_at"] > before + 500 and record["expires_at"] > now[0] + 200
+    with pytest.raises(ValueError, match="bounded guard reservation"):
+        guard.check(908)
+
+
+def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    ag_mod, args, sts_calls, _, journal = _closed_ready_capability_case(monkeypatch)
+    keeper, _ = _accepted_terminal_case()
+    order = []
+    def capability(*, journal, keeper, guard):
+        assert type(guard) is ag.KeeperGuard and journal._guard is guard and any(item is journal for item in keeper._contexts)
+        order.append("capability")
+        journal._broker = ag.ClosedReadyBroker.__new__(ag.ClosedReadyBroker)
+    monkeypatch.setattr(ag, "invoke_adapter", lambda **kwargs: order.append("adapter") or kwargs["journal"])
+    request_raw = c.canonical(journal._request)
+    result = ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
+        window=journal._request["stage"] | journal._identity, inputs=journal._inputs, activation_sha256=journal._request["activation_sha256"],
+        capability=capability, product="product", source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
+    assert order == ["capability", "adapter"] and type(result) is ag.AdapterJournal
+    def refusing(*, journal, keeper, guard):
+        journal._failed = True
+        raise ValueError("capability refused")
+    order.clear()
+    with pytest.raises(ValueError, match="capability refused"):
+        ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
+            window=journal._request["stage"] | journal._identity, inputs=journal._inputs,
+            activation_sha256=journal._request["activation_sha256"], capability=refusing, product="product",
+            source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
+    assert order == [] and {"kind": "context-failed"} in keeper.uncertainty()
+
+
+@pytest.mark.parametrize("validators,events,message", [
+    (None, None, "terminal validator unavailable; lifecycle disabled"),
+    ({"quiescence": object()}, None, "terminal validator unavailable; lifecycle disabled"),
+    ({"quiescence": object(), "routing": object(), "foreign": object()}, None, "terminal validator unavailable"),
+    ({"quiescence": object(), "routing": object()}, None, "keeper event producer not connected; lifecycle disabled"),
+])
+def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch, validators, events, message):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
+    monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
+    monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
+    monkeypatch.setattr(ag, "Keeper", lambda *a, **kw: pytest.fail("execute must refuse before the keeper"))
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *a: pytest.fail("enablement precedes adapter reads"))
+    with pytest.raises(ValueError, match=message):
+        ag.execute(({}, {"source_sha": "b" * 40}, {}, None, {}, {}), validators=validators, event_source=events)
+
+
+def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
+    admitted = ({}, {"source_sha": "b" * 40}, {}, None, {}, {})
+    monkeypatch.setattr(lr, "admission", lambda role: admitted)
+    monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
+    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
+    with pytest.raises(ValueError, match="terminal validator unavailable; lifecycle disabled"):
+        ag.main(["execute"])
+
+
+def test_execute_with_both_registries_supplied_still_refuses_before_any_effect(monkeypatch):
+    """Inactive by design: even with validators and an event producer, keeper construction is not connected."""
+    from tools.cnesdata_delivery import application_gate as ag, aws_boundary, lifecycle_runtime as lr
+    for module, name in ((lr, "AWS"), (aws_boundary, "AWS"), (lr, "S3LeaseStore"), (aws_boundary, "S3LeaseStore"),
+                         (lr, "oidc_credentials"), (ag, "Keeper"), (ag, "Lease"), (ag, "KeeperGuard"), (ag, "keeper_loop"),
+                         (ag, "run_closed_ready"), (ag, "closed_ready_capability"), (ag, "invoke_adapter")):
+        monkeypatch.setattr(module, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached while lifecycle is disabled"))
+    closures = []
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *args: closures.append(args))
+    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64}
+    events = []
+    with pytest.raises(ValueError, match="keeper construction from protected binding not connected; lifecycle disabled"):
+        ag.execute((governance, {"source_sha": "b" * 40}, {}, None, {}, {}),
+                   validators={"quiescence": object(), "routing": object()}, event_source=events.append, product="product")
+    assert closures == [("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)] and events == []
+
+
+def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
+    """Static proof: the only production path to the keeper is main -> execute(admitted), which refuses."""
+    import ast
+    from pathlib import Path
+    from tools.cnesdata_delivery import application_gate as ag
+    root = Path(__file__).resolve().parents[1]
+    guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
+               "ClosedReadyBroker"}
+    sites, gate_execute = set(), []
+    for path in sorted((root / "tools").rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        relative = path.relative_to(root).as_posix()
+        def visit(node, scope):
+            for child in ast.iter_child_nodes(node):
+                inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) else scope
+                if isinstance(child, ast.Call):
+                    func = child.func
+                    name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+                    if name in guarded:
+                        sites.add((relative, scope, name))
+                    if relative.endswith("application_gate.py") and isinstance(func, ast.Name) and func.id == "execute":
+                        gate_execute.append((scope, child))
+                if isinstance(child, ast.ImportFrom) and (child.module or "").endswith("application_gate"):
+                    assert not {alias.name for alias in child.names} & (guarded | {"execute"}), (relative, ast.dump(child))
+                if (isinstance(child, ast.Attribute) and child.attr in guarded | {"execute", "TERMINAL_VALIDATORS", "KEEPER_EVENT_SOURCE"}
+                        and isinstance(child.value, ast.Name) and child.value.id in {"application_gate", "ag"}):
+                    pytest.fail(f"{relative}: application_gate.{child.attr} referenced outside the gate")
+                visit(child, inner)
+        visit(tree, "<module>")
+    gate = "tools/cnesdata_delivery/application_gate.py"
+    assert sites == {
+        (gate, "run_closed_ready", "KeeperGuard"),              # run_closed_ready itself has no production caller
+        (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
+        (gate, "closed_ready_capability", "ClosedReadyBroker"),
+    }, sites
+    assert [scope for scope, _ in gate_execute] == ["main"]
+    call = gate_execute[0][1]
+    assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
+    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None

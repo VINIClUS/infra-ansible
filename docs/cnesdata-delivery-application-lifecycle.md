@@ -401,9 +401,17 @@ ceiling, passes only the Terraform bytes to the var-file. `activation_sha256` is
 raw signed payload bytes, equal to `activation.payload.sha256` and to the product's
 Phase B comparison over the activation bytes; the hash of the whole `activation` object is
 `activation_carrier_sha256`, internal only. The audit still commits the whole envelope.
-The plan side that produces the carrier (original EXT2 authentication through two read
-sessions) is not implemented: a plan whose step mode is `operational` refuses explicitly
-before publishing, and the deploy refuses every bare `inputs.json`.
+The plan side produces the carrier (amendment 2026-11-13 item 9): the step carries a closed
+`activation_selection` (`selection_version` 1 and the ten-field EXT2 reference); the profile is
+the single `ext2.history` row whose reference is equal, and its bucket, cipher key and three keys
+must equal the `activation_read` ceiling. The plan authenticates the public reference, opens a
+receipt-only session, reads the receipt, opens a session with the three version pairs, runs the
+complete historical `verify_ext2_reference` (the EXT2 gate configuration/invocation is never
+called) and renders `render_ext2` only from that real `VerifiedActivation`. Each session policy
+is measured before STS; 2049 encoded characters or more refuse. An operational plan step without
+`activation_selection` still refuses before any AWS access. The deploy revalidates the profile
+hash, the governed SPKI and the signature locally, without any EXT2 read, and still refuses
+every bare `inputs.json`.
 
 ## Merge scope and not-yet-proven
 
@@ -414,15 +422,48 @@ product (schema `cnesdata.mode-canary/v2`, `MODECANARY` entity, sorted compact U
 with one trailing LF, `record_sha256` over the payload text; no materializer), and this
 document. `execute` remains refused for every operational purpose and mode.
 
-Follow-up, not in this PR: effective fence scope and evaluation documents, the
-`application_coordination_policy` output, the pinned historical-source reader and the
-Phase A `source_closure_sha256` codec check, the producer job_id check, the
-closed-ready capability factory, the terminal-proof validator registry, the EXT2
-transport in the plan, and the keeper loop. Issue #55 closes only with them.
+Follow-up (controller PR after #56, `Refs #55`): effective fence scope and evaluation
+documents, the `application_coordination_policy` sensitive output, the pinned
+historical-source reader and the Phase A `source_closure_sha256` codec check, the producer
+job_id check, the eight-file producer inside the operational deploy, the closed-ready
+capability factory, the terminal-proof validator registry, the EXT2 transport in the plan,
+and the keeper loop. All of it stays disabled by default.
+
+Design decisions of the follow-up, for audit: the terminal validator registry also admits
+`decision` and `restoration` (failure-path proofs) besides the eight kinds of the amendment;
+capability ancestry is strictly direct preparation -> B -> API (longer chains refuse); the
+membership input uses a minimal shared codec (`frozen_membership_sha256`, `members`); the
+expected IAM readback bodies are the historical Phase A `get_role` bodies; the evaluation
+`evidence_arn` is the closed-ready intent key with the prepared checkpoint and sequence 0.
+The effective fence scope has one derivation, `fence_policy_scope`, used by the prepared
+evaluation and recomputed by the closed-ready capability from the same projected policy
+(item 2). Before STS, the capability rebuilds the evaluated `fence_session` with the single
+constructor at the preparation deadline `min(observed_at + 180, frozen_until)` and requires its
+digest to equal the evaluation's; the API session then differs from it only in `DateLessThan`
+(item 3).
+
+Keeper loop and execute are inactive by design. `keeper_loop` accepts only the closed events
+`closed-ready` and `terminal`; every guard check of a journal or broker is a keeper tick, so a
+quiet adapter child still renews the lease. `application_gate execute` refuses before any AWS
+client, lease store, STS call or Keeper construction while the code-constant registries
+`TERMINAL_VALIDATORS` and `KEEPER_EVENT_SOURCE` are empty; they are never read from
+governance, environment or request, and even with both supplied the construction of the
+operational Keeper from the protected binding is not connected. `keeper_loop`,
+`run_closed_ready` and `closed_ready_capability` have no production call site. Only
+`Keeper.acquire` writes a lifecycle lease, so the operational plan and deploy (items 6 and 9)
+refuse on the owner check before any EXT2 read, STS or apply.
+
+Second slice, after CnesData #473/#474 and a new amendment, not in this PR: the `close-drain`
+capability (amendment item 7 keeps it rejected); the authenticated trigger of each stage
+transition (application-prepare -> close -> B -> API); the source of the "authenticated
+input expiration" behind `input_deadline`; the real terminal validators; the real
+`KEEPER_EVENT_SOURCE`; and the binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
 and inline documents as a union); the global NotResource premise; quotas with real
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
-IAM; static binding #498. No operational readiness, applied IAM, production acceptance or
-integrated-code status is implied.
+IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
+present on the plan and deploy runners (which may use another image than the EXT2 gate);
+keeper stage advancement and its event producer; the product terminal validators. No
+operational readiness, applied IAM, production acceptance or integrated-code status is implied.

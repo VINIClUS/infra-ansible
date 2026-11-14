@@ -286,9 +286,64 @@ def current_checkpoint_chain(api, aws, governance, request, run, *, owner, prede
 
 
 
+HISTORICAL_SOURCE_PATH = r"infra/opentofu/(?:env/prod|modules/[a-z0-9-]+)/[a-z0-9_.-]+\.tf"
+
+
+def historical_sources(api, carrier, *, current_source, paths, guard=None):
+    """Pinned read of original Phase A source blobs (amendment 2026-11-13 item 4).
+
+    The commit is the authenticated Phase A source_sha only; ancestry uses the
+    admission compare. Absence is decided from the complete tree, never from a
+    failed read. Limits equal authenticate_sources: 64 paths, 256 KiB, 2 MiB.
+    """
+    import hashlib
+    history = lc.phase_a_originals(carrier)
+    plan = history["envelope"]["plan"]
+    source = history["predecessor_reference"]["source_sha"]
+    c.require(source == plan["source_sha"] == plan["release"]["source_sha"], "historical Phase A source pin")
+    c.digest(source, 40)
+    c.digest(current_source, 40)
+    c.require(type(paths) is list and 1 <= len(paths) <= 64 and paths == sorted(set(paths))
+              and all(type(path) is str and re.fullmatch(HISTORICAL_SOURCE_PATH, path) for path in paths), "historical source path inventory")
+
+    def read(path):
+        if guard is not None:
+            guard.check(20)
+        value = api.read(path)
+        if guard is not None:
+            guard.check()
+        return value
+
+    comparison = read(f"repos/{c.REPOSITORY}/compare/{source}...{current_source}")
+    c.require(comparison["status"] in {"ahead", "identical"} and comparison["merge_base_commit"]["sha"] == source,
+              "historical source ancestry")
+    tree = read(f"repos/{c.REPOSITORY}/git/trees/{source}?recursive=1")
+    c.require(tree["truncated"] is False and type(tree["tree"]) is list, "historical complete source tree")
+    blobs = {}
+    for entry in tree["tree"]:
+        if entry.get("path") in paths:
+            c.require(entry["path"] not in blobs and entry["type"] == "blob" and entry["mode"] in {"100644", "100755"},
+                      "historical source tree entry")
+            blobs[entry["path"]] = c.digest(entry["sha"], 40)
+    result, total = {}, 0
+    for path in paths:
+        if path not in blobs:
+            continue
+        item = read(f"repos/{c.REPOSITORY}/contents/{path}?ref={source}")
+        c.require(item["type"] == "file" and item["path"] == path and item["encoding"] == "base64"
+                  and type(item["size"]) is int and 0 <= item["size"] <= 256 * 1024, "historical source file")
+        raw = base64.b64decode(item["content"], validate=False)
+        blob = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+        c.require(len(raw) == item["size"] and blob == item["sha"] == blobs[path], "historical source blob sha1")
+        total += len(raw)
+        c.require(total <= 2 * 1024**2, "historical source total")
+        result[path] = raw
+    return result
+
+
 def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, original_sources, source_sha,
                                   activation_source_sha, current_index, checkpoint, chain, historical, owner, fragment, producer,
-                                  predecessor_raw, predecessor_reference):
+                                  predecessor_raw, predecessor_reference, terraform_raw=None):
     """Derive one existing role from current plan/source and authenticated history.
 
     Infra producer only: supplied index/history/source closures and schema4 owner
@@ -318,7 +373,10 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
     c.integer(indexed["plan.bin"]["size"])
     for name, raw in (("plan.json", plan_raw), ("inputs.json", inputs_raw)):
         c.require(name in indexed and indexed[name]["sha256"] == c.sha(raw) and indexed[name]["size"] == len(raw), "fence original current plan/input bytes")
-    plan, inputs, state = c.loads(plan_raw, state=True), c.loads(inputs_raw, canonical=True), c.loads(state_raw, state=True)
+    # The operational plan publishes the version2 carrier as inputs.json; its hash is the
+    # current commitment while the unwrapped Terraform bytes feed the resolver.
+    inputs = c.loads(inputs_raw if terraform_raw is None else terraform_raw, canonical=True)
+    plan, state = c.loads(plan_raw, state=True), c.loads(state_raw, state=True)
     c.require(c.canonical(checkpoint["owner"]) == c.canonical(owner) and checkpoint["purpose"] == "application-prepare"
               and c.canonical(checkpoint["state"]) == c.canonical(c.state_identity(state_raw)), "fence full current state checkpoint")
     envelope, old_checkpoint, reference = historical["envelope"], historical["checkpoint"], historical["predecessor_reference"]
@@ -396,6 +454,96 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
+def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence):
+    """Single derivation of own-run closed-ready intent/response/receipt keys.
+
+    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2).
+    """
+    c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
+    c.integer(sequence, 0, 8191)
+    operation = c.sha(c.canonical({"schema_version": 2, "operation": "closed-ready", "owner": owner, "caller": caller,
+                                   "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
+    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": "closed-ready"},
+                       {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
+    return {name: prefix + "sdk-" + operation[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
+
+
+def _allowed_resources(policy, action):
+    found = []
+    for statement in policy["Statement"]:
+        actions = statement.get("Action", [])
+        actions = [actions] if type(actions) is str else actions
+        if statement.get("Effect") == "Allow" and action in actions:
+            c.require("Resource" in statement, "fence policy exact resource")
+            resource = statement["Resource"]
+            found.extend([resource] if type(resource) is str else resource)
+    c.require(len(found) == 1 and type(found[0]) is str, "fence policy single resource for " + action)
+    return found[0]
+
+
+def fence_policy_scope(governance, policy):
+    """The single derivation of the effective fence scope from the projected role policy (item 2).
+
+    Shared by the prepared evaluation and the closed-ready capability. The table is
+    the single GetItem Resource; executions come from the single trailing wildcard
+    of DescribeExecution; both are bound to the protected account. State is never
+    consulted.
+    """
+    account = re.escape(governance["account_id"])
+    table = _allowed_resources(policy, "dynamodb:GetItem")
+    c.require(re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
+              "fence policy protected table")
+    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*",
+                         _allowed_resources(policy, "states:DescribeExecution"))
+    c.require(match is not None, "fence execution prefix single final wildcard")
+    return {"control_table_arn": table, "execution_prefix": match[1],
+            "machine_arn": match[1].replace(":execution:", ":stateMachine:")[:-1]}
+
+
+def fence_evaluation_scope(*, governance, role, control_table_arn, owner, checkpoint_sha256):
+    """Effective fence scope from the authenticated projected role policy (item 2).
+
+    The table derived by fence_policy_scope must equal the authenticated
+    Terraform shared_outputs value. Evidence is the own-run closed-ready intent
+    for (owner, caller, checkpoint, sequence 0).
+    """
+    from tools.cnesdata_delivery.coordination_lease import KEY
+    derived = fence_policy_scope(governance, role["policy"])
+    table, prefix = derived["control_table_arn"], derived["execution_prefix"]
+    c.require(table == control_table_arn, "fence table equals authenticated shared output")
+    machine = derived["machine_arn"].rsplit(":", 1)[1]
+    identity = lc.application_identity(owner, required=True)
+    request_owner = {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}
+    keys = closed_ready_evidence_keys(governance, owner=request_owner, caller=identity, checkpoint_sha256=checkpoint_sha256, sequence=0)
+    scope = {"role_arn": role["role_arn"], "session_name": role["session_name"], "control_table_arn": table,
+             "execution_arn": prefix + "0" * 16,
+             "foreign_execution_arn": prefix.replace(":" + machine + ":", ":" + machine + "-foreign:") + "0" * 16,
+             "evidence_arn": "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + keys["intent"],
+             "lease_arn": "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY}
+    return scope, prefix
+
+
+def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at):
+    """Six evaluation documents from protected sources (amendment 2026-11-13 item 3)."""
+    from tools.cnesdata_delivery import session_owner, session_policy
+    c.integer(observed_at)
+    frozen = min(c.instant(pin["frozen_until"]), c.instant(fragment["enabled_until"]))
+    c.require(type(frozen) in (int, float) and observed_at < frozen, "fence evaluation before freeze")
+    session = session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+        "closed-ready", application_purpose="promotion", delegations=("fence_operator",),
+        sessions={"fence_operator": role["session_name"]})
+    return {
+        "application_identity": session_owner.application_identity_document(governance, fragment),
+        "application_managed": c.loads(c.canonical(pin["document"]), canonical=True),
+        "application_session": c.loads(session["Policy"].encode()),
+        "fence_identity": role["policy"],
+        "fence_session": session_policy.fence_session_policy(control_table_arn=control_table_arn,
+            execution_prefix=execution_prefix, deadline=int(min(observed_at + 180, frozen))),
+        "freeze": {"frozen_until": c.utc(frozen), "application_fragment_sha256": c.sha(c.canonical(fragment)),
+                   "owner_policy_sha256": c.digest(pin["document_sha256"])},
+    }
+
+
 def fence_prepared_files(*, originals, owner, fragment, activation_sha256, producer, preparation, predecessor_raw, predecessor_reference):
     """Build before upload; enclosing artifact provenance remains external."""
     c.require(type(originals) is dict and set(originals) == lc.FENCE_PREPARE_FILES - {"fence-prepared.json"},
@@ -411,6 +559,121 @@ def fence_prepared_files(*, originals, owner, fragment, activation_sha256, produ
         activation_sha256=activation_sha256, producer=producer, preparation=preparation,
         predecessor_raw=predecessor_raw, predecessor_reference=predecessor_reference)
     return files
+
+
+def fence_producer_job(api, run, source):
+    """Identify the running producer job before publication (amendment 2026-11-13 item 5).
+
+    Exactly one current-attempt job with the fixed name, in progress on this
+    runner, at the source, with the gate step running after eight completed-success
+    steps in order. Anything else refuses before any private publication.
+    """
+    runner = os.environ.get("RUNNER_NAME")
+    c.require(type(runner) is str and 0 < len(runner) <= 256, "producer RUNNER_NAME")
+    c.digest(source, 40)
+    root = f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs"
+    jobs, total = [], None
+    for page in range(1, 21):
+        value = api.read(root + f"?per_page=100&page={page}")
+        c.integer(value["total_count"], 0, 2000)
+        total = value["total_count"] if total is None else total
+        c.require(value["total_count"] == total and type(value["jobs"]) is list, "stable producer job inventory")
+        jobs.extend(value["jobs"])
+        if len(jobs) >= total or not value["jobs"]:
+            break
+    c.require(len(jobs) == total and len({job["id"] for job in jobs}) == total, "complete producer job inventory")
+    named = [job for job in jobs if job["name"] == lc.FENCE_PREPARE_PRODUCER["job_name"]]
+    c.require(len(named) == 1, "unique fixed producer job")
+    job = named[0]
+    c.integer(job["id"])
+    c.require(job["status"] == "in_progress" and job["head_sha"] == source and job["runner_name"] == runner,
+              "running producer job on this runner")
+    steps = job.get("steps")
+    c.require(type(steps) is list, "producer job steps")
+    numbers = []
+    for index, name in enumerate(lc.FENCE_PREPARE_STEPS):
+        found = [item for item in steps if item.get("name") == name]
+        last = index == len(lc.FENCE_PREPARE_STEPS) - 1
+        c.require(len(found) == 1 and (found[0]["status"] == "in_progress" if last else
+                  found[0]["status"] == "completed" and found[0]["conclusion"] == "success"), "producer step state")
+        numbers.append(c.integer(found[0]["number"]))
+    c.require(numbers == sorted(set(numbers)), "producer step order")
+    return job
+
+
+def fence_phase_a_origin(history, projection_source_files):
+    """fence-origins.json phase_a from the authenticated original carrier only."""
+    plan, applied, reference = history["envelope"]["plan"], history["envelope"]["apply"], history["predecessor_reference"]
+    indexed = {entry["name"]: entry for entry in reference["objects"]}
+    files = {name: {key: reference[key] for key in ("repository", "source_sha", "run_id", "run_attempt", "artifact_id", "artifact_digest")}
+             | {"job_id": reference["producer_job_id"], "producer_name": reference["producer_name"], "step": "applied", **indexed[name]}
+             for name in sorted(lc.FENCE_PHASE_A_FILES)}
+    return {"source_sha": plan["source_sha"], "source_closure_sha256": lc.fence_source_closure(projection_source_files),
+            "release_id": plan["release"]["release_id"], "canary_id": plan["release"]["canary_id"],
+            "candidate_sha256": plan["release"]["candidate_sha256"], "plan_binary_sha256": plan["binary_sha256"],
+            "plan_json_sha256": plan["json_sha256"], "inputs_sha256": plan["inputs_sha256"],
+            "plan_receipt": {"plan_binding_sha256": applied["plan_binding_sha256"], "consumed_plan_artifact": applied["consumed_plan_artifact"]},
+            "state": history["checkpoint"]["state_after"], "files": files}
+
+
+def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, authority, predecessor, carrier, plan_index,
+                          plan_raw, inputs_raw, terraform_raw, approval_raw, previous_raw, checkpoint_raw, state_raw,
+                          sources, activation_sha256, clock=time.time, sleep=time.sleep):
+    """Eight-file prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6).
+
+    Only protected inputs already authenticated by execute: owner/lease, schema4
+    authority, H4 predecessor and carrier, the plan index read by private_payload,
+    the audited approval, the applied checkpoint/state and product sources.
+    Returns bytes to publish; it never grants a capability.
+    """
+    from tools.cnesdata_delivery.iam_boundary import fence_effective_evaluation
+    producer_step = lc.FENCE_PREPARE_PRODUCER
+    c.require(request["step"] == producer_step["step"], "fence producer step")
+    fragment = authority.application_fragment
+    c.require(type(fragment) is dict, "fence schema4 application authority")
+    job = fence_producer_job(api, run, request["source_sha"])
+    producer = producer_step | {"repository": c.REPOSITORY, "source_sha": request["source_sha"],
+        "workflow_sha": c.digest(governance["gate_shas"]["deploy"], 40), "run_id": run["id"],
+        "run_attempt": run["run_attempt"], "job_id": job["id"]}
+    chain, baseline = current_checkpoint_chain(api, aws, governance, request, run, owner=owner, predecessor=predecessor,
+        current_raw=checkpoint_raw, approval_raw=approval_raw, previous_raw=previous_raw, producer=producer, guard=guard, now=clock())
+    history = lc.phase_a_originals(carrier)
+    original_sources = historical_sources(api, carrier, current_source=request["source_sha"], paths=sorted(sources), guard=guard)
+    checkpoint = c.loads(checkpoint_raw, canonical=True)
+    projection = fence_current_role_projection(plan_raw=plan_raw, inputs_raw=inputs_raw, terraform_raw=terraform_raw,
+        state_raw=state_raw, sources=sources, original_sources=original_sources, source_sha=request["source_sha"],
+        activation_source_sha=request["source_sha"], current_index=plan_index, checkpoint=checkpoint, chain=chain,
+        historical=history, owner=owner, fragment=fragment, producer=producer, predecessor_raw=baseline,
+        predecessor_reference=predecessor)
+    role = projection["role"]
+    observed = {row["operation"]: row["observed"] for row in history["checkpoint"]["readbacks"]
+                if row["service"] == "iam" and row["operation"] in {"get_role", "get_role_policy"}
+                and (row["observed"].get("Role", {}).get("RoleName") == role["role_name"] or row["observed"].get("RoleName") == role["role_name"])}
+    expected = {"role": {"Role": observed["get_role"]["Role"]},
+                "policy": {"RoleName": role["role_name"], "PolicyName": role["policy_name"], "PolicyDocument": role["policy"]}}
+    window = guard.window
+    readbacks = fence_role_readbacks(aws, account=governance["account_id"], expected=expected,
+        preparation_admitted_at=window["admitted_at"], preparation_deadline=window["preparation_deadline"],
+        guard=guard, clock=clock, sleep=sleep)
+    preparation = {"admitted_at": window["admitted_at"], "deadline": window["preparation_deadline"],
+                   "observed_at": readbacks["readbacks"][-1]["observed_at"]}
+    terraform = c.loads(terraform_raw, canonical=True)
+    scope, execution_prefix = fence_evaluation_scope(governance=governance, role=role,
+        control_table_arn=terraform["shared_outputs"]["control_table_arn"], owner=owner, checkpoint_sha256=c.sha(checkpoint_raw))
+    documents = fence_evaluation_documents(governance=governance, pin=authority.pin, fragment=fragment, owner=owner, role=role,
+        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"])
+    evaluation = fence_effective_evaluation(documents, scope, evaluator_source_sha=producer["workflow_sha"],
+                                            observed_at=c.utc(preparation["observed_at"]))
+    origins = {"schema_version": 1, "phase_a": fence_phase_a_origin(history, projection["source_files"]),
+               "current_source_sha": request["source_sha"],
+               "current_source_closure_sha256": c.sha(c.canonical(governance["source_closure"])),
+               "current_plan": projection["current_plan"], "projection_source_files": projection["source_files"]}
+    originals = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw, "fence-role.json": c.canonical(role),
+                 "fence-readbacks.json": c.canonical(readbacks), "fence-origins.json": c.canonical(origins),
+                 "fence-chain.json": c.canonical(chain), "fence-evaluation.json": c.canonical(evaluation)}
+    guard.check()
+    return fence_prepared_files(originals=originals, owner=owner, fragment=fragment, activation_sha256=activation_sha256,
+        producer=producer, preparation=preparation, predecessor_raw=baseline, predecessor_reference=predecessor)
 
 
 class PreparedFence(dict):
@@ -442,13 +705,7 @@ def fence_prepared_payload(api, aws, governance, request, run, reference, *, own
     c.closed(reference, "artifact_id artifact_digest job_id")
     c.integer(reference["job_id"])
     job = api.read(f"repos/{c.REPOSITORY}/actions/jobs/{reference['job_id']}")
-    names = (
-        "Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
-        "Check out authenticated exact product source", "Check out pinned artifact SDK bundle",
-        "Set pinned Node runtime for the artifact SDK", "Install checksum-locked protected runtime",
-        "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
-        producer["step_name"],
-    )
+    names = lc.FENCE_PREPARE_STEPS
     steps = job.get("steps")
     c.require(type(steps) is list, "fence original producer steps")
     selected = []
@@ -865,22 +1122,110 @@ def authenticate_infrastructure_closure(product, source, expected):
               "complete infrastructure closure")
     return result
 
+def _activation_profile(governance, reference):
+    """The single ext2.history profile whose reference equals the selection; ceiling-bound."""
+    from tools.cnesdata_delivery import evidence as e, session_policy, signing_gate
+    profile = signing_gate._selection(governance["ext2"], {"mode": "historical", "ext2_post_upload_receipt_v1": dict(reference)})
+    storage, ceiling = e.storage_config(profile), session_policy.activation_ceiling(governance)
+    c.require(storage["bucket_arn"] == ceiling["bucket_arn"] and storage["cipher_kms_key_arn"] == ceiling["cipher_kms_key_arn"]
+              and list(storage["current_keys"]) == [ceiling["keys"][slot] for slot in session_policy.ACTIVATION_SLOTS],
+              "activation profile equals protected read ceiling")
+    return profile, storage
+
+
 def operational_inputs(raw, *, governance, owner, window):
-    """Unwrap the operational preparation carrier against the protected read ceiling; no fallback."""
+    """Unwrap the operational preparation carrier against the protected read ceiling; no fallback.
+
+    Item 9: the deploy revalidates SPKI, profile hash and signature locally; it reads no EXT2 object.
+    """
     from tools.cnesdata_delivery import session_policy
     ceiling = session_policy.activation_ceiling(governance)
     decoded = lc.inputs_envelope(raw, owner=owner, window=window)
     for slot, reference in decoded["objects"].items():
         c.require(reference["bucket_arn"] == ceiling["bucket_arn"] and reference["cipher_kms_key_arn"] == ceiling["cipher_kms_key_arn"]
                   and reference["key"] == ceiling["keys"][slot], "envelope object within protected activation ceiling")
+    revalidate_activation(governance, c.loads(raw, canonical=True, limit=lc.ENVELOPE_LIMIT)["activation"], decoded["activation"])
     return decoded
+
+
+def revalidate_activation(governance, activation, decoded):
+    """Local deploy-side EXT2 revalidation: governed profile hash, SPKI and signature; no EXT2 read."""
+    from tools.cnesdata_delivery import signing_gate
+    profile, _ = _activation_profile(governance, activation["ext2_reference"])
+    c.require(activation["ext2_governance_sha256"] == c.sha(c.canonical(profile)), "envelope original EXT2 profile hash")
+    spki = decoded["signing_spki"]
+    c.require(spki == signing_gate._governed_signing_spki(profile), "envelope original EXT2 SPKI")
+    signing_gate.verify_signature(decoded["payload"], decoded["signature"], spki, governance=profile)
+
+
+ACTIVATION_POLICY_LIMIT = 2048
+
+
+def activation_session_factory(governance, run):
+    """Production read sessions: one OIDC exchange per activation_request scope, size-checked first."""
+    from tools.cnesdata_delivery import session_policy, signing_gate
+    def open_session(versions, deadline):
+        restriction = session_policy.activation_request(governance, versions, deadline=deadline)
+        c.require(len(restriction["Policy"].encode()) <= ACTIVATION_POLICY_LIMIT, "activation session policy size")
+        credentials = oidc_credentials(governance, "plan", restriction, run)
+        return signing_gate._sdk_clients(credentials)["s3"]
+    return open_session
+
+
+def plan_activation_carrier(*, governance, step, owner, window, terraform_raw, github, session_factory, now):
+    """Original EXT2 authentication inside the operational plan (amendment 2026-11-13 item 9).
+
+    Public reference, receipt-only session, receipt read, three-pair session,
+    complete historical verify_ext2_reference, then render_ext2 from the real
+    VerifiedActivation. The EXT2 gate configuration/invocation is never called.
+    """
+    import base64
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import evidence as e, ext2_transport as t, signing_gate
+    selection = step.get("activation_selection")
+    c.closed(selection, "selection_version ext2_post_upload_receipt_v1")
+    c.require(type(selection["selection_version"]) is int and selection["selection_version"] == 1, "activation selection version")
+    reference = dict(selection["ext2_post_upload_receipt_v1"])
+    t.validate_reference(reference)
+    profile, storage = _activation_profile(governance, reference)
+    moment = datetime.fromtimestamp(now, timezone.utc)
+    authenticated = t.authenticate_reference(reference, github=github, governance=profile, current_invocation=None, now=moment)
+    member = authenticated.receipt_reference
+    deadline = c.utc(window["preparation_deadline"])
+    receipt_s3 = session_factory({"receipt": member["receipt_version_id"]}, deadline)
+    receipt_object = e.read_version({"bucket_arn": storage["bucket_arn"], "key": storage["current_keys"][2],
+        "version_id": member["receipt_version_id"], "content_sha256": member["receipt_sha256"],
+        "content_length": member["receipt_size"], "server_side_encryption": "aws:kms",
+        "cipher_kms_key_arn": storage["cipher_kms_key_arn"], "bucket_key_enabled": False}, s3=receipt_s3, governance=profile)
+    receipt = t.loads(receipt_object.body, 65536)
+    versions = {"payload": receipt["object"]["version_id"], "signature": receipt["signature_object"]["version_id"],
+                "receipt": member["receipt_version_id"]}
+    verified = signing_gate.verify_ext2_reference(reference, github=github, s3=session_factory(versions, deadline),
+                                                  governance=profile, now=moment, historical=True)
+    request = {"request_version": 1, "mode": "historical", "inputs": None,
+               "source_sha": t.hex_digest(profile["invocation"]["source_sha"], 40), "ext2_post_upload_receipt_v1": dict(reference)}
+    rendered = signing_gate._load_consumer(profile, request, github).render(verified, profile)
+    def blob(raw):
+        return {"sha256": c.sha(raw), "size": len(raw), "bytes_base64": base64.b64encode(raw).decode()}
+    objects = {slot: dict(item.reference()) | {"content_length": len(item.body)} for slot, item in
+               (("payload", verified.payload_object), ("signature", verified.signature_object), ("receipt", verified.receipt_object))}
+    carrier = {"lifecycle_inputs_version": 2, "owner": owner,
+        "preparation": {"admitted_at": window["admitted_at"], "deadline": window["deadline"], "observed_at": int(now)},
+        "terraform": blob(terraform_raw),
+        "activation": {"carrier_version": 1, "ext2_reference": reference, "ext2_governance_sha256": c.sha(c.canonical(profile)),
+            "payload": blob(verified.payload_bytes), "signature": blob(verified.signature_der), "receipt": blob(verified.receipt_bytes),
+            "signing_spki": blob(verified.signing_spki_der), "objects": objects, "rendered_targets": rendered}}
+    raw = c.canonical(carrier, limit=lc.ENVELOPE_LIMIT)
+    lc.inputs_envelope(raw, owner=owner, window=window)
+    return raw
 
 
 def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
     governance, request, step, api, run, public = admission(role)
-    c.require(not (role == "plan" and step["mode"] == "operational"), "operational plan requires activation transport")
+    c.require(not (role == "plan" and step["mode"] == "operational") or type(step.get("activation_selection")) is dict,
+              "operational plan requires activation transport")
     aws = AWS(governance)
     from tools.cnesdata_delivery import session_owner
     application_authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"], "application", "application-prepare", time.time())
@@ -903,13 +1248,15 @@ def execute(role):
     historical = lc.phase_a_originals(carrier)
     c.require(historical["envelope"]["plan"]["phase_a_inputs"]["canary_trusted_principal_arn"] ==
               application_authority.application_fragment["application_role_arn"], "original Phase A/current application principal")
-    payload = {}
+    payload, plan_indexes = {}, []
     for input_name, public_files in public.items():
         index, files = private_payload(aws, governance, request, run, public_files, guard=guard)
         c.require(index["step"] == step["input_jobs"][input_name]["step"], "private original producer step")
         c.require(index["owner_sha256"] == owner["owner_sha256"] and index["generation"] == owner["generation"], "payload original owner")
         c.require(not set(files) & set(payload), "ambiguous private payload")
         payload.update(files)
+        if "plan.json" in files:
+            plan_indexes.append(index)
     product = Path.cwd() / "product"
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=product, capture_output=True, text=True, check=True, timeout=5).stdout.strip()
     c.require(source == request["source_sha"], "immutable product checkout")
@@ -964,12 +1311,17 @@ def execute(role):
         guard.run([tofu, "init", "-input=false", "-lockfile=readonly", "-backend-config=" + str(temp / "backend.json")],
                   cwd=root, env=env, output=temp / "init.log", timeout=45, mutating=False)
         c.effective_backend(c.loads((root / ".terraform/terraform.tfstate").read_bytes(), state=True), "default", baseline["backend"]["configuration"])
+        published_inputs = payload["inputs.json"]
+        if role == "plan" and step["purpose"] == "application-prepare" and step["mode"] == "operational":
+            published_inputs = plan_activation_carrier(governance=governance, step=step, owner=owner, window=guard.window,
+                terraform_raw=terraform_raw, github=api, session_factory=activation_session_factory(governance, run), now=time.time())
+            guard.check()
         if role == "plan":
             guard.run([tofu, "plan", "-input=false", "-lock-timeout=20s", "-var-file=" + str(temp / "inputs.json"), "-out=" + str(temp / "plan.bin")],
                       cwd=root, env=env, output=temp / "plan.log", timeout=120)
             guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "plan.json", timeout=20, mutating=False)
             result_files = {"plan.bin": (temp / "plan.bin").read_bytes(), "plan.json": (temp / "plan.json").read_bytes(),
-                            "inputs.json": payload["inputs.json"], "checkpoint.json": payload["checkpoint.json"]}
+                            "inputs.json": published_inputs, "checkpoint.json": payload["checkpoint.json"]}
             # A saved plan is published unapproved; only the independent audit job
             # can authorize its digest for a subsequent deploy invocation.
             c._secrets(c.loads(result_files["plan.json"], state=True))
@@ -1011,6 +1363,15 @@ def execute(role):
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}
             result_files = {"checkpoint.json": c.canonical(checkpoint), "approval.json": payload["approval.json"]}
+            if step["purpose"] == "application-prepare" and step["mode"] == "operational":
+                # Amendment 2026-11-13 item 6: the eight-file observation is produced inside this running gate.
+                c.require(len(plan_indexes) == 1, "fence single authenticated current plan index")
+                result_files = fence_prepare_package(api=api, aws=aws, governance=governance, request=request, run=run,
+                    owner=owner, guard=guard, authority=application_authority, predecessor=predecessor, carrier=carrier,
+                    plan_index=plan_indexes[0], plan_raw=payload["plan.json"], inputs_raw=payload["inputs.json"],
+                    terraform_raw=terraform_raw, approval_raw=payload["approval.json"], previous_raw=payload["checkpoint.json"],
+                    checkpoint_raw=result_files["checkpoint.json"], state_raw=after_raw, sources=sources,
+                    activation_sha256=activation_sha256)
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)

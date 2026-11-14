@@ -59,6 +59,12 @@ output "application_promotion" {
   } : key => value if value != null })
 }
 
+output "application_coordination_policy" {
+  description = "Private application coordination inline policy bytes for the fence evaluation (#55 amendment 2026-11-13 item 3); validated against application_promotion.policy_sha256, null when disabled."
+  sensitive   = true
+  value       = var.application_promotion == null ? null : aws_iam_role_policy.application[0].policy
+}
+
 output "initialization" {
   description = "Identifiers for the controlled CRL import/readback only; never a consumer-ready shared_outputs object."
   value = {
