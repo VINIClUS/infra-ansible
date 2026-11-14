@@ -1677,6 +1677,102 @@ def write_credentials(directory, credentials, *, now):
     return expires
 
 
+# EXT-3 credential_process v1 (CnesData#473 amendment-5): the API container reads
+# this document through a read-only directory bind; the host never restarts it.
+CREDENTIAL_FILE = "aws-credentials.json"
+CONTAINER_OWNER = (0, 10001)
+PUBLISH_MINIMUM = 3300
+SESSION_SECONDS = 3600
+
+
+def shared_directory(path, *, owner, mode=0o710):
+    """Exact container-group directory under a private parent; never repaired."""
+    path = Path(path)
+    private_directory(path.parent)
+    require(not path.is_symlink(), "symlink directory")
+    if not path.exists():
+        path.mkdir(mode=0o700)
+        os.chown(path, *owner, follow_symlinks=False)
+        os.chmod(path, mode, follow_symlinks=False)
+    info = os.lstat(path)
+    require(
+        stat.S_ISDIR(info.st_mode)
+        and (info.st_uid, info.st_gid) == tuple(owner)
+        and stat.S_IMODE(info.st_mode) == mode,
+        "shared directory",
+    )
+    return path
+
+
+def read_shared(path, *, owner, mode=0o440, maximum=16384):
+    """Readback of a container-readable file; FIFOs and links never block or pass."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        require(
+            stat.S_ISREG(info.st_mode)
+            and (info.st_uid, info.st_gid) == tuple(owner)
+            and stat.S_IMODE(info.st_mode) == mode
+            and info.st_nlink == 1,
+            "shared file",
+        )
+        data = file.read(maximum + 1)
+        require(len(data) <= maximum, "file bound")
+        return data
+
+
+def container_document(credentials, *, now):
+    """The exact v1 bytes the container reader accepts, with Version restored."""
+    closed(credentials, "AccessKeyId SecretAccessKey SessionToken Expiration")
+    for value in credentials.values():
+        require(
+            isinstance(value, str) and value and "\n" not in value and "\r" not in value,
+            "credential field",
+        )
+    require(
+        re.fullmatch(r"ASIA[0-9A-Z]{16}", credentials["AccessKeyId"]),
+        "temporary credentials only",
+    )
+    expires = instant(credentials["Expiration"])
+    # A short RA session would be published and then refused by every reader.
+    require(
+        now + PUBLISH_MINIMUM <= expires <= now + SESSION_SECONDS,
+        "credential lifetime",
+    )
+    return canonical({"Version": 1, **credentials}), expires
+
+
+def publish_container_credentials(directory, credentials, *, now, owner):
+    """Atomic same-directory replacement; the current generation is never removed."""
+    raw, expires = container_document(credentials, now=now)
+    directory = shared_directory(directory, owner=owner)
+    path = directory / CREDENTIAL_FILE
+    temp = directory / (".write-" + secrets.token_hex(16))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(temp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(raw)
+            file.flush()
+            os.fsync(file.fileno())
+            # Owner and mode are final before the name becomes visible.
+            os.fchown(file.fileno(), *owner)
+            os.fchmod(file.fileno(), 0o440)
+            os.fsync(file.fileno())
+        os.replace(temp, path)
+        folder = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(folder)
+        finally:
+            os.close(folder)
+    finally:
+        temp.unlink(missing_ok=True)
+    require(
+        read_shared(path, owner=owner, maximum=len(raw)) == raw, "physical readback"
+    )
+    return expires
+
+
 def verify_run(run, reference, *, caller=False):
     run_ref(reference)
     require(
