@@ -227,12 +227,17 @@ sem adoção registrada procura o container pelos labels
 `aws_credentials_refreshed key_fp=<12 hex> previous_fp=<12 hex|none> pid=<n>`.
 
 - Mesmo `Id`, `StartedAt` e `RestartCount` e o `key_fp` da geração logado
-  depois da publicação: grava o checkpoint `credential-adoption`.
-- Id novo: só vale se o deploy aceito retido pela cadeia do lease nomeia esse Id
-  em `candidate-container.json` e o container logou, desde o seu `StartedAt`, a
-  linha de boot `key_fp=<geração> previous_fp=none`. O deploy grava esse arquivo
-  logo depois do `start-candidate`. Sem o checkpoint de deploy, o resultado é
+  depois da publicação: grava o checkpoint `credential-adoption`. Isso vale só
+  para o container da última adoção ou para um que a cadeia de releases admite,
+  inclusive antes da primeira adoção depois do boot. Fora disso, o resultado é
   `credential_adoption=container_replaced`.
+- A cadeia de releases admite o Id que o deploy aceito retido pelo lease grava em
+  `candidate-container.json`, logo depois do `start-candidate`. Um deploy
+  `ROLLED_BACK` admite também os containers da release para a qual voltou,
+  seguindo `previous_accepted_sha256`.
+- Id novo: só vale se a cadeia admite esse Id e o container logou, desde o seu
+  `StartedAt`, a linha de boot `key_fp=<geração> previous_fp=none`. Sem isso, o
+  resultado é `credential_adoption=container_replaced`.
 - Mesmo Id com `StartedAt` ou `RestartCount` diferente, inclusive em relação à
   última adoção: `credential_adoption=container_restarted` uma vez. A execução
   seguinte rebaseia pela linha de boot.
@@ -259,7 +264,8 @@ lease quando não há o que fazer fica como follow-up.
 Pior caso do lease contra o deploy. A folga do renovador entre ficar devido e
 a geração vigente cair abaixo de F + L é `R − F − L = 660 s`. Um deploy com
 ClosedReady segura o lease no máximo pela etapa API (180 s), mais o recovery
-(420 s) e a terminação (15 s), cerca de 615 s, o que cabe nessa folga. O sucesso
+(420 s) e a terminação (15 s), cerca de 615 s, o que cabe nessa folga só com a
+fase favorável do timer. O sucesso
 sem recovery fica em cerca de 195 s, e o `validate` faz poucas chamadas limitadas
 a 20 s. Uma execução que encontra o lease ocupado falha e tenta de novo no tick
 seguinte, então a fase do timer soma até T. No pior alinhamento, o primeiro tick

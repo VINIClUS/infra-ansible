@@ -29,9 +29,10 @@ Contract: CnesData#473 amendment-5 and infra-ansible#55 slice 2A.
   `/run/credentials`; the compose may not set any `AWS_*` environment.
 - Adoption is proven one cycle behind from the container's JSON stdout event
   `aws_credentials_refreshed key_fp=<sha256[:12]> previous_fp=… pid=…`, in the
-  same container (`Id`, `StartedAt`, `RestartCount`). A new container counts only
-  when the accepted deploy checkpoint names its Id and it logged its boot line
-  (`previous_fp=none`). Failures print `credential_adoption=missing`,
+  same container (`Id`, `StartedAt`, `RestartCount`). Only the last adopted
+  container or one the accepted release chain names can adopt (a rolled-back
+  deploy also admits the release it restored); a new container also needs its
+  boot line (`previous_fp=none`). Failures print `credential_adoption=missing`,
   `credential_adoption=container_replaced` or
   `credential_adoption=container_restarted` and fail the unit (exit 2) after the
   lease is released; publication of the next generation continues.

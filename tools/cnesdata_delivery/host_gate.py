@@ -1885,12 +1885,8 @@ def adoption_events(raw):
     return events
 
 
-def deployed_client(root, checkpoint):
-    """Container Id named by the accepted deploy retained in the lease chain."""
-    accepted = accepted_release(root, checkpoint)
-    if accepted is None:
-        return None
-    record = find_record(root, accepted)
+def candidate_container(root, record):
+    """Container Id one deploy record named after start-candidate, if any."""
     path = Path(root) / "cnesdata" / record["operation_id"] / "candidate-container.json"
     if not path.exists() and not path.is_symlink():
         return None
@@ -1911,34 +1907,61 @@ def deployed_client(root, checkpoint):
     return value["id"]
 
 
-def adoption_verdict(state, record, client, deploy_id, events_since):
-    """One cycle behind (§3.6); restart detection only ever adds a failure."""
+RELEASE_CHAIN = 32
+
+
+def deployed_clients(root, checkpoint):
+    """Container Ids the accepted release retained by the lease chain admits.
+
+    None means no accepted release. A ROLLED_BACK record restored the release it
+    rolled back to (restore_previous) or started it again (rollback-previous),
+    so it also admits that release's containers, following the chain.
+    """
+    accepted = accepted_release(root, checkpoint)
+    if accepted is None:
+        return None
+    ids = set()
+    for _ in range(RELEASE_CHAIN):
+        record = find_record(root, accepted)
+        require(
+            record["state"] in {"ACCEPTED", "ROLLED_BACK"}
+            and not record["effect_possible"],
+            "accepted release record",
+        )
+        container = candidate_container(root, record)
+        if container is not None:
+            ids.add(container)
+        accepted = record["previous_accepted_sha256"]
+        if record["state"] != "ROLLED_BACK" or accepted is None:
+            return frozenset(ids)
+    raise ValueError("release chain bound")
+
+
+def adoption_verdict(state, record, client, deployed, events_since):
+    """One cycle behind (§3.6); deployed is the admitted Id set or None.
+
+    Restart and replacement detection only ever add a failure.
+    """
     if client is None:
-        return "skipped" if deploy_id is None else "missing"
+        return "missing" if deployed else "skipped"
     fp, expected, baseline = record["key_fp"], record["container"], state["baseline"]
     reported = state["restart_reported"] == client
+    admitted = deployed is not None and client["id"] in deployed
+    known = baseline is not None and baseline["id"] == client["id"]
     if expected is not None and expected["id"] == client["id"]:
         if expected == client:
-            # Changes since the last proven adoption, before this publication.
-            if (
-                baseline is not None
-                and baseline["id"] != client["id"]
-                and deploy_id != client["id"]
-            ):
+            # Only the proven container or one the accepted release chain names
+            # may become the baseline, including before the first adoption.
+            if not (known or admitted):
                 return "container_replaced"
-            restarted = (
-                baseline is not None
-                and baseline["id"] == client["id"]
-                and baseline != client
-            )
-            if restarted and not reported:
+            if known and baseline != client and not reported:
                 return "container_restarted"
             since = instant(record["published_at"])
             found = any(key == fp for key, _ in events_since(since))
             return "adopted" if found else "missing"
         if not reported:
             return "container_restarted"
-    if deploy_id != client["id"]:
+    if not admitted:
         return "container_replaced"
     boot = (fp, "none") in events_since(started_at(client["started_at"]))
     return "rebased" if boot else "missing"
@@ -3397,7 +3420,7 @@ def prove_adoption(authority, state, record, read):
     label = f"generation={record['generation']} key_fp={record['key_fp']}"
     try:
         client = credential_client(read)
-        deploy_id = deployed_client(
+        deployed = deployed_clients(
             authority.lease.root, authority.snapshot["lease"]["checkpoint_sha256"]
         )
 
@@ -3405,7 +3428,7 @@ def prove_adoption(authority, state, record, read):
             argv = ["/usr/bin/docker", "logs", "--since", str(int(since)), client["id"]]
             return adoption_events(read(argv))
 
-        outcome = adoption_verdict(state, record, client, deploy_id, events_since)
+        outcome = adoption_verdict(state, record, client, deployed, events_since)
     except OBSERVATION_ERRORS as error:
         authority.contained(error)
         return f"credential_adoption=missing {label} client=unobservable", None, state

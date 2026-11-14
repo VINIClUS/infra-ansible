@@ -430,9 +430,10 @@ side (infra-ansible#55 slice 2A) is in `tools/cnesdata_delivery/host_gate.py`:
   in the cnesdata renewal.
 - Adoption is proven one cycle behind from the container's JSON stdout event
   `aws_credentials_refreshed key_fp=<sha256[:12]> previous_fp=<fp|none> pid=<n>`, in
-  the same container (`Id`, `StartedAt`, `RestartCount`). A new container counts only
-  when the accepted deploy checkpoint names its Id and it logged the boot line
-  `previous_fp=none`. `credential_adoption=missing|container_replaced|container_restarted`
+  the same container (`Id`, `StartedAt`, `RestartCount`). Only the last adopted
+  container or one the accepted release chain names (a rolled-back deploy also admits
+  the release it restored) can adopt, even before the first adoption after boot. A new
+  container also needs its boot line `previous_fp=none`. `credential_adoption=missing|container_replaced|container_restarted`
   fails the unit after the lease is released; publication continues.
 - The CRL `trust_deadline` in the host governance raises `credential_trust=expiring`
   seven days ahead.
