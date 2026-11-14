@@ -271,6 +271,7 @@ def test_workflow_renew_cross_app_workflow_transfer_preserves_release(
     import copy
     import io
     import json
+    import os
     from pathlib import Path
 
     from test_personal_platform_deployer import binding
@@ -355,12 +356,31 @@ def test_workflow_renew_cross_app_workflow_transfer_preserves_release(
         "urlopen",
         lambda *_a, **_k: contextlib.closing(io.BytesIO(health)),
     )
+    # cnesdata publishes credential_process JSON without restart; LimnoPulse keeps
+    # the unchanged legacy INI + restart + readiness path (H7 regression).
+    monkeypatch.setattr(g, "CREDENTIAL_ROOT", tmp_path / "json-credentials")
+    monkeypatch.setattr(g, "CONTAINER_OWNER", (os.geteuid(), os.getegid()))
+    restarts = []
     for app in ("cnesdata", "limnopulse"):
         inspections = iter(("old", "new"))
 
         def supervise(argv, guard, app=app, inspections=inspections, **kwargs):
             guard()
             calls.append(argv[0])
+            if "restart" in argv:
+                restarts.append(app)
+            if "credential-process" in argv and app == "cnesdata":
+                return g.canonical(
+                    {
+                        "Version": 1,
+                        "AccessKeyId": "ASIA" + "0" * 16,
+                        "SecretAccessKey": "fixture",
+                        "SessionToken": "fixture",
+                        "Expiration": g.utc(clock.t + 3600),
+                    }
+                )
+            if "ps" in argv:
+                return b""
             if "credential-process" in argv:
                 return g.canonical(
                     {
@@ -393,13 +413,22 @@ def test_workflow_renew_cross_app_workflow_transfer_preserves_release(
             "profile_arn": "fixture",
             "role_arn": "fixture",
             "duration_seconds": 3600,
-            "container_id": "a" * 12,
-            "health_url": "http://127.0.0.1:18081/health/ready",
-            "readiness_sha256": g.sha(health),
         }
-        g.renew_application_credentials({"credentials": c})
+        if app == "cnesdata":
+            c["trust_deadline"] = g.utc(clock.t + 30 * 86400)
+            assert g.renew_application_credentials({"credentials": c}) == []
+        else:
+            c.update(
+                container_id="a" * 12,
+                health_url="http://127.0.0.1:18081/health/ready",
+                readiness_sha256=g.sha(health),
+            )
+            assert g.renew_application_credentials({"credentials": c}) is None
         assert lease.snapshot()["lease"]["state"] == "RELEASED"
         identity["invocation_id"] = next(invocations)
+    assert restarts == ["limnopulse"]
+    legacy = tmp_path / "credentials" / "limnopulse" / "current"
+    assert sorted(os.listdir(legacy)) == ["credentials", "expiration"]
     prior = lease.snapshot()["lease"]
     with pytest.raises(ValueError, match="same invocation"):
         g.prior_owner_terminal(

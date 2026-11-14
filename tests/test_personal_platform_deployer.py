@@ -82,6 +82,33 @@ def binding():
     }
 
 
+CANDIDATE = "e" * 64
+
+
+def candidate_container(argv, project):
+    """Synthetic running candidate read back for the deploy-container checkpoint."""
+    if argv[1] == "ps" and "status=running" in argv:
+        assert "label=com.docker.compose.project=" + project in argv
+        assert "label=com.docker.compose.service=api" in argv
+        return (CANDIDATE + "\n").encode()
+    if argv[1:3] == ["inspect", CANDIDATE]:
+        labels = {
+            "com.docker.compose.project": project,
+            "com.docker.compose.service": "api",
+        }
+        return json.dumps(
+            [
+                {
+                    "Id": CANDIDATE,
+                    "Config": {"Labels": labels},
+                    "State": {"Running": True, "StartedAt": "1970-01-01T00:20:00.5Z"},
+                    "RestartCount": 0,
+                }
+            ]
+        ).encode()
+    return None
+
+
 def operation(tmp_path, action="validate"):
     g, clock = runtime(), Clock()
     lease = g.HostLease(tmp_path, clock)
@@ -408,6 +435,9 @@ def test_original_closed_ready_physical_driver_then_product_c_and_open(
         commands.append(argv)
         clock.advance(3)
         guard()
+        candidate = candidate_container(argv, "cnesdata-green")
+        if candidate is not None:
+            return candidate
         if "--format" in argv:
             return json.dumps(normalized).encode()
         if argv[1:3] == ["image", "inspect"]:
@@ -456,6 +486,18 @@ def test_original_closed_ready_physical_driver_then_product_c_and_open(
     }
     assert host.record["effect_possible"] is False
     assert any(argv[-2:] == ["-s", "reload"] for argv in commands)
+    # The deploy checkpoint names the new container for credential adoption rebase.
+    named = g.host_json(g.read_private(host.directory / "candidate-container.json"))
+    assert named == {
+        "version": 1,
+        "kind": "deploy-container",
+        "operation_id": host.record["operation_id"],
+        "project": "cnesdata-green",
+        "id": CANDIDATE,
+        "started_at": "1970-01-01T00:20:00.5Z",
+        "restart_count": 0,
+    }
+    assert not any("restart" in argv for argv in commands)
 
     product_until(clock.t)
     # Future consumer stages use their real previous checkpoint, distinct reviewed
@@ -977,6 +1019,9 @@ def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
 
     def endpoint(argv, guard, **kwargs):
         guard()
+        candidate = candidate_container(argv, "cnesdata-green")
+        if candidate is not None:
+            return candidate
         if "--format" in argv:
             return json.dumps(normalized).encode()
         if argv[1:3] == ["image", "inspect"]:
