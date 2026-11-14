@@ -299,3 +299,10 @@ variable "host_gate" {
     error_message = "EXT3 requires an immutable workflow, exact versioned CnesData objects, three deployment SSM leaves, and exact KMS encryption contexts."
   }
 }
+
+variable "local_controller_root_apply" {
+  description = "Owner-approved local controller exception (2026-11-13): true requires the same-account root caller and refuses every assumed-role session. Never set by CI/runtime."
+  type        = bool
+  default     = false
+  nullable    = false
+}
