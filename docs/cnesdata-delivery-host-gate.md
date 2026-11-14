@@ -205,7 +205,7 @@ diretórios do tmpfs no boot.
 
 | Símbolo | Valor | Regra |
 |---|---|---|
-| D | 3600 s | `duration_seconds` da governança e do profile RA; outro valor recusa |
+| D | 3600 s | a governança do host exige `duration_seconds == 3600` e recusa outro valor; o módulo opentofu aceita 900–3600, o catálogo fica no infra-ansible-inventory e o profile RA aplicado usa 3600 |
 | piso de publicação | 3300 s | o host recusa publicar geração com menos vida |
 | R | 1800 s | publica quando restam 1800 s ou menos, ou se o arquivo falta, não é lido ou não é a geração registrada |
 | T | 300 s | timer `OnUnitActiveSec=300s`, `OnBootSec=30s` |
@@ -247,9 +247,14 @@ recusada vira `credential_publication=failed`, também com o lease liberado e a
 geração vigente intacta. A sete dias do `trust_deadline` da governança (o
 `next_update` da CRL), a unit falha com `credential_trust=expiring`. Perda de
 autoridade (guard, CAS ou latch) e grupo de processo não comprovado continuam
-fatais e mantêm o lease para recovery revisado. O release grava o checkpoint
-administrativo `credential-publication`, que o `prior_owner_terminal` aceita para
-o owner systemd.
+fatais e mantêm o lease para recovery revisado. Falhas de integridade do próprio
+tenant (diretórios, `state.json` ou registro da geração fora do contrato) param
+antes de tomar o lease, então não bloqueiam deploy nem LimnoPulse. Erros de
+escrita ou de readback depois de tomar o lease são fatais e também mantêm o lease.
+O release grava o checkpoint administrativo `credential-publication`, que o
+`prior_owner_terminal` aceita para o owner systemd. Cada execução grava um desses
+checkpoints persistentes, cerca de 105 mil por ano a 300 s; um caminho rápido sem
+lease quando não há o que fazer fica como follow-up.
 
 Pior caso do lease contra o deploy. A folga do renovador entre ficar devido e
 a geração vigente cair abaixo de F + L é `R − F − L = 660 s`. Um deploy com
@@ -257,10 +262,13 @@ ClosedReady segura o lease no máximo pela etapa API (180 s), mais o recovery
 (420 s) e a terminação (15 s), cerca de 615 s, o que cabe nessa folga. O sucesso
 sem recovery fica em cerca de 195 s, e o `validate` faz poucas chamadas limitadas
 a 20 s. Uma execução que encontra o lease ocupado falha e tenta de novo no tick
-seguinte, então a fase do timer soma até T. No pior alinhamento, os 615 s
-bloqueiam três ticks e a publicação começa com cerca de 585 s da sessão anterior,
-já na borda da janela mandatory. Até lá a API loga `aws_credentials_refresh_failed`
-na advisory. Abaixo de 600 s as chamadas AWS falham até a publicação. Sem
+seguinte, então a fase do timer soma até T. No pior alinhamento, o primeiro tick
+devido cai com pouco mais de 1500 s restantes e o deploy tomou o lease logo antes
+dele. Os 615 s bloqueiam três ticks (cerca de 1500, 1200 e 900 s) e a publicação
+começa com cerca de 600 s da sessão anterior, na borda da janela mandatory. Com a
+fase favorável, ela começa com cerca de 900 s. Até lá a API loga
+`aws_credentials_refresh_failed` na advisory. No pior alinhamento, as chamadas AWS
+podem falhar desde os 600 s até o helper terminar, no máximo L = 180 s. Sem
 recovery, o deploy bloqueia no máximo um tick. Um deploy que termina em
 `RECOVERY_REQUIRED` mantém o lease até o recovery revisado. Nesse caso a API falha
 fechada quando a geração vigente entra na janela mandatory, entre cerca de 20 e

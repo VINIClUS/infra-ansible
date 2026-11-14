@@ -1,6 +1,7 @@
 # Credenciais pessoais
 
-Disabled by default. This role creates private /run directories only. It does not
+Disabled by default. This role creates the private /run directories (root 0700)
+and the shared `current/` directory (root:10001 0710) only. It does not
 issue certificates, create keys, request sessions, import credentials or enable
 a renewal service. It installs the fixed root-only oneshot unit
 `personal-platform-credential-reload.service` and the timer
