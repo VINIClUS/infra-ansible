@@ -245,3 +245,89 @@ def test_read_shared_refuses_a_fifo_without_blocking(tmp_path):
     worker.join(2)
     assert not worker.is_alive() and time.monotonic() - start < 2
     assert outcome == ["shared file"]
+
+
+def compose():
+    image = "ghcr.io/viniclus/cnesdata@sha256:" + "a" * 64
+    return image, {
+        "services": {
+            "api": {
+                "image": image,
+                "ports": [
+                    {"host_ip": "127.0.0.1", "published": "18081", "target": 8000}
+                ],
+                "networks": {"cnesdata": {}},
+                "read_only": True,
+                "user": "10001:10001",
+                "cap_drop": ["ALL"],
+                "security_opt": ["no-new-privileges:true"],
+                "mem_limit": "512m",
+                "cpus": "0.5",
+                "pids_limit": 128,
+                "logging": {
+                    "driver": "json-file",
+                    "options": {"max-size": "10m", "max-file": "3"},
+                },
+                "healthcheck": {"test": ["CMD", "true"]},
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": "/run/personal-platform/credentials/cnesdata/current",
+                        "target": "/run/credentials",
+                        "read_only": True,
+                        "bind": {"create_host_path": False},
+                    }
+                ],
+            }
+        },
+        "networks": {"cnesdata": {"name": "cnesdata"}},
+    }
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"AWS_SHARED_CREDENTIALS_FILE": "/run/credentials/credentials"},
+        {"AWS_SHARED_CREDENTIALS_FILE": "/dev/null"},
+        {"AWS_CONFIG_FILE": "/run/credentials/aws-config"},
+        {"AWS_ACCESS_KEY_ID": "ASIAFIXTURE"},
+        {"AWS_PROFILE": "default"},
+        {"AWS_EC2_METADATA_DISABLED": "true"},
+        {"PYTHONPATH": "/run/credentials"},
+    ],
+)
+def test_compose_refuses_every_aws_environment_override(environment):
+    import copy
+
+    g = runtime()
+    image, base = compose()
+    g.validate_compose(base, image, 18081)
+    wrong = copy.deepcopy(base)
+    wrong["services"]["api"]["environment"] = environment
+    with pytest.raises(ValueError, match="runtime environment authority"):
+        g.validate_compose(wrong, image, 18081)
+
+
+def test_compose_keeps_only_the_read_only_directory_bind():
+    import copy
+
+    g = runtime()
+    image, base = compose()
+    neutral = copy.deepcopy(base)
+    neutral["services"]["api"]["environment"] = {"TZ": "UTC"}
+    g.validate_compose(neutral, image, 18081)
+    for source, target, read_only in (
+        (
+            "/run/personal-platform/credentials/cnesdata/current/aws-credentials.json",
+            "/run/credentials/aws-credentials.json",
+            True,
+        ),
+        ("/run/personal-platform/credentials/cnesdata", "/run/credentials", True),
+        ("/run/personal-platform/credentials/cnesdata/current", "/run/credentials", False),
+    ):
+        wrong = copy.deepcopy(base)
+        wrong["services"]["api"]["volumes"][0].update(
+            source=source, target=target, read_only=read_only
+        )
+        with pytest.raises(ValueError):
+            g.validate_compose(wrong, image, 18081)
