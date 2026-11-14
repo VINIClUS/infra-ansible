@@ -34,6 +34,11 @@ ADMIN = [
     "kms:CancelKeyDeletion",
     "kms:TagResource",
     "kms:UntagResource",
+    "kms:ListResourceTags",
+    "kms:GetKeyRotationStatus",
+    "kms:CreateAlias",
+    "kms:UpdateAlias",
+    "kms:DeleteAlias",
 ]
 
 

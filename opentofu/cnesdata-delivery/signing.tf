@@ -43,7 +43,9 @@ resource "aws_kms_key" "ext2_signing" {
         Action = [
           "kms:DescribeKey", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:GetPublicKey",
           "kms:EnableKey", "kms:DisableKey", "kms:ScheduleKeyDeletion",
-          "kms:CancelKeyDeletion", "kms:TagResource", "kms:UntagResource"
+          "kms:CancelKeyDeletion", "kms:TagResource", "kms:UntagResource",
+          "kms:ListResourceTags", "kms:GetKeyRotationStatus",
+          "kms:CreateAlias", "kms:UpdateAlias", "kms:DeleteAlias"
         ]
         Resource = "*"
       },
