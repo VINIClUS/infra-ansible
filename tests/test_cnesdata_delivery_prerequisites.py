@@ -176,3 +176,33 @@ def test_lock_do_provider_identico_ao_do_foundation():
     lock = ROOT / ".terraform.lock.hcl"
     foundation = REPO / "opentofu/cnesdata-bootstrap/foundation/.terraform.lock.hcl"
     assert lock.read_bytes() == foundation.read_bytes()
+
+
+THUMBPRINTS = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
+
+
+def test_provider_fixa_thumbprints_publicados_do_github_por_padrao(native):
+    values = planned(native, OIDC, "oidc")
+    provider = by_type(values, "aws_iam_openid_connect_provider")
+    assert sorted(provider["thumbprint_list"]) == sorted(THUMBPRINTS)
+    assert sorted(output(values, "github_oidc_provider")["thumbprint_list"]) == sorted(THUMBPRINTS)
+
+
+@pytest.mark.parametrize("thumbprints", [[], ["ABC"], [THUMBPRINTS[0].upper()], [THUMBPRINTS[0], "xyz"]])
+def test_thumbprints_vazios_ou_invalidos_falham(native, thumbprints):
+    name = "bad-thumb-" + str(len(thumbprints)) + thumbprints[0][:3] if thumbprints else "bad-thumb-empty"
+    code, _, errors = native.plan({**BASE, **OIDC, "github_oidc_thumbprints": thumbprints}, name)
+    assert code != 0 and errors
+
+
+def test_key_policy_da_cmk_so_delega_a_raiz_da_conta(native):
+    values = planned(native, EVIDENCE, "evidence")
+    policy = json.loads(by_type(values, "aws_kms_key")["policy"])
+    assert policy["Statement"] == [{
+        "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::111122223333:root"},
+        "Action": "kms:*", "Resource": "*"}]
+
+
+def test_nome_ausente_com_evidencia_ligada_da_mensagem_amigavel(native):
+    _, _, errors = native.plan({**BASE, "evidence_enabled": True}, "evidence-sem-nome")
+    assert any("evidence_bucket_name required" in str(e) for e in errors)
