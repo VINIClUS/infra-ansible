@@ -92,6 +92,100 @@ def test_ext2_native_creates_exactly_four_with_independent_full_policy_oracles(
     )
 
 
+# Operations an administrator needs to create, refresh and manage the key and its alias.
+# AWS requires kms:CreateAlias/UpdateAlias/DeleteAlias in the TARGET key's policy (alias-access.html)
+# and the CreateKey lockout check requires the caller to keep kms:PutKeyPolicy.
+EXT2_ADMIN_REQUIRED = {
+    "kms:DescribeKey", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:GetPublicKey",
+    "kms:ListResourceTags", "kms:GetKeyRotationStatus",
+    "kms:CreateAlias", "kms:UpdateAlias", "kms:DeleteAlias",
+}
+EXT2_SIGNING_ONLY = {"kms:Sign", "kms:Verify", "kms:*"}
+
+
+def ext2_key_grants(document):
+    """Independent oracle: principal -> unconditional Allow actions in a rendered key policy."""
+    grants = {}
+    for statement in document["Statement"]:
+        assert statement["Effect"] == "Allow" and statement["Resource"] == "*"
+        principals = statement["Principal"]["AWS"]
+        actions = statement["Action"]
+        for principal in [principals] if isinstance(principals, str) else principals:
+            entry = grants.setdefault(principal, set())
+            entry.update([actions] if isinstance(actions, str) else actions)
+    return grants
+
+
+def ext2_key_policy_admin_violations(document, admins, gate):
+    grants = ext2_key_grants(document)
+    problems = []
+    for admin in admins:
+        missing = EXT2_ADMIN_REQUIRED - grants.get(admin, set())
+        if missing:
+            problems.append(("missing", admin, sorted(missing)))
+        if grants.get(admin, set()) & EXT2_SIGNING_ONLY:
+            problems.append(("signing", admin))
+    if not any("kms:CreateAlias" in actions for actions in grants.values()):
+        problems.append(("alias-unreachable",))
+    if set(grants) - set(admins) - {gate}:
+        problems.append(("extra-principal", sorted(set(grants) - set(admins) - {gate})))
+    return problems
+
+
+def test_ext2_key_policy_oracle_detects_admin_mutations():
+    from fixtures.cnesdata_delivery_ext2.inventory import ROLE
+
+    admin = f"arn:aws:iam::{ACCOUNT}:role/synthetic-delivery-operator"
+    good = {"Statement": [
+        {"Effect": "Allow", "Principal": {"AWS": [admin]}, "Action": sorted(EXT2_ADMIN_REQUIRED), "Resource": "*"},
+        {"Effect": "Allow", "Principal": {"AWS": ROLE}, "Action": "kms:Sign", "Resource": "*"},
+    ]}
+    assert ext2_key_policy_admin_violations(good, [admin], ROLE) == []
+    signing = copy.deepcopy(good)
+    signing["Statement"][0]["Action"].append("kms:Sign")
+    assert ("signing", admin) in ext2_key_policy_admin_violations(signing, [admin], ROLE)
+    no_alias = copy.deepcopy(good)
+    no_alias["Statement"][0]["Action"].remove("kms:CreateAlias")
+    problems = ext2_key_policy_admin_violations(no_alias, [admin], ROLE)
+    assert ("alias-unreachable",) in problems and problems[0][0] == "missing"
+    extra = copy.deepcopy(good)
+    extra["Statement"][1]["Principal"]["AWS"] = [ROLE, f"arn:aws:iam::{ACCOUNT}:root"]
+    assert ext2_key_policy_admin_violations(extra, [admin], ROLE)[0][0] == "extra-principal"
+
+
+@pytest.mark.parametrize("admins", [
+    [f"arn:aws:iam::{ACCOUNT}:role/synthetic-delivery-operator"],
+    [f"arn:aws:iam::{ACCOUNT}:root"],
+    [f"arn:aws:iam::{ACCOUNT}:root", f"arn:aws:iam::{ACCOUNT}:role/synthetic-delivery-operator"],
+])
+def test_ext2_key_policy_lets_administrators_create_refresh_and_alias_without_signing(ext2_native, admins):
+    from fixtures.cnesdata_delivery_ext2.inventory import ROLE, variables, values
+
+    v = variables()
+    v["ext2"]["admin_arns"] = admins
+    code, plans, errors = ext2_native.plan(v, "ext2-admins-" + str(len(admins)))
+    assert code == 0, errors
+    document = json.loads(values(plans[0])["aws_kms_key.ext2_signing[0]"]["policy"])
+    assert ext2_key_policy_admin_violations(document, admins, ROLE) == []
+
+
+@pytest.mark.parametrize("admin", [
+    "arn:aws:iam::444455556666:root",
+    f"arn:aws:iam::{ACCOUNT}:root/extra",
+    f"arn:aws:iam::{ACCOUNT}:user/synthetic-user",
+    f"arn:aws:iam::{ACCOUNT}:role/cnesdata-delivery-ext2-gate",
+])
+def test_ext2_admin_rejects_foreign_root_users_and_the_gate(ext2_native, admin):
+    from fixtures.cnesdata_delivery_ext2.inventory import variables
+
+    v = variables()
+    v["ext2"]["admin_arns"] = [admin]
+    code, _, errors = ext2_native.plan(v, "ext2-admin-refused")
+    assert code != 0
+    assert any("EXT2 requires" in d.get("detail", "") or d["summary"] == "Invalid value for variable"
+               for d in errors), errors
+
+
 def test_ext2_inventory_snapshot_keeps_current_native_source_and_plan_isolated(
     ext2_native,
 ):
