@@ -2101,13 +2101,13 @@ def validate_compose(config, image, port, config_path=None):
         require((mount.get("source"), mount.get("target")) in own, "cross-tenant mount")
     environment = service.get("environment", {})
     require(isinstance(environment, dict), "normalized environment")
-    for name, value in environment.items():
-        if name.startswith(("AWS_", "DOCKER_", "SSH_", "LD_", "PYTHON")):
-            require(
-                name == "AWS_SHARED_CREDENTIALS_FILE"
-                and value == "/run/credentials/credentials",
-                "runtime environment authority",
-            )
+    # The AWS profile belongs to the image (credential_process); the host compose
+    # can neither select another provider nor point the SDK at host-written files.
+    for name in environment:
+        require(
+            not name.startswith(("AWS_", "DOCKER_", "SSH_", "LD_", "PYTHON")),
+            "runtime environment authority",
+        )
     require(
         service["image"] == image
         and service["read_only"] is True
