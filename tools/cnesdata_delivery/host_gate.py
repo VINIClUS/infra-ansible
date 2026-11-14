@@ -1773,6 +1773,242 @@ def publish_container_credentials(directory, credentials, *, now, owner):
     return expires
 
 
+CREDENTIAL_ROOT = Path("/run/personal-platform/credentials")
+DEPLOY_PROJECTS = ("cnesdata-blue", "cnesdata-green")
+RENEW_THRESHOLD = 1800
+ADOPTION_SLACK = 120
+TRUST_WARNING = 7 * 86400
+# Frozen with CnesData (T11): one JSON object per stdout line from the API.
+ADOPTION_EVENT = re.compile(
+    r"aws_credentials_refreshed key_fp=([0-9a-f]{12}) "
+    r"previous_fp=([0-9a-f]{12}|none) pid=([0-9]+)"
+)
+STARTED_AT = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d{1,9})?Z")
+# Process-group proofs are authority failures, never observation findings.
+UNPROVEN = {"process group termination unproved", "surviving process group"}
+OBSERVATION_ERRORS = (ValueError, OSError, KeyError, TypeError, IndexError)
+
+
+def key_fingerprint(access_key_id):
+    return sha(access_key_id.encode("ascii"))[:12]
+
+
+def started_at(value):
+    match = isinstance(value, str) and STARTED_AT.fullmatch(value)
+    require(bool(match), "container start instant")
+    return instant(match[1] + "Z")
+
+
+def credential_identity(value):
+    if value is not None:
+        closed(value, "id started_at restart_count")
+        digest(value["id"])
+        started_at(value["started_at"])
+        integer(value["restart_count"])
+    return value
+
+
+def credential_client(read, projects=DEPLOY_PROJECTS):
+    """The single running compose API container, by labels, never a fixed Id."""
+    ids = []
+    for project in projects:
+        listed = read(
+            [
+                "/usr/bin/docker",
+                "ps",
+                "--no-trunc",
+                "--quiet",
+                "--filter",
+                "label=com.docker.compose.project=" + project,
+                "--filter",
+                "label=com.docker.compose.service=api",
+                "--filter",
+                "status=running",
+            ]
+        )
+        ids.extend(listed.decode("ascii").split())
+    require(
+        len(ids) <= 1 and all(re.fullmatch("[0-9a-f]{64}", i) for i in ids),
+        "credential client scope",
+    )
+    if not ids:
+        return None
+    [item] = json.loads(read(["/usr/bin/docker", "inspect", ids[0]]))
+    labels = item["Config"]["Labels"]
+    require(
+        item["Id"] == ids[0]
+        and labels.get("com.docker.compose.project") in projects
+        and labels.get("com.docker.compose.service") == "api"
+        and item["State"]["Running"] is True,
+        "credential client identity",
+    )
+    return credential_identity(
+        {
+            "id": item["Id"],
+            "started_at": item["State"]["StartedAt"],
+            "restart_count": item["RestartCount"],
+        }
+    )
+
+
+def adoption_events(raw):
+    """(key_fp, previous_fp) of exact contract lines; anything else never counts."""
+
+    def unique(pairs):
+        value = {}
+        for name, item in pairs:
+            require(name not in value, "duplicate JSON key")
+            value[name] = item
+        return value
+
+    events = []
+    for entry in raw.splitlines():
+        if len(entry) > 65536:
+            continue
+        try:
+            value = json.loads(entry, object_pairs_hook=unique)
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if (
+            type(value) is dict
+            and value.get("service") == "central-api"
+            and value.get("logger") == "cnes_infra.aws.credentials"
+            and value.get("level") == "INFO"
+            and isinstance(value.get("event"), str)
+        ):
+            match = ADOPTION_EVENT.fullmatch(value["event"])
+            if match:
+                events.append((match[1], match[2]))
+    return events
+
+
+def deployed_client(root, checkpoint):
+    """Container Id named by the accepted deploy retained in the lease chain."""
+    accepted = accepted_release(root, checkpoint)
+    if accepted is None:
+        return None
+    record = find_record(root, accepted)
+    path = Path(root) / "cnesdata" / record["operation_id"] / "candidate-container.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = closed(
+        host_json(read_private(path, 4096)),
+        "version kind operation_id project id started_at restart_count",
+    )
+    require(
+        value["version"] == 1
+        and value["kind"] == "deploy-container"
+        and value["operation_id"] == record["operation_id"]
+        and value["project"] in DEPLOY_PROJECTS,
+        "deploy container checkpoint",
+    )
+    credential_identity(
+        {k: value[k] for k in ("id", "started_at", "restart_count")}
+    )
+    return value["id"]
+
+
+def adoption_verdict(state, record, client, deploy_id, events_since):
+    """One cycle behind (§3.6); restart detection only ever adds a failure."""
+    if client is None:
+        return "skipped" if deploy_id is None else "missing"
+    fp, expected, baseline = record["key_fp"], record["container"], state["baseline"]
+    reported = state["restart_reported"] == client
+    if expected is not None and expected["id"] == client["id"]:
+        if expected == client:
+            restarted = (
+                baseline is not None
+                and baseline["id"] == client["id"]
+                and baseline != client
+            )
+            if restarted and not reported:
+                return "container_restarted"
+            since = instant(record["published_at"])
+            found = any(key == fp for key, _ in events_since(since))
+            return "adopted" if found else "missing"
+        if not reported:
+            return "container_restarted"
+    if deploy_id != client["id"]:
+        return "container_replaced"
+    boot = (fp, "none") in events_since(started_at(client["started_at"]))
+    return "rebased" if boot else "missing"
+
+
+def validate_generation(value):
+    closed(
+        value,
+        "version kind application generation key_fp expiration published_at previous_expiration adopt_by container",
+    )
+    require(
+        value["version"] == 1
+        and value["kind"] == "credential-generation"
+        and value["application"] == "cnesdata",
+        "credential generation",
+    )
+    integer(value["generation"], 1)
+    digest(value["key_fp"], 12)
+    for name in ("expiration", "published_at", "adopt_by"):
+        instant(value[name])
+    if value["previous_expiration"] is not None:
+        instant(value["previous_expiration"])
+    credential_identity(value["container"])
+    return value
+
+
+def generation_state(root):
+    """Mutable 0600 pointer plus immutable generation record, both outside the mount."""
+    path = root / "state.json"
+    if not path.exists() and not path.is_symlink():
+        return None, None
+    state = closed(
+        host_json(read_private(path, 65536)),
+        "version application generation publication_sha256 adopted baseline restart_reported",
+    )
+    require(
+        state["version"] == 1
+        and state["application"] == "cnesdata"
+        and type(state["adopted"]) is bool,
+        "credential state",
+    )
+    integer(state["generation"], 1)
+    digest(state["publication_sha256"])
+    credential_identity(state["baseline"])
+    credential_identity(state["restart_reported"])
+    name = state["publication_sha256"] + ".json"
+    raw = read_private(root / "generations" / name, 65536)
+    require(sha(raw) == state["publication_sha256"], "credential generation digest")
+    record = validate_generation(host_json(raw))
+    require(
+        record["generation"] == state["generation"], "credential generation pointer"
+    )
+    return state, record
+
+
+def current_expiration(current, record):
+    """Expiration of the readable published generation, or None to republish."""
+    if record is None:
+        return None
+    try:
+        value = host_json(
+            read_shared(current / CREDENTIAL_FILE, owner=CONTAINER_OWNER), 16384
+        )
+    except (OSError, ValueError):
+        return None
+    fields = {"Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
+    if (
+        type(value) is dict
+        and set(value) == fields
+        and type(value["Version"]) is int
+        and value["Version"] == 1
+        and isinstance(value["AccessKeyId"], str)
+        and value["AccessKeyId"].isascii()
+        and key_fingerprint(value["AccessKeyId"]) == record["key_fp"]
+        and value["Expiration"] == record["expiration"]
+    ):
+        return instant(record["expiration"])
+    return None
+
+
 def verify_run(run, reference, *, caller=False):
     run_ref(reference)
     require(
@@ -2516,6 +2752,21 @@ class HostDriver:
         )
         return raw
 
+    def record_candidate(self):
+        """Name the new API container so credential adoption may rebase on it."""
+        client = credential_client(self.read, (self.project,))
+        require(client is not None, "candidate container readback")
+        raw = canonical(
+            {
+                "version": 1,
+                "kind": "deploy-container",
+                "operation_id": self.op.record["operation_id"],
+                "project": self.project,
+                **client,
+            }
+        )
+        durable(self.op.directory / "candidate-container.json", raw, immutable=True)
+
     def processes(self):
         # The helper is the sole sending boundary, supervised children have reaped
         # process groups, and the lock excludes any new send during sealing.
@@ -2576,6 +2827,7 @@ class HostDriver:
             self.compose + ["up", "-d", "--no-build", "--pull", "never", "api"],
             self.health,
         )
+        self.record_candidate()
         self.op.transition("CANDIDATE_HEALTHY")
         candidate = render_nginx(self.config["port"], self.config["public_hostname"])
         durable(
@@ -2862,6 +3114,9 @@ def missing_object_probe(path, bucket, key, region, guard):
 
 def renew_application_credentials(governance):
     """Root-only autonomous renewer; no fourth SSH action and no static fallback."""
+    credentials = governance.get("credentials") if type(governance) is dict else None
+    if type(credentials) is dict and credentials.get("application") == "cnesdata":
+        return renew_container_credentials(governance)
     require(os.geteuid() == 0, "root credential renewal")
     c = closed(
         governance["credentials"],
@@ -3023,6 +3278,279 @@ def renew_application_credentials(governance):
             raise
 
 
+class CredentialAuthority:
+    """The host-wide lease held by one systemd renewal invocation."""
+
+    def __init__(self, c):
+        self.clock, self.lease = Clock(), HostLease()
+        identity = process_identity()
+        require(identity["invocation_id"] is not None, "systemd renewal invocation")
+        self.owner = {
+            "class": "systemd",
+            "process": identity,
+            "workflow": None,
+            "human_session_commitment": None,
+            "systemd_invocation": identity["invocation_id"],
+        }
+
+        def terminal(prior):
+            prior_owner_terminal(
+                self.lease.root, prior, GitHub(bytearray(), self.clock), identity
+            )
+            return True
+
+        self.token, self.snapshot = self.lease.acquire(
+            self.owner, sha(canonical(c)), terminal_proof=terminal
+        )
+        wall = self.clock.wall()
+        self.window = Window(
+            self.clock, host_started_at=wall, input_deadlines=[wall + 1800]
+        )
+
+    def guard(self):
+        try:
+            self.window.guard(
+                lease_expires_at=instant(self.snapshot["lease"]["expires_at"])
+            )
+            require(self.lease.snapshot() == self.snapshot, "credential owner CAS")
+            if self.clock.wall() - instant(self.snapshot["lease"]["renewed_at"]) >= 60:
+                self.snapshot = self.lease.renew(self.token, self.snapshot)
+        except BaseException:
+            self.window.fail("credential renewal authority lost")
+            raise
+
+    def contained(self, error):
+        """Observation failures become findings only while authority still holds."""
+        if str(error) in UNPROVEN:
+            raise error
+        self.guard()
+
+    def release(self, publication, adoption):
+        lease = self.snapshot["lease"]
+        checkpoint = canonical(
+            {
+                "version": 1,
+                "kind": "credential-publication",
+                "application": "cnesdata",
+                "owner": self.owner,
+                "operation_id": lease["operation_id"],
+                "generation": lease["generation"],
+                "accepted_record_sha256": accepted_release(
+                    self.lease.root, lease["checkpoint_sha256"]
+                ),
+                "previous_checkpoint_sha256": lease["checkpoint_sha256"],
+                "publication_sha256": publication,
+                "adoption_sha256": adoption,
+                "quiescent": True,
+            }
+        )
+        self.guard()
+        durable(
+            private_directory(self.lease.root / "checkpoints")
+            / (sha(checkpoint) + ".json"),
+            checkpoint,
+            immutable=True,
+        )
+        self.lease.release(self.token, self.snapshot, sha(checkpoint), lambda: True)
+
+
+def container_governance(governance):
+    c = closed(
+        governance["credentials"],
+        "application certificate private_key trust_anchor_arn profile_arn role_arn duration_seconds trust_deadline",
+    )
+    # The RA profile caps the helper; anything but 3600 breaks the R/A/M windows.
+    require(
+        c["application"] == "cnesdata"
+        and type(c["duration_seconds"]) is int
+        and c["duration_seconds"] == SESSION_SECONDS,
+        "RA application/lifetime",
+    )
+    instant(c["trust_deadline"])
+    for name, file in (
+        ("certificate", "certificate.pem"),
+        ("private_key", "private-key.pem"),
+    ):
+        path = Path(c[name])
+        require(
+            path == Path("/etc/personal-platform/ra/cnesdata") / file,
+            "isolated RA identity",
+        )
+        read_private(path, 16384)
+    for name in ("trust_anchor_arn", "profile_arn", "role_arn"):
+        opaque(c[name])
+    return c
+
+
+def prove_adoption(authority, state, record, read):
+    """Return (finding, adoption checkpoint digest, state)."""
+    label = f"generation={record['generation']} key_fp={record['key_fp']}"
+    try:
+        client = credential_client(read)
+        deploy_id = deployed_client(
+            authority.lease.root, authority.snapshot["lease"]["checkpoint_sha256"]
+        )
+
+        def events_since(since):
+            argv = ["/usr/bin/docker", "logs", "--since", str(int(since)), client["id"]]
+            return adoption_events(read(argv))
+
+        outcome = adoption_verdict(state, record, client, deploy_id, events_since)
+    except OBSERVATION_ERRORS as error:
+        authority.contained(error)
+        return f"credential_adoption=missing {label} client=unobservable", None, state
+    state = copy.deepcopy(state)
+    if outcome == "skipped":
+        return None, None, state
+    if outcome == "missing":
+        reason = " client=absent" if client is None else ""
+        return f"credential_adoption=missing {label}{reason}", None, state
+    if outcome in {"container_replaced", "container_restarted"}:
+        if outcome == "container_restarted":
+            state["restart_reported"] = client
+        return f"credential_adoption={outcome} {label}", None, state
+    raw = canonical(
+        {
+            "version": 1,
+            "kind": "credential-adoption",
+            "application": "cnesdata",
+            "generation": record["generation"],
+            "key_fp": record["key_fp"],
+            "publication_sha256": state["publication_sha256"],
+            "container": client,
+            "rebased": outcome == "rebased",
+            "observed_at": utc(authority.clock.wall()),
+        }
+    )
+    authority.guard()
+    durable(
+        private_directory(authority.lease.root / "checkpoints") / (sha(raw) + ".json"),
+        raw,
+        immutable=True,
+    )
+    state.update(adopted=True, baseline=client, restart_reported=None)
+    return None, sha(raw), state
+
+
+def publish_generation(c, authority, root, current, state, record, read):
+    """Return (finding, publication digest, state); the helper is the only RA call."""
+    generation = 1 if state is None else state["generation"] + 1
+    try:
+        raw = supervise(
+            [
+                "/usr/local/bin/aws_signing_helper",
+                "credential-process",
+                "--certificate",
+                c["certificate"],
+                "--private-key",
+                c["private_key"],
+                "--trust-anchor-arn",
+                c["trust_anchor_arn"],
+                "--profile-arn",
+                c["profile_arn"],
+                "--role-arn",
+                c["role_arn"],
+                "--session-duration",
+                str(c["duration_seconds"]),
+            ],
+            authority.guard,
+            env={"PATH": "/usr/bin:/bin"},
+        )
+        credentials = host_json(raw, 16384)
+        version = credentials.pop("Version", None)
+        require(type(version) is int and version == 1, "RA helper credential format")
+        container_document(credentials, now=authority.clock.wall())
+    except Exception as error:  # noqa: BLE001 -- helper output may carry secrets
+        authority.contained(error)
+        return f"credential_publication=failed generation={generation}", None, state
+    try:
+        client = credential_client(read)
+    except OBSERVATION_ERRORS as error:
+        authority.contained(error)
+        client = None
+    authority.guard()
+    now = authority.clock.wall()
+    publish_container_credentials(current, credentials, now=now, owner=CONTAINER_OWNER)
+    previous = instant(record["expiration"]) if record is not None else None
+    if previous is not None and previous <= now:
+        previous = None
+    # botocore adopts at previous - 900 (advisory); the API watcher logs within 60 s.
+    adopt_by = (now if previous is None else max(previous - 900, now)) + ADOPTION_SLACK
+    raw_record = canonical(
+        validate_generation(
+            {
+                "version": 1,
+                "kind": "credential-generation",
+                "application": "cnesdata",
+                "generation": generation,
+                "key_fp": key_fingerprint(credentials["AccessKeyId"]),
+                "expiration": credentials["Expiration"],
+                "published_at": utc(now),
+                "previous_expiration": None if previous is None else utc(previous),
+                "adopt_by": utc(adopt_by),
+                "container": client,
+            }
+        )
+    )
+    publication = sha(raw_record)
+    durable(
+        private_directory(root / "generations") / (publication + ".json"),
+        raw_record,
+        immutable=True,
+    )
+    state = {
+        "version": 1,
+        "application": "cnesdata",
+        "generation": generation,
+        "publication_sha256": publication,
+        "adopted": False,
+        "baseline": None if state is None else state["baseline"],
+        "restart_reported": None if state is None else state["restart_reported"],
+    }
+    durable(root / "state.json", canonical(state))
+    return None, publication, state
+
+
+def renew_container_credentials(governance):
+    """cnesdata: publish credential_process JSON without restart; prove adoption.
+
+    Returns key=value findings (no secrets); any finding fails the unit (exit 2)
+    after the lease is released, so the next timer run can still publish.
+    """
+    require(os.geteuid() == 0, "root credential renewal")
+    c = container_governance(governance)
+    authority = CredentialAuthority(c)
+
+    def read(argv):
+        return supervise(argv, authority.guard)
+
+    private_directory(CREDENTIAL_ROOT)
+    root = private_directory(CREDENTIAL_ROOT / "cnesdata")
+    current = shared_directory(root / "current", owner=CONTAINER_OWNER)
+    state, record = generation_state(root)
+    findings, publication, adoption = [], None, None
+    if (
+        state is not None
+        and not state["adopted"]
+        and authority.clock.wall() >= instant(record["adopt_by"])
+    ):
+        finding, adoption, state = prove_adoption(authority, state, record, read)
+        durable(root / "state.json", canonical(state))
+        findings += [finding] if finding else []
+    expires = current_expiration(current, record)
+    if expires is None or expires - authority.clock.wall() <= RENEW_THRESHOLD:
+        finding, publication, state = publish_generation(
+            c, authority, root, current, state, record, read
+        )
+        findings += [finding] if finding else []
+    remaining = instant(c["trust_deadline"]) - authority.clock.wall()
+    if remaining < TRUST_WARNING:
+        code = "expired" if remaining <= 0 else "expiring"
+        findings.append(f"credential_trust={code} trust_deadline={c['trust_deadline']}")
+    authority.release(publication, adoption)
+    return findings
+
+
 def render_nginx(port, hostname):
     require(
         port in {18081, 18082} and re.fullmatch(r"[a-z0-9.-]+", hostname),
@@ -3171,21 +3699,29 @@ def prior_owner_terminal(root, lease, api, identity=None):
         checkpoint = digest(lease["checkpoint_sha256"])
         raw = read_private(Path(root) / "checkpoints" / (checkpoint + ".json"))
         require(sha(raw) == checkpoint, "administrative checkpoint digest")
-        value = closed(
-            host_json(raw),
-            "version kind application owner operation_id generation accepted_record_sha256 previous_checkpoint_sha256 readiness_sha256 quiescent",
-        )
+        value = host_json(raw)
+        common = "version kind application owner operation_id generation accepted_record_sha256 previous_checkpoint_sha256 quiescent"
+        if type(value) is dict and value.get("kind") == "credential-publication":
+            # cnesdata credential_process: no restart, so no readiness digest.
+            closed(value, common + " publication_sha256 adoption_sha256")
+            applications = {"cnesdata"}
+            for name in ("publication_sha256", "adoption_sha256"):
+                if value[name] is not None:
+                    digest(value[name])
+        else:
+            closed(value, common + " readiness_sha256")
+            require(value["kind"] == "credential-renewal", "administrative kind")
+            applications = {"cnesdata", "limnopulse"}
+            digest(value["readiness_sha256"])
         require(
             value["version"] == 1
-            and value["kind"] == "credential-renewal"
-            and value["application"] in {"cnesdata", "limnopulse"}
+            and value["application"] in applications
             and value["owner"] == owner
             and value["operation_id"] == lease["operation_id"]
             and value["generation"] == lease["generation"]
             and value["quiescent"] is True,
             "administrative terminal checkpoint",
         )
-        digest(value["readiness_sha256"])
         accepted = accepted_release(root, value["previous_checkpoint_sha256"])
         require(accepted == value["accepted_record_sha256"], "accepted release pointer")
         if identity is not None:
@@ -4454,8 +4990,12 @@ def main():
         if args.host:
             return host_main()
         if args.credential_reload:
-            renew_application_credentials(load_governance())
-            return 0
+            # Findings are fixed key=value codes, generation numbers and key
+            # fingerprints only; any finding fails the unit after lease release.
+            findings = renew_application_credentials(load_governance()) or []
+            for finding in findings:
+                print(finding, file=sys.stderr)
+            return 2 if findings else 0
         return runner_main(args.runner)
     except Exception:  # noqa: BLE001 -- secret-bearing exceptions must never reach public logs
         # Secrets, HTTP bodies, commands and inventory never enter public logs.
