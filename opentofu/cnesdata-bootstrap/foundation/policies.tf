@@ -95,12 +95,29 @@ resource "aws_kms_key" "foundation" {
   bypass_policy_lockout_safety_check = false
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { AWS = "arn:aws:iam::${var.account_id}:root" }
-      Action    = "kms:*"
-      Resource  = "*"
-    }]
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${var.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      # Budgets publica no tópico SNS cifrado com esta CMK (EXT-5 checkpoint 2); service principal
+      # só recebe permissão pela key policy. Condições contra confused deputy: conta e budget.
+      {
+        Sid       = "AllowBudgetsPublishToEncryptedSns"
+        Effect    = "Allow"
+        Principal = { Service = "budgets.amazonaws.com" }
+        Action    = ["kms:GenerateDataKey*", "kms:Decrypt"]
+        Resource  = "*"
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = var.account_id }
+          ArnLike = {
+            "aws:SourceArn" = "arn:aws:budgets::${var.account_id}:budget/${local.budget_notifications_budget}"
+          }
+        }
+      },
+    ]
   })
   tags = local.tags
 
