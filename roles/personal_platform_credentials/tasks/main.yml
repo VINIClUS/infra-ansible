@@ -16,12 +16,31 @@
         mode: "0700"
       loop:
         - /run/personal-platform/credentials
+        - /run/personal-platform/credentials/cnesdata
         - /run/personal-platform/probes
+    - name: Create the container-group credential_process directory
+      ansible.builtin.file:
+        path: /run/personal-platform/credentials/cnesdata/current
+        state: directory
+        owner: root
+        group: "10001"
+        mode: "0710"
+    - name: Recreate the tmpfs credential directories on every boot
+      ansible.builtin.copy:
+        content: |
+          d /run/personal-platform 0700 root root -
+          d /run/personal-platform/credentials 0700 root root -
+          d /run/personal-platform/credentials/cnesdata 0700 root root -
+          d /run/personal-platform/credentials/cnesdata/current 0710 root 10001 -
+        dest: /etc/tmpfiles.d/personal-platform-credentials.conf
+        owner: root
+        group: root
+        mode: "0644"
     - name: Install the fixed root-only credential renewer without starting it
       ansible.builtin.copy:
         content: |
           [Unit]
-          Description=Personal platform lease-bound temporary credential replacement
+          Description=Personal platform lease-bound temporary credential publication
           After=docker.service
           Requires=docker.service
           [Service]
@@ -39,6 +58,22 @@
           ProtectSystem=strict
           ReadWritePaths=/run/personal-platform /var/lib/personal-platform/deployments
         dest: /etc/systemd/system/personal-platform-credential-reload.service
+        owner: root
+        group: root
+        mode: "0644"
+    - name: Install the 300-second renewal timer without enabling it
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Personal platform credential_process publication and adoption
+          [Timer]
+          OnBootSec=30s
+          OnUnitActiveSec=300s
+          AccuracySec=10s
+          Unit=personal-platform-credential-reload.service
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/personal-platform-credential-reload.timer
         owner: root
         group: root
         mode: "0644"
