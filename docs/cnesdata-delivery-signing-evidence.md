@@ -134,7 +134,20 @@ objetos current/history. A role `cnesdata-delivery-ext2-gate` confia somente no 
 GitHub compartilhado existente, aud sts e custom sub do reusable exato. A key própria
 é SIGN_VERIFY/ECC_NIST_P256/AWS_KMS, Enabled, single-region, com alias
 `alias/cnesdata-delivery-ext2-signing`. Administração pertence aos principals do
-owner, não à sessão runtime. A trust permite a sessão histórica após o prazo de
+owner, não à sessão runtime.
+
+`admin_arns` aceita roles da conta ou exatamente o principal da conta
+(`arn:aws:iam::<conta>:root`). O principal da conta representa os administradores da
+conta, inclusive o root, e habilita delegação IAM somente das ações de
+`OwnerAdministration`: nunca `kms:Sign`/`kms:Verify`, que continuam exclusivos do gate.
+É o caminho do apply local do controlador com root (decisão do dono de 2026-11-13).
+`OwnerAdministration` inclui o que a AWS exige para criar e manter a key e o alias:
+`kms:PutKeyPolicy` para a lockout safety check do CreateKey ([CreateKey](https://docs.aws.amazon.com/kms/latest/APIReference/API_CreateKey.html)),
+`kms:CreateAlias`/`kms:UpdateAlias`/`kms:DeleteAlias` na policy da key alvo
+([alias-access](https://docs.aws.amazon.com/kms/latest/developerguide/alias-access.html)),
+e `kms:ListResourceTags`/`kms:GetKeyRotationStatus` para o refresh do provider. Sem
+essas ações, nenhum principal criaria o alias, e um operador não conseguiria planejar
+de novo a raiz depois do apply. A trust permite a sessão histórica após o prazo de
 escrita; Sign, Put e GenerateDataKey current expiram sem remover os reads autorizados.
 
 Identity grants e sessão intersectam objetos exatos. Put exige cifra, COMPLIANCE e

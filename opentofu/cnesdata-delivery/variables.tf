@@ -257,13 +257,13 @@ variable "ext2" {
       alltrue([for date in [var.ext2.enabled_until, var.ext2.retain_until] : can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", date)) && can(timecmp(date, "1970-01-01T00:00:00Z"))]) &&
       length(var.ext2.admin_arns) > 0 && length(var.ext2.admin_arns) <= 4 &&
       length(distinct(var.ext2.admin_arns)) == length(var.ext2.admin_arns) &&
-      alltrue([for arn in var.ext2.admin_arns : can(regex("^arn:aws:iam::${var.account_id}:role/[A-Za-z0-9_+=,.@/-]+$", arn)) && arn != "arn:aws:iam::${var.account_id}:role/cnesdata-delivery-ext2-gate"]) &&
+      alltrue([for arn in var.ext2.admin_arns : (can(regex("^arn:aws:iam::${var.account_id}:role/[A-Za-z0-9_+=,.@/-]+$", arn)) || arn == "arn:aws:iam::${var.account_id}:root") && arn != "arn:aws:iam::${var.account_id}:role/cnesdata-delivery-ext2-gate"]) &&
       length(var.ext2.current_object_arns) == 3 && length(var.ext2.history_object_arns) <= 9 &&
       length(distinct(concat(var.ext2.current_object_arns, var.ext2.history_object_arns))) == 3 + length(var.ext2.history_object_arns) &&
       alltrue([for arn in var.ext2.current_object_arns : startswith(arn, "${var.ext2.bucket_arn}/cnesdata/prod/ext2/current/")]) &&
       alltrue([for arn in var.ext2.history_object_arns : startswith(arn, "${var.ext2.bucket_arn}/cnesdata/prod/ext2/")]) &&
     alltrue([for arn in concat(var.ext2.current_object_arns, var.ext2.history_object_arns) : length(regexall("[?*]", arn)) == 0 && !strcontains(arn, "..") && !endswith(arn, "/")]), false)
-    error_message = "EXT2 requires finite exact private object ARNs, a full same-account regional cipher CMK, immutable reusable SHA, absolute owner dates and named owner administrators."
+    error_message = "EXT2 requires finite exact private object ARNs, a full same-account regional cipher CMK, immutable reusable SHA, absolute owner dates and named owner administrators (roles or the exact account principal)."
   }
 }
 variable "host_gate" {
