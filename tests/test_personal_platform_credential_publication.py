@@ -331,3 +331,37 @@ def test_compose_keeps_only_the_read_only_directory_bind():
         )
         with pytest.raises(ValueError):
             g.validate_compose(wrong, image, 18081)
+
+
+def test_container_owner_is_applied_by_fchown_before_the_rename(tmp_path, monkeypatch):
+    g = runtime()
+    assert g.CONTAINER_OWNER == (0, 10001)
+    events = []
+    fchown, replace = g.os.fchown, g.os.replace
+
+    def spy_fchown(fd, uid, gid):
+        events.append(("fchown", uid, gid))
+        return fchown(fd, uid, gid)
+
+    def spy_replace(source, target):
+        events.append(("replace",))
+        return replace(source, target)
+
+    monkeypatch.setattr(g.os, "fchown", spy_fchown)
+    monkeypatch.setattr(g.os, "replace", spy_replace)
+    g.publish_container_credentials(
+        current(tmp_path), credentials(), now=NOW, owner=owner()
+    )
+    assert events == [("fchown", *owner()), ("replace",)]
+
+
+def test_document_never_exceeds_the_reader_8_kib_bound(tmp_path):
+    g = runtime()
+    with pytest.raises(ValueError, match="credential document bound"):
+        g.publish_container_credentials(
+            current(tmp_path),
+            credentials(SessionToken="t" * 8200),
+            now=NOW,
+            owner=owner(),
+        )
+    assert not (current(tmp_path) / "aws-credentials.json").exists()

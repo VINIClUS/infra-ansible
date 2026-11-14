@@ -782,3 +782,68 @@ def test_findings_exit_2_with_key_value_lines_and_exceptions_stay_generic(
     finally:
         for signum, handler in saved.items():
             signal.signal(signum, handler)
+
+
+@pytest.mark.parametrize("damage", ["state", "directory", "record"])
+def test_cnesdata_integrity_faults_fail_before_taking_the_host_lease(host, damage):
+    assert host.renew() == []
+    released = host.lease.snapshot()
+    if damage == "state":
+        (host.root / "cnesdata" / "state.json").write_bytes(b"{}")
+    elif damage == "directory":
+        os.chmod(host.root / "cnesdata" / "current", 0o750)
+    else:
+        record = host.root / "cnesdata" / "generations"
+        [path] = list(record.iterdir())
+        path.write_bytes(path.read_bytes() + b" ")
+    host.advance(300)
+    calls = len(host.docker.calls)
+    with pytest.raises(ValueError):
+        host.renew()
+    # Deploys and LimnoPulse keep the released host-wide lease.
+    assert host.lease.snapshot() == released and len(host.docker.calls) == calls
+
+
+def test_container_recreated_outside_a_deploy_before_publication_is_replaced(host):
+    host.docker.run(BLUE)
+    host.deploy(BLUE)
+    assert host.renew() == []
+    host.advance(60)
+    host.docker.log(BLUE, line(refreshed(1)))
+    host.advance(240)
+    assert host.renew() == [] and host.state()["baseline"]["id"] == BLUE
+    host.advance(1000)
+    host.docker.containers[BLUE]["running"] = False
+    host.docker.run(GREEN, project="cnesdata-green")
+    host.docker.log(GREEN, line(refreshed(1)))
+    host.advance(500)
+    assert host.renew() == []
+    assert host.record()["container"]["id"] == GREEN
+    host.advance(960)
+    host.docker.log(GREEN, line(refreshed(2, 1)))
+    host.advance(60)
+    assert host.renew() == [
+        f"credential_adoption=container_replaced generation=2 key_fp={fp(2)}"
+    ]
+
+
+def test_deployed_container_seen_at_publication_keeps_the_normal_proof(host):
+    host.docker.run(BLUE, running=False)
+    host.deploy(BLUE)
+    host.docker.run(GREEN, project="cnesdata-green")
+    assert host.renew() == []
+    host.advance(60)
+    host.docker.log(GREEN, line(refreshed(1)))
+    host.advance(240)
+    assert host.renew() == [] and host.state()["baseline"]["id"] == GREEN
+    host.advance(1000)
+    host.docker.containers[GREEN]["running"] = False
+    host.docker.restarted(BLUE)
+    host.docker.log(BLUE, line(refreshed(1)))
+    host.advance(500)
+    assert host.renew() == [] and host.record()["container"]["id"] == BLUE
+    host.advance(960)
+    host.docker.log(BLUE, line(refreshed(2, 1)))
+    host.advance(60)
+    assert host.renew() == []
+    assert host.state()["baseline"] == host.docker.identity(BLUE)
