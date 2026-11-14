@@ -4,6 +4,8 @@ locals {
   state_arn       = "arn:aws:s3:::${local.foundation_root.backend.bucket}"
   logging_arn     = "arn:aws:s3:::${local.foundation_root.logging.bucket}"
   access_prefix   = local.foundation_root.logging.prefix
+  # Budget de produção (personal-infra-live, import do checkpoint 2) que publica no SNS cifrado.
+  budget_notifications_budget = "cnesdata-monthly-cap"
 }
 
 resource "aws_s3_bucket" "state" {
