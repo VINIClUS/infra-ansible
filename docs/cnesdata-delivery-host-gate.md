@@ -234,7 +234,18 @@ sem adoção registrada procura o container pelos labels
 - A cadeia de releases admite o Id que o deploy aceito retido pelo lease grava em
   `candidate-container.json`, logo depois do `start-candidate`. Um deploy
   `ROLLED_BACK` admite também os containers da release para a qual voltou,
-  seguindo `previous_accepted_sha256`.
+  seguindo `previous_accepted_sha256` por até 32 elos; além disso, a observação
+  vira `client=unobservable`. O registro `ROLLED_BACK` ainda admite o próprio
+  candidato, mesmo quando o rollback foi o `restore_previous` do nginx. Restringir
+  isso aos registros sem dispatch `restore-previous` fica como follow-up.
+- Nenhum deploy anterior a esta versão tem `candidate-container.json`. Por isso o
+  timer só deve ser habilitado depois do primeiro deploy aceito com este
+  `host_gate.py`; antes disso, cada ciclo daria `container_replaced`. O EXT-3 já
+  exige esse deploy (compose sem `AWS_*`, bind do diretório e re-pin do
+  `runtime_sha256`).
+- O `restore_previous` não para o candidato. Enquanto ele e a release restaurada
+  rodam juntos, o container não é único e a prova sai `client=unobservable` até o
+  operador remover o candidato.
 - Id novo: só vale se a cadeia admite esse Id e o container logou, desde o seu
   `StartedAt`, a linha de boot `key_fp=<geração> previous_fp=none`. Sem isso, o
   resultado é `credential_adoption=container_replaced`.
