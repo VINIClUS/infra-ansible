@@ -95,10 +95,10 @@ def _wrong_kms_condition(config):
         config,
         "aws_kms_key",
         "foundation",
-        lambda statements: [
-            statement.update(Condition={"StringEquals": {"aws:PrincipalAccount": "999999999999"}})
-            for statement in statements
-        ],
+        # Só a delegação à raiz (statement 0): o statement do Budgets tem mutantes próprios.
+        lambda statements: statements[0].update(
+            Condition={"StringEquals": {"aws:PrincipalAccount": "999999999999"}}
+        ),
     )
 
 
