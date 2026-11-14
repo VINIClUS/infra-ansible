@@ -185,3 +185,56 @@ def test_only_the_container_group_reads_and_no_host_user_traverses(native):
             probe(state, user, "/mnt/cnesdata/current/aws-credentials.json", parents)
             == "read=PermissionError"
         )
+
+
+def test_real_docker_cli_matches_the_adoption_observer(native):
+    """ps filters, inspect fields, RFC3339Nano StartedAt and logs --since epoch."""
+    import sys
+
+    sys.path.insert(0, str(REPO))
+    from tools.cnesdata_delivery import host_gate as g
+
+    _, names = native
+    project = "cnesdata-h8" + uuid.uuid4().hex[:8]
+    name = "cred55-h8-" + uuid.uuid4().hex[:12]
+    names.append(name)
+    fingerprint = g.key_fingerprint(KEY_A)
+    event = f"aws_credentials_refreshed key_fp={fingerprint} previous_fp=none pid=1"
+    contract = json.dumps(
+        {
+            "timestamp": "2026-11-14T16:00:00.000001Z",
+            "level": "INFO",
+            "service": "central-api",
+            "logger": "cnes_infra.aws.credentials",
+            "event": event,
+        }
+    )
+    script = (
+        "import sys, time\n"
+        f"print({contract!r}, flush=True)\n"
+        f"print({contract!r}, file=sys.stderr, flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    since = int(time.time()) - 1
+    docker(
+        "run", "-d", "--name", name, "--user", "10001:10001", *HARDENED,
+        "--label", "com.docker.compose.project=" + project,
+        "--label", "com.docker.compose.service=api",
+        IMAGE, "python3", "-I", "-u", "-c", script,
+    )
+    wait_for(name, event)
+
+    def read(argv):
+        return g.supervise(argv, lambda: None)
+
+    client = g.credential_client(read, (project,))
+    assert client["id"] == docker("inspect", "--format", "{{.Id}}", name).stdout.strip()
+    assert client["restart_count"] == 0
+    assert abs(g.started_at(client["started_at"]) - time.time()) < 120
+    logs = read(["/usr/bin/docker", "logs", "--since", str(since), client["id"]])
+    # Only the container stdout reaches the host parser (stderr is discarded).
+    assert g.adoption_events(logs) == [(fingerprint, "none")]
+    later = read(
+        ["/usr/bin/docker", "logs", "--since", str(int(time.time()) + 5), client["id"]]
+    )
+    assert g.adoption_events(later) == []
