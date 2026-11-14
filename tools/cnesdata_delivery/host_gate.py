@@ -1683,6 +1683,7 @@ CREDENTIAL_FILE = "aws-credentials.json"
 CONTAINER_OWNER = (0, 10001)
 PUBLISH_MINIMUM = 3300
 SESSION_SECONDS = 3600
+DOCUMENT_LIMIT = 8192  # the container reader reads at most 8 KiB
 
 
 def shared_directory(path, *, owner, mode=0o710):
@@ -1739,7 +1740,9 @@ def container_document(credentials, *, now):
         now + PUBLISH_MINIMUM <= expires <= now + SESSION_SECONDS,
         "credential lifetime",
     )
-    return canonical({"Version": 1, **credentials}), expires
+    raw = canonical({"Version": 1, **credentials})
+    require(len(raw) <= DOCUMENT_LIMIT, "credential document bound")
+    return raw, expires
 
 
 def publish_container_credentials(directory, credentials, *, now, owner):
@@ -1916,6 +1919,13 @@ def adoption_verdict(state, record, client, deploy_id, events_since):
     reported = state["restart_reported"] == client
     if expected is not None and expected["id"] == client["id"]:
         if expected == client:
+            # Changes since the last proven adoption, before this publication.
+            if (
+                baseline is not None
+                and baseline["id"] != client["id"]
+                and deploy_id != client["id"]
+            ):
+                return "container_replaced"
             restarted = (
                 baseline is not None
                 and baseline["id"] == client["id"]
@@ -3461,6 +3471,8 @@ def publish_generation(c, authority, root, current, state, record, read):
         require(type(version) is int and version == 1, "RA helper credential format")
         container_document(credentials, now=authority.clock.wall())
     except Exception as error:  # noqa: BLE001 -- helper output may carry secrets
+        # Includes a stop signal during the helper: supervise already proved the
+        # group dead, so releasing the lease is safer than leaving it HELD.
         authority.contained(error)
         return f"credential_publication=failed generation={generation}", None, state
     try:
@@ -3519,14 +3531,18 @@ def renew_container_credentials(governance):
     """
     require(os.geteuid() == 0, "root credential renewal")
     c = container_governance(governance)
+    # Integrity faults of this tenant fail before the host-wide lease, so they
+    # never block deploys or LimnoPulse. Later write/readback errors are fatal
+    # and keep the lease for reviewed recovery, like every other host effect.
+    private_directory(CREDENTIAL_ROOT)
+    root = private_directory(CREDENTIAL_ROOT / "cnesdata")
+    current = shared_directory(root / "current", owner=CONTAINER_OWNER)
+    generation_state(root)
     authority = CredentialAuthority(c)
 
     def read(argv):
         return supervise(argv, authority.guard)
 
-    private_directory(CREDENTIAL_ROOT)
-    root = private_directory(CREDENTIAL_ROOT / "cnesdata")
-    current = shared_directory(root / "current", owner=CONTAINER_OWNER)
     state, record = generation_state(root)
     findings, publication, adoption = [], None, None
     if (
