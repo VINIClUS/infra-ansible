@@ -204,6 +204,7 @@ class Host:
         self.root = tmp_path / "credentials"
         self.binding = closed_ready_fixture()[2]["binding"]
         self.invocation = 0
+        self.deploys = 0
         self.governance = governance(g, self.clock)
         require, read = g.require, g.read_private
         monkeypatch.setattr(
@@ -247,9 +248,14 @@ class Host:
         self.invocation += 1
         return self.g.renew_application_credentials(copy.deepcopy(self.governance))
 
-    def deploy(self, container):
-        """Accepted deploy whose checkpoint names the new API container Id."""
+    def deploy(self, container, *, previous=None, rolled_back=False):
+        """Accepted deploy whose checkpoint names the new API container Id.
+
+        rolled_back: the candidate started, then the exact nginx checkpoint was
+        restored (restore_previous), so the previous release keeps serving.
+        """
         g, b = self.g, self.binding
+        b["previous_accepted_sha256"] = previous
         owner = {
             "class": "workflow",
             "process": {
@@ -262,11 +268,25 @@ class Host:
             "human_session_commitment": None,
             "systemd_invocation": None,
         }
-        token, first = self.lease.acquire(owner, H)
+        self.deploys += 1
+        operation = H if self.deploys == 1 else g.sha(b"deploy-%d" % self.deploys)
+        token, first = self.lease.acquire(
+            owner,
+            operation,
+            terminal_proof=lambda prior: g.prior_terminal(prior, b, API(b)),
+        )
         b["lease_owner_sha256"] = g.sha(token)
+        b["initial_generation"] = first["lease"]["generation"]
         op = g.Operation(self.lease, token, first, b, {"fixture": b"original"})
-        for state in ("VERIFIED", "STAGED", "CANDIDATE_HEALTHY", "SWITCHED", "ACCEPTED"):
+        for state in ("VERIFIED", "STAGED", "CANDIDATE_HEALTHY", "SWITCHED"):
             op.transition(state)
+        if rolled_back:
+            record = copy.deepcopy(op.record)
+            record["effect_confirmed"] = True
+            op.commit(record)
+            op.transition("ROLLED_BACK")
+        else:
+            op.transition("ACCEPTED")
         g.durable(
             op.directory / "candidate-container.json",
             g.canonical(
@@ -827,23 +847,71 @@ def test_container_recreated_outside_a_deploy_before_publication_is_replaced(hos
     ]
 
 
+def adopted_on(host, container):
+    """First generation published and adopted on the given running container."""
+    assert host.renew() == []
+    host.advance(60)
+    host.docker.log(container, line(refreshed(1)))
+    host.advance(240)
+    assert host.renew() == [] and host.state()["baseline"]["id"] == container
+
+
 def test_deployed_container_seen_at_publication_keeps_the_normal_proof(host):
+    host.docker.run(BLUE)
+    first = host.deploy(BLUE)
+    adopted_on(host, BLUE)
+    host.advance(1000)
+    host.docker.containers[BLUE]["running"] = False
+    host.docker.run(GREEN, project="cnesdata-green")
+    host.deploy(GREEN, previous=first)
+    host.docker.log(GREEN, line(refreshed(1)))
+    host.advance(500)
+    assert host.renew() == [] and host.record()["container"]["id"] == GREEN
+    host.advance(960)
+    host.docker.log(GREEN, line(refreshed(2, 1)))
+    host.advance(60)
+    assert host.renew() == []
+    assert host.state()["baseline"] == host.docker.identity(GREEN)
+
+
+def test_undeployed_container_is_replaced_even_before_the_first_adoption(host):
     host.docker.run(BLUE, running=False)
     host.deploy(BLUE)
     host.docker.run(GREEN, project="cnesdata-green")
-    assert host.renew() == []
+    assert host.renew() == [] and host.record()["container"]["id"] == GREEN
     host.advance(60)
     host.docker.log(GREEN, line(refreshed(1)))
     host.advance(240)
-    assert host.renew() == [] and host.state()["baseline"]["id"] == GREEN
+    assert host.renew() == [
+        f"credential_adoption=container_replaced generation=1 key_fp={fp(1)}"
+    ]
+    assert host.state()["baseline"] is None
+
+
+def test_rolled_back_deploy_keeps_the_serving_release_container(host):
+    host.docker.run(BLUE)
+    first = host.deploy(BLUE)
+    adopted_on(host, BLUE)
     host.advance(1000)
-    host.docker.containers[GREEN]["running"] = False
-    host.docker.restarted(BLUE)
-    host.docker.log(BLUE, line(refreshed(1)))
+    host.docker.containers[BLUE]["running"] = False
+    host.docker.run(GREEN, project="cnesdata-green")
+    second = host.deploy(GREEN, previous=first)
+    host.docker.log(GREEN, line(refreshed(1)))
     host.advance(500)
-    assert host.renew() == [] and host.record()["container"]["id"] == BLUE
+    assert host.renew() == [] and host.record()["container"]["id"] == GREEN
+    # A later deploy starts its candidate, fails and restores nginx: GREEN serves.
+    host.docker.run(OTHER, project="cnesdata-blue", running=False)
+    host.deploy(OTHER, previous=second, rolled_back=True)
     host.advance(960)
-    host.docker.log(BLUE, line(refreshed(2, 1)))
+    host.docker.log(GREEN, line(refreshed(2, 1)))
     host.advance(60)
     assert host.renew() == []
-    assert host.state()["baseline"] == host.docker.identity(BLUE)
+    assert host.state()["baseline"] == host.docker.identity(GREEN)
+
+
+def test_reboot_after_a_rollback_adopts_on_the_restored_release(host):
+    host.docker.run(BLUE)
+    first = host.deploy(BLUE)
+    host.docker.run(OTHER, project="cnesdata-green", running=False)
+    host.deploy(OTHER, previous=first, rolled_back=True)
+    adopted_on(host, BLUE)
