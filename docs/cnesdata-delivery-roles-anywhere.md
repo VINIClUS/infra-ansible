@@ -31,13 +31,33 @@ defines the external CRL operation and the IAM expiration control.
   plans or artifacts. Operational leaf installation is a separate secure
   bootstrap. No AWS Private CA or signing KMS key is created.
 
-All inputs/readbacks and the non-root temporary operator identity must be ready
-before any real operation. Local default AWS credentials are not an authorized
-fallback. Root credentials are forbidden for delivery, CI, runtime and tests;
-the historical local foundation exception is not inherited here.
-The root checks the caller account and requires an STS assumed-role ARN, rejecting
-root and IAM user credentials even during initialization. This does not choose or
-grant an operator role: the controller must still verify its approved provenance.
+All inputs/readbacks and the temporary operator identity must be ready before any
+real operation. Local default AWS credentials are not an authorized fallback for
+CI, runtime or tests. The root checks the caller account and, by default, requires
+an STS assumed-role ARN, rejecting root and IAM user credentials even during
+initialization. This does not choose or grant an operator role: the controller must
+still verify its approved provenance.
+
+### Local controller root exception (owner decision, 2026-11-13)
+
+The executor role requires MFA and the account root cannot assume roles, so the
+owner accepted the account root credential for the **local controller** plan/apply
+of this root only (EPIC CnesData #465, Production stage). The exception is the
+explicit input `local_controller_root_apply`, `bool`, default `false`, non-nullable:
+
+| `local_controller_root_apply` | Accepted caller | Refused |
+| --- | --- | --- |
+| `false` (default) | `arn:aws:sts::<account>:assumed-role/<role>/<session>` | root, IAM users, other accounts |
+| `true` | exactly `arn:aws:iam::<account>:root` | every assumed-role session, IAM users, other accounts/partitions |
+
+The switch is either/or: a plan with the flag can only run as same-account root,
+so a CI or runtime OIDC session that sets it fails the precondition, and a plan
+without it can never run as root. No workflow or runtime tool sets the flag; a
+test enforces that. Every root use is therefore visible in the saved plan inputs
+and must be recorded in the controller ledger. Static AWS keys remain forbidden;
+root never enters CI, runtime, artifacts or tests (fixtures use synthetic ARNs).
+The Python gates (`aws_boundary.py`, `signing_gate.py`, `host_gate.py`) keep their
+exact assumed-role identity checks unchanged.
 
 ## Closed initialization and activation
 

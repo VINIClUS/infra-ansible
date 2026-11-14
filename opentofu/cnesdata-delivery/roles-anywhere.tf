@@ -11,10 +11,13 @@ resource "aws_rolesanywhere_trust_anchor" "ca" {
     prevent_destroy = true
     precondition {
       condition = (
-        data.aws_caller_identity.current.account_id == var.account_id &&
-        can(regex("^arn:aws:sts::${var.account_id}:assumed-role/[A-Za-z0-9_+=,.@/-]+/[A-Za-z0-9_+=,.@-]+$", data.aws_caller_identity.current.arn))
+        data.aws_caller_identity.current.account_id == var.account_id && (
+          var.local_controller_root_apply
+          ? data.aws_caller_identity.current.arn == "arn:aws:iam::${var.account_id}:root"
+          : can(regex("^arn:aws:sts::${var.account_id}:assumed-role/[A-Za-z0-9_+=,.@/-]+/[A-Za-z0-9_+=,.@-]+$", data.aws_caller_identity.current.arn))
+        )
       )
-      error_message = "Delivery requires an approved temporary assumed-role session in the expected account; root and IAM user credentials are forbidden."
+      error_message = "Delivery requires an approved temporary assumed-role session in the expected account; IAM user credentials are forbidden, and root is accepted only with local_controller_root_apply=true, which refuses every session."
     }
   }
 }
