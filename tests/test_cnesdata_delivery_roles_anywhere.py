@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import ssl
 import subprocess
@@ -376,6 +377,58 @@ def test_native_rejects_root_and_non_session_callers(native, helper, caller):
     code, _, diagnostics = native.plan(root_inputs(helper, False), "caller-" + caller.rsplit(":", 1)[1].replace("/", "-"), caller_arn=caller)
     assert code != 0
     assert any(d["summary"] == "Resource precondition failed" for d in diagnostics), diagnostics
+
+
+ROOT_CALLER = f"arn:aws:iam::{ACCOUNT}:root"
+SESSION_CALLER = f"arn:aws:sts::{ACCOUNT}:assumed-role/synthetic-operator/synthetic-session"
+
+
+def local_root_inputs(helper, enabled):
+    values = root_inputs(helper, False)
+    values["local_controller_root_apply"] = enabled
+    return values
+
+
+def test_local_controller_root_apply_accepts_only_same_account_root(native, helper):
+    code, plans, diagnostics = native.plan(local_root_inputs(helper, True), "local-root", caller_arn=ROOT_CALLER)
+    assert code == 0, diagnostics
+    assert len(plans) == 1
+    assert "aws_rolesanywhere_trust_anchor.ca" in resources(plans[0]["planned_values"])
+
+
+@pytest.mark.parametrize("caller", [
+    SESSION_CALLER,
+    f"arn:aws:iam::{ACCOUNT}:user/synthetic-user",
+    "arn:aws:iam::444455556666:root",
+    f"arn:aws:iam::{ACCOUNT}:root/extra",
+    f"arn:aws-us-gov:iam::{ACCOUNT}:root",
+])
+def test_local_controller_root_apply_refuses_every_non_root_caller(native, helper, caller):
+    # Either/or: with the flag on, CI/runtime assumed-role sessions and IAM users are refused.
+    code, _, diagnostics = native.plan(local_root_inputs(helper, True), "local-refuse", caller_arn=caller)
+    assert code != 0
+    assert any(d["summary"] == "Resource precondition failed" for d in diagnostics), diagnostics
+
+
+def test_local_controller_root_apply_is_off_by_default_and_explicit_false_keeps_root_refused(native, helper):
+    declared = (REPO / "opentofu/cnesdata-delivery/variables.tf").read_text()
+    block = declared.split('variable "local_controller_root_apply" {', 1)[1].split("\n}\n", 1)[0]
+    for attribute in ("type", "default", "nullable"):
+        expected = "bool" if attribute == "type" else "false"
+        assert re.search(rf"^\s*{attribute}\s*=\s*{expected}\s*$", block, re.MULTILINE), attribute
+    code, _, diagnostics = native.plan(local_root_inputs(helper, False), "local-off", caller_arn=ROOT_CALLER)
+    assert code != 0
+    assert any(d["summary"] == "Resource precondition failed" for d in diagnostics), diagnostics
+    code, _, diagnostics = native.plan(local_root_inputs(helper, False), "local-off-session", caller_arn=SESSION_CALLER)
+    assert code == 0, diagnostics
+
+
+def test_local_controller_root_apply_never_reaches_ci_or_runtime():
+    # Only the local controller may opt in; no workflow or runtime tool may set the flag.
+    for path in [*(REPO / ".github").rglob("*"), *(REPO / "tools").rglob("*.py")]:
+        if path.is_file():
+            text = path.read_text(errors="replace")
+            assert "local_controller_root_apply" not in text, path
 
 
 def test_renewal_cannot_drop_revocations_even_with_higher_crl_number(helper):
