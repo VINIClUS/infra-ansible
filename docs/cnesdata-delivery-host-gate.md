@@ -182,6 +182,93 @@ O helper confere o principal real e faz GET SigV4 da sonda fixa de objeto ausent
 NoSuchKey 404 é distinto de AccessDenied 403. Não há quarta role, RunTask,
 PassRole de verifier, cross-assume ou escrita no semáforo.
 
+## Credencial do cnesdata: credential_process sem restart
+
+Contrato: amendment-5 de VINIClUS/CnesData#473 e fatia 2A do #55. O host obtém a
+sessão Roles Anywhere de 3600 s com o `aws_signing_helper` e publica
+`/run/personal-platform/credentials/cnesdata/current/aws-credentials.json`, um
+documento `credential_process` v1 com `Version` e `Expiration`. A escrita é
+atômica no mesmo diretório: temp `O_EXCL|O_NOFOLLOW`, `fsync`, `fchown`/`fchmod`
+para root:10001 0440 antes do `os.replace`, `fsync` do diretório e readback exato
+de bytes, dono, modo e `nlink`. O diretório `current/` é root:10001 0710 e os
+pais são root 0700, então nenhum usuário do host chega a `current/`. A geração
+vigente nunca é apagada nem truncada.
+
+O container monta `current/` como bind de diretório `:ro` em `/run/credentials`.
+O perfil AWS é da imagem e o compose do host não pode ter nenhuma variável
+`AWS_*`. O bind de arquivo é recusado porque fica preso ao inode antigo depois do
+rename. A rotação não reinicia nem recria o container: o botocore renova as
+`RefreshableCredentials` no mesmo processo. A unit
+`personal-platform-credential-reload` roda pelo timer de 300 s, que fica
+instalado e desabilitado até a habilitação operacional. O `tmpfiles.d` recria os
+diretórios do tmpfs no boot.
+
+| Símbolo | Valor | Regra |
+|---|---|---|
+| D | 3600 s | `duration_seconds` da governança e do profile RA; outro valor recusa |
+| piso de publicação | 3300 s | o host recusa publicar geração com menos vida |
+| R | 1800 s | publica quando restam 1800 s ou menos, ou se o arquivo falta, não é lido ou não é a geração registrada |
+| T | 300 s | timer `OnUnitActiveSec=300s`, `OnBootSec=30s` |
+| L | 180 s | `TimeoutStartSec=180` |
+| F | 960 s | piso do leitor no container |
+| A / M | 900 / 600 s | janelas advisory e mandatory do botocore |
+
+A prova de adoção corre um ciclo atrás. Cada publicação grava, em 0600 fora do
+mount, o registro da geração (`key_fp = sha256(AccessKeyId)[:12]`, expiração,
+`published_at`, `previous_expiration`, `adopt_by` e o container visto) e um
+ponteiro de estado. `adopt_by` é `max(previous_expiration − 900, published_at) +
+120`, ou seja `previous_expiration − 780` em regime. A partir dele, cada execução
+sem adoção registrada procura o container pelos labels
+`com.docker.compose.project ∈ {cnesdata-blue, cnesdata-green}` e
+`com.docker.compose.service=api`, exatamente um rodando. Depois lê
+`docker logs --since` desse Id, só o stdout, linha a linha como JSON. Conta apenas
+`service == "central-api"`, `logger == "cnes_infra.aws.credentials"`,
+`level == "INFO"` e `event` casando inteiro
+`aws_credentials_refreshed key_fp=<12 hex> previous_fp=<12 hex|none> pid=<n>`.
+
+- Mesmo `Id`, `StartedAt` e `RestartCount` e o `key_fp` da geração logado
+  depois da publicação: grava o checkpoint `credential-adoption`.
+- Id novo: só vale se o deploy aceito retido pela cadeia do lease nomeia esse Id
+  em `candidate-container.json` e o container logou, desde o seu `StartedAt`, a
+  linha de boot `key_fp=<geração> previous_fp=none`. O deploy grava esse arquivo
+  logo depois do `start-candidate`. Sem o checkpoint de deploy, o resultado é
+  `credential_adoption=container_replaced`.
+- Mesmo Id com `StartedAt` ou `RestartCount` diferente, inclusive em relação à
+  última adoção: `credential_adoption=container_restarted` uma vez. A execução
+  seguinte rebaseia pela linha de boot.
+- Sem a linha: `credential_adoption=missing`. Com deploy aceito e nenhum container
+  rodando, acrescenta `client=absent`. Observação Docker ambígua ou falha acrescenta
+  `client=unobservable`. Sem deploy aceito e sem container, não há o que adotar.
+
+Os achados saem como `key=value` no stderr, só com códigos, número da geração e
+`key_fp`. Eles marcam a unit como failed (saída 2) depois de o lease ser liberado.
+A publicação seguinte nunca é retida por falta de prova. Falha do helper ou saída
+recusada vira `credential_publication=failed`, também com o lease liberado e a
+geração vigente intacta. A sete dias do `trust_deadline` da governança (o
+`next_update` da CRL), a unit falha com `credential_trust=expiring`. Perda de
+autoridade (guard, CAS ou latch) e grupo de processo não comprovado continuam
+fatais e mantêm o lease para recovery revisado. O release grava o checkpoint
+administrativo `credential-publication`, que o `prior_owner_terminal` aceita para
+o owner systemd.
+
+Pior caso do lease contra o deploy. A folga do renovador entre ficar devido e
+a geração vigente cair abaixo de F + L é `R − F − L = 660 s`. Um deploy com
+ClosedReady segura o lease no máximo pela etapa API (180 s), mais o recovery
+(420 s) e a terminação (15 s), cerca de 615 s, o que cabe nessa folga. O sucesso
+sem recovery fica em cerca de 195 s, e o `validate` faz poucas chamadas limitadas
+a 20 s. Uma execução que encontra o lease ocupado falha e tenta de novo no tick
+seguinte, então a fase do timer soma até T. No pior alinhamento, os 615 s
+bloqueiam três ticks e a publicação começa com cerca de 585 s da sessão anterior,
+já na borda da janela mandatory. Até lá a API loga `aws_credentials_refresh_failed`
+na advisory. Abaixo de 600 s as chamadas AWS falham até a publicação. Sem
+recovery, o deploy bloqueia no máximo um tick. Um deploy que termina em
+`RECOVERY_REQUIRED` mantém o lease até o recovery revisado. Nesse caso a API falha
+fechada quando a geração vigente entra na janela mandatory, entre cerca de 20 e
+50 minutos depois, e o recovery precisa acontecer antes disso.
+
+O caminho `app=limnopulse` continua o legado sem mudança: INI 0400, restart do
+client e readback de saúde com `readiness_sha256`. Hoje ele não tem consumidor.
+
 ## Efeitos, evidência e recuperação
 
 SEND_PENDING é durável antes do envio. Timeout, falha de transporte ou resultado

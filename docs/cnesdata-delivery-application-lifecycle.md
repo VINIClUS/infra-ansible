@@ -413,6 +413,36 @@ is measured before STS; 2049 encoded characters or more refuse. An operational p
 hash, the governed SPKI and the signature locally, without any EXT2 read, and still refuses
 every bare `inputs.json`.
 
+## EXT-3 API credential contract (slice 2A)
+
+CnesData#473 amendment-5 moves the `central_api` credential to a `credential_process`
+JSON file published by the EXT-3 host gate, without restarting the container. The host
+side (infra-ansible#55 slice 2A) is in `tools/cnesdata_delivery/host_gate.py`:
+
+- The root renewer publishes `aws-credentials.json` (v1, `Version` and `Expiration`)
+  into `/run/personal-platform/credentials/cnesdata/current` (file root:10001 0440,
+  directory root:10001 0710, parents root 0700). It renews with 1800 s or less left,
+  from a 300-second timer, with the RA session fixed at 3600 s, and refuses a generation
+  with less than 3300 s of life.
+- The API container binds that directory read-only at `/run/credentials`. Its image owns
+  the AWS profile; `validate_compose` refuses any `AWS_*` in the compose environment.
+- No `docker restart`, fixed `container_id`, `health_url` or `readiness_sha256` remains
+  in the cnesdata renewal.
+- Adoption is proven one cycle behind from the container's JSON stdout event
+  `aws_credentials_refreshed key_fp=<sha256[:12]> previous_fp=<fp|none> pid=<n>`, in
+  the same container (`Id`, `StartedAt`, `RestartCount`). A new container counts only
+  when the accepted deploy checkpoint names its Id and it logged the boot line
+  `previous_fp=none`. `credential_adoption=missing|container_replaced|container_restarted`
+  fails the unit after the lease is released; publication continues.
+- The CRL `trust_deadline` in the host governance raises `credential_trust=expiring`
+  seven days ahead.
+
+The exact host behaviour, margins and the worst case of the host-wide lease against a
+deploy are in [the host gate contract](cnesdata-delivery-host-gate.md). Production
+acceptance needs two consecutive rotations adopted by the same container with no restart,
+plus the negative test with the timer stopped closing in the mandatory window. Issuing and
+renewing the host's RA leaf certificate is not automated anywhere yet.
+
 ## Merge scope and not-yet-proven
 
 Controller amendment of 2026-11-13 (issue #55, item 11) lets this PR merge as disabled code
