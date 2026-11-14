@@ -54,7 +54,7 @@ Ambos `false` por padrão: com os defaults o plano tem 0 recursos e outputs `nul
 
 ## Outputs
 
-- `github_oidc_provider`: `arn`, `url`, `client_id_list`, `thumbprint_list` (readback da AWS,
+- `github_oidc_provider`: `arn`, `url`, `client_id_list`, `thumbprint_list` (fixo e validado, default os thumbprints publicados pelo GitHub em https://github.blog/changelog/2023-06-27-github-actions-update-on-oidc-integration-with-aws/;
   alimenta `github_delivery.provider_thumbprints`; exige 40 hex no root delivery).
 - `evidence_storage`: `evidence_bucket_name`, `evidence_bucket_arn`, `kms_key_arn`. Fragmento,
   não é `shared_outputs` v2 completo.

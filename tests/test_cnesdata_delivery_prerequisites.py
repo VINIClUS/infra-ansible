@@ -178,7 +178,10 @@ def test_lock_do_provider_identico_ao_do_foundation():
     assert lock.read_bytes() == foundation.read_bytes()
 
 
-THUMBPRINTS = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
+THUMBPRINTS = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
+]
 
 
 def test_provider_fixa_thumbprints_publicados_do_github_por_padrao(native):
@@ -188,7 +191,10 @@ def test_provider_fixa_thumbprints_publicados_do_github_por_padrao(native):
     assert sorted(output(values, "github_oidc_provider")["thumbprint_list"]) == sorted(THUMBPRINTS)
 
 
-@pytest.mark.parametrize("thumbprints", [[], ["ABC"], [THUMBPRINTS[0].upper()], [THUMBPRINTS[0], "xyz"]])
+BAD_THUMBPRINTS = [[], ["ABC"], [THUMBPRINTS[0].upper()], [THUMBPRINTS[0], "xyz"]]
+
+
+@pytest.mark.parametrize("thumbprints", BAD_THUMBPRINTS)
 def test_thumbprints_vazios_ou_invalidos_falham(native, thumbprints):
     name = "bad-thumb-" + str(len(thumbprints)) + thumbprints[0][:3] if thumbprints else "bad-thumb-empty"
     code, _, errors = native.plan({**BASE, **OIDC, "github_oidc_thumbprints": thumbprints}, name)
