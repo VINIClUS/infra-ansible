@@ -40,6 +40,12 @@ EXTRA_MUTATIONS = (
     "logging_expiration_31",
     "logging_prefix_only",
     "login_attached_other_user",
+    "kms_budgets_wrong_account",
+    "kms_budgets_other_budget",
+    "kms_budgets_sourcearn_absent",
+    "kms_budgets_wildcard_principal",
+    "kms_budgets_extra_action",
+    "kms_budgets_statement_removed",
 )
 INTERFACE_MUTATIONS = (
     "foundation_backend_kms_defaults",
@@ -228,9 +234,34 @@ def _extras(config, name):
         "login_attached_other_user": lambda: resources["aws_iam_user_policy_attachment"][
             "local_login"].update(user="foreign-user"),
     }
+    actions.update(_budgets_kms_mutations(config))
     action = actions.get(name)
     assert action, f"unknown mutation: {name}"
     action()
+
+
+def _budgets_kms_mutations(config):
+    def budgets(change):
+        return lambda: _change_policy(
+            config, "aws_kms_key", "foundation", lambda statements: change(statements[1]))
+
+    def condition(key, value):
+        return lambda statement: statement["Condition"][key].update(value)
+
+    return {
+        "kms_budgets_wrong_account": budgets(
+            condition("StringEquals", {"aws:SourceAccount": "999999999999"})),
+        "kms_budgets_other_budget": budgets(condition("ArnLike", {
+            "aws:SourceArn": "arn:aws:budgets::${var.account_id}:budget/outro-budget"})),
+        "kms_budgets_sourcearn_absent": budgets(
+            lambda statement: statement["Condition"].pop("ArnLike")),
+        "kms_budgets_wildcard_principal": budgets(
+            lambda statement: statement.update(Principal={"AWS": "*"})),
+        "kms_budgets_extra_action": budgets(lambda statement: statement.update(
+            Action=["kms:GenerateDataKey*", "kms:Decrypt", "kms:CreateGrant"])),
+        "kms_budgets_statement_removed": lambda: _change_policy(
+            config, "aws_kms_key", "foundation", lambda statements: statements.pop(1)),
+    }
 
 
 def _interface(config, name):

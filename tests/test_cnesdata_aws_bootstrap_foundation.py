@@ -65,6 +65,25 @@ def expected_permissions(case):
     return _executor_permissions(buckets, objects, locks, key), _readback_permissions(
         (buckets, logs), (objects, locks), key)
 
+BUDGET_NAME = "cnesdata-monthly-cap"
+
+
+def budgets_sns_statement(account_id):
+    """Statement aditivo: só o Budgets desta conta e deste budget cifra no tópico SNS (#41)."""
+    return {
+        "Sid": "AllowBudgetsPublishToEncryptedSns",
+        "Effect": "Allow",
+        "Principal": {"Service": "budgets.amazonaws.com"},
+        "Action": ["kms:GenerateDataKey*", "kms:Decrypt"],
+        "Resource": "*",
+        "Condition": {
+            "StringEquals": {"aws:SourceAccount": account_id},
+            "ArnLike": {
+                "aws:SourceArn": "arn:aws:budgets::" + account_id + ":budget/" + BUDGET_NAME
+            },
+        },
+    }
+
 def assert_cmk(plan, case):
     key = observation(plan, "aws_kms_key.foundation")
     required = {
@@ -90,7 +109,8 @@ def assert_cmk(plan, case):
                     "Principal": {"AWS": "arn:aws:iam::" + case["account_id"] + ":root"},
                     "Action": "kms:*",
                     "Resource": "*",
-                }
+                },
+                budgets_sns_statement(case["account_id"]),
             ],
         },
         "cmk_account_delegation",
@@ -285,6 +305,12 @@ EXTRA_REJECTIONS = {
     "logging_expiration_31": "lifecycle_expiration",
     "logging_prefix_only": "logging_prefix",
     "login_attached_other_user": "login_user_binding",
+    "kms_budgets_wrong_account": "policy_document_mismatch: cmk_account_delegation",
+    "kms_budgets_other_budget": "policy_document_mismatch: cmk_account_delegation",
+    "kms_budgets_sourcearn_absent": "policy_document_mismatch: cmk_account_delegation",
+    "kms_budgets_wildcard_principal": "policy_document_mismatch: cmk_account_delegation",
+    "kms_budgets_extra_action": "policy_document_mismatch: cmk_account_delegation",
+    "kms_budgets_statement_removed": "policy_document_mismatch: cmk_account_delegation",
 }
 
 

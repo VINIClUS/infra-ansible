@@ -303,7 +303,22 @@ def _foundation_witness(resources, key):
                     "Principal": {"AWS": "arn:aws:iam::${var.account_id}:root"},
                     "Action": "kms:*",
                     "Resource": "*",
-                }
+                },
+                {
+                    "Sid": "AllowBudgetsPublishToEncryptedSns",
+                    "Effect": "Allow",
+                    "Principal": {"Service": "budgets.amazonaws.com"},
+                    "Action": ["kms:GenerateDataKey*", "kms:Decrypt"],
+                    "Resource": "*",
+                    "Condition": {
+                        "StringEquals": {"aws:SourceAccount": "${var.account_id}"},
+                        "ArnLike": {
+                            "aws:SourceArn": (
+                                "arn:aws:budgets::${var.account_id}:budget/cnesdata-monthly-cap"
+                            )
+                        },
+                    },
+                },
             ],
         ),
         lifecycle={"prevent_destroy": True},
