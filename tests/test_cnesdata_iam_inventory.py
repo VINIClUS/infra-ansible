@@ -17,9 +17,13 @@ ORACLES = json.loads((Path(__file__).parent / "fixtures/cnesdata_iam_policy_orac
 def test_policy_source_fixtures_are_the_recorded_immutable_producer_bytes():
     root = Path(__file__).parent / "fixtures/cnesdata_delivery_sources"
     manifest = json.loads((root / "source-manifest.json").read_text())
-    assert manifest["source_sha"] == "00370142815870a90ea3e7790c7a9465fb3e7aaa"
+    assert manifest["source_sha"] == "28597b30ef8e22d5fcdccba85503b2f2fc85d1bc"
     assert manifest["fixture_only"] is True
     assert {item["path"] for item in manifest["files"]} == {str(path.relative_to(root)) for path in root.rglob("*.tf")}
+    assert len(manifest["files"]) == 34
+    assert {"infra/opentofu/modules/runtime-iam/static-promotion.tf", "infra/opentofu/modules/static-web/main.tf",
+            "infra/opentofu/modules/static-web/variables.tf",
+            "infra/opentofu/modules/static-web/outputs.tf"} <= {item["path"] for item in manifest["files"]}
     for item in manifest["files"]:
         raw = (root / item["path"]).read_bytes()
         assert len(raw) == item["size"]

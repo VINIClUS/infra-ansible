@@ -49,6 +49,7 @@ def _symbolic_configuration(kind, role, policy):
             "local.canary_audit_task_definition_arn",
             "aws_ecs_cluster.processor.arn",
             "aws_ecs_cluster.processor",
+            "local.canary_task_arn_pattern",
         ]
     )
     modules = _symbolic_modules(kind, role_name)

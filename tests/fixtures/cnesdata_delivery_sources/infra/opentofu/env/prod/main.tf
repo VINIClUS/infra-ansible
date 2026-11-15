@@ -80,6 +80,14 @@ resource "aws_cloudwatch_log_group" "processor" {
 module "runtime_iam" {
   source = "../../modules/runtime-iam"
 
+  demo_seed        = var.demo_seed
+  mode_canary      = var.mode_canary
+  static_promotion = var.static_promotion
+  static_web = {
+    bucket_arn       = module.static_web.bucket_arn
+    distribution_arn = module.static_web.distribution_arn
+  }
+  tags           = local.common_tags
   name_prefix    = local.name_prefix
   account_id     = var.shared_outputs.account_id
   repository_arn = module.processor_registry.repository_arn
@@ -181,15 +189,22 @@ module "observability" {
 }
 
 locals {
+
+
   role_arn_prefix = "arn:aws:iam::${var.shared_outputs.account_id}:role/"
 
-  activation_blocking_preconditions = ["cloudfront_free_plan_active"]
+  activation_blocking_preconditions = []
 
   freeze_target_role_arns = sort(concat(
     [var.shared_outputs.roles_anywhere.api_role_arn],
     [for name in concat(
       [module.runtime_iam.task_role_names["recovery"], module.runtime_iam.step_functions_role_id],
       module.schedulers.freeze_target_role_names,
+      try(var.static_promotion.mode == "operational", false) ?
+      ["${local.name_prefix}-static-normal"] : [],
+      var.mode_canary == null ? [] : [
+        "${local.name_prefix}-mode-seed", "${local.name_prefix}-mode-dispatch",
+      ],
     ) : "${local.role_arn_prefix}${name}"],
   ))
 
@@ -201,5 +216,20 @@ locals {
       module.athena.cutoff_role_name,
     ],
     module.schedulers.freeze_excluded_role_names,
+    var.static_promotion == null ? [] : concat(
+      ["${local.name_prefix}-static-observer"],
+      try(var.static_promotion.mode == "operational", false) ?
+      ["${local.name_prefix}-static-recovery"] : [],
+    ),
+    var.mode_canary == null ? [] : [
+      "${local.name_prefix}-mode-audit-launch", "${local.name_prefix}-mode-observe",
+    ],
+    var.canary_release_id == null ? [] : [
+      "${local.name_prefix}-canary-task",
+      "${local.name_prefix}-canary-execution",
+      "${local.name_prefix}-canary-seeder",
+      "${local.name_prefix}-canary-verifier",
+      "${local.name_prefix}-promotion-fence-operator",
+    ],
   ) : "${local.role_arn_prefix}${name}"])
 }

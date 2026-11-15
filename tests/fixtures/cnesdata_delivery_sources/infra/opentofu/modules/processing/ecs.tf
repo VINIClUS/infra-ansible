@@ -37,8 +37,12 @@ locals {
     })
   }
 
+  # Forma canônica do readback do ECS: o provider compara container_definitions com o state, que
+  # guarda os defaults ecoados (`add = []`, `essential`, listas vazias); omiti-los força replace
+  # perpétuo das revisões (#469).
   linux_parameters = {
     capabilities = {
+      add  = []
       drop = ["ALL"]
     }
   }
@@ -80,7 +84,11 @@ resource "aws_ecs_task_definition" "processor" {
   container_definitions = jsonencode([{
     name                   = "processor"
     image                  = "${var.repository_uri}@${var.image_digest}"
+    essential              = true
     command                = local.commands[each.key]
+    portMappings           = []
+    systemControls         = []
+    volumesFrom            = []
     readonlyRootFilesystem = true
     user                   = "app"
     privileged             = false
