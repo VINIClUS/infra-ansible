@@ -1,0 +1,61 @@
+---
+- name: Install the pinned Roles Anywhere signing helper only when explicitly enabled
+  when: personal_platform_signing_helper_enabled | bool
+  block:
+    - name: Require one exact host and the official pinned release
+      ansible.builtin.assert:
+        that:
+          - personal_platform_delivery_enabled | default(false) | bool
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+          - personal_platform_signing_helper_sha256 is match('^[0-9a-f]{64}$')
+          - personal_platform_signing_helper_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+          - >-
+            personal_platform_signing_helper_url ==
+            'https://rolesanywhere.amazonaws.com/releases/'
+            ~ personal_platform_signing_helper_version
+            ~ '/X86_64/Linux/Amzn2023/aws_signing_helper'
+    - name: Read the host architecture before any download
+      ansible.builtin.command:
+        argv: [/usr/bin/uname, -m]
+      register: personal_platform_signing_helper_architecture
+      changed_when: false
+    - name: Require the x86_64 build the pin describes
+      ansible.builtin.assert:
+        that:
+          - personal_platform_signing_helper_architecture.stdout == 'x86_64'
+    - name: Download the exact helper bytes with checksum verification
+      ansible.builtin.get_url:
+        url: "{{ personal_platform_signing_helper_url }}"
+        dest: /usr/local/bin/aws_signing_helper
+        checksum: "sha256:{{ personal_platform_signing_helper_sha256 }}"
+        owner: root
+        group: root
+        mode: "0755"
+        timeout: 30
+    - name: Read back the installed helper bytes
+      ansible.builtin.stat:
+        path: /usr/local/bin/aws_signing_helper
+        checksum_algorithm: sha256
+        get_mime: false
+      register: personal_platform_signing_helper_installed
+    - name: Read back the helper version
+      ansible.builtin.command:
+        argv: [/usr/local/bin/aws_signing_helper, version]
+      register: personal_platform_signing_helper_reported
+      changed_when: false
+    - name: Require the exact installed bytes, owner, mode and version
+      ansible.builtin.assert:
+        that:
+          - personal_platform_signing_helper_installed.stat.exists
+          - personal_platform_signing_helper_installed.stat.isreg
+          - not personal_platform_signing_helper_installed.stat.islnk
+          - >-
+            personal_platform_signing_helper_installed.stat.checksum ==
+            personal_platform_signing_helper_sha256
+          - personal_platform_signing_helper_installed.stat.pw_name == 'root'
+          - personal_platform_signing_helper_installed.stat.gr_name == 'root'
+          - personal_platform_signing_helper_installed.stat.mode == '0755'
+          - >-
+            personal_platform_signing_helper_reported.stdout | trim ==
+            personal_platform_signing_helper_version
