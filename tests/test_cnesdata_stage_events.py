@@ -80,6 +80,12 @@ def test_close_window_takes_the_earliest_original_expiration():
         lc.phase_capacity(current, now=1005, credential_deadline=9000, operation_seconds=20)
 
 
+def test_close_window_bounds_phase_b_by_f_when_inputs_expire_before_close_plus_360():
+    expirations = [{"kind": "activation", "object_sha256": "1" * 64, "expires_at": c.utc(1300)}]
+    current = _close(_close_drain(input_expirations=expirations, fixed_deadline=c.utc(1300)), infra_bound=1300)
+    assert (current["input_deadline"], current["fixed_deadline"], current["deadline"]) == (1300, 1300, 1300)
+
+
 def test_close_window_admits_infra_bound_equal_to_input_deadline():
     assert _close(infra_bound=4000)["input_deadline"] == 4000
 
@@ -98,6 +104,8 @@ _CLOSE_REFUSALS = {
     "expiry-field": ({"input_expirations": [_close_drain()["input_expirations"][0] | {"extra": 1}]}, {}, "closed object fields"),
     "object-digest": ({"input_expirations": [_close_drain()["input_expirations"][0] | {"object_sha256": "x"}]}, {}, "^digest$"),
     "expiry-time": ({"input_expirations": [_close_drain()["input_expirations"][0] | {"expires_at": 4000}]}, {}, "UTC timestamp"),
+    "permit": ({"permit": {"holder": "other"}}, {}, "original idle permit/decision"),
+    "decision": ({"decision": {"choice": "rollback"}}, {}, "original idle permit/decision"),
     "version": ({"version": 2}, {}, "close-drain observation version/kind"),
     "version-type": ({"version": True}, {}, "close-drain observation version/kind"),
     "doc-kind": ({"kind": "closed-ready"}, {}, "close-drain observation version/kind"),
