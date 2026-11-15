@@ -3620,6 +3620,24 @@ def load_governance(path=CONFIG):
     return value
 
 
+def load_credential_governance(path=CONFIG):
+    """--credential-reload only: the renewer never reads the deploy binding.
+
+    Same root boundary, private file, enablement and runtime pin as
+    load_governance; `credentials` must pass container_governance. Only the
+    closed credentials are returned, so nothing downstream can consult a
+    binding. Deploy (--host) and runner keep load_governance/runner_request.
+    """
+    require(os.geteuid() == 0, "root boundary required")
+    value = host_json(read_private(path))
+    require(value.get("enabled") is True, "host delivery disabled")
+    require(
+        value.get("runtime_sha256") == sha(Path(__file__).read_bytes()),
+        "installed runtime pin",
+    )
+    return {"credentials": container_governance(value)}
+
+
 def process_absent(identity):
     try:
         current = process_identity(identity["pid"])
@@ -5031,7 +5049,10 @@ def main():
         if args.credential_reload:
             # Findings are fixed key=value codes, generation numbers and key
             # fingerprints only; any finding fails the unit after lease release.
-            findings = renew_application_credentials(load_governance()) or []
+            # Credentials-only governance: the renewer never needs the binding.
+            findings = (
+                renew_application_credentials(load_credential_governance()) or []
+            )
             for finding in findings:
                 print(finding, file=sys.stderr)
             return 2 if findings else 0

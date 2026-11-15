@@ -203,6 +203,22 @@ rename. A rotação não reinicia nem recria o container: o botocore renova as
 instalado e desabilitado até a habilitação operacional. O `tmpfiles.d` recria os
 diretórios do tmpfs no boot.
 
+A unit lê a governança por `load_credential_governance`, que não lê o `binding`:
+- Exige o mesmo limite do deploy: euid 0, `host-gate.json` privado
+  (`read_private`), `enabled is True` e o pin de `runtime_sha256` igual aos bytes
+  instalados.
+- `credentials` precisa passar por `container_governance`: campos fechados,
+  `application == "cnesdata"`, 3600 s, `trust_deadline` e os dois paths fixos da
+  folha.
+- Só esse objeto fechado segue para o renovador.
+- Uma governança só de credenciais (`enabled`, `runtime_sha256` e `credentials`)
+  basta para o timer. A governança completa continua aceita.
+
+O `--host` e o `--runner` não mudam: continuam com `load_governance` e
+`runner_request`, que validam o `binding` inteiro. Por isso recusam a governança
+só de credenciais, e um host assim pode renovar credenciais, mas não aceita
+deploy pelo gate.
+
 | Símbolo | Valor | Regra |
 |---|---|---|
 | D | 3600 s | a governança do host exige `duration_seconds == 3600` e recusa outro valor; o módulo opentofu aceita 900–3600, o catálogo fica no infra-ansible-inventory e o profile RA aplicado usa 3600 |
