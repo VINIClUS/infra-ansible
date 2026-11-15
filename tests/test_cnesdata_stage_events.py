@@ -172,17 +172,40 @@ def test_stage_triggers_are_the_closed_ratified_table():
         assert order.index(following) == order.index(stage) + 1
 
 
-def test_infra_expiration_bound_is_the_earliest_authenticated_expiration():
-    from tools.cnesdata_delivery import application_gate as ag
+def _authority(**changes):
     from tools.cnesdata_delivery.session_owner import Authority
-    authority = Authority({}, 5000.0, None, {"fragment": True})
-    bound = ag.infra_expiration_bound(authority, SimpleNamespace(expiries={("r", 1): 6000.0, ("r", 2): 4500.0}))
-    assert bound == 4500 and type(bound) is int
-    assert ag.infra_expiration_bound(authority, SimpleNamespace(expiries={})) == 5000
-    assert ag.infra_expiration_bound(authority, SimpleNamespace(expiries={("r", 1): 7000.0})) == 5000
-    for wrong in (Authority({}, 5000.0, None, None), SimpleNamespace(expires_at=5000.0, application_fragment={})):
-        with pytest.raises(ValueError, match="application owner authority"):
-            ag.infra_expiration_bound(wrong, SimpleNamespace(expiries={}))
+    values = {"pin": {"frozen_until": c.utc(5500)}, "expires_at": 5000.0, "application_fragment": {"enabled_until": c.utc(5200)}}
+    values |= changes
+    return Authority(values["pin"], values["expires_at"], None, values["application_fragment"])
+
+
+def _expiries(*values):
+    return SimpleNamespace(expiries={("VINIClUS/CnesData", index): value for index, value in enumerate(values, 1)})
+
+
+def test_infra_expiration_bound_is_the_earliest_of_the_four_authenticated_expirations():
+    """Errata 6887682424: owner proof, api.expiries, fragment enabled_until and pin frozen_until."""
+    from tools.cnesdata_delivery import application_gate as ag
+    bound = ag.infra_expiration_bound(_authority(), _expiries(6000.0, 7000.0))
+    assert bound == 5000 and type(bound) is int
+    assert ag.infra_expiration_bound(_authority(), _expiries(6000.0, 4500.0)) == 4500
+    assert ag.infra_expiration_bound(_authority(application_fragment={"enabled_until": c.utc(4400)}), _expiries(6000.0)) == 4400
+    assert ag.infra_expiration_bound(_authority(pin={"frozen_until": c.utc(4300)}), _expiries(6000.0)) == 4300
+
+
+@pytest.mark.parametrize("missing", ["expiries", "fragment", "enabled_until", "pin", "frozen_until", "authority-type"])
+def test_infra_expiration_bound_refuses_when_any_source_is_missing(missing):
+    from tools.cnesdata_delivery import application_gate as ag
+    authority, api = _authority(), _expiries(6000.0)
+    if missing == "expiries": api = _expiries()
+    if missing == "fragment": authority = _authority(application_fragment=None)
+    if missing == "enabled_until": authority = _authority(application_fragment={"fragment": True})
+    if missing == "pin": authority = _authority(pin=None)
+    if missing == "frozen_until": authority = _authority(pin={"observed_at": c.utc(900)})
+    if missing == "authority-type":
+        authority = SimpleNamespace(pin={"frozen_until": c.utc(5500)}, expires_at=5000.0, application_fragment={"enabled_until": c.utc(5200)})
+    with pytest.raises(ValueError, match="application authenticated expirations"):
+        ag.infra_expiration_bound(authority, api)
 
 
 def _archive(index):
