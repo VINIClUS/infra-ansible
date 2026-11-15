@@ -4030,7 +4030,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     from tools.cnesdata_delivery import application_gate as ag
     root = Path(__file__).resolve().parents[1]
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
-               "ClosedReadyBroker"}
+               "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
