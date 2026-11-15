@@ -246,9 +246,24 @@ variable "ext2" {
     cipher_kms_key_arn  = string
     current_object_arns = list(string)
     history_object_arns = list(string)
+    # Temporary operator signer (#29): [] renders the unchanged 3-statement key policy.
+    operator_signer_arns = optional(list(string), [])
+    operator_sign_until  = optional(string)
   })
   default  = null
   nullable = true
+  validation {
+    # try() keeps a null/absent deadline from raising when no signer is listed.
+    condition = var.ext2 == null ? true : try(alltrue([
+      length(var.ext2.operator_signer_arns) <= 2,
+      length(distinct(var.ext2.operator_signer_arns)) == length(var.ext2.operator_signer_arns),
+      alltrue([for arn in var.ext2.operator_signer_arns : (can(regex("^arn:aws:iam::${var.account_id}:role/[A-Za-z0-9_+=,.@/-]+$", arn)) || arn == "arn:aws:iam::${var.account_id}:root") && !endswith(arn, "/cnesdata-delivery-ext2-gate")]),
+      length(var.ext2.operator_signer_arns) == 0 || try(
+        can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$", var.ext2.operator_sign_until)) &&
+      timecmp(var.ext2.operator_sign_until, var.ext2.enabled_until) <= 0, false),
+    ]), false)
+    error_message = "EXT2 operator signers are at most two distinct same-account roles or the exact account principal, never the gate, and need operator_sign_until in RFC3339 UTC no later than enabled_until."
+  }
   validation {
     condition = var.ext2 == null ? !var.ext2_enabled : try(
       can(regex("^[0-9a-f]{40}$", var.ext2.workflow_sha)) &&
