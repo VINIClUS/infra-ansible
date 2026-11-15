@@ -1092,6 +1092,7 @@ def infra_expiration_bound(authority, api):
 
     Owner proof expires_at, api.expiries, fragment enabled_until and pin frozen_until
     are all mandatory; a missing one refuses. The guard compares, it never adopts.
+    api.expiries is read at call time: the minimum covers what the process authenticated so far.
     """
     from tools.cnesdata_delivery.session_owner import Authority
     c.require(type(authority) is Authority and type(authority.pin) is dict and type(authority.application_fragment) is dict

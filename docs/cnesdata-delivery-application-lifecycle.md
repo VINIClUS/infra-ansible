@@ -501,7 +501,7 @@ refuse on the owner check before any EXT2 read, STS or apply.
 Window and stage triggers (second slice, amendment 6886977054 decisions 2 and 3, `Refs #55`).
 `lifecycle_contract.close_window` derives the close CAS from the bytes of the `close-drain`
 observation in the keeper journal, never from caller JSON: the closed host schema of
-`close-drain.json`; `input_deadline` is the earliest original `input_expirations` entry (closed
+`close-drain.json`, with the idle `permit` and `decision` the host requires; `input_deadline` is the earliest original `input_expirations` entry (closed
 kind set, unique and sorted by kind and object); `close` is `close_confirmed_at`; and
 F = `min(close + 1800, input_deadline)` must equal the observation's own `fixed_deadline`, the
 equality the host requires. An infra-known authenticated expiration earlier than

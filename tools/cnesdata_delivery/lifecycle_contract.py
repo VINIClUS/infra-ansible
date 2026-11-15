@@ -1133,6 +1133,7 @@ def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
     value = c.closed(c.loads(raw, canonical=True, limit=1024**2), CLOSE_DRAIN_FIELDS)
     c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == "close-drain",
               "close-drain observation version/kind")
+    c.require(value["permit"] is None and value["decision"] is None, "original idle permit/decision")
     expirations = value["input_expirations"]
     c.require(type(expirations) is list and expirations, "original input expirations")
     keys = []
