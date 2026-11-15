@@ -172,6 +172,86 @@ def test_unexplained_prior_authorization_is_not_bootstrap(helper):
         helper.validate_handoff(case, now=NOW)
 
 
+# ImportCrl requires PEM and GetCrl returns the imported bytes (live readback, 2026-11-15, #27 D6).
+# Only the canonical single-block rendering of the reviewed DER is accepted.
+DER_PATH_HANDOFF_SHA256 = "f315dbda9ccb2dbe8e8a8249a9d349d1a84396528b54656faec7a29f20b3a1a7"
+
+
+def pem_crl(der, label=b"X509 CRL", width=64, newline=b"\n"):
+    body = base64.b64encode(der)
+    lines = b"".join(body[i:i + width] + newline for i in range(0, len(body), width))
+    return b"-----BEGIN " + label + b"-----" + newline + lines + b"-----END " + label + b"-----" + newline
+
+
+def with_readback(case, data):
+    case["crl_readback"]["crl"]["crlData"] = base64.b64encode(data).decode()
+    return case
+
+
+def test_der_readback_path_is_unchanged(helper):
+    assert helper.validate_handoff(inputs(), now=NOW)["crl_handoff_sha256"] == DER_PATH_HANDOFF_SHA256
+
+
+def test_canonical_pem_readback_binds_the_reviewed_der(helper):
+    der_result = helper.validate_handoff(inputs(), now=NOW)["crl_handoff"]
+    case = with_readback(inputs(), pem_crl(inputs()["crl_der"]))
+    pem_result = helper.validate_handoff(case, now=NOW)["crl_handoff"]
+    assert pem_result["sha256"] == digest(case["crl_der"])
+    assert pem_result["readback_sha256"]["crl"] != der_result["readback_sha256"]["crl"]
+    pem_result["readback_sha256"]["crl"] = der_result["readback_sha256"]["crl"]
+    assert pem_result == der_result
+
+
+def _pem_mutation(name):
+    der = inputs()["crl_der"]
+    canonical_pem = pem_crl(der)
+    return {
+        "two-blocks": canonical_pem + canonical_pem,
+        "wrong-label": pem_crl(der, label=b"CRL"),
+        "certificate-label": pem_crl(der, label=b"CERTIFICATE"),
+        "crlf": pem_crl(der, newline=b"\r\n"),
+        "wide-lines": pem_crl(der, width=76),
+        "unwrapped": pem_crl(der, width=10 ** 6),
+        "no-final-newline": canonical_pem[:-1],
+        "leading-text": b"Issuer: synthetic\n" + canonical_pem,
+        "trailing-text": canonical_pem + b"# comment\n",
+        "inner-space": canonical_pem.replace(b"\n", b" \n", 2).replace(b"----- \n", b"-----\n", 1),
+        "bad-padding": canonical_pem.replace(b"=\n-----END", b"\n-----END"),
+        "non-alphabet": canonical_pem[:40] + b"*" + canonical_pem[41:],
+        "other-der": pem_crl(base64.b64decode(json.loads((FIXTURES / "crls.json").read_text())["previous"])),
+        "der-with-trailing-bytes": pem_crl(der + b"\x00"),
+        "empty-body": b"-----BEGIN X509 CRL-----\n-----END X509 CRL-----\n",
+    }[name]
+
+
+@pytest.mark.parametrize("mutation", [
+    "two-blocks", "wrong-label", "certificate-label", "crlf", "wide-lines", "unwrapped", "no-final-newline",
+    "leading-text", "trailing-text", "inner-space", "bad-padding", "non-alphabet", "other-der",
+    "der-with-trailing-bytes", "empty-body",
+])
+def test_non_canonical_or_divergent_pem_readback_is_refused(helper, mutation):
+    data = _pem_mutation(mutation)
+    assert data != pem_crl(inputs()["crl_der"])
+    with pytest.raises(ValueError):
+        helper.validate_handoff(with_readback(inputs(), data), now=NOW)
+
+
+def test_cli_accepts_the_canonical_pem_readback(tmp_path):
+    case = with_readback(inputs(), pem_crl(inputs()["crl_der"]))
+    names = {"ca_pem": "ca", "crl_der": "crl", "crl_readback": "get-crl",
+             "anchor_readback": "get-trust-anchor", "expected": "expected"}
+    command = [sys.executable, str(HELPER)]
+    for key, name in names.items():
+        path = tmp_path / name
+        value = case[key]
+        path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+        command.extend(["--" + name, str(path)])
+    env = {"PATH": os.defpath, "HOME": str(tmp_path), "LANG": "C.UTF-8"}
+    result = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["crl_handoff"]["sha256"] == digest(case["crl_der"])
+
+
 def test_missing_openssl_is_failure_not_skip(helper, monkeypatch):
     monkeypatch.setattr(helper.shutil, "which", lambda _: None)
     with pytest.raises(ValueError, match="openssl"):
