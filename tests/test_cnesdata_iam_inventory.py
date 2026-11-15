@@ -20,6 +20,10 @@ def test_policy_source_fixtures_are_the_recorded_immutable_producer_bytes():
     assert manifest["source_sha"] == "28597b30ef8e22d5fcdccba85503b2f2fc85d1bc"
     assert manifest["fixture_only"] is True
     assert {item["path"] for item in manifest["files"]} == {str(path.relative_to(root)) for path in root.rglob("*.tf")}
+    assert len(manifest["files"]) == 34
+    assert {"infra/opentofu/modules/runtime-iam/static-promotion.tf", "infra/opentofu/modules/static-web/main.tf",
+            "infra/opentofu/modules/static-web/variables.tf",
+            "infra/opentofu/modules/static-web/outputs.tf"} <= {item["path"] for item in manifest["files"]}
     for item in manifest["files"]:
         raw = (root / item["path"]).read_bytes()
         assert len(raw) == item["size"]
