@@ -92,10 +92,16 @@ def test_application_source_closure_refuses_non_bytes_and_oversized_files(bad):
         lc.application_source_closure(files.__getitem__)
 
 
-@pytest.mark.parametrize("mutation", [None, "governance", "zero", "python", "blob", "content", "type", "path", "size"])
+@pytest.mark.parametrize("mutation", [None, "crlf", "governance", "zero", "python", "blob", "content", "type", "path", "size",
+                                      "encoding", "size-type", "oversized"])
 def test_verify_source_closure_reads_python_from_disk_and_reusable_at_gate_pin(tmp_path, mutation):
     from tools.cnesdata_delivery import application_gate as ag
     files = _tree(tmp_path)
+    if mutation == "crlf":
+        files["tools/cnesdata_delivery/outputs.py"] += b"# windows line\r\n"
+        (tmp_path / "tools/cnesdata_delivery/outputs.py").write_bytes(files["tools/cnesdata_delivery/outputs.py"])
+    if mutation == "oversized":
+        files[WORKFLOW] = b"#" * (256 * 1024 + 1)
     pin = "a" * 40
     governance = {"gate_shas": {"application": pin}, "application_source_closure_sha256": expected_closure(files.__getitem__),
                   "application_configuration": {"workflow_sha": "b" * 40}}
@@ -108,7 +114,9 @@ def test_verify_source_closure_reads_python_from_disk_and_reusable_at_gate_pin(t
     if mutation == "type": api.item["type"] = "symlink"
     if mutation == "path": api.item["path"] = ".github/workflows/other.yml"
     if mutation == "size": api.item["size"] += 1
-    if mutation is None:
+    if mutation == "encoding": api.item["encoding"] = "utf-8"
+    if mutation == "size-type": api.item["size"] = str(api.item["size"])
+    if mutation in {None, "crlf"}:
         assert ag.verify_source_closure(governance, api, root=tmp_path) == governance["application_source_closure_sha256"]
         assert api.calls == [WORKFLOW_URL + pin]
         return
@@ -136,6 +144,9 @@ def test_closure_cli_prints_the_pin_closure_the_gate_recomputes(tmp_path, monkey
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "pin")
     pin = _git(tmp_path, "rev-parse", "HEAD")
+    (tmp_path / WORKFLOW).write_bytes(files[WORKFLOW] + b"# later commit is not the pin\n")
+    _git(tmp_path, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-am", "after the pin")
+    assert _git(tmp_path, "rev-parse", "HEAD") != pin
     (tmp_path / "tools/cnesdata_delivery/contract.py").write_bytes(b"# working tree is not the pin\n")
     monkeypatch.chdir(tmp_path)
     assert ag.main(["closure", "--pin", pin]) is None
@@ -144,6 +155,14 @@ def test_closure_cli_prints_the_pin_closure_the_gate_recomputes(tmp_path, monkey
     governance = {"gate_shas": {"application": pin}, "application_source_closure_sha256": printed.strip()}
     _tree(tmp_path)
     assert ag.verify_source_closure(governance, _API(files[WORKFLOW], pin), root=tmp_path) == printed.strip()
+
+
+@pytest.mark.parametrize("operation", ["preflight", "credentials", "execute"])
+def test_pin_is_refused_outside_closure_before_admission(monkeypatch, operation):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    monkeypatch.setattr(lr, "admission", lambda role: pytest.fail("a pinned non-closure operation never reaches admission"))
+    with pytest.raises(ValueError, match="pin is closure-only"):
+        ag.main([operation, "--pin", "a" * 40])
 
 
 @pytest.mark.parametrize("argv", [["closure"], ["closure", "--pin", "A" * 40], ["closure", "--pin", "a" * 39]])
