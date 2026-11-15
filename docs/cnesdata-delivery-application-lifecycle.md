@@ -498,11 +498,42 @@ operational Keeper from the protected binding is not connected. `keeper_loop`,
 `Keeper.acquire` writes a lifecycle lease, so the operational plan and deploy (items 6 and 9)
 refuse on the owner check before any EXT2 read, STS or apply.
 
-Second slice, after CnesData #473/#474 and a new amendment, not in this PR: the `close-drain`
-capability (amendment item 7 keeps it rejected); the authenticated trigger of each stage
-transition (application-prepare -> close -> B -> API); the source of the "authenticated
-input expiration" behind `input_deadline`; the real terminal validators; the real
-`KEEPER_EVENT_SOURCE`; and the binding of `execute` to the operational Keeper.
+Window and stage triggers (second slice, amendment 6886977054 decisions 2 and 3, `Refs #55`).
+`lifecycle_contract.close_window` derives the close CAS from the bytes of the `close-drain`
+observation in the keeper journal, never from caller JSON: the closed host schema of
+`close-drain.json`; `input_deadline` is the earliest original `input_expirations` entry (closed
+kind set, unique and sorted by kind and object); `close` is `close_confirmed_at`; and
+F = `min(close + 1800, input_deadline)` must equal the observation's own `fixed_deadline`, the
+equality the host requires. An infra-known authenticated expiration earlier than
+`input_deadline` refuses and is never adopted. `application_gate.infra_expiration_bound` is that
+bound: the application owner proof `expires_at` and the authenticated artifact retention in
+`api.expiries`, the application-gate analogue of `runtime.py` 555-557 (application governance
+carries no `cost` or CloudFront expiry, and `now + 3600` is a cap, not an expiration). Phase B
+is born with `admitted_at = close` and `deadline = min(F, close + 360)`; its capacity check then
+holds only when F = close + 1800, so every product input expiration must clear close + 1800.
+`api_window` admits the API stage when the keeper observes the completed B publication
+(`admitted_at = now`, `deadline = min(F, now + 180)`), with the B checkpoint. The constants of
+6755178450:140 are tests.
+
+`STAGE_TRIGGERS` is closed to the ratified transitions: `application-prepare` waits for the
+`prepared` event (job `FENCE_PREPARE_PRODUCER`); the close CAS enters `phase-b` with no external
+event; `phase-b` waits for the `phase-b` event (the unique protected deploy step `phase-b` /
+`advance`). `stage_event_source` reads the same-run jobs inventory and returns no event while the
+producer job is absent, queued, running or completed without success. Otherwise it requires the
+unique job with the catalogue name, completed/success, and the unique `lifecycle-<step>`
+artifact created strictly inside its interval, authenticated by `lifecycle_artifact` with equal
+step, `owner_sha256` and `generation`; anything else refuses. It refuses
+`stage trigger not connected stage=<x>` for the API and every later or recovery stage, and
+`stage deadline elapsed stage=<x>` at the stage deadline (`terminal_deadline`), so a failed
+producer cannot keep the lease renewed past F. The closed-ready `_phase_b_publication` uses the
+same reader. None of this has a production call site: `keeper_loop` still accepts only
+`closed-ready` and `terminal`, so it refuses the `prepared` and `phase-b` kinds until the
+execute wiring. No dispatch and no reusable input or output was added; the transitions after
+the API need their own amendment naming each event source.
+
+Second slice, remaining: the `close-drain` capability (amendment item 7 keeps it rejected
+until then); the real terminal validators; `KEEPER_EVENT_SOURCE = stage_event_source` and the
+binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
@@ -510,5 +541,7 @@ and inline documents as a union); the global NotResource premise; quotas with re
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
 IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
 present on the plan and deploy runners (which may use another image than the EXT2 gate);
-keeper stage advancement and its event producer; the product terminal validators. No
+keeper stage advancement (the `prepared` and `phase-b` handlers); the event producer against
+real GitHub runs, including its request budget (one jobs read per poll, about 720 per hour at
+the five-second poll, against the token's hourly limit); the product terminal validators. No
 operational readiness, applied IAM, production acceptance or integrated-code status is implied.
