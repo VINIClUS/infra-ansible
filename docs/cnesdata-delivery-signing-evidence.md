@@ -139,8 +139,37 @@ owner, não à sessão runtime.
 `admin_arns` aceita roles da conta ou exatamente o principal da conta
 (`arn:aws:iam::<conta>:root`). O principal da conta representa os administradores da
 conta, inclusive o root, e habilita delegação IAM somente das ações de
-`OwnerAdministration`: nunca `kms:Sign`/`kms:Verify`, que continuam exclusivos do gate.
+`OwnerAdministration`: nunca `kms:Sign`/`kms:Verify`. Fora do statement temporário
+`OperatorSign` descrito abaixo, `kms:Sign` é exclusivo do gate.
 É o caminho do apply local do controlador com root (decisão do dono de 2026-11-13).
+
+`OperatorSign` (amendment de 2026-11-15 da #29) é um signatário de operador
+temporário, para assinar a activation da rota manual do CnesData#473 P1 enquanto o
+gate não tem governança:
+- `ext2.operator_signer_arns` tem default `[]`. Com lista vazia, a key policy sai
+  com os mesmos 3 statements, byte a byte iguais aos anteriores. Um
+  `operator_sign_until` que tenha sobrado não muda nada.
+- A lista aceita até 2 principals distintos: roles da conta ou exatamente o
+  principal da conta, nunca a role do gate. Com lista não vazia,
+  `operator_sign_until` é obrigatório, em RFC3339 UTC, e no máximo igual a
+  `enabled_until`.
+- O statement concede só `kms:Sign` aos principals da lista, com:
+  - o mesmo algoritmo e o mesmo message type do `GateSign`;
+  - `DateLessThan` = `operator_sign_until`;
+  - `ArnEquals aws:PrincipalArn` = a lista.
+- Por que o `ArnEquals`: numa key policy, o principal da conta delega à IAM, então
+  sem a condição qualquer role ou usuário da conta com `kms:Sign` na própria policy
+  também assinaria. Com a condição, só os principals listados assinam (o root, se
+  for o principal da conta).
+- Uso:
+  1. apply com o signatário;
+  2. a assinatura;
+  3. apply com `[]`, que remove o statement.
+  Cada apply passa por uma admissão default-deny própria. O `verify_ext2_inventory`
+  é histórico (fonte d6c2fe1) e não cobre a raiz atual.
+- O `key_policy_sha256` que a governança do gate pinar depois é o hash da policy de
+  3 statements, lido após o passo 3. Entre os passos 1 e 3, a policy tem 4
+  statements.
 `OwnerAdministration` inclui o que a AWS exige para criar e manter a key e o alias:
 `kms:PutKeyPolicy` para a lockout safety check do CreateKey ([CreateKey](https://docs.aws.amazon.com/kms/latest/APIReference/API_CreateKey.html)),
 `kms:CreateAlias`/`kms:UpdateAlias`/`kms:DeleteAlias` na policy da key alvo

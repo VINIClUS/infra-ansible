@@ -35,7 +35,7 @@ resource "aws_kms_key" "ext2_signing" {
   deletion_window_in_days  = 30
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid       = "OwnerAdministration"
         Effect    = "Allow"
@@ -67,7 +67,22 @@ resource "aws_kms_key" "ext2_signing" {
           DateLessThan = { "aws:CurrentTime" = var.ext2.enabled_until }
         }
       }
-    ]
+      ],
+      # Temporary operator signer (#29), removed by an apply with []. An account
+      # principal would delegate kms:Sign to every IAM identity of the account;
+      # aws:PrincipalArn keeps it to exactly the listed principals.
+      length(var.ext2.operator_signer_arns) > 0 ? [{
+        Sid       = "OperatorSign"
+        Effect    = "Allow"
+        Principal = { AWS = var.ext2.operator_signer_arns }
+        Action    = "kms:Sign"
+        Resource  = "*"
+        Condition = {
+          StringEquals = { "kms:SigningAlgorithm" = "ECDSA_SHA_256", "kms:MessageType" = "DIGEST" }
+          ArnEquals    = { "aws:PrincipalArn" = var.ext2.operator_signer_arns }
+          DateLessThan = { "aws:CurrentTime" = var.ext2.operator_sign_until }
+        }
+    }] : [])
   })
   lifecycle {
     prevent_destroy = true
