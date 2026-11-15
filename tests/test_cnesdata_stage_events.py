@@ -224,8 +224,8 @@ def _archive(index):
 
 
 class _GitHub:
-    def __init__(self, job_name, step, mutation=None):
-        index = {"step": step, "owner_sha256": OWNER["owner_sha256"], "generation": OWNER["generation"]}
+    def __init__(self, job_name, step, mutation=None, index=None):
+        index = index or {"step": step, "owner_sha256": OWNER["owner_sha256"], "generation": OWNER["generation"]}
         index |= {"owner": {"owner_sha256": "5" * 64}, "generation": {"generation": 8}, "generation-type": {"generation": "7"},
                   "step": {"step": "other-step"}}.get(mutation, {})
         archive = _archive(index)
@@ -355,3 +355,24 @@ def test_stage_event_source_needs_the_unique_protected_phase_b_advance_step(step
     with pytest.raises(ValueError, match="unique protected phase-b advance step"):
         source(_window("phase-b"))
     assert api.reads == []
+
+
+def test_phase_b_publication_reads_only_the_b_checkpoint_and_approval():
+    """The closed-ready reader keeps the private selection through the shared same-run reader."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    files = {"checkpoint.json": b'{"checkpoint":1}', "approval.json": b'{"approval":1}', "plan.json": b'{"plan":1}'}
+    index = {"version": 1, "source_sha": "b" * 40, "run_id": 4242, "run_attempt": 1, "step": "phase-b-advance",
+             "owner_sha256": OWNER["owner_sha256"], "generation": 7, **IDENTITY,
+             "files": [{"name": name, "size": len(raw), "sha256": c.sha(raw)} for name, raw in sorted(files.items())]}
+    governance = GOVERNANCE | {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "context_kind": "promotion"}
+    request = {"source_sha": "b" * 40, "step": "closed-ready", "application_purpose": "promotion", "caller_binding_sha256": "c" * 64}
+    prefix = lr.namespace(governance, request, RUN, "phase-b-advance")
+    reads = []
+    class Store:
+        def get(self, bucket, key, maximum=None):
+            reads.append(key)
+            return files[key.removeprefix(prefix)], None
+    result = ag._phase_b_publication(_GitHub("phase-b / execute", "phase-b-advance", index=index), Store(), governance, request,
+                                     dict(RUN), dict(OWNER), _Guard(), 1300)
+    assert result == {name: files[name] for name in ("checkpoint.json", "approval.json")}
+    assert reads == [prefix + "approval.json", prefix + "checkpoint.json"]
