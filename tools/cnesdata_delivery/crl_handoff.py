@@ -72,6 +72,37 @@ def public_pem(value):
     return value
 
 
+PEM_CRL_HEADER = b"-----BEGIN X509 CRL-----\n"
+PEM_CRL_FOOTER = b"-----END X509 CRL-----\n"
+
+
+def pem_crl(der):
+    body = base64.b64encode(der)
+    lines = b"".join(body[i : i + 64] + b"\n" for i in range(0, len(body), 64))
+    return PEM_CRL_HEADER + lines + PEM_CRL_FOOTER
+
+
+def readback_crl_der(data):
+    """ImportCrl requires PEM and GetCrl returns the imported bytes (#27 D6).
+
+    A DER readback is returned unchanged. A PEM readback is accepted only as the
+    canonical rendering of a DER CRL: one `X509 CRL` block, LF line endings, strict
+    base64 in 64-column lines and nothing else. The decoded DER is still compared
+    with the reviewed hash by the caller.
+    """
+    if not data.startswith(b"-----"):
+        return data
+    message = "readback PEM must be exactly one canonical X509 CRL block"
+    require(data.startswith(PEM_CRL_HEADER) and data.endswith(PEM_CRL_FOOTER), message)
+    body = data[len(PEM_CRL_HEADER) : -len(PEM_CRL_FOOTER)]
+    try:
+        der = base64.b64decode(body.replace(b"\n", b""), validate=True)
+    except binascii.Error as error:
+        raise ValueError(message) from error
+    require(der and pem_crl(der) == data, message)
+    return der
+
+
 def _read_crypto(ca_pem, crl_der, anchor_pem, now):
     binary = shutil.which("openssl")
     require(binary is not None, "openssl is required; no verification fallback")
@@ -260,7 +291,8 @@ def _read_anchor_pem(evidence, identity):
         "anchor readback identity mismatch",
     )
     require(anchor["trustAnchorId"] == anchor_arn.rsplit("/", 1)[1], "anchor ID mismatch")
-    require(base64.b64decode(crl["crlData"], validate=True) == crl_der, "readback DER mismatch")
+    readback = readback_crl_der(base64.b64decode(crl["crlData"], validate=True))
+    require(readback == crl_der, "readback DER mismatch")
     require(
         anchor["source"]["sourceType"] == "CERTIFICATE_BUNDLE", "only offline public CA supported"
     )
