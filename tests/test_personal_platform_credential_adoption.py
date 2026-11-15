@@ -785,7 +785,12 @@ def test_findings_exit_2_with_key_value_lines_and_exceptions_stay_generic(
     g = runtime()
     saved = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGALRM)}
     monkeypatch.setattr(sys, "argv", ["host_gate.py", "--credential-reload"])
-    monkeypatch.setattr(g, "load_governance", lambda: {"credentials": {}})
+    monkeypatch.setattr(g, "load_credential_governance", lambda: {"credentials": {}})
+
+    def deploy_loader():
+        raise AssertionError("--credential-reload never reads the deploy binding")
+
+    monkeypatch.setattr(g, "load_governance", deploy_loader)
     try:
         for result, code in (([missing(3)], 2), ([], 0), (None, 0)):
             monkeypatch.setattr(g, "renew_application_credentials", lambda _, r=result: r)
@@ -915,3 +920,192 @@ def test_reboot_after_a_rollback_adopts_on_the_restored_release(host):
     host.docker.run(OTHER, project="cnesdata-green", running=False)
     host.deploy(OTHER, previous=first, rolled_back=True)
     adopted_on(host, BLUE)
+
+
+# --- D4a (#30): credentials-only governance for --credential-reload ---------
+# The renewer reads only `credentials`; deploy (--host) and runner keep the
+# complete binding. Synthetic values only; root and RA reads are bypassed by
+# reason, exactly like the Host fixture above.
+
+
+class _Instant:
+    t = START
+
+
+class _ReachedArtifact(Exception):
+    pass
+
+
+def credential_only_governance(g):
+    return {
+        "enabled": True,
+        "runtime_sha256": g.sha(Path(g.__file__).read_bytes()),
+        **governance(g, _Instant()),
+    }
+
+
+def full_governance(g):
+    from test_personal_platform_dispatcher import closed_ready_fixture as fixture
+
+    return {**credential_only_governance(g), **copy.deepcopy(fixture()[2])}
+
+
+def private_file(tmp_path, value):
+    path = tmp_path / "host-gate.json"
+    path.write_bytes(json.dumps(value).encode())
+    path.chmod(0o600)
+    return path
+
+
+@pytest.fixture
+def root_loader(monkeypatch):
+    g = runtime()
+    require, read = g.require, g.read_private
+    monkeypatch.setattr(
+        g,
+        "require",
+        lambda c, r: require(True if r == "root boundary required" else c, r),
+    )
+    monkeypatch.setattr(
+        g,
+        "read_private",
+        lambda p, *a, **kw: (
+            b"certificate"
+            if str(p).startswith("/etc/personal-platform/ra/")
+            else read(p, *a, **kw)
+        ),
+    )
+    return g
+
+
+def test_credential_reload_loads_credentials_only_governance_without_binding(
+    root_loader, tmp_path, monkeypatch
+):
+    g = root_loader
+    value = credential_only_governance(g)
+
+    def binding_read(_):
+        raise AssertionError("credential governance never validates a binding")
+
+    monkeypatch.setattr(g, "validate_binding", binding_read)
+    loaded = g.load_credential_governance(private_file(tmp_path, value))
+    # Only the closed credentials reach the renewer; nothing else is forwarded.
+    assert loaded == {"credentials": value["credentials"]}
+
+
+def test_deploy_and_runner_refuse_credentials_only_governance(root_loader, tmp_path):
+    g = root_loader
+    value = credential_only_governance(g)
+    with pytest.raises(KeyError, match="binding"):
+        g.load_governance(private_file(tmp_path, value))
+    with pytest.raises(KeyError, match="binding"):
+        g.runner_request(value, bytearray(b"synthetic-token"))
+
+
+def test_complete_governance_is_still_accepted_by_reload_deploy_and_runner(
+    root_loader, tmp_path, monkeypatch
+):
+    g = root_loader
+    value = full_governance(g)
+    path = private_file(tmp_path, value)
+    assert g.load_credential_governance(path) == {
+        "credentials": value["credentials"]
+    }
+    assert g.load_governance(path)["binding"] == value["binding"]
+
+    class StopAtArtifact:
+        def __init__(self, token):
+            self.token = token
+
+        def read(self, *_a, **_kw):
+            raise _ReachedArtifact
+
+    # The runner validated the binding and both pins before its first API read.
+    monkeypatch.setattr(g, "GitHub", StopAtArtifact)
+    approval = value["binding"]["approval"]["governance_sha256"]
+    value["source_files"][0]["sha256"] = approval
+    value["envelope"] = {"synthetic": "runner-only governance field"}
+    with pytest.raises(_ReachedArtifact):
+        g.runner_request(value, bytearray(b"synthetic-token"))
+
+
+def _wrong_pin(v):
+    v["runtime_sha256"] = "0" * 64
+
+
+def _disabled(v):
+    v["enabled"] = False
+
+
+def _enabled_absent(v):
+    del v["enabled"]
+
+
+def _enabled_truthy(v):
+    v["enabled"] = 1
+
+
+def _pin_absent(v):
+    del v["runtime_sha256"]
+
+
+def _credentials_absent(v):
+    del v["credentials"]
+
+
+def _credentials_extra(v):
+    v["credentials"]["container_id"] = "a" * 12
+
+
+def _credentials_missing(v):
+    del v["credentials"]["trust_deadline"]
+
+
+def _legacy_application(v):
+    v["credentials"]["application"] = "limnopulse"
+
+
+def _foreign_identity(v):
+    v["credentials"]["private_key"] = "/etc/personal-platform/ra/limnopulse/private-key.pem"
+
+
+def _short_session(v):
+    v["credentials"]["duration_seconds"] = 900
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        _wrong_pin,
+        _disabled,
+        _enabled_absent,
+        _enabled_truthy,
+        _pin_absent,
+        _credentials_absent,
+        _credentials_extra,
+        _credentials_missing,
+        _legacy_application,
+        _foreign_identity,
+        _short_session,
+    ],
+)
+def test_credential_governance_refuses_pin_enablement_and_inexact_credentials(
+    root_loader, tmp_path, mutation
+):
+    g = root_loader
+    value = credential_only_governance(g)
+    mutation(value)
+    with pytest.raises((ValueError, KeyError)):
+        g.load_credential_governance(private_file(tmp_path, value))
+
+
+def test_credential_governance_requires_root_and_a_private_file(tmp_path):
+    g = runtime()
+    value = credential_only_governance(g)
+    path = private_file(tmp_path, value)
+    if os.geteuid() != 0:
+        with pytest.raises(ValueError, match="root boundary required"):
+            g.load_credential_governance(path)
+    path.chmod(0o640)
+    with pytest.raises(ValueError):
+        g.load_credential_governance(path)
