@@ -1088,14 +1088,17 @@ def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
 
 
 def infra_expiration_bound(authority, api):
-    """Decision 2 guard: the authenticated expirations this gate knows (runtime.py:555-557).
+    """Errata 6887682424 of decision 2: the closed set of authenticated expirations this gate knows.
 
-    Owner proof and authenticated artifact retention; cost and CloudFront are not
-    application governance, and now + 3600 is a cap, not an expiration.
+    Owner proof expires_at, api.expiries, fragment enabled_until and pin frozen_until
+    are all mandatory; a missing one refuses. The guard compares, it never adopts.
     """
     from tools.cnesdata_delivery.session_owner import Authority
-    c.require(type(authority) is Authority and authority.application_fragment is not None, "application owner authority")
-    return int(min([authority.expires_at, *api.expiries.values()]))
+    c.require(type(authority) is Authority and type(authority.pin) is dict and type(authority.application_fragment) is dict
+              and "frozen_until" in authority.pin and "enabled_until" in authority.application_fragment
+              and type(api.expiries) is dict and len(api.expiries) > 0, "application authenticated expirations")
+    return int(min([authority.expires_at, *api.expiries.values(), c.instant(authority.application_fragment["enabled_until"]),
+                    c.instant(authority.pin["frozen_until"])]))
 
 
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,

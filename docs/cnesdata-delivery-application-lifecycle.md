@@ -506,9 +506,9 @@ kind set, unique and sorted by kind and object); `close` is `close_confirmed_at`
 F = `min(close + 1800, input_deadline)` must equal the observation's own `fixed_deadline`, the
 equality the host requires. An infra-known authenticated expiration earlier than
 `input_deadline` refuses and is never adopted. `application_gate.infra_expiration_bound` is that
-bound: the application owner proof `expires_at` and the authenticated artifact retention in
-`api.expiries`, the application-gate analogue of `runtime.py` 555-557 (application governance
-carries no `cost` or CloudFront expiry, and `now + 3600` is a cap, not an expiration). Phase B
+bound, the closed set of errata 6887682424: the application owner proof `expires_at`, the
+authenticated artifact retention in `api.expiries`, the authenticated fragment `enabled_until`
+and the authenticated pin `frozen_until`. All four are mandatory; a missing one refuses. Phase B
 is born with `admitted_at = close` and `deadline = min(F, close + 360)`; its capacity check then
 holds only when F = close + 1800, so every product input expiration must clear close + 1800.
 `api_window` admits the API stage when the keeper observes the completed B publication
