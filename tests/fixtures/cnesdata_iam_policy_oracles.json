@@ -679,6 +679,26 @@
             },
             "Effect": "Allow",
             "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "dynamodb:ConditionCheckItem",
+            "Condition": {
+              "ForAllValues:StringEquals": {
+                "dynamodb:LeadingKeys": [
+                  "ENV#prod#SEMAPHORE"
+                ]
+              },
+              "Null": {
+                "dynamodb:LeadingKeys": "false"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:dynamodb:us-east-2:123456789012:table/cnesdata-prod-control-plane"
+          },
+          {
+            "Action": "states:DescribeExecution",
+            "Effect": "Allow",
+            "Resource": "arn:aws:states:us-east-2:123456789012:execution:cnesdata-prod:*"
           }
         ],
         "Version": "2012-10-17"
@@ -722,6 +742,16 @@
             },
             "Effect": "Allow",
             "Resource": "arn:aws:ecs:us-east-2:123456789012:task-definition/cnesdata-prod-processor-audit:2"
+          },
+          {
+            "Action": "ecs:DescribeTasks",
+            "Condition": {
+              "ArnEquals": {
+                "ecs:cluster": "arn:aws:ecs:us-east-2:123456789012:cluster/cnesdata-prod-processor"
+              }
+            },
+            "Effect": "Allow",
+            "Resource": "arn:aws:ecs:us-east-2:123456789012:task/cnesdata-prod-processor/*"
           }
         ],
         "Version": "2012-10-17"

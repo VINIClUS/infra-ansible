@@ -968,6 +968,9 @@ def test_source_resolver_derives_complete_grants_and_role_from_authenticated_hcl
                   "ArnEquals": {"ecs:cluster": f"arn:aws:ecs:{REGION}:{ACCOUNT}:cluster/cnesdata-prod-processor"}})
     expected = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "dynamodb:PutItem" if kind == "seeder" else "ecs:RunTask",
         "Resource": resource, "Condition": condition}]}
+    if kind == "verifier":
+        expected["Statement"].append({"Effect": "Allow", "Action": "ecs:DescribeTasks",
+            "Resource": f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/cnesdata-prod-processor/*", "Condition": condition})
     observed[address]["policy"] = json.dumps(expected)
     resolver = SourceResolver(plan, context["source_files"], context)
     resolver.precheck(address)

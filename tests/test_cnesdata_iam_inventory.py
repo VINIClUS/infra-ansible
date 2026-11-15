@@ -17,7 +17,7 @@ ORACLES = json.loads((Path(__file__).parent / "fixtures/cnesdata_iam_policy_orac
 def test_policy_source_fixtures_are_the_recorded_immutable_producer_bytes():
     root = Path(__file__).parent / "fixtures/cnesdata_delivery_sources"
     manifest = json.loads((root / "source-manifest.json").read_text())
-    assert manifest["source_sha"] == "00370142815870a90ea3e7790c7a9465fb3e7aaa"
+    assert manifest["source_sha"] == "28597b30ef8e22d5fcdccba85503b2f2fc85d1bc"
     assert manifest["fixture_only"] is True
     assert {item["path"] for item in manifest["files"]} == {str(path.relative_to(root)) for path in root.rglob("*.tf")}
     for item in manifest["files"]:
