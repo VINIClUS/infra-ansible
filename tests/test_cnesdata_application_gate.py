@@ -3277,6 +3277,34 @@ def test_historical_sources_reads_exact_phase_a_commit_by_path(mutation):
             historical_sources(api, carrier, current_source=current, paths=paths)
 
 
+@pytest.mark.parametrize("count", [8, 9])
+def test_historical_sources_total_is_capped_at_two_mebibytes(count):
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, _ = _historical_sources_case()
+    files = {f"infra/opentofu/modules/runtime-iam/f{i}.tf": bytes([65 + i]) * (256 * 1024) for i in range(count)}
+    api = _HistoricalSourceAPI(source, "a" * 40, files)
+    if count == 8:
+        assert historical_sources(api, carrier, current_source="a" * 40, paths=sorted(files)) == files
+        return
+    with pytest.raises(ValueError, match="historical source total"):
+        historical_sources(api, carrier, current_source="a" * 40, paths=sorted(files))
+
+
+def test_historical_sources_binds_contents_blob_to_the_tree_entry_sha():
+    from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
+    carrier, source, files = _historical_sources_case()
+    api = _HistoricalSourceAPI(source, "a" * 40, files)
+    original = api.read
+    def read(path, **kw):
+        value = original(path, **kw)
+        if "/git/trees/" in path:
+            value["tree"] = [entry | {"sha": "e" * 40} for entry in value["tree"]]
+        return value
+    api.read = read
+    with pytest.raises(ValueError, match="historical source blob sha1"):
+        historical_sources(api, carrier, current_source="a" * 40, paths=sorted(files))
+
+
 def test_historical_sources_pins_phase_a_source_from_authenticated_carrier():
     from tools.cnesdata_delivery.lifecycle_runtime import historical_sources
     carrier, source, files = _historical_sources_case()
@@ -3452,6 +3480,57 @@ def _fence_prepare_package_case(monkeypatch, mutation=None):
     return kwargs, calls, fragment
 
 
+def test_fence_evaluation_binds_shared_table_and_strictly_precedes_freeze(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
+    scope_of, documents_of, seen = lr.fence_evaluation_scope, lr.fence_evaluation_documents, {}
+    def scope_spy(**arguments):
+        seen["scope"] = arguments
+        return scope_of(**arguments)
+    def documents_spy(**arguments):
+        seen["documents"] = arguments
+        return documents_of(**arguments)
+    monkeypatch.setattr(lr, "fence_evaluation_scope", scope_spy)
+    monkeypatch.setattr(lr, "fence_evaluation_documents", documents_spy)
+    lr.fence_prepare_package(**kwargs)
+    scope = seen["scope"]
+    with pytest.raises(ValueError, match="fence table equals authenticated shared output"):
+        scope_of(**scope | {"control_table_arn": scope["control_table_arn"] + "-other"})
+    documents = seen["documents"]
+    frozen = int(min(c.instant(documents["pin"]["frozen_until"]), c.instant(documents["fragment"]["enabled_until"])))
+    assert documents_of(**documents | {"observed_at": frozen - 1})["freeze"]["frozen_until"] == c.utc(frozen)
+    with pytest.raises(ValueError, match="fence evaluation before freeze"):
+        documents_of(**documents | {"observed_at": frozen})
+
+
+_IDENTITY_REFUSALS = {"absent": "protected application coordination policy",
+                      "oversized": "protected application coordination policy",
+                      "commitment": "application coordination policy commitment",
+                      "version": "application coordination statements", "statements": "application coordination statements",
+                      "predecessor-missing": "application predecessor policy composition",
+                      "predecessor-unexpected": "application predecessor policy composition"}
+
+
+@pytest.mark.parametrize("mutation", [None, *_IDENTITY_REFUSALS])
+def test_application_identity_document_checks_protected_policy_offline(mutation):
+    from tools.cnesdata_delivery import session_owner
+    statement = {"Effect": "Allow", "Action": "sts:AssumeRole",
+                 "Resource": "arn:aws:iam::111122223333:role/cnesdata-prod-promotion-fence-operator"}
+    coordination = {"Version": "2008-10-17" if mutation == "version" else "2012-10-17",
+                    "Statement": [] if mutation == "statements" else [statement]}
+    raw = c.canonical(coordination).decode().strip()
+    governance = {"application_coordination_policy": raw + " " * 65536 if mutation == "oversized" else raw}
+    fragment = {"policy_sha256": "0" * 64 if mutation == "commitment" else session_owner._terraform_document_digest(coordination)}
+    if mutation == "absent": governance.pop("application_coordination_policy")
+    if mutation == "predecessor-missing": fragment["predecessor_reads"] = {"policy_sha256": "1" * 64}
+    if mutation == "predecessor-unexpected": governance["predecessor_read"] = {}
+    if mutation is None:
+        assert session_owner.application_identity_document(governance, fragment) == {"Version": "2012-10-17", "Statement": [statement]}
+        return
+    with pytest.raises(ValueError, match=_IDENTITY_REFUSALS[mutation]):
+        session_owner.application_identity_document(governance, fragment)
+
+
 @pytest.mark.parametrize("mutation", [None, "runner", "historical-source", "readback", "evaluation"])
 def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(monkeypatch, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
@@ -3571,7 +3650,9 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
     inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": c.canonical({"fixture_only": "close"}),
               "phase-b": b_files["checkpoint.json"], "membership": c.canonical(membership)}
-    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api", "admitted_at": 1300, "deadline": 1480,
+    prepared_at = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]["admitted_at"]
+    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api",
+              "admitted_at": prepared_at if mutation == "admitted" else 1300, "deadline": 1480,
               "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
               "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
     request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
@@ -3588,6 +3669,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
         governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
     governance["context_kind"] = "promotion"
     governance["lifecycle_steps"] = {"phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "operational", "job_name": "phase-b / execute"}}
+    if mutation == "two-steps":
+        governance["lifecycle_steps"]["phase-b-advance-twin"] = dict(governance["lifecycle_steps"]["phase-b-advance"])
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"]}
     root = f"repos/{c.REPOSITORY}"
     index = {"version": 1, "source_sha": owner["source_sha"], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
@@ -3602,7 +3685,9 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
                 "workflow_run": {"id": run["id"], "head_sha": run["head_sha"]}, "expired": False, "expires_at": c.utc(9000), "created_at": c.utc(1200)}
     responses = {root + "/actions/jobs/77": job, root + "/actions/artifacts/78": metadata, root + "/actions/artifacts/78/zip": archive.getvalue(),
                  root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1": {"jobs": [job], "total_count": 1},
-                 root + f"/actions/runs/{run['id']}/artifacts?per_page=100&page=1": {"artifacts": [metadata], "total_count": 1},
+                 root + f"/actions/runs/{run['id']}/artifacts?per_page=100&page=1": {
+                     "artifacts": [metadata, metadata | {"id": 79}] if mutation == "two-candidates" else [metadata],
+                     "total_count": 2 if mutation == "two-candidates" else 1},
                  root + f"/actions/runs/{run['id']}/attempts/{run['run_attempt']}": run | {"event": "workflow_dispatch",
                      "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml"}}
     class API:
@@ -3619,12 +3704,17 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     return ag, args, sts_calls, keeper, journal
 
 
+_CAPABILITY_REFUSALS = {"session-document": "except DateLessThan", "admitted": "original preparation before API stage",
+                        "two-steps": "unique protected phase-b advance step",
+                        "two-candidates": "unique phase-b publication in job interval"}
+
+
 @pytest.mark.parametrize("mutation", [None, "activation", "preparation", "delegation", "ancestry", "machine", "membership",
-                                      "session-document"])
+                                      "session-document", "admitted", "two-steps", "two-candidates"])
 def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutation):
     ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, mutation)
     if mutation:
-        expected = "except DateLessThan" if mutation == "session-document" else None
+        expected = _CAPABILITY_REFUSALS.get(mutation)
         with pytest.raises(ValueError, match=expected):
             ag.closed_ready_capability(**args)
         assert sts_calls == [] and journal._failed is True
@@ -3806,6 +3896,18 @@ def test_keeper_loop_refuses_stage_advancement_and_open_events(event):
         ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
                        publish=published.append, sleep=lambda s: None)
     assert store.get()[0]["status"] == "held" and published == []
+
+
+@pytest.mark.parametrize("kind", ["advance", "close-drain"])
+def test_keeper_loop_refuses_unknown_event_whose_terminal_reference_would_finish(kind):
+    """Synthetic validators are registered and the reference finishes as `terminal`; only KEEPER_EVENTS refuses."""
+    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+    event = {"kind": kind, "reference": _terminal_reference(keeper)}
+    with pytest.raises(ValueError, match="closed keeper event; stage advancement not connected"):
+        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
+                       publish=published.append, sleep=lambda s: None)
+    assert store.get()[0]["status"] == "held" and published == []
+    assert c.loads(keeper.finish(event["reference"])["terminal.json"], canonical=True)["promotion_status"] == "accepted"
 
 
 @pytest.mark.parametrize("handlers", [{}, {"closed-ready": None, "close-drain": None}, {"close-drain": None}])
