@@ -17,6 +17,9 @@ this role installs the AWS Roles Anywhere credential helper at the fixed path
   existing file with another digest is replaced, a matching one is left alone.
 - Readback: `stat` sha256, regular file, not a symlink, owner root:root, mode
   0755, and `aws_signing_helper version` equal to the pinned version.
+- `--check` runs the gates (host, URL shape and the real `uname -m`) and reports
+  whether `get_url` would change the file; it skips only the post-install
+  version and readback assert, because nothing was downloaded.
 - It requires one exact host (`--limit` equal to the host and a single play
   host) and `personal_platform_delivery_enabled`. It never starts a service,
   requests a session or reads a certificate.

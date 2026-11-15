@@ -20,6 +20,8 @@
         argv: [/usr/bin/uname, -m]
       register: personal_platform_signing_helper_architecture
       changed_when: false
+      # Read-only: also runs under --check, so the x86_64 gate stays real.
+      check_mode: false
     - name: Require the x86_64 build the pin describes
       ansible.builtin.assert:
         that:
@@ -39,12 +41,15 @@
         checksum_algorithm: sha256
         get_mime: false
       register: personal_platform_signing_helper_installed
+    # Under --check get_url downloads nothing, so there is no binary to run.
     - name: Read back the helper version
       ansible.builtin.command:
         argv: [/usr/local/bin/aws_signing_helper, version]
       register: personal_platform_signing_helper_reported
       changed_when: false
+      when: not ansible_check_mode
     - name: Require the exact installed bytes, owner, mode and version
+      when: not ansible_check_mode
       ansible.builtin.assert:
         that:
           - personal_platform_signing_helper_installed.stat.exists
