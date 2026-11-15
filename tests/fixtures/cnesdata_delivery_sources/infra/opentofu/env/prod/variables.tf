@@ -1,3 +1,55 @@
+variable "static_promotion" {
+  description = "Closed static preparation input, disabled by default."
+  type        = any
+  default     = null
+  nullable    = true
+}
+
+variable "mode_canary" {
+  description = "Closed source-bound mode capability input, or null to disable it."
+  type        = any
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = var.mode_canary == null ? true : try(
+      var.mode_canary.resources.table_arn == module.control_plane.table_arn &&
+      var.mode_canary.resources.index_arn == module.control_plane.index_arns["gsi5"] &&
+      var.mode_canary.resources.data_bucket_arn == module.data_buckets.data_bucket_arn &&
+      var.mode_canary.resources.audit_bucket_arn == module.data_buckets.audit_bucket_arn &&
+      var.mode_canary.resources.cluster_arn == module.processing.cluster_arn &&
+      var.mode_canary.resources.revisions == module.processing.task_definition_arns &&
+      jsonencode(var.mode_canary.resources.network) == jsonencode({
+        public_subnet_ids = sort(module.network.public_subnet_ids)
+        security_group_id = module.network.security_group_id
+      }) &&
+      var.mode_canary.resources.schedule_arns == {
+        for mode in ["recovery", "audit"] : mode => format(
+          "arn:aws:scheduler:us-east-2:%s:schedule/%s-%s/%s-%s",
+          var.shared_outputs.account_id, local.name_prefix, mode, local.name_prefix, mode,
+        )
+      } &&
+      var.mode_canary.resources.alarm_arns == {
+        for key in ["recovery_repeated_failure", "audit_repeated_failure", "audit_outbox_backlog"] :
+        key => format("arn:aws:cloudwatch:us-east-2:%s:alarm:%s-scheduler-%s",
+          var.shared_outputs.account_id, local.name_prefix, replace(key, "_", "-")
+        )
+      }, false
+    )
+    error_message = "mode_canary=invalid_contract"
+  }
+}
+
+variable "demo_seed" {
+  description = "Exact tenant and governed principal for optional demo seed IAM."
+  type = object({
+    tenant_partition_key  = string
+    trusted_principal_arn = string
+  })
+  default  = null
+  nullable = true
+}
+
 variable "shared_outputs" {
   description = "Versioned outputs consumed from the shared personal-infra state."
   type = object({

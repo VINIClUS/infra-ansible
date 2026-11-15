@@ -1,9 +1,11 @@
 locals {
-  canary_count           = var.canary_storage_enabled ? 1 : 0
-  canary_name            = "${var.name_prefix}-canary"
-  canary_retention_days  = 1
-  canary_expiration_days = 2
-  canary_index_names     = [for position in range(1, 7) : "gsi${position}"]
+  canary_count            = var.canary_storage_enabled ? 1 : 0
+  canary_name             = "${var.name_prefix}-canary"
+  canary_retention_days   = 1
+  canary_expiration_days  = 2
+  canary_cluster_suffix   = ":cluster/${var.name_prefix}-processor"
+  canary_task_arn_pattern = "${trimsuffix(aws_ecs_cluster.processor.arn, local.canary_cluster_suffix)}:task/${var.name_prefix}-processor/*"
+  canary_index_names      = [for position in range(1, 7) : "gsi${position}"]
   canary_audit_task_definition_arn = one([
     for mode, definition in aws_ecs_task_definition.processor : definition.arn if mode == "audit"
   ])
@@ -201,6 +203,11 @@ resource "aws_iam_role_policy" "canary_verifier_run_task" {
       Effect    = "Allow"
       Action    = "ecs:RunTask"
       Resource  = local.canary_audit_task_definition_arn
+      Condition = { ArnEquals = { "ecs:cluster" = aws_ecs_cluster.processor.arn } }
+      }, {
+      Effect    = "Allow"
+      Action    = "ecs:DescribeTasks"
+      Resource  = local.canary_task_arn_pattern
       Condition = { ArnEquals = { "ecs:cluster" = aws_ecs_cluster.processor.arn } }
     }]
   })
