@@ -1462,14 +1462,59 @@ def credentials(admitted, *, product=None):
     lr.export_credentials(value)
 
 
+def verify_source_closure(governance, api, *, root=None):
+    """Recompute the producer closure right after admission (#55 2nd slice, decision 1).
+
+    Python files are the executing tree; the reusable is read at the gate pin,
+    never at workflow_sha, which inside a reusable can be the caller's SHA.
+    """
+    import base64
+    import hashlib
+    from pathlib import Path
+    pin = c.digest(governance["gate_shas"]["application"], 40)
+    root = Path(__file__).resolve().parents[2] if root is None else root
+
+    def read(path):
+        if path != lc.APPLICATION_GATE_WORKFLOW:
+            return (root / path).read_bytes()
+        item = api.read(f"repos/{lc.APPLICATION_GATE_REPOSITORY}/contents/{path}?ref={pin}")
+        c.require(item["type"] == "file" and item["path"] == path and item["encoding"] == "base64"
+                  and type(item["size"]) is int and 0 <= item["size"] <= 256 * 1024, "application gate workflow contents")
+        raw = base64.b64decode(item["content"], validate=False)
+        blob = hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest()
+        c.require(len(raw) == item["size"] and blob == item["sha"], "application gate workflow blob")
+        return raw
+
+    closure = lc.application_source_closure(read)
+    c.require(closure == c.digest(governance["application_source_closure_sha256"]), "application producer closure")
+    return closure
+
+
+def closure(pin):
+    """Print the producer closure of this checkout at pin, read by git cat-file, never the working tree."""
+    import subprocess
+    import sys
+    c.digest(pin, 40)
+
+    def read(path):
+        return subprocess.run(["git", "cat-file", "blob", f"{pin}:{path}"], check=True, capture_output=True).stdout
+
+    sys.stdout.write(lc.application_source_closure(read) + "\n")
+
+
 def main(argv=None):
     """Public admission and own-role bootstrap; effects require private capability."""
     import argparse
     from tools.cnesdata_delivery import lifecycle_runtime, session_owner
     parser = argparse.ArgumentParser(description="Protected CnesData application gate")
-    parser.add_argument("operation", choices=("preflight", "credentials", "execute"))
+    parser.add_argument("operation", choices=("preflight", "credentials", "execute", "closure"))
+    parser.add_argument("--pin")
     args = parser.parse_args(argv)
+    if args.operation == "closure":
+        return closure(args.pin)
+    c.require(args.pin is None, "pin is closure-only")
     admitted = lifecycle_runtime.admission("application")
+    verify_source_closure(admitted[0], admitted[3])
     session_owner.application_fragment(admitted[0], time.time())
     if args.operation == "credentials":
         return credentials(admitted)
