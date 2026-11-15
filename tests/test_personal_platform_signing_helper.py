@@ -185,8 +185,13 @@ def test_every_pre_task_runs_under_any_tag_selection():
     )
 
 
-@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-core absent")
-def test_isolated_helper_tag_still_lists_the_checkpoint_assert(tmp_path):
+CHECKPOINT = "Require one exact inventory host and explicit installation authorization"
+DOWNLOAD = "Download the exact helper bytes with checksum verification"
+DISPATCHER = "Install the self-contained runtime from this exact checkout"
+CREDENTIALS = "Install the fixed root-only credential renewer without starting it"
+
+
+def listed(tmp_path, *selection):
     inventory = tmp_path / "hosts.yml"
     inventory.write_text(
         yaml.safe_dump(
@@ -194,28 +199,52 @@ def test_isolated_helper_tag_still_lists_the_checkpoint_assert(tmp_path):
         )
     )
     result = subprocess.run(
-        [
-            "ansible-playbook",
-            "-i",
-            str(inventory),
-            str(PLAYBOOK),
-            "--list-tasks",
-            "--tags",
-            TAG,
-        ],
+        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "--list-tasks", *selection],
         cwd=ROOT,
         capture_output=True,
         text=True,
         check=True,
     )
-    listed = result.stdout
-    assert "Require one exact inventory host and explicit installation authorization" in listed
-    assert "Download the exact helper bytes with checksum verification" in listed
-    for other in (
-        "Install the self-contained runtime from this exact checkout",
-        "Install the fixed root-only credential renewer without starting it",
-    ):
-        assert other not in listed
+    return result.stdout
+
+
+@pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-core absent")
+@pytest.mark.parametrize(
+    ("selection", "present", "absent"),
+    [
+        (("--tags", TAG), [CHECKPOINT, DOWNLOAD], [DISPATCHER, CREDENTIALS]),
+        (
+            ("--tags", "personal_platform_delivery"),
+            [CHECKPOINT, DISPATCHER, DOWNLOAD, CREDENTIALS],
+            [],
+        ),
+        ((), [CHECKPOINT, DISPATCHER, DOWNLOAD, CREDENTIALS], []),
+        (("--skip-tags", TAG), [CHECKPOINT, DISPATCHER, CREDENTIALS], [DOWNLOAD]),
+    ],
+)
+def test_tag_selections_keep_the_checkpoint_assert_first(tmp_path, selection, present, absent):
+    text = listed(tmp_path, *selection)
+    for name in present:
+        assert name in text, name
+    for name in absent:
+        assert name not in text, name
+    positions = [text.index(name) for name in present]
+    assert positions == sorted(positions) and positions[0] == text.index(CHECKPOINT)
+
+
+def by_name(fragment):
+    [task] = [t for t in tasks() if fragment in t["name"]]
+    return task
+
+
+def test_check_mode_reads_the_architecture_and_skips_only_the_post_install_readback():
+    # uname is read-only, so it runs under --check and the x86_64 gate stays real.
+    assert by_name("host architecture")["check_mode"] is False
+    for fragment in ("x86_64", "Download", "installed helper bytes"):
+        assert "check_mode" not in by_name(fragment) and "when" not in by_name(fragment)
+    # Under --check get_url does not download, so there is nothing to execute.
+    for fragment in ("helper version", "Require the exact installed bytes"):
+        assert by_name(fragment)["when"] == "not ansible_check_mode"
 
 
 def test_readme_documents_pin_path_inertness_and_isolated_run():
@@ -230,5 +259,6 @@ def test_readme_documents_pin_path_inertness_and_isolated_run():
         f"--tags {TAG}",
         "x86_64",
         "credential_process",
+        "--check",
     ):
         assert phrase in readme, phrase
