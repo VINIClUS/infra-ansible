@@ -6,6 +6,8 @@
   tags: [personal_platform_delivery]
   pre_tasks:
     - name: Require one exact inventory host and explicit installation authorization
+      # Tagged always: no --tags selection (e.g. the isolated helper) skips it.
+      tags: [always]
       ansible.builtin.assert:
         that:
           - personal_platform_delivery_enabled | default(false) | bool
@@ -18,4 +20,6 @@
     - role: personal_platform_dispatcher
     - role: personal_platform_deployer
     - role: personal_platform_nginx
+    - role: personal_platform_signing_helper
+      tags: [personal_platform_signing_helper]
     - role: personal_platform_credentials

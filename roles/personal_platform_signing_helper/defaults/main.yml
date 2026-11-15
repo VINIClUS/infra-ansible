@@ -1,0 +1,8 @@
+---
+personal_platform_signing_helper_enabled: false
+# Same release and digest as CnesData apps/central_api/Dockerfile. A new pin is
+# a reviewed change of both values; the role refuses any other URL shape.
+personal_platform_signing_helper_version: "1.8.5"
+personal_platform_signing_helper_sha256: beec9ed1c492d93db809890f16713e3556353294b823c2184ad4e891f1b2b54d
+personal_platform_signing_helper_url: >-
+  https://rolesanywhere.amazonaws.com/releases/1.8.5/X86_64/Linux/Amzn2023/aws_signing_helper
