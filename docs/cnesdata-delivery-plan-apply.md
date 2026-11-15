@@ -319,8 +319,8 @@ o delta imutável 80e6451a2c995905183a30a0775f98a68b1f6c10: sort/setunion até 1
 deduplicação antes do limite; concat/for/splat continuam 64. A extensão bootstrap
 admite somente os formatos/funções ratificados. try está restrito ao parser observado
 da API role e captura apenas erros dinâmicos de null/index. Descrição heredoc estática
-é metadata lexical ignorada, sem admitir heredoc como expressão. Os 30 arquivos HCL
-de fixture mantêm os hashes de CnesData 00370142815870a90ea3e7790c7a9465fb3e7aaa;
+é metadata lexical ignorada, sem admitir heredoc como expressão. Os 34 arquivos HCL
+de fixture mantêm os hashes de CnesData 28597b30ef8e22d5fcdccba85503b2f2fc85d1bc;
 oracles fixos verificam os 16 documentos integrais e suas mutações.
 
 A prova histórica de plan usa o inventário independente de seus seis baselines e,
