@@ -125,6 +125,19 @@ def test_verify_source_closure_reads_python_from_disk_and_reusable_at_gate_pin(t
         ag.verify_source_closure(governance, api, root=tmp_path)
 
 
+def test_verify_source_closure_accepts_the_contents_api_line_wrapped_base64(tmp_path):
+    """The contents API wraps base64 every 60 characters; strict validation would refuse the real reusable."""
+    from tools.cnesdata_delivery import application_gate as ag
+    files = _tree(tmp_path)
+    pin = "a" * 40
+    governance = {"gate_shas": {"application": pin}, "application_source_closure_sha256": expected_closure(files.__getitem__)}
+    api = _API(files[WORKFLOW], pin)
+    encoded = api.item["content"]
+    api.item["content"] = "\n".join(encoded[i:i + 60] for i in range(0, len(encoded), 60)) + "\n"
+    assert "\n" in api.item["content"].rstrip("\n")
+    assert ag.verify_source_closure(governance, api, root=tmp_path) == governance["application_source_closure_sha256"]
+
+
 def test_verify_source_closure_default_root_is_the_executing_tree():
     from tools.cnesdata_delivery import application_gate as ag
     files = {path: (ROOT / path).read_bytes() for path in _paths()}

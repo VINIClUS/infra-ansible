@@ -850,6 +850,12 @@ PURPOSES = frozenset({"application-prepare", "phase-b", "phase-c-recovery", "pha
 STAGES = {"phase-b": (360, 1020), "api": (180, 840), "static": (180, 660),
           "unit": (120, 540), "phase-c-recovery": (240, 300), "phase-c-audit": (240, 60),
           "final": (60, 0)}
+# Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
+# event (the close CAS enters phase-b); every transition after the API needs its own amendment.
+STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api")}
+CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
+                      "permit input_expirations fixed_deadline decision")
+CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})
 OWNER_FIELDS = "repository source_sha run_id run_attempt release_sha256 generation session_sha256".split()
 STATE_MACHINE = "module.processing.aws_sfn_state_machine.processor[0]"
 API_POLICY = "module.runtime_iam.aws_iam_role_policy.api[0]"
@@ -1116,6 +1122,48 @@ def checkpoint_transition(previous, current):
     if current["close"] is not None:
         c.require(current["fixed_deadline"] == min(current["close"] + 1800, current["input_deadline"]),
                   "original fixed deadline")
+
+
+def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
+    """Decision 2: F from the keeper journal close-drain observation, never caller JSON.
+
+    input_deadline is the earliest original expiration and F must equal the host's
+    close.fixed_deadline. An earlier infra-known expiration refuses; it is never adopted.
+    """
+    value = c.closed(c.loads(raw, canonical=True, limit=1024**2), CLOSE_DRAIN_FIELDS)
+    c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == "close-drain",
+              "close-drain observation version/kind")
+    c.require(value["permit"] is None and value["decision"] is None, "original idle permit/decision")
+    expirations = value["input_expirations"]
+    c.require(type(expirations) is list and expirations, "original input expirations")
+    keys = []
+    for expiry in expirations:
+        c.closed(expiry, "kind object_sha256 expires_at")
+        c.require(expiry["kind"] in CLOSE_EXPIRATION_KINDS, "original input expiration kind")
+        keys.append((expiry["kind"], c.digest(expiry["object_sha256"])))
+    c.require(keys == sorted(set(keys)), "unique original input expirations")
+    close = int(c.instant(value["close_confirmed_at"]))
+    input_deadline = int(min(c.instant(expiry["expires_at"]) for expiry in expirations))
+    fixed = min(close + 1800, input_deadline)
+    c.require(c.instant(value["fixed_deadline"]) == fixed, "original fixed deadline")
+    c.require(type(infra_bound) is int and input_deadline <= infra_bound,
+              "infra-known authenticated expiration precedes input deadline")
+    c.require(previous["stage"] == "application-prepare" and previous["close"] is None and previous["decision"] is None
+              and previous["admitted_at"] <= close <= now and close < previous["preparation_deadline"],
+              "close inside the preparation stage")
+    return previous | {"sequence": previous["sequence"] + 1, "close": close, "fixed_deadline": fixed,
+                       "input_deadline": input_deadline, "stage": "phase-b", "admitted_at": close,
+                       "deadline": min(fixed, close + STAGES["phase-b"][0]), "checkpoint_sha256": c.digest(checkpoint_sha256)}
+
+
+def api_window(previous, *, checkpoint_sha256, now):
+    """Decision 3, B -> API: admitted when the keeper observes the completed B publication, never at close."""
+    admitted = int(now)
+    c.require(previous["stage"] == "phase-b" and previous["close"] is not None and previous["decision"] is None
+              and previous["admitted_at"] <= admitted, "API follows the closed phase-b stage")
+    return previous | {"sequence": previous["sequence"] + 1, "stage": "api", "admitted_at": admitted,
+                       "deadline": min(previous["fixed_deadline"], admitted + STAGES["api"][0]),
+                       "checkpoint_sha256": c.digest(checkpoint_sha256)}
 
 
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):

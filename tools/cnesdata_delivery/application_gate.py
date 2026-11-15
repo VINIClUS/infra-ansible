@@ -1010,34 +1010,96 @@ class ClosedReadyBroker:
             raise
 
 
-def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
-    """Completed same-run phase-b advance deploy publication (checkpoint + approval)."""
-    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
-    from tools.cnesdata_delivery.provenance import lifecycle_artifact
+def _phase_b_step(governance):
     steps = [(name, step) for name, step in governance["lifecycle_steps"].items()
              if step["role"] == "deploy" and step["purpose"] == "phase-b" and step["direction"] == "advance"]
     c.require(len(steps) == 1, "unique protected phase-b advance step")
-    name, step = steps[0]
-    root = f"repos/{c.REPOSITORY}/actions/runs/{run['id']}"
+    return steps[0]
+
+
+def _same_run_job(api, run, *, kind, job_name, guard):
+    """The unique same-run job with the catalogue name; None while it does not exist."""
     guard.check(20)
-    jobs = api.read(root + f"/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
-    artifacts = api.read(root + "/artifacts?per_page=100&page=1")
+    jobs = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
     guard.check()
-    c.require(jobs["total_count"] == len(jobs["jobs"]) <= 100 and artifacts["total_count"] == len(artifacts["artifacts"]) <= 100,
-              "complete phase-b publication inventory")
-    found = [job for job in jobs["jobs"] if job["name"] == step["job_name"]]
-    c.require(len(found) == 1 and found[0]["status"] == "completed" and found[0]["conclusion"] == "success", "completed phase-b producer")
-    job = found[0]
-    candidates = [item for item in artifacts["artifacts"] if item["name"] == "lifecycle-" + name
+    c.require(jobs["total_count"] == len(jobs["jobs"]) <= 100, f"complete {kind} publication inventory")
+    found = [job for job in jobs["jobs"] if job["name"] == job_name]
+    c.require(len(found) <= 1, f"unique {kind} producer job")
+    return found[0] if found else None
+
+
+def _same_run_publication(api, run, owner, job, *, kind, step, guard, now):
+    """Decision 3: unique lifecycle-<step> artifact inside the completed-success job interval, original owner."""
+    from tools.cnesdata_delivery.provenance import lifecycle_artifact
+    c.require(job is not None and job["status"] == "completed" and job["conclusion"] == "success", f"completed {kind} producer")
+    guard.check(20)
+    artifacts = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100&page=1")
+    guard.check()
+    c.require(artifacts["total_count"] == len(artifacts["artifacts"]) <= 100, f"complete {kind} publication inventory")
+    candidates = [item for item in artifacts["artifacts"] if item["name"] == "lifecycle-" + step
                   and c.instant(job["started_at"]) < c.instant(item["created_at"]) < c.instant(job["completed_at"])]
-    c.require(len(candidates) == 1, "unique phase-b publication in job interval")
+    c.require(len(candidates) == 1, f"unique {kind} publication in job interval")
     reference = {"job_id": job["id"], "artifact_id": candidates[0]["id"], "artifact_digest": candidates[0]["digest"]}
     public = lifecycle_artifact(api, reference, now, source=owner["source_sha"], run_id=owner["run_id"],
-                                attempt=owner["run_attempt"], producer_name=step["job_name"], artifact_name="lifecycle-" + name)
-    index, files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})
-    c.require(index["step"] == name and index["owner_sha256"] == owner["owner_sha256"]
-              and type(index["generation"]) is int and index["generation"] == owner["generation"], "phase-b original owner")
-    return files
+                                attempt=owner["run_attempt"], producer_name=job["name"], artifact_name="lifecycle-" + step)
+    index = c.loads(public["index.json"], canonical=True) if set(public) == {"index.json"} else None
+    c.require(type(index) is dict and index.get("step") == step and index.get("owner_sha256") == owner["owner_sha256"]
+              and type(index.get("generation")) is int and index.get("generation") == owner["generation"],
+              f"{kind} original owner")
+    return reference, public
+
+
+def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
+    """Completed same-run phase-b advance deploy publication (checkpoint + approval)."""
+    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
+    name, step = _phase_b_step(governance)
+    job = _same_run_job(api, run, kind="phase-b", job_name=step["job_name"], guard=guard)
+    _, public = _same_run_publication(api, run, owner, job, kind="phase-b", step=name, guard=guard, now=now)
+    return private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+
+
+def _trigger_producer(governance, kind):
+    if kind == "prepared":
+        return lc.FENCE_PREPARE_PRODUCER["job_name"], lc.FENCE_PREPARE_PRODUCER["step"]
+    name, step = _phase_b_step(governance)
+    return step["job_name"], name
+
+
+def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
+    """Decision 3 event producer over the closed STAGE_TRIGGERS; no dispatch, no reusable output.
+
+    A producer not yet completed-success is no event (the keeper keeps ticking, bounded
+    by the stage deadline); a publication that can never be the trigger refuses.
+    """
+    def next_event(window):
+        stage = window["stage"]
+        c.require(window["decision"] is None and stage in lc.STAGE_TRIGGERS, f"stage trigger not connected stage={stage}")
+        c.require((window["close"] is None) == (stage == "application-prepare"), "stage/close consistency")
+        now = clock()
+        c.require(now < lc.terminal_deadline(window), f"stage deadline elapsed stage={stage}")
+        kind = lc.STAGE_TRIGGERS[stage][0]
+        job_name, step = _trigger_producer(governance, kind)
+        job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard)
+        if job is None or job["status"] != "completed" or job["conclusion"] != "success":
+            return None
+        reference, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
+        return {"kind": kind, "reference": reference}
+    return next_event
+
+
+def infra_expiration_bound(authority, api):
+    """Errata 6887682424 of decision 2: the closed set of authenticated expirations this gate knows.
+
+    Owner proof expires_at, api.expiries, fragment enabled_until and pin frozen_until
+    are all mandatory; a missing one refuses. The guard compares, it never adopts.
+    api.expiries is read at call time: the minimum covers what the process authenticated so far.
+    """
+    from tools.cnesdata_delivery.session_owner import Authority
+    c.require(type(authority) is Authority and type(authority.pin) is dict and type(authority.application_fragment) is dict
+              and "frozen_until" in authority.pin and "enabled_until" in authority.application_fragment
+              and type(api.expiries) is dict and len(api.expiries) > 0, "application authenticated expirations")
+    return int(min([authority.expires_at, *api.expiries.values(), c.instant(authority.application_fragment["enabled_until"]),
+                    c.instant(authority.pin["frozen_until"])]))
 
 
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
