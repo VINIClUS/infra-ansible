@@ -1860,3 +1860,189 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
         "source bootstrap must refuse metadata redirects before code is trusted"
     )
     assert all("@main" not in url and "private-token" not in url for url in calls)
+
+
+# --- #29 amendment 2026-11-15: optional OperatorSign ------------------------
+# A temporary operator signer for the P1 activation, removed by an apply with
+# []. Synthetic account/ARNs only. The historical inventory verifier and the
+# EXT2 fixtures are intentionally untouched.
+
+OPERATOR_ROOT = f"arn:aws:iam::{ACCOUNT}:root"
+OPERATOR_ROLE = f"arn:aws:iam::{ACCOUNT}:role/synthetic-delivery-operator"
+OPERATOR_UNTIL = "2029-12-31T00:00:00Z"
+
+
+def operator_statement(signers, until):
+    return {
+        "Sid": "OperatorSign",
+        "Effect": "Allow",
+        "Principal": {"AWS": signers},
+        "Action": "kms:Sign",
+        "Resource": "*",
+        "Condition": {
+            "StringEquals": {
+                "kms:SigningAlgorithm": "ECDSA_SHA_256",
+                "kms:MessageType": "DIGEST",
+            },
+            "ArnEquals": {"aws:PrincipalArn": signers},
+            "DateLessThan": {"aws:CurrentTime": until},
+        },
+    }
+
+
+def rendered_key_policy(ext2_native, v, label):
+    from fixtures.cnesdata_delivery_ext2.inventory import values
+
+    code, plans, errors = ext2_native.plan(v, label)
+    assert code == 0, errors
+    return values(plans[0])["aws_kms_key.ext2_signing[0]"]["policy"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"operator_signer_arns": []},
+        # Step 3 of the checkpoint may keep the old deadline: still 3 statements.
+        {"operator_signer_arns": [], "operator_sign_until": OPERATOR_UNTIL},
+    ],
+)
+def test_operator_sign_absent_keeps_the_three_statement_policy_byte_identical(
+    ext2_native, fields
+):
+    from fixtures.cnesdata_delivery_ext2.inventory import key_policy, variables
+
+    v = variables()
+    v["ext2"].update(fields)
+    raw = rendered_key_policy(ext2_native, v, "ext2-operator-absent-" + str(len(fields)))
+    # jsonencode: sorted keys, compact separators. Same bytes as before #29.
+    assert raw == json.dumps(key_policy(variables()), sort_keys=True, separators=(",", ":"))
+
+
+@pytest.mark.parametrize(
+    "signers",
+    [[OPERATOR_ROOT], [OPERATOR_ROLE], [OPERATOR_ROOT, OPERATOR_ROLE]],
+)
+def test_operator_sign_renders_the_exact_fourth_statement(ext2_native, signers):
+    from fixtures.cnesdata_delivery_ext2.inventory import key_policy, variables
+
+    v = variables()
+    v["ext2"]["operator_signer_arns"] = signers
+    v["ext2"]["operator_sign_until"] = OPERATOR_UNTIL
+    document = json.loads(
+        rendered_key_policy(ext2_native, v, "ext2-operator-" + str(len(signers)))
+    )
+    expected = key_policy(variables())
+    expected["Statement"].append(operator_statement(signers, OPERATOR_UNTIL))
+    assert document == expected
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"operator_signer_arns": [f"arn:aws:iam::{ACCOUNT}:role/cnesdata-delivery-ext2-gate"]},
+        {"operator_signer_arns": ["arn:aws:iam::444455556666:root"]},
+        {"operator_signer_arns": ["arn:aws:iam::444455556666:role/synthetic-delivery-operator"]},
+        {"operator_signer_arns": [f"arn:aws:iam::{ACCOUNT}:user/synthetic-user"]},
+        {"operator_signer_arns": [f"arn:aws:iam::{ACCOUNT}:role/*"]},
+        {"operator_signer_arns": [f"arn:aws:iam::{ACCOUNT}:root/extra"]},
+        {"operator_signer_arns": ["*"]},
+        {"operator_signer_arns": [OPERATOR_ROOT, OPERATOR_ROOT]},
+        {
+            "operator_signer_arns": [
+                OPERATOR_ROOT,
+                OPERATOR_ROLE,
+                f"arn:aws:iam::{ACCOUNT}:role/synthetic-second-operator",
+            ]
+        },
+        {"operator_signer_arns": [OPERATOR_ROOT], "operator_sign_until": None},
+        {"operator_signer_arns": [OPERATOR_ROOT], "operator_sign_until": "2030-01-01T00:00:01Z"},
+        {"operator_signer_arns": [OPERATOR_ROOT], "operator_sign_until": "2029-12-31"},
+        {"operator_signer_arns": [OPERATOR_ROOT], "operator_sign_until": "2029-12-31T00:00:00+00:00"},
+    ],
+)
+def test_operator_sign_validation_refuses_unbounded_or_foreign_signers(ext2_native, fields):
+    from fixtures.cnesdata_delivery_ext2.inventory import variables
+
+    v = variables()
+    v["ext2"].setdefault("operator_sign_until", OPERATOR_UNTIL)
+    v["ext2"].update(fields)
+    if v["ext2"]["operator_sign_until"] is None:
+        del v["ext2"]["operator_sign_until"]
+    code, _, errors = ext2_native.plan(v, "ext2-operator-refused")
+    assert code != 0
+    assert any(
+        "EXT2 operator signers" in d.get("detail", "") for d in errors
+    ), errors
+
+
+def _key_policy_allows(document, principal, action, context, identity_allows):
+    """Independent KMS key-policy oracle for this test only.
+
+    A listed account principal (`:root`) delegates to IAM: any identity of that
+    account matches it when its own IAM policy allows the action. Conditions
+    supported: StringEquals, ArnEquals and DateLessThan; anything else fails.
+    """
+    account = principal.split(":")[4]
+    root = f"arn:aws:iam::{account}:root"
+    allowed = False
+    for s in document["Statement"]:
+        actions = [s["Action"]] if isinstance(s["Action"], str) else s["Action"]
+        if action not in actions:
+            continue
+        listed = s["Principal"]["AWS"]
+        listed = [listed] if isinstance(listed, str) else listed
+        if not (
+            principal in listed
+            or (root in listed and (principal == root or identity_allows))
+        ):
+            continue
+        matched = True
+        for op, entries in s.get("Condition", {}).items():
+            assert op in {"StringEquals", "ArnEquals", "DateLessThan"}, op
+            for key, expected in entries.items():
+                choices = [expected] if isinstance(expected, str) else expected
+                actual = principal if key == "aws:PrincipalArn" else context.get(key)
+                if op == "DateLessThan":
+                    matched &= actual is not None and any(actual < c for c in choices)
+                else:
+                    matched &= actual in choices
+        if matched:
+            assert s["Effect"] == "Allow"
+            allowed = True
+    return allowed
+
+
+def test_operator_root_signs_but_an_account_role_with_iam_sign_does_not(ext2_native):
+    from fixtures.cnesdata_delivery_ext2.inventory import ROLE, variables
+
+    v = variables()
+    v["ext2"]["operator_signer_arns"] = [OPERATOR_ROOT]
+    v["ext2"]["operator_sign_until"] = OPERATOR_UNTIL
+    document = json.loads(rendered_key_policy(ext2_native, v, "ext2-operator-1"))
+    context = {
+        "kms:SigningAlgorithm": "ECDSA_SHA_256",
+        "kms:MessageType": "DIGEST",
+        "aws:CurrentTime": "2029-06-01T00:00:00Z",
+    }
+    other = f"arn:aws:iam::{ACCOUNT}:role/synthetic-iam-signer"
+
+    def signs(principal, ctx=context, policy=document, identity_allows=True):
+        return _key_policy_allows(policy, principal, "kms:Sign", ctx, identity_allows)
+
+    assert signs(OPERATOR_ROOT)
+    assert signs(ROLE)  # GateSign is unchanged.
+    # A same-account role whose IAM policy allows kms:Sign on * does not sign:
+    # the account principal does not delegate past aws:PrincipalArn.
+    assert not signs(other)
+    for change in (
+        {"aws:CurrentTime": OPERATOR_UNTIL},
+        {"kms:SigningAlgorithm": "ECDSA_SHA_384"},
+        {"kms:MessageType": "RAW"},
+    ):
+        assert not signs(OPERATOR_ROOT, {**context, **change})
+    # The oracle is load-bearing: without ArnEquals the same role would sign.
+    mutant = copy.deepcopy(document)
+    del mutant["Statement"][-1]["Condition"]["ArnEquals"]
+    assert signs(other, policy=mutant)
+    assert not signs(other, policy=mutant, identity_allows=False)
