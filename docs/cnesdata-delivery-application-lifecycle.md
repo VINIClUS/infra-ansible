@@ -97,6 +97,20 @@ by the consumer. Absent/null selector produces no `predecessor_reads` output.
 A selected history requires that non-null field and its exact eight fields.
 Selector and protected full reference must appear together; parser and public
 admission use the same closed reference validator, including exact integer types.
+
+The producer `source_closure_sha256` (#55 second-slice amendment 6886977054, decision 1)
+is `sha256(canonical({"files": {path: sha256(bytes)}}))` over the 19 PYBOOT files
+(`tools/cnesdata_delivery/*`, including `runtime-requirements.txt`) plus
+`.github/workflows/reusable-cnesdata-application-gate.yml`, all read at
+`gate_shas.application`, never at `workflow_sha`, which inside a reusable can be the
+caller's SHA. `application_gate closure --pin <sha>` prints it from a checkout with
+`git cat-file`, before and without admission. Right after admission, `preflight`,
+`credentials` and `execute` recompute it from the executing files and from the reusable
+read through the contents API at the pin (blob SHA-1 checked), and refuse any
+difference with `application producer closure`. A governance still carrying the 64-zero
+sentinel therefore refuses there; the explicit sentinel refusal in `session_owner` and
+`variables.tf` lands only with the final wiring PR, so the `cnesdata-delivery` plan keeps
+working until the private tfvars switches to the value computed on that PR's head.
 The legacy planned/applied or lifecycle terminal inventory is derived from the
 original source/run/attempt/status/purpose, never the current application purpose.
 The parser independently derives the original GetObject/Decrypt policy and checks

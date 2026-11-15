@@ -363,6 +363,30 @@ def fence_predecessor_baseline(raw, reference, carrier):
     return state, state_object
 
 
+APPLICATION_GATE_REPOSITORY = "VINIClUS/infra-ansible"
+APPLICATION_GATE_WORKFLOW = ".github/workflows/reusable-cnesdata-application-gate.yml"
+APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "aws_boundary.py", "runtime.py",
+                      "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
+                      "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
+                      "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
+                      "runtime-requirements.txt")
+APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
+                                         + [APPLICATION_GATE_WORKFLOW]))
+
+
+def application_source_closure(read):
+    """Producer closure (#55 2nd slice, decision 1): PYBOOT files plus the reusable.
+
+    read(path) returns the exact bytes at governance gate_shas.application.
+    """
+    files = {}
+    for path in APPLICATION_CLOSURE_PATHS:
+        raw = read(path)
+        c.require(type(raw) is bytes and len(raw) <= 256 * 1024, "application closure file")
+        files[path] = c.sha(raw)
+    return c.sha(c.canonical({"files": files}))
+
+
 def fence_source_closure(projection_source_files):
     """Amendment 2026-11-13 item 4: commitment of the traversed projection source files."""
     return c.sha(c.canonical(projection_source_files))
