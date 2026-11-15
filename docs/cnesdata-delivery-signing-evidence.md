@@ -152,7 +152,9 @@ gate não tem governança:
 - A lista aceita até 2 principals distintos: roles da conta ou exatamente o
   principal da conta, nunca a role do gate. Com lista não vazia,
   `operator_sign_until` é obrigatório, em RFC3339 UTC, e no máximo igual a
-  `enabled_until`.
+  `enabled_until`. Uma role listada precisa existir antes do apply, porque a KMS
+  recusa key policy com principal inexistente. O principal da conta não tem essa
+  restrição.
 - O statement concede só `kms:Sign` aos principals da lista, com:
   - o mesmo algoritmo e o mesmo message type do `GateSign`;
   - `DateLessThan` = `operator_sign_until`;
