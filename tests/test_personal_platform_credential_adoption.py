@@ -1074,38 +1074,42 @@ def _short_session(v):
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "error", "reason"),
     [
-        _wrong_pin,
-        _disabled,
-        _enabled_absent,
-        _enabled_truthy,
-        _pin_absent,
-        _credentials_absent,
-        _credentials_extra,
-        _credentials_missing,
-        _legacy_application,
-        _foreign_identity,
-        _short_session,
+        (_wrong_pin, ValueError, "installed runtime pin"),
+        (_disabled, ValueError, "host delivery disabled"),
+        (_enabled_absent, ValueError, "host delivery disabled"),
+        (_enabled_truthy, ValueError, "host delivery disabled"),
+        (_pin_absent, ValueError, "installed runtime pin"),
+        (_credentials_absent, KeyError, "credentials"),
+        (_credentials_extra, ValueError, "closed object fields"),
+        (_credentials_missing, ValueError, "closed object fields"),
+        (_legacy_application, ValueError, "RA application/lifetime"),
+        (_foreign_identity, ValueError, "isolated RA identity"),
+        (_short_session, ValueError, "RA application/lifetime"),
     ],
 )
 def test_credential_governance_refuses_pin_enablement_and_inexact_credentials(
-    root_loader, tmp_path, mutation
+    root_loader, tmp_path, mutation, error, reason
 ):
     g = root_loader
     value = credential_only_governance(g)
     mutation(value)
-    with pytest.raises((ValueError, KeyError)):
+    with pytest.raises(error, match=reason):
         g.load_credential_governance(private_file(tmp_path, value))
 
 
-def test_credential_governance_requires_root_and_a_private_file(tmp_path):
+@pytest.mark.skipif(os.geteuid() == 0, reason="the root refusal needs a non-root uid")
+def test_credential_governance_requires_root(tmp_path):
     g = runtime()
-    value = credential_only_governance(g)
-    path = private_file(tmp_path, value)
-    if os.geteuid() != 0:
-        with pytest.raises(ValueError, match="root boundary required"):
-            g.load_credential_governance(path)
+    path = private_file(tmp_path, credential_only_governance(g))
+    with pytest.raises(ValueError, match="root boundary required"):
+        g.load_credential_governance(path)
+
+
+def test_credential_governance_requires_a_private_file(root_loader, tmp_path):
+    g = root_loader
+    path = private_file(tmp_path, credential_only_governance(g))
     path.chmod(0o640)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="insecure file"):
         g.load_credential_governance(path)
