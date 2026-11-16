@@ -1243,6 +1243,32 @@ def published_case(gate, crypto):
     return case, ref, produced
 
 
+def test_verify_ext2_reference_aceita_head_sem_bucket_key(
+    gate, crypto, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    case, reference, produced = published_case(gate, crypto)
+    gov, api, _, s3, _, payload = case
+    original = s3.head_object
+
+    def sem_chave(**kwargs):
+        result = original(**kwargs)
+        del result["BucketKeyEnabled"]
+        return result
+
+    monkeypatch.setattr(s3, "head_object", sem_chave)
+    result = gate.verify_ext2_reference(
+        reference,
+        github=api,
+        s3=s3,
+        governance=gov,
+        now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        historical=True,
+    )
+    assert result.payload_bytes == payload
+    assert result.signature_der == produced.signature.body
+
+
 def test_retained_activation_reads_original_versions_without_resign_or_refresh(
     gate, crypto, tmp_path, monkeypatch
 ):
