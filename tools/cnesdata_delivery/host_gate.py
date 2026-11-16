@@ -19,8 +19,10 @@ import hashlib
 import hmac
 import importlib.util
 import io
+import ipaddress
 import json
 import os
+import posixpath
 import re
 import secrets
 import select
@@ -77,6 +79,7 @@ EFFECTS = {
     "pull",
     "start-candidate",
     "nginx-switch",
+    "caddy-switch",
     "stop-prior",
     "restore-previous",
     "credential-reload",
@@ -2683,6 +2686,243 @@ def public_handoff(response, request, binding, now):
     return raw
 
 
+CADDY_KEYS = (
+    "caddyfile_path",
+    "caddy_container",
+    "proxy_network",
+    "caddy_ip",
+    "previous_caddyfile_sha256",
+    "previous_caddy_upstream",
+)
+CADDY_UPSTREAM = re.compile(r"central-api:8000|cnesdata-(?:blue|green)-api-1:8000")
+DOCKER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+
+
+def ipv4(value):
+    try:
+        return ipaddress.IPv4Address(value)
+    except ValueError:
+        return None
+
+
+def proxy_selector(config):
+    proxy = config.get("proxy", "nginx")
+    require(type(proxy) is str and proxy in {"nginx", "caddy"}, "proxy selector")
+    if proxy == "caddy":
+        values = [config.get(key) for key in CADDY_KEYS]
+        require(
+            all(type(value) is str for value in values)
+            and Path(config["caddyfile_path"]).is_absolute()
+            and DOCKER_NAME.fullmatch(config["caddy_container"])
+            and DOCKER_NAME.fullmatch(config["proxy_network"])
+            and ipv4(config["caddy_ip"]) is not None
+            and re.fullmatch("[0-9a-f]{64}", config["previous_caddyfile_sha256"])
+            and CADDY_UPSTREAM.fullmatch(config["previous_caddy_upstream"]),
+            "caddy config keys",
+        )
+    return proxy
+
+
+DOCKER = "/usr/bin/docker"
+
+
+class CaddyEdge:
+    """Shared Caddy switch: same-inode Caddyfile write validated inside the container."""
+
+    def __init__(self, driver):
+        self.driver, self.config = driver, driver.config
+        self.path = Path(self.config["caddyfile_path"])
+
+    def docker(self, *args):
+        return self.driver.read([DOCKER, *args])
+
+    def exec(self, *args, stdin=None):
+        argv = [DOCKER, "exec"] + (["-i"] if stdin is not None else [])
+        argv += [self.config["caddy_container"], *args]
+        return supervise(
+            argv, self.driver.watchdog.tick, env=self.driver.env, stdin=stdin
+        )
+
+    def read_live(self):
+        fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as file:
+            info = os.fstat(file.fileno())
+            require(stat.S_ISREG(info.st_mode), "caddyfile regular file")
+            data = file.read(LIMIT + 1)
+            require(len(data) <= LIMIT, "file bound")
+            return data, [info.st_dev, info.st_ino]
+
+    def inspect_container(self):
+        raw = self.docker("inspect", self.config["caddy_container"])
+        container = json.loads(raw)[0]
+        require(container["State"]["Running"] is True, "caddy container running")
+        mounts = [
+            mount["Destination"]
+            for mount in container["Mounts"]
+            if mount["Type"] == "bind" and mount["Source"] == str(self.path)
+        ]
+        require(len(mounts) == 1 and posixpath.isabs(mounts[0]), "caddy mount")
+        attached = container["NetworkSettings"]["Networks"].get(
+            self.config["proxy_network"]
+        )
+        require(
+            attached is None or attached["IPAddress"] == self.config["caddy_ip"],
+            "caddy already connected with another ip",
+        )
+        return mounts[0], attached is not None
+
+    def require_subnet(self):
+        raw = self.docker("network", "inspect", self.config["proxy_network"])
+        address = ipv4(self.config["caddy_ip"])
+        subnets = [
+            ipaddress.ip_network(item["Subnet"], strict=False)
+            for item in json.loads(raw)[0]["IPAM"]["Config"]
+        ]
+        require(any(address in subnet for subnet in subnets), "caddy ip subnet")
+
+    def checkpoint(self):
+        live, identity = self.read_live()
+        require(
+            sha(live) == self.config["previous_caddyfile_sha256"],
+            "previous caddyfile exact checkpoint",
+        )
+        self.candidate = render_caddy(
+            live,
+            self.config["public_hostname"],
+            self.config["previous_caddy_upstream"],
+            f"cnesdata-{self.config['slot']}-api-1:8000",
+        )
+        container_path, connected = self.inspect_container()
+        self.require_subnet()
+        directory = self.driver.op.directory
+        durable(directory / "previous-Caddyfile", live, immutable=True)
+        record = {
+            "version": 1,
+            "kind": "caddy-checkpoint",
+            "container_path": container_path,
+            "identity": identity,
+            "connected_before": connected,
+            "previous_sha256": sha(live),
+        }
+        durable(directory / "caddy-checkpoint.json", canonical(record), immutable=True)
+        self.record = record
+
+    def validate(self, data):
+        directory = posixpath.dirname(self.record["container_path"])
+        temp = posixpath.join(directory, f".candidate-{sha(data)[:16]}.caddyfile")
+        try:
+            self.exec("sh", "-c", 'cat > "$1"', "sh", temp, stdin=data)
+            self.exec("caddy", "validate", "--config", temp, "--adapter", "caddyfile")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                self.exec("rm", "-f", temp)
+            raise
+        self.exec("rm", "-f", temp)
+
+    def write_live(self, data):
+        fd = os.open(self.path, os.O_WRONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            require(
+                stat.S_ISREG(info.st_mode)
+                and [info.st_dev, info.st_ino] == self.record["identity"],
+                "caddyfile inode changed",
+            )
+            require(os.pwrite(fd, data, 0) == len(data), "caddyfile short write")
+            os.ftruncate(fd, len(data))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def require_container_bytes(self, data):
+        raw = self.exec("cat", self.record["container_path"])
+        require(sha(raw) == sha(data), "caddy container readback")
+
+    def reload(self):
+        self.exec(
+            "caddy",
+            "reload",
+            "--config",
+            self.record["container_path"],
+            "--adapter",
+            "caddyfile",
+        )
+
+    def switch(self):
+        driver, candidate = self.driver, self.candidate
+        durable(driver.op.directory / "candidate-Caddyfile", candidate, immutable=True)
+        driver.watchdog.tick()
+        ident = driver.op.before_send("caddy-switch", candidate)
+        try:
+            if not self.record["connected_before"]:
+                self.docker(
+                    "network",
+                    "connect",
+                    "--ip",
+                    self.config["caddy_ip"],
+                    self.config["proxy_network"],
+                    self.config["caddy_container"],
+                )
+            self.validate(candidate)
+            self.write_live(candidate)
+            self.require_container_bytes(candidate)
+            self.reload()
+            driver.health(tunnel=True)
+            driver.op.outcome(ident, "EFFECT_CONFIRMED", "terminal", sha(candidate))
+            driver.op.transition("SWITCHED")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                driver.op.outcome(
+                    ident,
+                    "OUTCOME_UNKNOWN",
+                    "unknown",
+                    sha(b"caddy response uncertain"),
+                )
+                driver.op.transition("RECOVERY_REQUIRED")
+            raise
+
+    def disconnect_if_connected_here(self):
+        switched = any(
+            item["kind"] == "caddy-switch"
+            for item in self.driver.op.record["dispatches"]
+        )
+        if switched and not self.record["connected_before"]:
+            self.docker(
+                "network",
+                "disconnect",
+                self.config["proxy_network"],
+                self.config["caddy_container"],
+            )
+
+    def restore(self):
+        driver, directory = self.driver, self.driver.op.directory
+        self.record = host_json(read_private(directory / "caddy-checkpoint.json"))
+        previous = read_private(directory / "previous-Caddyfile")
+        require(
+            sha(previous) == self.config["previous_caddyfile_sha256"]
+            and sha(previous) == self.record["previous_sha256"],
+            "rollback exact checkpoint",
+        )
+        driver.watchdog.tick()
+        ident = driver.op.before_send("restore-previous", previous)
+        try:
+            self.validate(previous)
+            self.write_live(previous)
+            self.require_container_bytes(previous)
+            self.reload()
+            driver.health(tunnel=True)
+            self.disconnect_if_connected_here()
+            driver.op.outcome(ident, "EFFECT_CONFIRMED", "terminal", sha(previous))
+            driver.op.transition("ROLLED_BACK")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                driver.op.outcome(
+                    ident, "OUTCOME_UNKNOWN", "unknown", sha(b"rollback unconfirmed")
+                )
+                driver.op.transition("RECOVERY_REQUIRED")
+            raise
+
+
 class HostDriver:
     """Fixed CnesData commands; configuration selects identities, never executable code."""
 
@@ -2697,6 +2937,8 @@ class HostDriver:
         self.project = "cnesdata-" + configuration["slot"]
         require(configuration["slot"] in {"blue", "green"}, "deployment slot")
         require(configuration["port"] in {18081, 18082}, "loopback alternate port")
+        self.proxy = proxy_selector(configuration)
+        self.caddy = CaddyEdge(self) if self.proxy == "caddy" else None
         self.compose = [
             "/usr/bin/docker",
             "compose",
@@ -2845,12 +3087,10 @@ class HostDriver:
             self.config["slot"] != self.config["previous_slot"],
             "alternate candidate required",
         )
-        previous = read_private(Path("/etc/personal-platform/nginx/active.conf"))
-        require(
-            sha(previous) == self.config["previous_nginx_sha256"],
-            "previous nginx exact checkpoint",
-        )
-        durable(self.op.directory / "previous-nginx.conf", previous, immutable=True)
+        if self.caddy:
+            self.caddy.checkpoint()
+        else:
+            self.checkpoint_nginx()
         self.op.transition("STAGED")
         self.effect(
             "pull", self.compose + ["pull", "--quiet", "api"], self.image_readback
@@ -2862,44 +3102,10 @@ class HostDriver:
         )
         self.record_candidate()
         self.op.transition("CANDIDATE_HEALTHY")
-        candidate = render_nginx(self.config["port"], self.config["public_hostname"])
-        durable(
-            self.op.directory / "candidate-nginx.conf",
-            b"events {}\nhttp {\n" + candidate + b"\n}\n",
-            immutable=True,
-        )
-        self.read(
-            [
-                "/usr/sbin/nginx",
-                "-t",
-                "-c",
-                str(self.op.directory / "candidate-nginx.conf"),
-            ]
-        )
-        self.watchdog.tick()
-        ident = self.op.before_send("nginx-switch", candidate)
-        try:
-            durable(Path("/etc/personal-platform/nginx/active.conf"), candidate)
-            self.read(["/usr/sbin/nginx", "-t"])
-            self.read(["/usr/sbin/nginx", "-s", "reload"])
-            self.health(tunnel=True)
-            require(
-                read_private(Path("/etc/personal-platform/nginx/active.conf"))
-                == candidate,
-                "nginx switch readback",
-            )
-            self.op.outcome(ident, "EFFECT_CONFIRMED", "terminal", sha(candidate))
-            self.op.transition("SWITCHED")
-        except BaseException:
-            with contextlib.suppress(Exception):
-                self.op.outcome(
-                    ident,
-                    "OUTCOME_UNKNOWN",
-                    "unknown",
-                    sha(b"nginx response uncertain"),
-                )
-                self.op.transition("RECOVERY_REQUIRED")
-            raise
+        if self.caddy:
+            self.caddy.switch()
+        else:
+            self.switch_nginx()
         # Stopping the old stack is independently recorded and must read back.
         prior = self.config["previous_slot"]
         require(prior in {"blue", "green"}, "previous slot")
@@ -2943,12 +3149,62 @@ class HostDriver:
             else "ACCEPTED"
         )
 
+    def checkpoint_nginx(self):
+        previous = read_private(Path("/etc/personal-platform/nginx/active.conf"))
+        require(
+            sha(previous) == self.config["previous_nginx_sha256"],
+            "previous nginx exact checkpoint",
+        )
+        durable(self.op.directory / "previous-nginx.conf", previous, immutable=True)
+
+    def switch_nginx(self):
+        candidate = render_nginx(self.config["port"], self.config["public_hostname"])
+        durable(
+            self.op.directory / "candidate-nginx.conf",
+            b"events {}\nhttp {\n" + candidate + b"\n}\n",
+            immutable=True,
+        )
+        self.read(
+            [
+                "/usr/sbin/nginx",
+                "-t",
+                "-c",
+                str(self.op.directory / "candidate-nginx.conf"),
+            ]
+        )
+        self.watchdog.tick()
+        ident = self.op.before_send("nginx-switch", candidate)
+        try:
+            durable(Path("/etc/personal-platform/nginx/active.conf"), candidate)
+            self.read(["/usr/sbin/nginx", "-t"])
+            self.read(["/usr/sbin/nginx", "-s", "reload"])
+            self.health(tunnel=True)
+            require(
+                read_private(Path("/etc/personal-platform/nginx/active.conf"))
+                == candidate,
+                "nginx switch readback",
+            )
+            self.op.outcome(ident, "EFFECT_CONFIRMED", "terminal", sha(candidate))
+            self.op.transition("SWITCHED")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                self.op.outcome(
+                    ident,
+                    "OUTCOME_UNKNOWN",
+                    "unknown",
+                    sha(b"nginx response uncertain"),
+                )
+                self.op.transition("RECOVERY_REQUIRED")
+            raise
+
     def restore_previous(self):
         """Only known terminal effects can take the exact checkpoint rollback path."""
         require(
             not self.op.record["effect_possible"],
             "uncertain effect cannot auto-rollback",
         )
+        if self.caddy:
+            return self.caddy.restore()
         previous = read_private(self.op.directory / "previous-nginx.conf")
         require(
             sha(previous) == self.config["previous_nginx_sha256"],
@@ -3608,6 +3864,72 @@ def render_nginx(port, hostname):
     ).encode()
 
 
+CADDY_PLACEHOLDER = re.compile(r"\{[^\s{}]+\}")
+CADDY_HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
+CADDY_CANDIDATE = re.compile(r"cnesdata-(?:blue|green)-api-1:8000")
+
+
+def caddy_quoted_end(text, i):
+    quote, i = text[i], i + 1
+    while i < len(text) and text[i] != quote:
+        i += 2 if text[i] == "\\" else 1
+    require(i < len(text), "caddyfile braces")
+    return i + 1
+
+
+def scan_caddy(text):
+    """Return top-level (head, open, close) blocks and the text with comments blanked."""
+    code, blocks, stack = list(text), [], []
+    start = i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "#" and (i == 0 or text[i - 1].isspace()):
+            end = text.find("\n", i)
+            end = len(text) if end < 0 else end
+            code[i:end] = " " * (end - i)
+            i = end
+        elif char in '"`':
+            i = caddy_quoted_end(text, i)
+        elif char == "{" and (placeholder := CADDY_PLACEHOLDER.match(text, i)):
+            i = placeholder.end()
+        else:
+            start = i + 1 if char == "\n" else start
+            if char == "{":
+                stack.append((text[start:i].strip(), i))
+            if char == "}":
+                require(stack, "caddyfile braces")
+                head, opened = stack.pop()
+                if not stack:
+                    blocks.append((head, opened, i))
+            i += 1
+    require(not stack, "caddyfile braces")
+    return blocks, "".join(code)
+
+
+def render_caddy(previous, hostname, previous_upstream, upstream):
+    require(
+        type(hostname) is str and CADDY_HOSTNAME.fullmatch(hostname),
+        "caddy hostname",
+    )
+    require(
+        CADDY_UPSTREAM.fullmatch(previous_upstream)
+        and CADDY_CANDIDATE.fullmatch(upstream)
+        and upstream != previous_upstream,
+        "caddy upstream",
+    )
+    try:
+        text = previous.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("caddyfile encoding") from None
+    blocks, code = scan_caddy(text)
+    spans = [(opened, end) for head, opened, end in blocks if head == hostname]
+    require(len(spans) == 1, "caddy block")
+    token = re.compile(r"(?<![\w.:-])" + re.escape(previous_upstream) + r"(?![\w.:-])")
+    found = list(token.finditer(code, spans[0][0] + 1, spans[0][1]))
+    require(len(found) == 1, "caddy upstream token")
+    return (text[: found[0].start()] + upstream + text[found[0].end() :]).encode()
+
+
 def load_governance(path=CONFIG):
     require(os.geteuid() == 0, "root boundary required")
     value = host_json(read_private(path))
@@ -4053,7 +4375,10 @@ def host_main():
                     driver is not None
                     and operation.record["effect_confirmed"]
                     and not operation.record["effect_possible"]
-                    and (operation.directory / "previous-nginx.conf").exists()
+                    and any(
+                        (operation.directory / name).exists()
+                        for name in ("previous-nginx.conf", "previous-Caddyfile")
+                    )
                 ):
                     window.import_recovery(decision)
                     with contextlib.suppress(Exception):
