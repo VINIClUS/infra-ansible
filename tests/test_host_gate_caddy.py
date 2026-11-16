@@ -261,9 +261,10 @@ def test_render_recusa_bloco_ou_token_fora_de_uma_ocorrencia(mutation):
         {"previous_upstream": "dev-central-api:8000"},
         {"previous_upstream": "central-api:9000"},
         {"upstream": "central-api:8000"},
-        {"upstream": "cnesdata-green-api-1:8000", "previous_upstream": (
-            "cnesdata-green-api-1:8000"
-        )},
+        {
+            "upstream": "cnesdata-green-api-1:8000",
+            "previous_upstream": ("cnesdata-green-api-1:8000"),
+        },
         {"upstream": "evil.example.test:8000"},
         {"hostname": "API.example.test"},
         {"hostname": "api.example.test {"},
@@ -364,7 +365,11 @@ class World:
         networks = {}
         if self.connected_ip:
             networks[NETWORK] = {"IPAddress": self.connected_ip}
-        mount = {"Type": "bind", "Source": str(self.live), "Destination": CONTAINER_PATH}
+        mount = {
+            "Type": "bind",
+            "Source": str(self.live),
+            "Destination": CONTAINER_PATH,
+        }
         return [
             {
                 "State": {"Running": True},
@@ -497,9 +502,7 @@ def build(tmp_path, monkeypatch, *, caddyfile=CADDYFILE, connected_ip=None, **ex
 
 
 def candidate_bytes(g):
-    return g.render_caddy(
-        CADDYFILE, HOSTNAME, "central-api:8000", CANDIDATE_UPSTREAM
-    )
+    return g.render_caddy(CADDYFILE, HOSTNAME, "central-api:8000", CANDIDATE_UPSTREAM)
 
 
 def temp_name(g, data):
@@ -546,7 +549,9 @@ def test_switch_completo_na_ordem_da_decisao_sem_efeito_nginx(tmp_path, monkeypa
     assert world.argv_of("remove-temp") == [exec_argv("rm", "-f", temp)]
     assert world.argv_of("readback") == [exec_argv("cat", CONTAINER_PATH)]
     assert world.argv_of("reload") == [
-        exec_argv("caddy", "reload", "--config", CONTAINER_PATH, "--adapter", "caddyfile")
+        exec_argv(
+            "caddy", "reload", "--config", CONTAINER_PATH, "--adapter", "caddyfile"
+        )
     ]
     assert world.temp == {}
     assert world.at_validate == CADDYFILE
@@ -675,7 +680,13 @@ def test_sha_visto_de_dentro_do_container_divergente_recusa_sem_reload(
 
 @pytest.mark.parametrize(
     ("point", "reloads"),
-    [("connect", 0), ("write-temp", 0), ("readback", 0), ("reload", 1), ("tunnel-health", 1)],
+    [
+        ("connect", 0),
+        ("write-temp", 0),
+        ("readback", 0),
+        ("reload", 1),
+        ("tunnel-health", 1),
+    ],
 )
 def test_falha_entre_before_send_e_outcome_deixa_outcome_unknown(
     tmp_path, monkeypatch, point, reloads
@@ -855,7 +866,9 @@ def real_host(tmp_path, monkeypatch, *, fault):
     gov["binding"]["api_image"] = "registry.example/api@sha256:" + H
     hostkey = b"synthetic public host key"
     fingerprint = base64.b64encode(g.hashlib.sha256(hostkey).digest()).decode()
-    gov["binding"]["platform"]["host_key_fingerprint"] = "SHA256:" + fingerprint.rstrip("=")
+    gov["binding"]["platform"]["host_key_fingerprint"] = "SHA256:" + fingerprint.rstrip(
+        "="
+    )
     binary = b"synthetic cloudflared"
     gov["runner"] = {
         "ssh_hostname": "host.example.test",

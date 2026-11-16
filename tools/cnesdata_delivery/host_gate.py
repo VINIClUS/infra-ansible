@@ -2687,9 +2687,13 @@ def public_handoff(response, request, binding, now):
 
 
 CADDY_KEYS = (
-    "caddyfile_path caddy_container proxy_network caddy_ip "
-    "previous_caddyfile_sha256 previous_caddy_upstream"
-).split()
+    "caddyfile_path",
+    "caddy_container",
+    "proxy_network",
+    "caddy_ip",
+    "previous_caddyfile_sha256",
+    "previous_caddy_upstream",
+)
 CADDY_UPSTREAM = re.compile(r"central-api:8000|cnesdata-(?:blue|green)-api-1:8000")
 DOCKER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
@@ -2735,7 +2739,9 @@ class CaddyEdge:
     def exec(self, *args, stdin=None):
         argv = [DOCKER, "exec"] + (["-i"] if stdin is not None else [])
         argv += [self.config["caddy_container"], *args]
-        return supervise(argv, self.driver.watchdog.tick, env=self.driver.env, stdin=stdin)
+        return supervise(
+            argv, self.driver.watchdog.tick, env=self.driver.env, stdin=stdin
+        )
 
     def read_live(self):
         fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -2867,15 +2873,18 @@ class CaddyEdge:
         except BaseException:
             with contextlib.suppress(Exception):
                 driver.op.outcome(
-                    ident, "OUTCOME_UNKNOWN", "unknown", sha(b"caddy response uncertain")
+                    ident,
+                    "OUTCOME_UNKNOWN",
+                    "unknown",
+                    sha(b"caddy response uncertain"),
                 )
                 driver.op.transition("RECOVERY_REQUIRED")
             raise
 
-
     def disconnect_if_connected_here(self):
         switched = any(
-            item["kind"] == "caddy-switch" for item in self.driver.op.record["dispatches"]
+            item["kind"] == "caddy-switch"
+            for item in self.driver.op.record["dispatches"]
         )
         if switched and not self.record["connected_before"]:
             self.docker(
@@ -3187,6 +3196,7 @@ class HostDriver:
                 )
                 self.op.transition("RECOVERY_REQUIRED")
             raise
+
     def restore_previous(self):
         """Only known terminal effects can take the exact checkpoint rollback path."""
         require(
@@ -3878,10 +3888,10 @@ def scan_caddy(text):
             end = len(text) if end < 0 else end
             code[i:end] = " " * (end - i)
             i = end
-        elif char in "\"`":
+        elif char in '"`':
             i = caddy_quoted_end(text, i)
-        elif char == "{" and CADDY_PLACEHOLDER.match(text, i):
-            i = CADDY_PLACEHOLDER.match(text, i).end()
+        elif char == "{" and (placeholder := CADDY_PLACEHOLDER.match(text, i)):
+            i = placeholder.end()
         else:
             start = i + 1 if char == "\n" else start
             if char == "{":
