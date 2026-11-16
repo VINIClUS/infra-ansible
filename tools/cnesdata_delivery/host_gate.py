@@ -3643,6 +3643,72 @@ def render_nginx(port, hostname):
     ).encode()
 
 
+CADDY_PLACEHOLDER = re.compile(r"\{[^\s{}]+\}")
+CADDY_HOSTNAME = re.compile(r"[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
+CADDY_CANDIDATE = re.compile(r"cnesdata-(?:blue|green)-api-1:8000")
+
+
+def caddy_quoted_end(text, i):
+    quote, i = text[i], i + 1
+    while i < len(text) and text[i] != quote:
+        i += 2 if text[i] == "\\" else 1
+    require(i < len(text), "caddyfile braces")
+    return i + 1
+
+
+def scan_caddy(text):
+    """Return top-level (head, open, close) blocks and the text with comments blanked."""
+    code, blocks, stack = list(text), [], []
+    start = i = 0
+    while i < len(text):
+        char = text[i]
+        if char == "#" and (i == 0 or text[i - 1].isspace()):
+            end = text.find("\n", i)
+            end = len(text) if end < 0 else end
+            code[i:end] = " " * (end - i)
+            i = end
+        elif char in "\"`":
+            i = caddy_quoted_end(text, i)
+        elif char == "{" and CADDY_PLACEHOLDER.match(text, i):
+            i = CADDY_PLACEHOLDER.match(text, i).end()
+        else:
+            start = i + 1 if char == "\n" else start
+            if char == "{":
+                stack.append((text[start:i].strip(), i))
+            if char == "}":
+                require(stack, "caddyfile braces")
+                head, opened = stack.pop()
+                if not stack:
+                    blocks.append((head, opened, i))
+            i += 1
+    require(not stack, "caddyfile braces")
+    return blocks, "".join(code)
+
+
+def render_caddy(previous, hostname, previous_upstream, upstream):
+    require(
+        type(hostname) is str and CADDY_HOSTNAME.fullmatch(hostname),
+        "caddy hostname",
+    )
+    require(
+        CADDY_UPSTREAM.fullmatch(previous_upstream)
+        and CADDY_CANDIDATE.fullmatch(upstream)
+        and upstream != previous_upstream,
+        "caddy upstream",
+    )
+    try:
+        text = previous.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("caddyfile encoding") from None
+    blocks, code = scan_caddy(text)
+    spans = [(opened, end) for head, opened, end in blocks if head == hostname]
+    require(len(spans) == 1, "caddy block")
+    token = re.compile(r"(?<![\w.:-])" + re.escape(previous_upstream) + r"(?![\w.:-])")
+    found = list(token.finditer(code, spans[0][0] + 1, spans[0][1]))
+    require(len(found) == 1, "caddy upstream token")
+    return (text[: found[0].start()] + upstream + text[found[0].end() :]).encode()
+
+
 def load_governance(path=CONFIG):
     require(os.geteuid() == 0, "root boundary required")
     value = host_json(read_private(path))
