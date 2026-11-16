@@ -64,21 +64,24 @@ def test_put_explicit_false_and_versioned_readback(evidence):
     assert [name for name, _ in s3.calls].count("encryption") == 2
 
 
-@pytest.mark.parametrize("value", [None, True, "false", 0, "missing"])
-@pytest.mark.parametrize("level", ["bucket", "head"])
-def test_bucket_key_readback_fails_closed(evidence, value, level, monkeypatch):
+@pytest.mark.parametrize(
+    "level,value",
+    [
+        ("bucket", None),
+        ("bucket", True),
+        ("bucket", "false"),
+        ("bucket", 0),
+        ("bucket", "missing"),
+        ("head", None),
+        ("head", True),
+        ("head", "false"),
+        ("head", 0),
+    ],
+)
+def test_bucket_key_readback_fails_closed(evidence, value, level):
     s3 = S3()
     if level == "bucket":
         s3.bucket_key = value
-    elif value == "missing":
-        original = s3.head_object
-
-        def missing(**kwargs):
-            result = original(**kwargs)
-            del result["BucketKeyEnabled"]
-            return result
-
-        monkeypatch.setattr(s3, "head_object", missing)
     else:
         s3.head_mutation["BucketKeyEnabled"] = value
     with pytest.raises(ValueError):
@@ -87,6 +90,21 @@ def test_bucket_key_readback_fails_closed(evidence, value, level, monkeypatch):
         )
     if level == "bucket":
         assert not any(name == "put" for name, _ in s3.calls)
+
+
+def test_head_sem_bucket_key_equivale_a_desligado(evidence, monkeypatch):
+    s3 = S3()
+    original = s3.head_object
+
+    def sem_chave(**kwargs):
+        result = original(**kwargs)
+        del result["BucketKeyEnabled"]
+        return result
+
+    monkeypatch.setattr(s3, "head_object", sem_chave)
+    raw = b"original"
+    result = evidence.store_and_verify(raw, key=KEYS[0], s3=s3, governance=governance())
+    assert result.body == raw and result.version_id == "1"
 
 
 @pytest.mark.parametrize(

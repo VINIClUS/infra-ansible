@@ -16,7 +16,8 @@ COMPLIANCE e retain_until absoluto vêm do owner, sem novo TTL ou retenção arb
 
 Antes da escrita e depois do readback, consulta versioning, lock e encryption; o
 default precisa devolver boolean false presente. Head/Get/Retention usam a VersionId
-retornada pelo Put, nunca latest. Head exige false presente, checksum/length/cifra
+retornada pelo Put, nunca latest. Head aceita BucketKeyEnabled ausente como desligado
+(o S3 real omite o campo) e recusa None, True ou tipo não bool; exige checksum/length/cifra
 exatos; Get confirma os bytes e retention confirma mode/date absolutos. ETag não é
 hash. Timeout/409/412 não repete escrita: recovery_required até referência original
 autenticada permitir somente releitura. SDK mutante deve ter total_max_attempts=1.
