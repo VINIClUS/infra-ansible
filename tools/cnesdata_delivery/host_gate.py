@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import re
@@ -2683,6 +2684,39 @@ def public_handoff(response, request, binding, now):
     return raw
 
 
+CADDY_KEYS = (
+    "caddyfile_path caddy_container proxy_network caddy_ip "
+    "previous_caddyfile_sha256 previous_caddy_upstream"
+).split()
+CADDY_UPSTREAM = re.compile(r"central-api:8000|cnesdata-(?:blue|green)-api-1:8000")
+DOCKER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+
+
+def ipv4(value):
+    try:
+        return ipaddress.IPv4Address(value)
+    except ValueError:
+        return None
+
+
+def proxy_selector(config):
+    proxy = config.get("proxy", "nginx")
+    require(type(proxy) is str and proxy in {"nginx", "caddy"}, "proxy selector")
+    if proxy == "caddy":
+        values = [config.get(key) for key in CADDY_KEYS]
+        require(
+            all(type(value) is str for value in values)
+            and Path(config["caddyfile_path"]).is_absolute()
+            and DOCKER_NAME.fullmatch(config["caddy_container"])
+            and DOCKER_NAME.fullmatch(config["proxy_network"])
+            and ipv4(config["caddy_ip"]) is not None
+            and re.fullmatch("[0-9a-f]{64}", config["previous_caddyfile_sha256"])
+            and CADDY_UPSTREAM.fullmatch(config["previous_caddy_upstream"]),
+            "caddy config keys",
+        )
+    return proxy
+
+
 class HostDriver:
     """Fixed CnesData commands; configuration selects identities, never executable code."""
 
@@ -2697,6 +2731,7 @@ class HostDriver:
         self.project = "cnesdata-" + configuration["slot"]
         require(configuration["slot"] in {"blue", "green"}, "deployment slot")
         require(configuration["port"] in {18081, 18082}, "loopback alternate port")
+        self.proxy = proxy_selector(configuration)
         self.compose = [
             "/usr/bin/docker",
             "compose",
