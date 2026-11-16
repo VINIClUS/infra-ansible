@@ -258,7 +258,7 @@ def _read_verified(
         and head["ContentLength"] == ref["content_length"],
         "head_length",
     )
-    require(head.get("BucketKeyEnabled") is False, "object_bucket_key")
+    require(head.get("BucketKeyEnabled", False) is False, "object_bucket_key")
     require(
         head.get("ServerSideEncryption") == "aws:kms"
         and head.get("SSEKMSKeyId") == config["cipher_kms_key_arn"],
