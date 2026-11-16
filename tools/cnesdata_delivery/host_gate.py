@@ -2873,6 +2873,47 @@ class CaddyEdge:
             raise
 
 
+    def disconnect_if_connected_here(self):
+        switched = any(
+            item["kind"] == "caddy-switch" for item in self.driver.op.record["dispatches"]
+        )
+        if switched and not self.record["connected_before"]:
+            self.docker(
+                "network",
+                "disconnect",
+                self.config["proxy_network"],
+                self.config["caddy_container"],
+            )
+
+    def restore(self):
+        driver, directory = self.driver, self.driver.op.directory
+        self.record = host_json(read_private(directory / "caddy-checkpoint.json"))
+        previous = read_private(directory / "previous-Caddyfile")
+        require(
+            sha(previous) == self.config["previous_caddyfile_sha256"]
+            and sha(previous) == self.record["previous_sha256"],
+            "rollback exact checkpoint",
+        )
+        driver.watchdog.tick()
+        ident = driver.op.before_send("restore-previous", previous)
+        try:
+            self.validate(previous)
+            self.write_live(previous)
+            self.require_container_bytes(previous)
+            self.reload()
+            driver.health(tunnel=True)
+            self.disconnect_if_connected_here()
+            driver.op.outcome(ident, "EFFECT_CONFIRMED", "terminal", sha(previous))
+            driver.op.transition("ROLLED_BACK")
+        except BaseException:
+            with contextlib.suppress(Exception):
+                driver.op.outcome(
+                    ident, "OUTCOME_UNKNOWN", "unknown", sha(b"rollback unconfirmed")
+                )
+                driver.op.transition("RECOVERY_REQUIRED")
+            raise
+
+
 class HostDriver:
     """Fixed CnesData commands; configuration selects identities, never executable code."""
 
@@ -3152,6 +3193,8 @@ class HostDriver:
             not self.op.record["effect_possible"],
             "uncertain effect cannot auto-rollback",
         )
+        if self.caddy:
+            return self.caddy.restore()
         previous = read_private(self.op.directory / "previous-nginx.conf")
         require(
             sha(previous) == self.config["previous_nginx_sha256"],
@@ -4322,7 +4365,10 @@ def host_main():
                     driver is not None
                     and operation.record["effect_confirmed"]
                     and not operation.record["effect_possible"]
-                    and (operation.directory / "previous-nginx.conf").exists()
+                    and any(
+                        (operation.directory / name).exists()
+                        for name in ("previous-nginx.conf", "previous-Caddyfile")
+                    )
                 ):
                     window.import_recovery(decision)
                     with contextlib.suppress(Exception):

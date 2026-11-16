@@ -60,7 +60,8 @@ e é validado pelo mesmo contrato EXT1, incluindo somas gross, datas, FREE ACTIV
 e bindings. Nenhum literal pass substitui a medição. Os campos runner
 identificam role ARN, objetos S3/version/hash/size, os três parâmetros SSM,
 hostname/known_hosts e versão/checksum do cloudflared. O fragmento host fixa slot,
-porta, hostname, bytes esperados de readiness e checkpoint Nginx. Esses valores
+porta, hostname, bytes esperados de readiness e checkpoint do proxy (Nginx, ou
+Caddy quando `proxy` for `"caddy"`). Esses valores
 são configuração do owner; nenhum input público ou frame escolhe comandos,
 paths, scripts, URLs de objetos, pins ou overrides.
 
@@ -356,6 +357,60 @@ de seu próprio readback futuro. Guardas valem entre todas as etapas. Perda de
 autoridade durante E/W/I não transforma um receipt já serializado em sucesso.
 O gate verifica nonce, binding, hashes, tempos e chegada dentro do lease confirmado
 e deadlines originais. Evidência copiada depois não altera o evento observado.
+
+### Efeito caddy-switch
+
+O seletor `proxy` do fragmento host escolhe o proxy. Ausente vale `"nginx"`, com o
+comportamento anterior. `"caddy"` liga o ramo Caddy; qualquer outro valor recusa
+antes de qualquer efeito. No ramo Caddy, `previous_nginx_sha256` não é exigido e as
+chaves obrigatórias são `caddyfile_path` (absoluto, no host), `caddy_container`,
+`proxy_network`, `caddy_ip` (IPv4 dentro da sub-rede de `proxy_network`),
+`previous_caddyfile_sha256` e `previous_caddy_upstream`.
+
+O checkpoint ocorre antes do pull e confere o sha256 do Caddyfile vivo, renderiza o
+candidato (`render_caddy`), exige exatamente um bind-mount do arquivo no container,
+confere que `caddy_ip` pertence à sub-rede, recusa container já conectado com outro
+IP e grava `previous-Caddyfile` e `caddy-checkpoint.json` imutáveis no diretório da
+operação. O registro guarda dispositivo e inode do arquivo vivo e se o container já
+estava em `proxy_network`.
+
+`render_caddy` troca só o upstream anterior, como token inteiro fora de comentários,
+no bloco cuja linha de endereço é exatamente `<public_hostname> {`. O fim do bloco
+vem da profundidade de chaves, ignorando chaves em comentários `#` e em strings
+entre aspas; placeholders como `{args[0]}` são balanceados. Recusa bloco ausente ou
+repetido, token ≠ 1 vez, chaves desbalanceadas, upstream anterior fora de
+`central-api:8000` e `cnesdata-(blue|green)-api-1:8000`, e upstream igual ao
+anterior. Os bytes fora do bloco ficam idênticos.
+
+O efeito `caddy-switch` registra `before_send` antes de qualquer efeito e segue:
+
+1. `docker network connect --ip` só se o container não estava conectado;
+2. validação do candidato dentro do container, em arquivo temporário no mesmo
+   diretório do Caddyfile, removido em qualquer desfecho;
+3. escrita no mesmo inode: um buffer em offset 0, `ftruncate` e `fsync`, nunca
+   rename, porque o Caddyfile é montado como arquivo único; inode diferente recusa;
+4. readback do sha256 visto de dentro do container, igual ao candidato;
+5. `caddy reload` dentro do container;
+6. health pelo Tunnel.
+
+Nenhum reload ocorre sem o readback do passo 4. Falha entre `before_send` e
+`outcome` deixa `OUTCOME_UNKNOWN`; a recuperação não restaura sozinha e
+`previous-Caddyfile` permanece intacto. A restauração automática só ocorre para
+efeitos terminais conhecidos: confere a cópia contra o checkpoint, valida no
+container, escreve no mesmo inode, confere o sha visto de dentro, recarrega, valida
+o health e só então desconecta a rede, e apenas se esta operação a conectou.
+
+Restauração manual após `OUTCOME_UNKNOWN`: confirmar que o sha256 de
+`previous-Caddyfile` é `previous_caddyfile_sha256`; validar a cópia dentro do
+container; escrever no mesmo inode do arquivo vivo (nunca rename ou `mv`); conferir
+que o sha256 visto de dentro do container é o do checkpoint; então `caddy reload` e
+smoke dos dois sites. Se o `caddy-checkpoint.json` indicar `connected_before` falso e
+a rede foi conectada por esta operação, desconectar o container de `proxy_network`
+somente depois do smoke e se nenhum outro slot depender dela.
+
+O arquivo vivo é lido sem exigir modo 0600, pois é compartilhado com outro site; a
+cópia de checkpoint e o registro ficam 0600. O diretório do Caddyfile dentro do
+container precisa permitir o arquivo temporário de validação.
 
 ## IAM, custo e gates de Produção
 
