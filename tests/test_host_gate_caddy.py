@@ -333,6 +333,9 @@ class World:
         self.commands, self.stdin, self.temp = [], {}, {}
         self.seen_by_container = None
         self.at_validate = None
+        self.prior_ids = b"aabbccddeeff\n"
+        self.log = None
+        self.fail_validate = False
 
     def labels(self):
         return [label(argv) for argv in self.commands]
@@ -376,7 +379,7 @@ class World:
             self.temp[rest[-1]] = stdin
         elif rest[0] == "validate":
             self.at_validate = self.live.read_bytes()
-            if b"INVALID" in self.temp[rest[2]]:
+            if self.fail_validate or b"INVALID" in self.temp[rest[2]]:
                 raise ValueError("caddy adapt failed")
         elif rest[0] == "rm":
             self.temp.pop(rest[2], None)
@@ -399,6 +402,9 @@ class World:
     def process(self, argv, guard, **kwargs):
         guard()
         self.commands.append(argv)
+        if self.log:
+            with self.log.open("a") as file:
+                file.write(label(argv) + "\n")
         if self.on_command:
             self.on_command(self, argv)
         self.clock.advance(3)
@@ -418,7 +424,7 @@ class World:
         if argv[1] == "exec":
             return self.exec_caddy(argv, kwargs.get("stdin"))
         if argv[1] == "ps":
-            return b"aabbccddeeff\n"
+            return self.prior_ids
         if argv[1] == "inspect":
             return b'[{"State":{"Running":false}}]'
         return b""
@@ -697,3 +703,349 @@ def test_before_send_antecede_o_primeiro_efeito_do_switch(tmp_path, monkeypatch)
     f = build(tmp_path, monkeypatch, on_command=snapshot)
     f.driver.run()
     assert seen == dict.fromkeys(("connect", "write-temp", "reload"), "SEND_PENDING")
+
+
+TWO_PRIORS = b"aabbccddeeff\nbbccddeeff00\n"
+ROLLBACK_LABELS = [
+    "write-temp",
+    "validate",
+    "remove-temp",
+    "readback",
+    "reload",
+    "tunnel-health",
+]
+
+
+def failed_after_switch(tmp_path, monkeypatch, **kwargs):
+    f = build(tmp_path, monkeypatch, **kwargs)
+    f.world.prior_ids = TWO_PRIORS
+    with pytest.raises(ValueError, match="prior container scope"):
+        f.driver.run()
+    assert f.host.record["effect_possible"] is False
+    assert f.live.read_bytes() == candidate_bytes(f.g)
+    return f
+
+
+@pytest.mark.parametrize("connected_ip", [None, CADDY_IP])
+def test_rollback_restaura_o_backup_conferido_e_desconecta_so_se_conectou(
+    tmp_path, monkeypatch, connected_ip
+):
+    f = failed_after_switch(tmp_path, monkeypatch, connected_ip=connected_ip)
+    inode = f.live.stat().st_ino
+    before = len(f.world.commands)
+    f.driver.restore_previous()
+    labels = [label(argv) for argv in f.world.commands[before:]]
+    expected = ROLLBACK_LABELS + (["disconnect"] if connected_ip is None else [])
+    assert labels == expected
+    assert f.live.read_bytes() == CADDYFILE and f.live.stat().st_ino == inode
+    assert f.world.argv_of("disconnect") == (
+        [[DOCKER, "network", "disconnect", NETWORK, CADDY]] if not connected_ip else []
+    )
+    assert f.world.temp == {}
+    assert dispatches(f.host)["restore-previous"] == "EFFECT_CONFIRMED"
+    assert f.host.record["state"] == "ROLLED_BACK"
+
+
+def test_rollback_confere_o_sha_do_backup_antes_de_qualquer_efeito(
+    tmp_path, monkeypatch
+):
+    f = failed_after_switch(tmp_path, monkeypatch)
+    (f.host.directory / "previous-Caddyfile").write_bytes(b"tampered")
+    before = len(f.world.commands)
+    with pytest.raises(ValueError, match="rollback exact checkpoint"):
+        f.driver.restore_previous()
+    assert len(f.world.commands) == before
+    assert "restore-previous" not in dispatches(f.host)
+    assert f.live.read_bytes() == candidate_bytes(f.g)
+
+
+def test_rollback_com_sha_divergente_dentro_do_container_nao_recarrega(
+    tmp_path, monkeypatch
+):
+    f = failed_after_switch(tmp_path, monkeypatch)
+    f.world.seen_by_container = candidate_bytes(f.g)
+    reloads = len(f.world.argv_of("reload"))
+    with pytest.raises(ValueError, match="caddy container readback"):
+        f.driver.restore_previous()
+    assert len(f.world.argv_of("reload")) == reloads
+    assert "disconnect" not in f.world.labels()
+    assert dispatches(f.host)["restore-previous"] == "OUTCOME_UNKNOWN"
+
+
+def test_rollback_com_validate_que_falha_nao_escreve_no_arquivo_vivo(
+    tmp_path, monkeypatch
+):
+    f = failed_after_switch(tmp_path, monkeypatch)
+    f.world.fail_validate = True
+    with pytest.raises(ValueError, match="caddy adapt failed"):
+        f.driver.restore_previous()
+    assert f.live.read_bytes() == candidate_bytes(f.g)
+    assert f.world.labels()[-2:] == ["validate", "remove-temp"]
+
+
+def test_rollback_recusa_troca_de_inode(tmp_path, monkeypatch):
+    f = failed_after_switch(tmp_path, monkeypatch)
+    fresh = f.live.with_name("Caddyfile.new")
+    fresh.write_bytes(b"# replaced\n")
+    fresh.replace(f.live)
+    reloads = len(f.world.argv_of("reload"))
+    with pytest.raises(ValueError, match="caddyfile inode changed"):
+        f.driver.restore_previous()
+    assert f.live.read_bytes() == b"# replaced\n"
+    assert len(f.world.argv_of("reload")) == reloads
+
+
+def test_rollback_antes_do_switch_nao_desconecta_rede_que_nao_conectou(
+    tmp_path, monkeypatch
+):
+    def gone(world, argv):
+        if "status=running" in argv:
+            raise ValueError("candidate container gone")
+
+    f = build(tmp_path, monkeypatch, on_command=gone)
+    with pytest.raises(ValueError, match="candidate container gone"):
+        f.driver.run()
+    assert f.host.record["effect_possible"] is False
+    f.driver.restore_previous()
+    assert "disconnect" not in f.world.labels()
+    assert "connect" not in f.world.labels()
+    assert f.live.read_bytes() == CADDYFILE
+
+
+def test_rollback_recusa_efeito_incerto(tmp_path, monkeypatch):
+    def fault(world, argv):
+        if label(argv) == "reload":
+            raise TimeoutError("synthetic lost response")
+
+    f = build(tmp_path, monkeypatch, on_command=fault)
+    with pytest.raises(TimeoutError):
+        f.driver.run()
+    with pytest.raises(ValueError, match="uncertain effect cannot auto-rollback"):
+        f.driver.restore_previous()
+
+
+def real_host(tmp_path, monkeypatch, *, fault):
+    """Actual host_main over real kernel pipes; the Docker daemon is synthetic."""
+    import base64
+    import io
+    import os
+    from pathlib import Path
+
+    from test_personal_platform_dispatcher import closed_ready_fixture
+
+    g, clock, gov, api, *_ = closed_ready_fixture()
+    root = g.private_directory(tmp_path / "host")
+    runner = g.private_directory(tmp_path / "runner")
+    staged = g.private_directory(tmp_path / "stage")
+    live = tmp_path / "edge" / "Caddyfile"
+    live.parent.mkdir()
+    live.write_bytes(CADDYFILE)
+    gov["host"] = caddy_config(
+        g,
+        caddyfile_path=str(live),
+        caddy_container=CADDY,
+        proxy_network=NETWORK,
+        caddy_ip=CADDY_IP,
+        previous_caddyfile_sha256=g.sha(CADDYFILE),
+    )
+    envelope = {"release_manifest": {"requested_action": "deploy"}}
+    raw = g.canonical(envelope)
+    gov["binding"]["original_bytes"]["envelope_sha256"] = g.sha(raw)
+    gov["binding"]["original_bytes"]["archive_sha256"] = g.sha(b"original archive")
+    gov["binding"]["api_image"] = "registry.example/api@sha256:" + H
+    hostkey = b"synthetic public host key"
+    fingerprint = base64.b64encode(g.hashlib.sha256(hostkey).digest()).decode()
+    gov["binding"]["platform"]["host_key_fingerprint"] = "SHA256:" + fingerprint.rstrip("=")
+    binary = b"synthetic cloudflared"
+    gov["runner"] = {
+        "ssh_hostname": "host.example.test",
+        "known_hosts": "host.example.test ssh-ed25519 "
+        + base64.b64encode(hostkey).decode(),
+        "cloudflared": {"version": "2026.1.0", "sha256": g.sha(binary)},
+        "ssm_parameters": {
+            name: "arn:aws:ssm:us-east-2:111111111111:parameter/cnesdata/deploy/" + name
+            for name in ("ssh-key", "cloudflare-client-id", "cloudflare-client-secret")
+        },
+    }
+    for name in ("platform", "baseline"):
+        original = ("original " + name).encode()
+        g.durable(root / ("original-" + name + ".json"), original)
+        gov["binding"]["original_bytes"][name + "_sha256"] = g.sha(original)
+    admission = g.admit_physical_action(gov["binding"], gov, api, clock)
+    request = g.Request(
+        envelope, raw, b"original archive", bytearray(b"synthetic-token"), admission
+    )
+    monkeypatch.setattr(g, "ROOT", root)
+    monkeypatch.setattr(g, "Clock", lambda: clock)
+    monkeypatch.setattr(g.time, "time", lambda: clock.t)
+    monkeypatch.setattr(g, "load_governance", lambda: gov)
+    monkeypatch.setattr(g, "GitHub", lambda *_: api)
+    monkeypatch.setattr(
+        g, "authenticate_request", lambda *_: (copy.deepcopy(gov["binding"]), {})
+    )
+    monkeypatch.setattr(g, "verify_original_activation", lambda *_: None)
+    monkeypatch.setattr(g, "verify_runtime_probes", lambda *_: None)
+    monkeypatch.setattr(g, "stage_archive", lambda *_: staged)
+    private_dir = g.private_directory
+    monkeypatch.setattr(
+        g,
+        "private_directory",
+        lambda p: (
+            private_dir(staged)
+            if str(p) == "/run/personal-platform/staging"
+            else private_dir(p)
+        ),
+    )
+    world = World(live, on_command=fault)
+    world.clock, world.image = clock, gov["binding"]["api_image"]
+    world.normalized = compose_config(world.image)
+    world.log = tmp_path / "commands.log"
+    monkeypatch.setattr(g, "supervise", world.process)
+    monkeypatch.setattr(g.urllib.request, "build_opener", lambda *_: world)
+    return types.SimpleNamespace(
+        g=g,
+        clock=clock,
+        gov=gov,
+        api=api,
+        root=root,
+        runner=runner,
+        live=live,
+        world=world,
+        request=request,
+        binary=binary,
+        io=io,
+        os=os,
+        Path=Path,
+    )
+
+
+def ssh_process(f, tmp_path):
+    g, clock, root, os = f.g, f.clock, f.root, f.os
+
+    class SSHProcess:
+        def __init__(self, argv, **kwargs):
+            assert argv[0] == "/usr/bin/ssh"
+            input_r, input_w = os.pipe()
+            output_r, output_w = os.pipe()
+            self.pid = os.fork()
+            self.returncode = None
+            if self.pid == 0:
+                os.setsid()
+                os.close(input_w)
+                os.close(output_r)
+                g.sys = types.SimpleNamespace(
+                    stdin=types.SimpleNamespace(
+                        buffer=os.fdopen(input_r, "rb", buffering=0)
+                    ),
+                    stdout=types.SimpleNamespace(
+                        buffer=os.fdopen(output_w, "wb", buffering=0)
+                    ),
+                )
+                os.environ["SSH_ORIGINAL_COMMAND"] = "deploy"
+                try:
+                    status = g.host_main()
+                except BaseException:  # noqa: BLE001 -- the child endpoint must exit
+                    import traceback
+
+                    (root / "child-error.txt").write_text(traceback.format_exc())
+                    status = 1
+                (root / "child-clock").write_text(str(clock.t))
+                os._exit(status)
+            os.close(input_r)
+            os.close(output_w)
+            self.stdin = os.fdopen(input_w, "wb", buffering=0)
+            self.stdout = os.fdopen(output_r, "rb", buffering=0)
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                _, status = os.waitpid(self.pid, 0)
+                self.returncode = os.waitstatus_to_exitcode(status)
+                returned = int((root / "child-clock").read_text())
+                clock.advance(returned - clock.t)
+            return self.returncode
+
+        def poll(self):
+            if self.returncode is None:
+                pid, status = os.waitpid(self.pid, os.WNOHANG)
+                if pid:
+                    self.returncode = os.waitstatus_to_exitcode(status)
+            return self.returncode
+
+    return SSHProcess
+
+
+def execute_runner(f, monkeypatch, tmp_path):
+    g = f.g
+
+    class SSM:
+        def get_parameter(self, Name, WithDecryption):
+            return {
+                "Parameter": {"ARN": Name, "Type": "SecureString", "Value": "synthetic"}
+            }
+
+    monkeypatch.setattr(g.subprocess, "Popen", ssh_process(f, tmp_path))
+    monkeypatch.setattr(
+        g.urllib.request,
+        "urlopen",
+        lambda *_a, **_kw: __import__("contextlib").closing(f.io.BytesIO(f.binary)),
+    )
+    monkeypatch.setattr(g, "runner_request", lambda *_: f.request)
+    monkeypatch.setattr(g, "runner_clients", lambda _: (None, SSM()))
+    monkeypatch.setattr(g, "runner_handoff", lambda *_: None)
+    monkeypatch.setattr(
+        g.sys, "stdin", types.SimpleNamespace(buffer=f.io.BytesIO(b"synthetic-token"))
+    )
+    monkeypatch.setenv("CNESDATA_HOST_GOVERNANCE", g.canonical(f.gov).decode())
+    monkeypatch.setenv("RUNNER_TEMP", str(f.runner))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(f.runner / "outputs"))
+    return g.runner_main("execute")
+
+
+def final_record(f):
+    g = f.g
+    authority = g.host_json(g.read_private(f.root / "authority.json"))
+    directory = f.root / "cnesdata" / authority["head"]["operation_id"]
+    name = authority["head"]["record_sha256"] + ".json"
+    return g.host_json(g.read_private(directory / name)), directory
+
+
+def test_host_main_restaura_automaticamente_apos_falha_conhecida_pos_switch(
+    tmp_path, monkeypatch
+):
+    def two_priors(world, argv):
+        if argv[1:2] == ["ps"] and "-aq" in argv:
+            world.prior_ids = TWO_PRIORS
+
+    f = real_host(tmp_path, monkeypatch, fault=two_priors)
+    assert execute_runner(f, monkeypatch, tmp_path) == 2
+    record, directory = final_record(f)
+    kinds = {d["kind"]: d["state"] for d in record["dispatches"]}
+    assert record["state"] == "ROLLED_BACK"
+    assert record["effect_possible"] is False
+    assert kinds["caddy-switch"] == kinds["restore-previous"] == "EFFECT_CONFIRMED"
+    assert f.live.read_bytes() == CADDYFILE
+    log = (tmp_path / "commands.log").read_text().split()
+    assert log[-1] == "disconnect" and log.count("reload") == 2
+    kept = f.g.read_private(directory / "previous-Caddyfile")
+    assert kept == CADDYFILE
+
+
+def test_host_main_nao_restaura_efeito_incerto_do_switch(tmp_path, monkeypatch):
+    def fault(world, argv):
+        if label(argv) == "reload":
+            raise TimeoutError("synthetic lost response")
+
+    f = real_host(tmp_path, monkeypatch, fault=fault)
+    with pytest.raises(ValueError, match="unknown outcome"):
+        execute_runner(f, monkeypatch, tmp_path)
+    record, directory = final_record(f)
+    kinds = {d["kind"]: d["state"] for d in record["dispatches"]}
+    assert record["state"] == "RECOVERY_REQUIRED"
+    assert record["effect_possible"] is True
+    assert kinds["caddy-switch"] == "OUTCOME_UNKNOWN"
+    assert "restore-previous" not in kinds
+    log = (tmp_path / "commands.log").read_text().split()
+    assert log.count("reload") == 1 and "disconnect" not in log
+    assert f.live.read_bytes() == candidate_bytes(f.g)
+    kept = f.g.read_private(directory / "previous-Caddyfile")
+    assert kept == CADDYFILE
