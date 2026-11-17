@@ -4,6 +4,7 @@ The legacy plan/apply envelopes and 1980-second initial admission remain separat
 No credentials, network, caller commands or lifecycle side effects in this module.
 """
 import base64
+import hashlib
 import time
 import re
 
@@ -242,6 +243,47 @@ def static_sessions(binding, operation):
     """Exact delegation -> session names for one static ABI operation; the caller authenticates the binding."""
     c.require(operation in STATIC_SESSION_OPERATIONS, "closed static session operation")
     return {alias: static_session(binding, name) for alias, name in STATIC_SESSION_OPERATIONS[operation].items()}
+
+
+def s3_body_bytes(body):
+    """Queue item 3d (CnesData 9cdd452f publish_dashboard.b64): {"base64": canonical padded standard base64}."""
+    c.closed(body, "base64")
+    text = body["base64"]
+    c.require(type(text) is str and text.isascii(), "S3 Body base64 text")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except ValueError as error:
+        raise ValueError("S3 Body base64 text") from error
+    c.require(base64.b64encode(raw).decode("ascii") == text, "S3 Body canonical base64")
+    return raw
+
+
+def s3_put_body(parameters):
+    """PutObject bytes for the native call; ChecksumSHA256 is base64(sha256(bytes)) as the product sends it.
+
+    The journal's canonical request limit bounds the text; this codec adds no size of its own.
+    """
+    c.require(type(parameters) is dict and "Body" in parameters and type(parameters.get("ChecksumSHA256")) is str,
+              "S3 Body PutObject parameters")
+    raw = s3_body_bytes(parameters["Body"])
+    c.require(parameters["ChecksumSHA256"] == base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii"),
+              "S3 Body ChecksumSHA256")
+    return raw
+
+
+def s3_body_value(stream, *, maximum):
+    """GetObject Body -> {"base64": ...}; reads at most maximum + 1 bytes and refuses past maximum."""
+    c.integer(maximum, 0)
+    chunks, size = [], 0
+    while size <= maximum:
+        chunk = stream.read(maximum + 1 - size)
+        c.require(type(chunk) is bytes, "S3 Body stream bytes")
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    c.require(size <= maximum, "S3 Body bound")
+    return {"base64": base64.b64encode(b"".join(chunks)).decode("ascii")}
 ADAPTER_STAGE_FIELDS = "close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence checkpoint_sha256"
 FENCE_PREPARE_PRODUCER = {
     "workflow_path": ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml", "job": "execute", "step_id": "gate",
