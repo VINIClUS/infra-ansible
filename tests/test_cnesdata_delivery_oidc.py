@@ -496,7 +496,10 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
                 if self.mutation == "extra-policy": names.append("other-policy")
                 return {"IsTruncated": self.mutation == "truncated", "PolicyNames": names}
             if operation == "list_attached_role_policies":
-                return {"IsTruncated": False, "AttachedPolicies": [{"PolicyArn": "other"}] if self.mutation == "attached" else []}
+                freeze = "arn:aws:iam::" + fragment["application_role_arn"].split(":")[4] + ":policy/cnesdata-budget-freeze"
+                attached = {"attached": [{"PolicyArn": "other"}],
+                            "freeze": [{"PolicyName": "cnesdata-budget-freeze", "PolicyArn": freeze}]}.get(self.mutation, [])
+                return {"IsTruncated": False, "AttachedPolicies": attached}
             assert operation == "get_role_policy"
             self.policies_read += 1
             key = "application_history" if parameters["PolicyName"].endswith("predecessor-read") else "application"
@@ -519,6 +522,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     for mutation in ("managed-default", "boundary", "trust", "duration", "role-replaced", "extra-policy", "truncated", "attached", "policy-changed"):
         with pytest.raises(ValueError):
             session_owner.verify_application(IAM(mutation), authority, now + 3600, Guard(), clock=lambda: now)
+    with pytest.raises(ValueError, match="freeze=attached"):
+        session_owner.verify_application(IAM("freeze"), authority, now + 3600, Guard(), clock=lambda: now)
 
     # Own-role bootstrap uses the real source and authority/readback validators.
     # The OIDC exchange and IAM network boundary are synthetic; no AWS is used.

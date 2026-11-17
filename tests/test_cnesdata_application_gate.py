@@ -2126,6 +2126,193 @@ def test_journal_records_only_the_operation_finite_sdk_set_and_write_responses_s
         assert journal._failed and journal.unknown
 
 
+_FREEZE_ACCOUNT = "111122223333"
+_FREEZE = {"PolicyName": "cnesdata-budget-freeze", "PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/cnesdata-budget-freeze"}
+
+
+@pytest.mark.parametrize("case, refusal", [
+    ("none", None), ("freeze", "freeze=attached"), ("freeze-and-other", "freeze=attached"),
+    ("other", "application has no attached policies"), ("foreign-freeze", "application has no attached policies"),
+    ("path-freeze", "application has no attached policies"), ("truncated-freeze", "application has no attached policies"),
+    ("untyped", "application has no attached policies")])
+def test_application_unfrozen_refuses_the_budget_freeze_as_its_own_reason(case, refusal):
+    """Queue item 3a: cnesdata-budget-freeze (personal-infra-live#2 6883013198, path /) refuses as freeze=attached."""
+    from tools.cnesdata_delivery import session_owner
+    other = {"PolicyName": "other", "PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/other"}
+    attached = {"none": [], "freeze": [_FREEZE], "freeze-and-other": [other, _FREEZE], "other": [other],
+                "foreign-freeze": [_FREEZE | {"PolicyArn": _FREEZE["PolicyArn"].replace(_FREEZE_ACCOUNT, "999900001111")}],
+                "path-freeze": [_FREEZE | {"PolicyArn": _FREEZE["PolicyArn"].replace(":policy/", ":policy/x/")}],
+                "truncated-freeze": [_FREEZE], "untyped": None}[case]
+    response = {"IsTruncated": case == "truncated-freeze", "AttachedPolicies": attached}
+    if refusal is None:
+        assert session_owner.application_unfrozen(response, _FREEZE_ACCOUNT) is None
+        return
+    with pytest.raises(ValueError, match=refusal):
+        session_owner.application_unfrozen(response, _FREEZE_ACCOUNT)
+
+
+def _close_role_session_case(monkeypatch, mutation=None):
+    """Finite close session over the fence SDK boundary fakes; the role carries the promotion_fence_operator grants."""
+    from tools.cnesdata_delivery import application_gate as ag
+    native_mutations = {"arn", "role-id", "account", "packed", "expiration"}
+    ag, args, calls, native = _fence_sdk_boundary_case(monkeypatch, mutation=mutation if mutation in native_mutations else None)
+    operation = "closed-ready" if mutation == "closed-ready-prepare" else "close-drain"
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    if mutation == "closed-ready-prepare":
+        journal._request["stage"] = _adapter_case("close-drain")[0]["stage"]
+    role = args["role"]
+    statements = []
+    for action, keys in (("GetItem", ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]), ("UpdateItem", ["ENV#prod#FENCE"]),
+                         ("ConditionCheckItem", ["ENV#prod#SEMAPHORE"])):
+        if (mutation, action) not in {("no-write-grant", "UpdateItem"), ("no-check-grant", "ConditionCheckItem")}:
+            statements.append({"Effect": "Allow", "Action": "dynamodb:" + action, "Resource": CLOSE_SCOPE["control_table_arn"],
+                               "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": keys},
+                                             "Null": {"dynamodb:LeadingKeys": "false"}}})
+    statements.append({"Effect": "Allow", "Action": "states:DescribeExecution",
+                       "Resource": CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":*"})
+    role["policy"] = {"Version": "2012-10-17", "Statement": statements}
+    scope = dict(CLOSE_SCOPE)
+    if mutation == "members-scope": scope["members"] = []
+    if mutation == "synthetic-table": scope["control_table_arn"] = scope["control_table_arn"].replace("control-plane", "control")
+    stage = journal._request["stage"]
+    if mutation == "api-stage": stage.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
+    if mutation == "closed": stage["close"] = 1000
+    if mutation == "deadline": stage["deadline"] = 1899
+    if mutation == "late": stage.update(deadline=1340, preparation_deadline=1340)
+    if mutation == "future-admission": stage["admitted_at"] = 1301
+    args.update(journal=journal, scope=scope, credential_limit=2199 if mutation == "credential" else 3000)
+    return ag, args, calls, native
+
+
+_CLOSE_SESSION_REFUSALS = {"api-stage": "preparation/credential window", "closed": "preparation/credential window",
+                           "deadline": "preparation/credential window", "late": "preparation/credential window",
+                           "future-admission": "preparation/credential window", "credential": "preparation/credential window",
+                           "closed-ready-prepare": "API/credential window", "members-scope": "closed object fields",
+                           "synthetic-table": "close-drain pinned get_item template",
+                           "no-write-grant": "effective close-write grant", "no-check-grant": "effective close-write grant"}
+
+
+@pytest.mark.parametrize("mutation", [None, *sorted(_CLOSE_SESSION_REFUSALS), "arn", "role-id", "account", "packed", "expiration"])
+def test_finite_close_session_is_the_preparation_window_per_item_policy(monkeypatch, mutation):
+    """Decision 4: application-prepare, close/decision unset, deadline = preparation_deadline, per-item grants."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, calls, native = _close_role_session_case(monkeypatch, mutation)
+    if mutation in _CLOSE_SESSION_REFUSALS:
+        with pytest.raises(ValueError, match=_CLOSE_SESSION_REFUSALS[mutation]):
+            ag._assume_fence_session(**args)
+        assert calls == native == []
+        return
+    if mutation:
+        with pytest.raises(ValueError):
+            ag._assume_fence_session(**args)
+        assert len(calls) == 1
+        return
+    session = ag._assume_fence_session(**args)
+    assert session.scope == CLOSE_SCOPE and session.deadline == 1900 and len(calls) == len(native) == 1
+    expected = session_policy.fence_close_session_policy(control_table_arn=CLOSE_SCOPE["control_table_arn"],
+        execution_prefix=CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
+    assert calls[0][2]["Policy"] == c.canonical(expected).decode().strip() and calls[0][2]["DurationSeconds"] == 900
+
+
+def _close_drain_capability_case(monkeypatch, mutation=None):
+    """Connected close-drain composition: real prepared producer/codec, real broker; S3/STS/IAM are external fakes."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import Authority
+    kwargs, _, fragment = _fence_prepare_package_case(monkeypatch)
+    activation = b"original-ext2-payload-bytes"
+    kwargs["activation_sha256"] = c.sha(activation)
+    files = lr.fence_prepare_package(**kwargs)
+    prepared = lr.PreparedFence(files)
+    owner, pin = kwargs["owner"], kwargs["authority"].pin
+    preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
+    _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    authority = Authority(pin, 5000.0, None, fragment, "3" * 64)
+    api = SimpleNamespace(expiries={(c.REPOSITORY, 81): 6000.0}, digests={(c.REPOSITORY, 81): "2" * 64})
+    expirations = ag.close_expirations(authority, api)
+    if mutation == "expirations": api.expiries[(c.REPOSITORY, 81)] = 5900.0
+    if mutation == "late-artifact": api.expiries[(c.REPOSITORY, 82)], api.digests[(c.REPOSITORY, 82)] = 6100.0, "4" * 64
+    inputs = {"activation": activation if mutation != "activation" else b"other", "expirations": expirations}
+    window = {"close": None, "fixed_deadline": None, "input_deadline": None, "stage": "application-prepare",
+              "admitted_at": preparation["admitted_at"] - (mutation == "admitted"),
+              "deadline": preparation["deadline"] - (mutation == "preparation"),
+              "decision": None, "preparation_deadline": preparation["deadline"] - (mutation == "preparation"),
+              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), **lc.application_identity(owner)}
+    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
+               "activation_sha256": c.sha(inputs["activation"]),
+               "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = dict(sts_args["governance"])
+    if mutation == "delegation":
+        governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
+    events = []
+    attached = {"freeze": [_FREEZE], "attached": [{"PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/other"}]}.get(mutation, [])
+    class Application:
+        def call(self, service, operation, **parameters):
+            events.append((service, operation))
+            if service == "iam":
+                assert operation == "list_attached_role_policies"
+                assert parameters == {"RoleName": fragment["application_role_name"], "MaxItems": 100}
+                return {"IsTruncated": False, "AttachedPolicies": attached}
+            return sts_args["aws"].call(service, operation, **parameters)
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: events.append(("lease", "check")) or {"held": True})
+    args = dict(aws=Application(), api=api, governance=governance, authority=authority, journal=journal, keeper=keeper,
+                prepared=prepared, credential_limit=3000, clock=lambda: 1300)
+    return ag, args, sts_calls, keeper, journal, events
+
+
+_CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "preparation": "original preparation is the close stage",
+                              "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
+                              "expirations": "close-drain authenticated expirations",
+                              "late-artifact": "close-drain authenticated expirations",
+                              "freeze": "freeze=attached", "attached": "application has no attached policies"}
+
+
+@pytest.mark.parametrize("mutation", [None, *sorted(_CLOSE_CAPABILITY_REFUSALS)])
+def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_before_sts(monkeypatch, mutation):
+    """Decision 4 and 3a: every refusal mints no credential, poisons the journal and keeps the lease held."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError, match=_CLOSE_CAPABILITY_REFUSALS[mutation]):
+            ag.close_drain_capability(**args)
+        assert sts_calls == [] and journal._failed is True and keeper.uncertainty() == [{"kind": "context-failed"}]
+        assert ("sts", "assume_role") not in events
+        assert (("iam", "list_attached_role_policies") in events) is (mutation in {"freeze", "attached"})
+        return
+    broker = ag.close_drain_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker] and keeper.uncertainty() == []
+    assert events == [("lease", "check"), ("iam", "list_attached_role_policies"), ("sts", "assume_role")]
+    scope = broker.session.scope
+    assert set(scope) == {"account", "control_table_arn", "machine_arn"} and broker.session.deadline == 1900
+    expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
+        execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
+    assert len(sts_calls) == 1 and sts_calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+
+
+@pytest.mark.parametrize("capability", ["close_drain_capability", "closed_ready_capability"])
+def test_fence_capabilities_refuse_the_other_operation_before_any_io(monkeypatch, capability):
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    if capability == "closed_ready_capability":
+        args.update(request={}, run={}, guard=None)
+        args.pop("authority")
+    else:
+        journal._request = dict(journal._request, operation="closed-ready")
+    with pytest.raises(ValueError, match="only; every other operation remains rejected"):
+        getattr(ag, capability)(**args)
+    assert sts_calls == [] and events == [] and keeper._contexts == []
+
+
 def _product_context_request(wrapper, **extra):
     import json
     return (json.dumps({"mode_canary": {"context_manifest": wrapper}, **extra}, ensure_ascii=False,
@@ -4474,7 +4661,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     root = Path(__file__).resolve().parents[1]
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
                "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
-               "close_expirations"}
+               "close_expirations", "close_drain_capability"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4502,6 +4689,9 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller
+        (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
+        (gate, "close_drain_capability", "_assume_fence_session"),
+        (gate, "close_drain_capability", "ClosedReadyBroker"),
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]

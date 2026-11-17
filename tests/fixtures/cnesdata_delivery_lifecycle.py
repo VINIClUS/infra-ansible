@@ -583,7 +583,7 @@ def fence_projection_case(*, probe=False):
     from fixtures.cnesdata_iam_sources import symbolic_state
     account = "111122223333"
     principal = f"arn:aws:iam::{account}:role/cnesdata-prod-application"
-    table = f"arn:aws:dynamodb:us-east-2:{account}:table/cnesdata-prod-control"
+    table = f"arn:aws:dynamodb:us-east-2:{account}:table/cnesdata-prod-control-plane"
     role_address = "module.runtime_iam.aws_iam_role.promotion_fence_operator[0]"
     policy_address = "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]"
     root = b'''module "runtime_iam" {
