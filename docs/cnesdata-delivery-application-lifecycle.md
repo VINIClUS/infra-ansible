@@ -600,11 +600,15 @@ journal. Every object must match its own closed field set and `version`/`kind` (
 
 - `routing`: `fence` (OPEN or CLOSED) and `routes_match` from the `routing` observation (reopen).
 - `static`: the `publication` observation, with the closed fields and schema of CnesData 9cdd452f
-  `_api_static_records.py` (`cnesdata.static-publication/v1`), whose `closed_ready_sha256` equals
-  the digest of the `closed-ready` observation (the item 6 equality); accepted.
+  `_api_static_records.py` (`cnesdata.static-publication/v1`) and the field types of its
+  `PublicationReceipt` (`uploaded` a list of string pairs, `already_published` a list of strings,
+  `invalidation_id` a string or null), whose `closed_ready_sha256` equals the digest of the
+  `closed-ready` observation (the item 6 equality); accepted.
 - `membership`: the frozen `close-drain` members (host member shape, `frozen_membership_sha256`
-  commitment) against the `terminal` readback members. `resolved` only with the same host identity
-  tuples in the same order and every resolution TERMINAL, ABSENT_PROVEN or CANCEL_BEFORE_SEND.
+  commitment) against the `terminal` readback members. Identity fields have the exact host types
+  (`generation` an integer that is not a boolean, `execution_ref` a string or null, the others
+  strings). `resolved` only with the same host identity tuples in the same order and every
+  resolution TERMINAL, ABSENT_PROVEN or CANCEL_BEFORE_SEND.
 - `quiescence`: a factory over `Keeper.uncertainty()`. `quiescent`, `state_clean`, `pending` and
   `observed_at` come from the `terminal` readback; `unknown` is the readback's plus the held
   uncertainty, never dropped.
