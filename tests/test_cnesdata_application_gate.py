@@ -4740,7 +4740,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
                "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
                "close_expirations", "close_drain_capability", "register_terminal_validator", "routing_terminal_validator",
-               "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator"}
+               "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
+               "host_terminal_validator", "decision_terminal_validator"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5046,3 +5047,169 @@ def test_keeper_finish_refuses_when_observation_validators_report_failure(mutati
     with pytest.raises(ValueError):
         keeper.finish(reference)
     assert store.get() == before and store.get()[0]["status"] == "held"
+
+
+def _synthetic_terminal_artifacts(vectors, **changes):
+    """SYNTHETIC labelled authenticated bytes: host-handoff follows host_gate.py public handoff (version 1),
+    recovery-decision follows host_gate.validate_recovery_decision. Not product bytes or live acceptance."""
+    artifacts = {
+        "host-handoff": {"version": 1, "kind": "host-handoff", "caller": dict(vectors["closed-ready"]["common"]["caller"]),
+                         "producer_sha": "c" * 40, "closed_ready_sha256": c.sha(c.canonical(vectors["closed-ready"])),
+                         "original_request_sha256": "1" * 64, "status": "accepted", "response_sha256": "2" * 64,
+                         "proof_sha256": "3" * 64, "receipt_sha256": "4" * 64, "witness_sha256": None,
+                         "operation_id": "5" * 64, "binding_sha256": "6" * 64, "generation": 2,
+                         "recovery_decision": None, "recovery_proof_sha256": None},
+        "recovery-decision": {"version": 1, "operation_id": "5" * 64, "binding_sha256": "6" * 64, "generation": 2,
+                              "choice_at": c.utc(1000), "choice_monotonic_ms": 5, "clock_boot_id": "synthetic-boot",
+                              "fixed_deadline": c.utc(2800), "recovery_deadline": c.utc(1420), "allocated_seconds": 420,
+                              "convergence_budget_seconds": 300, "finalization_budget_seconds": 60,
+                              "uncertainty_budget_seconds": 60, "checkpoint_sha256": "7" * 64}}
+    for name, change in changes.items():
+        change(artifacts[name])
+    return {name: c.canonical(value) for name, value in artifacts.items()}
+
+
+RECOVERY_WINDOW = {"stage": "recovery", "fixed_deadline": 2800,
+                   "decision": {"choice_at": 1000, "deadline": 1420, "checkpoint_sha256": "e" * 64}}
+
+
+def _validate_artifact(kind, *, vectors=None, artifacts=None, source=None, window=None, observations=None):
+    from tools.cnesdata_delivery import application_gate as ag
+    vectors = vectors or _synthetic_terminal_vectors()
+    artifacts = artifacts or _synthetic_terminal_artifacts(vectors)
+    digests, journal = _journal_observations(vectors)
+    role = {"host": "host-handoff", "decision": "recovery-decision"}[kind]
+    validator = getattr(ag, kind + "_terminal_validator")(artifacts[role])
+    if source is None:
+        source = {name: c.sha(artifacts[name]) if name == role else digests[name] for name in ag.TERMINAL_SOURCE_ROLES[kind].split()}
+    return validator(source, owner={"owner_sha256": "a" * 64}, window=window or RECOVERY_WINDOW,
+                     observations=journal if observations is None else observations), source
+
+
+@pytest.mark.parametrize("status,accepted", [("accepted", True), ("rolled_back", False), ("recovery_required", False)])
+def test_host_validator_reports_authenticated_handoff_status_bound_to_closed_ready(status, accepted):
+    vectors = _synthetic_terminal_vectors()
+    artifacts = _synthetic_terminal_artifacts(vectors, **{"host-handoff": lambda value: value.update(status=status)})
+    result, source = _validate_artifact("host", vectors=vectors, artifacts=artifacts)
+    assert set(source) == {"host-handoff", "closed-ready"}
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": accepted}}
+
+
+@pytest.mark.parametrize("mutation", ["status", "closed-ready-binding", "caller", "extra-field", "kind", "version",
+                                      "ready-common-field", "factory-text"])
+def test_host_validator_refuses_unbound_or_malformed_handoff(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    if mutation == "factory-text":
+        with pytest.raises(ValueError, match="authenticated host handoff bytes"):
+            ag.host_terminal_validator("{}")
+        return
+    def handoff(value):
+        if mutation == "status": value["status"] = "unknown"
+        if mutation == "closed-ready-binding": value["closed_ready_sha256"] = "f" * 64
+        if mutation == "caller": value["caller"]["run_attempt"] = 2
+        if mutation == "extra-field": value["accepted"] = True
+        if mutation == "kind": value["kind"] = "closed-ready"
+        if mutation == "version": value["version"] = 2
+    vectors = _synthetic_terminal_vectors(**{"closed-ready": lambda value: value["common"].update(extra=1)}
+                                          if mutation == "ready-common-field" else {})
+    artifacts = _synthetic_terminal_artifacts(vectors, **{"host-handoff": handoff})
+    with pytest.raises(ValueError):
+        _validate_artifact("host", vectors=vectors, artifacts=artifacts)
+
+
+def test_decision_validator_binds_authenticated_recovery_decision_to_the_lease_decision():
+    result, source = _validate_artifact("decision")
+    assert set(source) == {"recovery-decision"}
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {}}
+
+
+@pytest.mark.parametrize("mutation", ["no-decision", "choice", "deadline", "fixed", "extra-field", "version", "missing-field",
+                                      "factory-text"])
+def test_decision_validator_refuses_unbound_or_malformed_recovery_decision(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    if mutation == "factory-text":
+        with pytest.raises(ValueError, match="authenticated recovery decision bytes"):
+            ag.decision_terminal_validator("{}")
+        return
+    window = copy.deepcopy(RECOVERY_WINDOW)
+    if mutation == "no-decision": window["decision"] = None
+    if mutation == "choice": window["decision"]["choice_at"] = 1001
+    if mutation == "deadline": window["decision"]["deadline"] = 1419
+    if mutation == "fixed": window["fixed_deadline"] = 2799
+    def decision(value):
+        if mutation == "extra-field": value["accepted"] = True
+        if mutation == "version": value["version"] = 2
+        if mutation == "missing-field": value.pop("clock_boot_id")
+    vectors = _synthetic_terminal_vectors()
+    with pytest.raises(ValueError):
+        _validate_artifact("decision", artifacts=_synthetic_terminal_artifacts(vectors, **{"recovery-decision": decision}),
+                           window=window)
+
+
+@pytest.mark.parametrize("kind", ["host", "decision"])
+@pytest.mark.parametrize("mutation", ["journal-substitution", "foreign-digest", "extra-role", "missing-role", "string"])
+def test_artifact_validator_reads_artifact_roles_only_from_authenticated_bytes(kind, mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    vectors = _synthetic_terminal_vectors()
+    artifacts = _synthetic_terminal_artifacts(vectors)
+    role = {"host": "host-handoff", "decision": "recovery-decision"}[kind]
+    digests, journal = _journal_observations(vectors)
+    source = {name: c.sha(artifacts[name]) if name == role else digests[name] for name in ag.TERMINAL_SOURCE_ROLES[kind].split()}
+    observations = dict(journal)
+    if mutation == "journal-substitution":  # Original bytes in the journal, other bytes authenticated by the caller.
+        observations[source[role]] = artifacts[role]
+        artifacts = dict(artifacts, **{role: artifacts[role].replace(b'"generation":2', b'"generation":3')})
+    if mutation == "foreign-digest": source[role] = "f" * 64
+    if mutation == "extra-role": source["facts"] = digests["routing"]
+    if mutation == "missing-role": source.pop(role)
+    if mutation == "string": source = source[role]
+    with pytest.raises(ValueError):
+        _validate_artifact(kind, vectors=vectors, artifacts=artifacts, source=source, observations=observations)
+
+
+def test_keeper_finish_accepts_with_authenticated_host_handoff_validator():
+    from tools.cnesdata_delivery import application_gate as ag
+    vectors = _synthetic_terminal_vectors()
+    artifacts = _synthetic_terminal_artifacts(vectors)
+    keeper, store, reference, _ = _observation_terminal_case(vectors)
+    digests = _journal_observations(vectors)[0]
+    keeper._terminal_validators.pop("host")
+    keeper.register_terminal_validator("host", ag.host_terminal_validator(artifacts["host-handoff"]), label="artifact-host")
+    reference["sources"]["host"] = {"host-handoff": c.sha(artifacts["host-handoff"]), "closed-ready": digests["closed-ready"]}
+    files = keeper.finish(reference)
+    assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+    assert c.loads(files["checkpoint.json"], canonical=True)["inputs"]["host"] == c.sha(c.canonical(reference["sources"]["host"]))
+
+
+def _recovery_terminal_case(vectors, artifacts):
+    """failed-closed-quiescent through the real decision/routing/membership/quiescence validators; SYNTHETIC restoration."""
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store, reference, _ = _observation_terminal_case(vectors)
+    window = store.get()[0]["lifecycle"]
+    keeper.lease.checkpoint(window | {"sequence": window["sequence"] + 1, "stage": "recovery", "deadline": 1300,
+                                      "decision": {"choice_at": 1000, "deadline": 1420, "checkpoint_sha256": window["checkpoint_sha256"]}})
+    proof = keeper._synthetic_terminal_proof
+    proof["assessment"].update(kind="failed-closed-quiescent", fence="CLOSED", accepted_modes=[],
+                               restoration={k: True for k in ("unit", "recovery", "audit", "api", "static", "first_static_absent")})
+    proof["inputs"] = {name: "e" * 64 for name in ("decision", "restoration", "routing", "membership", "quiescence")}
+    keeper._terminal_validators.pop("decision")
+    keeper.register_terminal_validator("decision", ag.decision_terminal_validator(artifacts["recovery-decision"]),
+                                       label="artifact-decision")
+    sources = {kind: reference["sources"][kind] for kind in ("routing", "membership", "quiescence")}
+    sources |= {"restoration": "synthetic-restoration", "decision": {"recovery-decision": c.sha(artifacts["recovery-decision"])}}
+    return keeper, store, {"kind": "failed-closed-quiescent", "checkpoint_raw": reference["checkpoint_raw"], "sources": sources}
+
+
+@pytest.mark.parametrize("mutation", [None, "foreign-decision", "routing-open"])
+def test_keeper_finish_records_recovery_failure_through_the_decision_validator(mutation):
+    vectors = _synthetic_terminal_vectors(routing=lambda value: value.update(fence="OPEN" if mutation == "routing-open" else "CLOSED"))
+    artifacts = _synthetic_terminal_artifacts(vectors, **{"recovery-decision": lambda value: value.update(
+        choice_at=c.utc(1001) if mutation == "foreign-decision" else value["choice_at"])})
+    keeper, store, reference = _recovery_terminal_case(vectors, artifacts)
+    if mutation is None:
+        terminal = c.loads(keeper.finish(reference)["terminal.json"], canonical=True)
+        assert terminal["promotion_status"] == "failed" and store.get()[0]["status"] == "released"
+        return
+    with pytest.raises(ValueError):
+        keeper.finish(reference)
+    assert store.get()[0]["status"] == "held"
