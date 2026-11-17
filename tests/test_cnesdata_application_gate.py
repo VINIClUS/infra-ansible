@@ -4749,7 +4749,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
                "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
                "close_expirations", "close_drain_capability", "register_terminal_validator", "routing_terminal_validator",
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
-               "host_terminal_validator", "decision_terminal_validator"}
+               "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
+               "static_session", "static_sessions"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4780,6 +4781,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
         (gate, "close_drain_capability", "_assume_fence_session"),
         (gate, "close_drain_capability", "ClosedReadyBroker"),
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
