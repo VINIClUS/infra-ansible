@@ -5314,7 +5314,8 @@ def test_static_validator_accepts_the_product_publication_shapes(change):
 
 
 @pytest.mark.parametrize("change", [
-    {"uploaded": {}}, {"uploaded": ["index.html"]}, {"uploaded": [["index.html"]]}, {"uploaded": [["index.html", 1]]},
+    {"uploaded": {}}, {"uploaded": ["index.html"]}, {"uploaded": ["v1"]}, {"uploaded": [{"key": "index.html", "version": "v1"}]},
+    {"uploaded": [["index.html"]]}, {"uploaded": [["index.html", 1]]},
     {"uploaded": [["index.html", "v1", "extra"]]}, {"already_published": "index.html"}, {"already_published": [1]},
     {"invalidation_id": 7}, {"invalidation_id": ["SYNTHETICINVALIDATION"]}])
 def test_static_validator_refuses_publication_fields_of_the_wrong_type(change):
