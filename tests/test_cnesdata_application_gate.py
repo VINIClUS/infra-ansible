@@ -5446,3 +5446,101 @@ def test_static_session_refuses_bindings_outside_the_498_contract(operation, mut
             return
     with pytest.raises(ValueError):
         lc.static_session(binding, operation)
+
+
+class _QuietGuard:
+    def check(self, seconds=1):
+        pass
+
+
+def _static_journal(operation, *, inputs=None):
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    request, owner, window, original = _adapter_case(operation)
+    original.update(inputs or {})
+    request["inputs"] = {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in original.items()}
+    return AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=original,
+                          activation_sha256=request["activation_sha256"], guard=_QuietGuard())
+
+
+def _publish_static_case(*, receipt=lambda value: None, ready=(("closed-ready",),), broker=False, other=None):
+    """Item 6: one closed-ready journal per entry of `ready`, each observing the listed kinds of the SYNTHETIC
+    closed-ready bytes (the second journal observes other bytes); the publish-static host-receipt is the
+    SYNTHETIC host handoff v1 bound to the first."""
+    from tools.cnesdata_delivery.application_gate import ClosedReadyBroker, Keeper
+    keeper = Keeper(None, {"lifecycle_version": 1}, None, api=None, governance=None)
+    vectors = _synthetic_terminal_vectors()
+    ready_raw = c.canonical(vectors["closed-ready"])
+    for index, kinds in enumerate(ready):
+        journal = _static_journal("closed-ready")
+        for kind in kinds:
+            journal.observe(kind, ready_raw if index == 0 else c.canonical(vectors["closed-ready"] | {"observed_at": c.utc(1001)}))
+        keeper.attach(journal)
+        if broker:
+            wrapper = ClosedReadyBroker.__new__(ClosedReadyBroker)
+            wrapper.journal = journal
+            keeper.attach(wrapper)
+    if other is not None:
+        journal = _static_journal(other)
+        journal.observe({"close-drain": "close-drain", "inventory": "inventory"}[other], ready_raw)
+        keeper.attach(journal)
+    handoff = json.loads(_synthetic_terminal_artifacts(vectors)["host-handoff"])
+    raw = receipt(handoff)
+    publish = _static_journal("publish-static", inputs={"host-receipt": raw if type(raw) is bytes else c.canonical(handoff)})
+    return keeper, publish, c.sha(ready_raw)
+
+
+@pytest.mark.parametrize("broker", [False, True])
+def test_publish_static_binds_the_host_receipt_to_the_single_closed_ready_observation(broker):
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, publish, digest = _publish_static_case(broker=broker)
+    assert ag.publish_static_closed_ready(publish, keeper) == digest
+    assert publish._failed is False and not any(item is publish for item in keeper._contexts)
+
+
+@pytest.mark.parametrize("mutation", ["digest", "absent", "two-in-one-journal", "two-journals", "other-kind-close-drain",
+                                      "other-kind-inventory", "observed-under-other-kind"])
+def test_publish_static_refuses_without_exactly_one_matching_closed_ready_observation(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    case = {"digest": {"receipt": lambda value: value.update(closed_ready_sha256="9" * 64)},
+            "absent": {"ready": ()}, "two-in-one-journal": {"ready": (("closed-ready", "closed-ready"),)},
+            "two-journals": {"ready": (("closed-ready",), ("closed-ready",))},
+            "other-kind-close-drain": {"ready": (), "other": "close-drain"},
+            "other-kind-inventory": {"ready": (), "other": "inventory"},
+            "observed-under-other-kind": {"ready": (("closed-ready",),), "other": "close-drain",
+                                          "receipt": lambda value: value.update(closed_ready_sha256="9" * 64)}}[mutation]
+    keeper, publish, _ = _publish_static_case(**case)
+    with pytest.raises(ValueError, match="publish-static host-receipt closed-ready binding"):
+        ag.publish_static_closed_ready(publish, keeper)
+    assert publish._failed is True and any(item is publish for item in keeper._contexts)
+
+
+@pytest.mark.parametrize("mutation", ["extra-field", "missing-field", "version", "version-bool", "kind", "noncanonical",
+                                      "not-json", "list"])
+def test_publish_static_refuses_a_host_receipt_outside_the_v1_handoff(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    def receipt(value):
+        if mutation == "extra-field": value["accepted"] = True
+        if mutation == "missing-field": value.pop("producer_sha")
+        if mutation == "version": value["version"] = 2
+        if mutation == "version-bool": value["version"] = True
+        if mutation == "kind": value["kind"] = "closed-ready"
+        if mutation == "noncanonical": return c.canonical(value) + b" "
+        if mutation == "not-json": return b"host-handoff\n"
+        if mutation == "list": return c.canonical([value])
+    keeper, publish, _ = _publish_static_case(receipt=receipt)
+    with pytest.raises(ValueError):
+        ag.publish_static_closed_ready(publish, keeper)
+    assert publish._failed is True
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "retire-static", "inventory"])
+def test_publish_static_binding_takes_only_a_publish_static_journal_and_the_keeper(operation):
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, publish, _ = _publish_static_case()
+    journal = _static_journal(operation)
+    with pytest.raises(ValueError, match="publish-static original journal/keeper"):
+        ag.publish_static_closed_ready(journal, keeper)
+    with pytest.raises(ValueError, match="publish-static original journal/keeper"):
+        ag.publish_static_closed_ready(publish, object())
+    with pytest.raises(ValueError, match="publish-static original journal/keeper"):
+        ag.publish_static_closed_ready(publish._request, keeper)
