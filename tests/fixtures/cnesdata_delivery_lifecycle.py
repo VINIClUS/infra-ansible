@@ -787,3 +787,18 @@ STATIC_MINIMAL_NORMAL_POLICY = {
     43: {"sha256": "24fd592ac7e710a50feb546c5c1628bab69b0b09e523fd1b34e99ad9dcdbcd90", "length": 10119},
     44: {"sha256": "b159a490a0876270d8b82bd0d6ce3610fd90d9a8a18ad9a26bc6cb15109e5201", "length": 10340},
 }
+# SYNTHETIC static_promotion plan of STATIC_SESSION_VECTOR and its #498 normal/observer policies, rendered by the same
+# `tofu console` run (distribution arn:aws:cloudfront::111122223333:distribution/E2SYNTHETIC0): sha256 and length only.
+STATIC_PROMOTION_VECTOR = {
+    "candidate_keys": ["assets/app.js", "index.html", "theme-init.js"],
+    "rollback_versions": [{"key": "index.html", "version_id": "Prev.Index_1"},
+                          {"key": "theme-init.js", "version_id": "Prev+Theme=2"}],
+    "retire_versions": [{"key": "assets/old.js", "version_id": "Old~Version/3"},
+                        {"key": "assets/old.js", "version_id": "Older-4"}],
+    "multipart_keys": [], "enabled_until": "2027-02-12T00:00:00Z",
+    "distribution_arn": "arn:aws:cloudfront::111122223333:distribution/E2SYNTHETIC0",
+}
+STATIC_POLICY_VECTOR = {
+    "normal": {"sha256": "490ed9a4d05bbcae5f4a7c31d8b988e85d0d87350743506bf5ad28096ba750ce", "length": 1317},
+    "observer": {"sha256": "664c77372a95ab57f33b0bc8325682b0c85bcf5603b83b953edec828ace050b3", "length": 568},
+}

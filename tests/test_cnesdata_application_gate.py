@@ -5581,29 +5581,49 @@ def test_publish_static_refuses_while_the_keeper_holds_sdk_uncertainty(held):
     assert publish._failed is True and any(item is publish for item in keeper._contexts)
 
 
-def _retire_static_plan_bound():
-    """Decision 5: largest retire_versions count #498 admits, from the pinned source's policy size rule."""
+def _static_promotion_source():
+    """Pinned #498 static-promotion.tf text and the bucket ARN its name_prefix validation fixes."""
     import re
     from pathlib import Path
-    from fixtures.cnesdata_delivery_lifecycle import (STATIC_MINIMAL_NORMAL_POLICY, STATIC_PROMOTION_SOURCE_SHA256,
-                                                      STATIC_VERSION_CHARS)
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_PROMOTION_SOURCE_SHA256
     raw = (Path(__file__).resolve().parent
            / "fixtures/cnesdata_delivery_sources/infra/opentofu/modules/runtime-iam/static-promotion.tf").read_bytes()
     assert c.sha(raw) == STATIC_PROMOTION_SOURCE_SHA256
     source = raw.decode()
+    return source, "arn:aws:s3:::" + re.search(r'var\.name_prefix ==\s*"([a-z0-9-]+)"', source).group(1) + "-static-web"
+
+
+def _static_policies(bucket, plan):
+    """#498 locals.static_policies normal/observer as jsonencode text; checked against tofu renderings by digest."""
+    expiry = {"DateLessThan": {"aws:CurrentTime": plan["enabled_until"]}}
+    resources = [bucket + "/" + key for key in plan["candidate_keys"]]
+    normal = [{"Effect": "Allow", "Action": action, "Resource": resources, "Condition": expiry}
+              for action in ("s3:PutObject", "s3:GetObject")]
+    normal.append({"Effect": "Allow", "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
+                   "Resource": plan["distribution_arn"], "Condition": expiry})
+    normal += [{"Effect": "Allow", "Action": "s3:DeleteObjectVersion", "Resource": bucket + "/" + ref["key"],
+                "Condition": expiry | {"StringEquals": {"s3:VersionId": ref["version_id"]}}}
+               for ref in plan["retire_versions"]]
+    observer = [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListMultipartUploadParts"],
+                 "Resource": [bucket + "/assets/*", bucket + "/index.html", bucket + "/theme-init.js"]},
+                {"Effect": "Allow", "Action": ["s3:ListBucketVersions", "s3:ListBucketMultipartUploads"], "Resource": bucket},
+                {"Effect": "Allow", "Action": "cloudfront:GetInvalidation", "Resource": plan["distribution_arn"]}]
+    return {alias: json.dumps({"Version": "2012-10-17", "Statement": statements}, sort_keys=True, separators=(",", ":"))
+            for alias, statements in (("normal", normal), ("observer", observer))}
+
+
+def _retire_static_plan_bound():
+    """Decision 5: largest retire_versions count #498 admits, from the pinned source's policy size rule."""
+    import re
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_MINIMAL_NORMAL_POLICY, STATIC_VERSION_CHARS
+    source, bucket = _static_promotion_source()
     limit = int(re.fullmatch(r"(?s).*\}\)\) : length\(policy\) <= (\d+)\]\),.*", source).group(1))
-    bucket = "arn:aws:s3:::" + re.search(r'var\.name_prefix ==\s*"([a-z0-9-]+)"', source).group(1) + "-static-web"
-    expiry = {"DateLessThan": {"aws:CurrentTime": "2027-02-12T00:00:00Z"}}
 
     def normal(count):
-        statements = [{"Effect": "Allow", "Action": action, "Resource": [bucket + "/assets/a"], "Condition": expiry}
-                      for action in ("s3:PutObject", "s3:GetObject")]
-        statements.append({"Effect": "Allow", "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
-                           "Resource": "arn:aws:cloudfront::111122223333:distribution/A", "Condition": expiry})
-        statements += [{"Effect": "Allow", "Action": "s3:DeleteObjectVersion", "Resource": bucket + "/assets/a",
-                        "Condition": expiry | {"StringEquals": {"s3:VersionId": version}}}
-                       for version in STATIC_VERSION_CHARS[:count]]
-        return json.dumps({"Version": "2012-10-17", "Statement": statements}, sort_keys=True, separators=(",", ":"))
+        return _static_policies(bucket, {
+            "candidate_keys": ["assets/a"], "enabled_until": "2027-02-12T00:00:00Z",
+            "distribution_arn": "arn:aws:cloudfront::111122223333:distribution/A",
+            "retire_versions": [{"key": "assets/a", "version_id": version} for version in STATIC_VERSION_CHARS[:count]]})["normal"]
     for count, rendered in STATIC_MINIMAL_NORMAL_POLICY.items():
         assert {"sha256": c.sha(normal(count).encode()), "length": len(normal(count))} == rendered, count
     count = 0
@@ -5681,3 +5701,45 @@ def test_retire_static_does_not_fit_the_final_budget_for_the_largest_498_plan_in
         (False, True): pytest.approx((60 - 20 - 37) / (1 + (plan - 1)), abs=1e-6),
         (False, False): pytest.approx((60 - 20) / (1 + (plan - 1)), abs=1e-6)}
     assert max(thresholds.values()) < 1
+
+
+def test_498_static_policies_evaluate_on_source_to_the_static_stage_calls():
+    """R4 after PR-R: iam_boundary.effective_iam over the #498 source policies, never the applied IAM.
+
+    No static session policy exists, so the identity document is its own session. HeadObject is s3:GetObject.
+    """
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_POLICY_VECTOR, STATIC_PROMOTION_VECTOR as plan
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    _, bucket = _static_promotion_source()
+    texts = _static_policies(bucket, plan)
+    assert {alias: {"sha256": c.sha(text.encode()), "length": len(text)} for alias, text in texts.items()} == STATIC_POLICY_VECTOR
+    policies = {alias: json.loads(text) for alias, text in texts.items()}
+    distribution, old = plan["distribution_arn"], bucket + "/assets/old.js"
+
+    def allowed(alias, action, resource, now="2027-02-11T23:59:59Z", **context):
+        policy = policies[alias]
+        return effective_iam(policy, [policy], action, resource, {"aws:CurrentTime": now} | context)
+    observer = [("s3:GetObject", bucket + "/assets/app.js"), ("s3:GetObject", bucket + "/index.html"),
+                ("s3:GetObjectVersion", bucket + "/theme-init.js"), ("s3:ListMultipartUploadParts", bucket + "/assets/x/y.js"),
+                ("s3:ListBucketVersions", bucket), ("s3:ListBucketMultipartUploads", bucket),
+                ("cloudfront:GetInvalidation", distribution)]
+    assert all(allowed("observer", *case) for case in observer)
+    assert all(allowed("observer", *case, now="2099-01-01T00:00:00Z") for case in observer)
+    for action, resource in [("s3:PutObject", bucket + "/index.html"), ("s3:DeleteObjectVersion", old), ("s3:DeleteObject", old),
+                             ("s3:AbortMultipartUpload", bucket + "/assets/a"), ("cloudfront:CreateInvalidation", distribution),
+                             ("s3:GetObject", bucket + "/other.html"), ("s3:ListBucketVersions", bucket + "/assets/a")]:
+        assert not allowed("observer", action, resource, **{"s3:VersionId": "Older-4"}), (action, resource)
+    normal = [(action, bucket + "/" + key, {}) for key in plan["candidate_keys"] for action in ("s3:PutObject", "s3:GetObject")]
+    normal += [(action, distribution, {}) for action in ("cloudfront:CreateInvalidation", "cloudfront:GetInvalidation")]
+    normal += [("s3:DeleteObjectVersion", bucket + "/" + ref["key"], {"s3:VersionId": ref["version_id"]})
+               for ref in plan["retire_versions"]]
+    assert all(allowed("normal", action, resource, **context) for action, resource, context in normal)
+    assert not any(allowed("normal", action, resource, now=plan["enabled_until"], **context) for action, resource, context in normal)
+    for action, resource, context in [
+            ("s3:PutObject", old, {}), ("s3:GetObject", old, {}), ("s3:DeleteObjectVersion", old, {}),
+            ("s3:DeleteObjectVersion", old, {"s3:VersionId": "Prev.Index_1"}),
+            ("s3:DeleteObjectVersion", bucket + "/index.html", {"s3:VersionId": "Prev.Index_1"}),
+            ("s3:DeleteObjectVersion", bucket + "/assets/app.js", {"s3:VersionId": "Older-4"}),
+            ("s3:DeleteObject", old, {"s3:VersionId": "Older-4"}), ("s3:ListBucketVersions", bucket, {}),
+            ("s3:GetObjectVersion", bucket + "/index.html", {"s3:VersionId": "Prev.Index_1"})]:
+        assert not allowed("normal", action, resource, **context), (action, resource, context)
