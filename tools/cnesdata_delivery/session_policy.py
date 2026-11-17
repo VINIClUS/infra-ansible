@@ -91,7 +91,7 @@ def fence_session_policy(*, control_table_arn, execution_prefix, deadline):
     c.require(type(control_table_arn) is str and re.fullmatch(
         r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
     c.require(type(execution_prefix) is str and re.fullmatch(
-        r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod-[A-Za-z0-9_-]+:", execution_prefix), "fence session execution prefix")
+        r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod:", execution_prefix), "fence session execution prefix")
     c.integer(deadline)
     condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
     return {"Version": "2012-10-17", "Statement": [

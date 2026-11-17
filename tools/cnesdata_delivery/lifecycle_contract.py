@@ -764,7 +764,7 @@ def validate_closed_ready_call(*, request, role, service, operation, parameters,
               "closed-ready finite SDK operation")
     c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account), "closed-ready account")
     table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
-    c.require(table and re.fullmatch(r"arn:aws:states:us-east-2:" + account + r":stateMachine:cnesdata-prod-[A-Za-z0-9_-]+", machine_arn),
+    c.require(table and re.fullmatch(r"arn:aws:states:us-east-2:" + account + r":stateMachine:cnesdata-prod", machine_arn),
               "closed-ready protected resource scope")
     if service == "dynamodb":
         c.closed(parameters, "TableName Key ConsistentRead")

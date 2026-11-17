@@ -493,7 +493,7 @@ def fence_policy_scope(governance, policy):
     table = _allowed_resources(policy, "dynamodb:GetItem")
     c.require(re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
               "fence policy protected table")
-    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*",
+    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod):)\*",
                          _allowed_resources(policy, "states:DescribeExecution"))
     c.require(match is not None, "fence execution prefix single final wildcard")
     return {"control_table_arn": table, "execution_prefix": match[1],
