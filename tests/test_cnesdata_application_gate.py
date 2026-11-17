@@ -1854,7 +1854,7 @@ CLOSE_MUTATIONS = {
     "cas-unsorted": "transact_write_items", "cas-absent-variant": "transact_write_items",
     "cas-held-variant": "transact_write_items", "update-extra": "transact_write_items", "three-items": "transact_write_items",
     "confirm-version": "update_item", "confirm-closed": "update_item", "confirm-untyped": "update_item",
-    "closed-ready-request": "describe_execution"}
+    "closed-ready-request": "describe_execution", "open-value": "transact_write_items"}
 
 
 @pytest.mark.parametrize("mutation", sorted(CLOSE_MUTATIONS))
@@ -1891,6 +1891,7 @@ def test_close_drain_calls_refuse_anything_outside_the_pinned_close(mutation):
             if mutation == "tenant-key": parameters["Key"]["pk"]["S"] = "TENANT#private"
             if mutation == "promotion": values[":promotion"] = {"S": "5" * 64}
             if mutation == "open-state": values[":state"] = {"S": "OPEN"}
+            if mutation == "open-value": values[":open"] = {"S": "CLOSED"}
             if mutation == "entity": values[":entity"] = {"S": "UNITPERMIT"}
             if mutation == "version-zero": values[":version"] = {"N": "0"}
             if mutation == "cas-value": check["ExpressionAttributeValues"][":v2"] = {"S": "t-2"}
