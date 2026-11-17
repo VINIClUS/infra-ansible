@@ -1679,6 +1679,7 @@ def publish_static_closed_ready(journal, keeper):
     c.require(type(journal) is AdapterJournal and type(keeper) is Keeper
               and journal._request["operation"] == "publish-static", "publish-static original journal/keeper")
     try:
+        c.require(not keeper.uncertainty(), "publish-static keeper uncertainty")
         receipt = _versioned(c.loads(journal._inputs["host-receipt"], canonical=True, limit=1024**2), "host-handoff",
                              HOST_HANDOFF_FIELDS)
         journals = []
