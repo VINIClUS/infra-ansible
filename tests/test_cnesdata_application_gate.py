@@ -5743,3 +5743,89 @@ def test_498_static_policies_evaluate_on_source_to_the_static_stage_calls():
             ("s3:DeleteObject", old, {"s3:VersionId": "Older-4"}), ("s3:ListBucketVersions", bucket, {}),
             ("s3:GetObjectVersion", bucket + "/index.html", {"s3:VersionId": "Prev.Index_1"})]:
         assert not allowed("normal", action, resource, **context), (action, resource, context)
+
+
+def _b64(raw):
+    import base64
+    return base64.b64encode(raw).decode("ascii")
+
+
+@pytest.mark.parametrize("raw", [b"", b"a", b"\x00\xff" * 10, bytes(range(256))])
+def test_s3_body_crosses_the_broker_as_canonical_standard_base64(raw):
+    import hashlib
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert lc.s3_body_bytes({"base64": _b64(raw)}) == raw
+    parameters = {"Bucket": "b", "Key": "index.html", "Body": {"base64": _b64(raw)}, "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
+    assert lc.s3_put_body(parameters) == raw
+
+
+@pytest.mark.parametrize("body", [b"QQ==", "QQ", "QR==", "QQ==\n", " QQ==", "Q Q==", "-_8=", "+/8", "QQ==QQ==", "QUI=" + "é",
+                                  None, 7, ["QQ=="]])
+def test_s3_body_refuses_anything_but_one_canonical_padded_base64_text(body):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    with pytest.raises(ValueError, match="S3 Body"):
+        lc.s3_body_bytes({"base64": body})
+
+
+@pytest.mark.parametrize("body", [None, "QQ==", {}, {"base64": "QQ==", "encoding": "base64"}, {"b64": "QQ=="}])
+def test_s3_body_is_a_closed_single_field_object(body):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    with pytest.raises(ValueError):
+        lc.s3_body_bytes(body)
+
+
+@pytest.mark.parametrize("mutation", ["checksum-other", "checksum-hex", "checksum-of-text", "checksum-missing", "checksum-none",
+                                      "body-missing", "body-invalid", "not-dict"])
+def test_s3_put_body_binds_checksum_sha256_to_the_decoded_bytes(mutation):
+    import hashlib
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    raw = b"console.log(1)\n"
+    parameters = {"Bucket": "b", "Key": "assets/app.js", "Body": {"base64": _b64(raw)}, "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
+    if mutation == "checksum-other": parameters["ChecksumSHA256"] = _b64(hashlib.sha256(raw + b" ").digest())
+    if mutation == "checksum-hex": parameters["ChecksumSHA256"] = hashlib.sha256(raw).hexdigest()
+    if mutation == "checksum-of-text": parameters["ChecksumSHA256"] = _b64(hashlib.sha256(_b64(raw).encode()).digest())
+    if mutation == "checksum-missing": parameters.pop("ChecksumSHA256")
+    if mutation == "checksum-none": parameters["ChecksumSHA256"] = None
+    if mutation == "body-missing": parameters.pop("Body")
+    if mutation == "body-invalid": parameters["Body"] = {"base64": "QR=="}
+    if mutation == "not-dict": parameters = [parameters]
+    with pytest.raises(ValueError, match="S3 Body"):
+        lc.s3_put_body(parameters)
+
+
+class _Stream:
+    def __init__(self, raw, step=None, kind=bytes):
+        self.raw, self.step, self.kind, self.reads = raw, step, kind, []
+
+    def read(self, amount):
+        self.reads.append(amount)
+        size = amount if self.step is None else min(amount, self.step)
+        chunk, self.raw = self.raw[:size], self.raw[size:]
+        return self.kind(chunk)
+
+
+@pytest.mark.parametrize("step", [None, 1, 3])
+@pytest.mark.parametrize("raw", [b"", b"x", b"\x00" * 9, bytes(range(10))])
+def test_s3_body_value_reads_at_most_the_bound_and_returns_base64(raw, step):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    stream = _Stream(raw, step)
+    assert lc.s3_body_value(stream, maximum=10) == {"base64": _b64(raw)}
+    assert stream.raw == b"" and 1 <= min(stream.reads) and max(stream.reads) <= 11
+
+
+@pytest.mark.parametrize("step", [None, 1, 4])
+def test_s3_body_value_refuses_one_byte_past_the_bound_without_reading_further(step):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    stream = _Stream(b"y" * 64, step)
+    with pytest.raises(ValueError, match="S3 Body bound"):
+        lc.s3_body_value(stream, maximum=10)
+    assert len(stream.raw) == 64 - 11
+
+
+@pytest.mark.parametrize("case", ["str-chunk", "bytearray-chunk", "maximum-negative", "maximum-bool", "maximum-float"])
+def test_s3_body_value_refuses_non_bytes_chunks_and_unbounded_reads(case):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    stream = _Stream(b"abc", kind={"str-chunk": lambda raw: raw.decode(), "bytearray-chunk": bytearray}.get(case, bytes))
+    maximum = {"maximum-negative": -1, "maximum-bool": True, "maximum-float": 10.0}.get(case, 10)
+    with pytest.raises(ValueError):
+        lc.s3_body_value(stream, maximum=maximum)
