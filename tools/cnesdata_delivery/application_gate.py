@@ -334,11 +334,27 @@ class _TerminalStore:
 
 
 _ADAPTER_CHILD = r'''
-import base64, importlib.util, sys
+import base64, importlib.machinery, importlib.util, os, sys
 sys.path.insert(0, sys.argv[2])
 from tools.cnesdata_delivery import contract as c
 product = sys.argv[1]
 sys.path.insert(0, product)
+class AuthorizedPackages:
+    # Queue item 3c: closed roots by authorized path; parents are stubs, leaves load by file, nothing falls back.
+    ROOTS = {"cnes_domain": "packages/cnes_domain/src/cnes_domain", "cnes_infra": "packages/cnes_infra/src/cnes_infra"}
+    def find_spec(self, name, path=None, target=None):
+        parts = name.split(".")
+        if parts[0] not in self.ROOTS:
+            return None
+        base = os.path.join(product, self.ROOTS[parts[0]], *parts[1:])
+        if os.path.isdir(base):
+            spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
+            spec.submodule_search_locations = [base]
+            return spec
+        if os.path.isfile(base + ".py"):
+            return importlib.util.spec_from_file_location(name, base + ".py")
+        raise ModuleNotFoundError("adapter authorized path " + name, name=name)
+sys.meta_path.insert(0, AuthorizedPackages())
 def receive():
     raw = sys.stdin.buffer.readline(192 * 1024**2 + 1)
     return c.loads(raw, canonical=True, limit=192 * 1024**2)
@@ -541,14 +557,22 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_policy import validate_response
-    c.require(type(journal) is AdapterJournal and journal._request["operation"] == "closed-ready"
+    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain"}
               and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
     request, stage = journal._request, journal._request["stage"]
-    c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
-              and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
-              and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
-              and clock() + 900 <= credential_limit, "fence original API/credential window")
-    c.closed(scope, "account control_table_arn machine_arn members")
+    close = request["operation"] == "close-drain"
+    if close:
+        deadline = stage["preparation_deadline"]
+        c.require(stage["stage"] == "application-prepare" and stage["close"] is None and stage["decision"] is None
+                  and stage["deadline"] == deadline and stage["admitted_at"] <= clock() and clock() + 40 < deadline
+                  and clock() + 900 <= credential_limit, "fence original preparation/credential window")
+    else:
+        deadline = stage["deadline"]
+        c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
+                  and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
+                  and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
+                  and clock() + 900 <= credential_limit, "fence original API/credential window")
+    c.closed(scope, "account control_table_arn machine_arn" + ("" if close else " members"))
     c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
               and role["role_arn"] == governance["application_delegations"]["fence_operator"]
               and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
@@ -556,22 +580,26 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
               and role["session_name"] == "promotion-fence-" + role["release_id"]
               and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
     probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
+    validate = lc.validate_close_drain_call if close else lc.validate_closed_ready_call
     for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
-        lc.validate_closed_ready_call(request=request, role="fence_operator", service="dynamodb", operation="get_item",
+        validate(request=request, role="fence_operator", service="dynamodb", operation="get_item",
             parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
                         "ConsistentRead": True}, **scope)
-    for member in scope["members"]:
+    for member in [] if close else scope["members"]:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    from tools.cnesdata_delivery.session_policy import fence_session_policy
-    policy = fence_session_policy(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix,
-                                  deadline=stage["deadline"])
+    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_session_policy
+    build = fence_close_session_policy if close else fence_session_policy
+    policy = build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline)
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
     context = {"aws:CurrentTime": c.utc(clock())}
     for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE"):
         c.require(effective_iam(role["policy"], [policy], "dynamodb:GetItem", scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective strong-read grant")
+    for action, key in (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")) if close else ():
+        c.require(effective_iam(role["policy"], [policy], action, scope["control_table_arn"],
+                                context | {"dynamodb:LeadingKeys": [key]}), "fence original effective close-write grant")
     c.require(effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context),
               "fence original effective metadata-probe grant")
     journal._guard.check(40)
@@ -594,13 +622,13 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
               and response["AssumedRoleUser"] == {"Arn": expected_arn, "AssumedRoleId": expected_id},
               "fence exact native role ID/session/account")
     journal.guard()
-    c.require(clock() + 20 < stage["deadline"], "fence STS completed in original API window")
+    c.require(clock() + 20 < deadline, "fence STS completed in original API window")
     binding = c.sha(c.canonical(request))
     commitment = c.sha(c.canonical({"prepared_sha256": c.digest(prepared_sha256), "request_sha256": binding,
         "role_arn": role["role_arn"], "role_id": role["role_id"], "session_name": role["session_name"],
         "policy_sha256": c.sha(c.canonical(policy)), "expires_at": c.utc(expiry.timestamp()),
         "account": scope["account"], "arn": expected_arn, "user_id": expected_id}))
-    return _FenceSession(client, commitment, scope, stage["deadline"], binding)
+    return _FenceSession(client, commitment, scope, deadline, binding)
 
 
 class AdapterJournal:
@@ -659,8 +687,8 @@ class AdapterJournal:
         """
         request = c.loads(raw, canonical=True, limit=128 * 1024)
         c.closed(request, "role service operation parameters")
-        c.require(self._request["operation"] == "closed-ready" and request["role"] == "fence_operator"
-                  and (request["service"], request["operation"]) in {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
+        c.require(request["role"] == "fence_operator"
+                  and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(self._request["operation"], ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -696,7 +724,7 @@ class AdapterJournal:
             c._secrets(response)
             _sdk_private_fields(response)
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
-            allowed = ({"Item"} if request["service"] == "dynamodb" else
+            allowed = ({"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
             absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
@@ -714,6 +742,12 @@ class AdapterJournal:
         except BaseException:
             self.fail_sdk_call(ticket)
             raise
+
+    def _settled_calls(self):
+        """This journal's own guarded receipts as call/response pairs; the close-drain write history."""
+        return [{"call": c.loads(self._call_bytes[receipt["request_sha256"]], canonical=True),
+                 "response": c.loads(self._call_bytes[receipt["response_sha256"]], canonical=True)}
+                for receipt in self._call_receipts]
 
     def fail_sdk_call(self, ticket):
         """Unresolved IO poisons this context; no exception/credential is stored."""
@@ -793,15 +827,16 @@ class ClosedReadyEvidence:
     def __init__(self, aws, governance, journal, native_raw, *, prepared_sha256, role_session_sha256, scope):
         from tools.cnesdata_delivery.lifecycle_runtime import closed_ready_evidence_keys
         c.require(type(journal) is AdapterJournal and governance["role"] == "application", "shared closed-ready journal")
-        c.closed(scope, "account control_table_arn machine_arn members")
+        operation = journal._request["operation"]
+        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation == "closed-ready" else ""))
         c.require(scope["account"] == governance["account_id"], "original journal account")
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
         c.closed(native, "role service operation parameters")
-        lc.validate_closed_ready_call(request=journal._request, **native, **scope)
+        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), **native, **scope)
         _sdk_private_fields(native)
         request = journal._request
         sequence, previous = journal._next_durable()
-        intent = {"schema_version": 2, "operation": "closed-ready", "owner": request["owner"],
+        intent = {"schema_version": 2, "operation": operation, "owner": request["owner"],
                   "sequence": sequence, "previous_receipt_sha256": previous,
                   "caller": journal._identity, "adapter_request_sha256": c.sha(c.canonical(request)),
                   "checkpoint_sha256": request["checkpoint_sha256"], "activation_sha256": request["activation_sha256"],
@@ -814,7 +849,8 @@ class ClosedReadyEvidence:
         self._sequence, self._previous = sequence, previous
         c.require(request["source_sha"] == request["owner"]["source_sha"], "closed-ready evidence source")
         self._keys = closed_ready_evidence_keys(governance, owner=request["owner"], caller=journal._identity,
-                                                checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence)
+                                                checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence,
+                                                operation=operation)
         self._aws, self._bucket, self._journal = aws, governance["evidence_bucket"], journal
         self._native_sha256, self._session_sha256 = c.sha(native_raw), role_session_sha256
         self._binding = c.sha(c.canonical({key: request[key] for key in ("owner", "checkpoint_sha256", "activation_sha256", "stage")}))
@@ -935,7 +971,11 @@ class ClosedReadyEvidence:
 
 
 class ClosedReadyBroker:
-    """Finite private SDK dispatcher with a durable reservation before native IO."""
+    """Finite private SDK dispatcher with a durable reservation before native IO.
+
+    The SDK set is per operation (closed-ready reads; close-drain adds the pinned close writes).
+    Any native error but a validated ExecutionDoesNotExist is unknown (R12): poison, never retry.
+    """
     def __init__(self, aws, governance, journal, session, *, prepared_sha256, clock=None):
         c.require(type(journal) is AdapterJournal and type(session) is _FenceSession
                   and session.request_binding == c.sha(c.canonical(journal._request))
@@ -954,8 +994,8 @@ class ClosedReadyBroker:
         journal.guard()
         c.require(session.request_binding == c.sha(c.canonical(journal._request))
                   and self.clock() + 20 < session.deadline, "original finite SDK request/window")
-        lc.validate_closed_ready_call(request=journal._request, role=role, service=service, operation=operation,
-                                      parameters=parameters, **session.scope)
+        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), role=role, service=service,
+                               operation=operation, parameters=parameters, **session.scope)
         native = {"role": role, "service": service, "operation": operation, "parameters": parameters}
         raw = c.canonical(native, limit=128 * 1024)
         ledger = ClosedReadyEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
@@ -976,9 +1016,9 @@ class ClosedReadyBroker:
                 response = getattr(error, "response", {})
                 c.require(service == "stepfunctions" and operation == "describe_execution"
                           and response.get("Error", {}).get("Code") == "ExecutionDoesNotExist"
-                          and any(member["resolution"] == "CANCEL_BEFORE_SEND" and member["execution_ref"] is None
+                          and (journal._request["operation"] == "close-drain" or any(member["resolution"] == "CANCEL_BEFORE_SEND" and member["execution_ref"] is None
                                   and parameters["executionArn"] == session.scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + member["dispatch_id"]
-                                  for member in session.scope["members"]), "native SDK outcome unknown")
+                                  for member in session.scope["members"])), "native SDK outcome unknown")
                 absent = True
             metadata = response.get("ResponseMetadata", {})
             c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == (400 if absent else 200),
@@ -986,8 +1026,9 @@ class ClosedReadyBroker:
             if absent:
                 value = {"Error": {"Code": "ExecutionDoesNotExist"}}
             elif service == "dynamodb":
-                c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
-                value = {key: response[key] for key in ("Item",) if key in response}
+                fields = ("Item",) if operation == "get_item" else ()
+                c.require(set(response) <= {*fields, "ResponseMetadata"}, "finite native DynamoDB response")
+                value = {key: response[key] for key in fields if key in response}
             else:
                 value = lc.closed_ready_probe_response(response, execution_arn=parameters["executionArn"], machine_arn=session.scope["machine_arn"])
             from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
@@ -1102,6 +1143,27 @@ def infra_expiration_bound(authority, api):
                     c.instant(authority.pin["frozen_until"])]))
 
 
+
+def close_expirations(authority, api):
+    """Correction 6906038586 item 1: the close-drain `expirations` input from authenticated originals.
+
+    credential = owner proof bytes, artifact = each authenticated download, platform =
+    fragment enabled_until and pin frozen_until. Unbound or duplicate (kind, object) refuses.
+    """
+    infra_expiration_bound(authority, api)
+    c.require(type(authority.proof_sha256) is str and type(getattr(api, "digests", None)) is dict
+              and set(api.digests) == set(api.expiries), "close expirations authenticated objects")
+    fragment, pin = authority.application_fragment, authority.pin
+    entries = sorted([("credential", c.digest(authority.proof_sha256), authority.expires_at),
+                      ("platform", c.sha(c.canonical(fragment)), c.instant(fragment["enabled_until"])),
+                      ("platform", c.sha(c.canonical(pin)), c.instant(pin["frozen_until"])),
+                      *[("artifact", c.digest(api.digests[key]), api.expiries[key]) for key in api.expiries]])
+    keys = [entry[:2] for entry in entries]
+    c.require(len(set(keys)) == len(keys), "close expirations unique originals")
+    return c.canonical([{"kind": kind, "object_sha256": digest, "expires_at": c.utc(int(expiry))}
+                        for kind, digest, expiry in entries])
+
+
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
                             guard, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).
@@ -1164,6 +1226,55 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
             lc.validate_closed_ready_call(request=journal._request, role="fence_operator", service="stepfunctions",
                 operation="describe_execution", parameters={"executionArn": prefix + member["dispatch_id"],
                 "includedData": "METADATA_ONLY"}, **scope)
+        prepared_sha256 = c.sha(prepared["fence-prepared.json"])
+        session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
+        broker = ClosedReadyBroker(aws, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
+
+
+def close_drain_capability(*, aws, api, governance, authority, journal, keeper, prepared, credential_limit, clock=time.time):
+    """Close-drain capability factory, sibling of closed_ready_capability (decision 4, queue item 3a).
+
+    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations and the
+    finite close session. The freeze reread is the last check before STS; any failure poisons the
+    journal, keeps the lease held and mints no credential. No production caller until PR-F.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import application_unfrozen
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper and type(prepared) is lr.PreparedFence,
+              "close-drain original journal/keeper/prepared authority")
+    c.require(journal._request["operation"] == "close-drain" and getattr(journal, "_broker", None) is None,
+              "close-drain only; every other operation remains rejected")
+    try:
+        stage = journal._request["stage"]
+        keeper.lease.check()  # The original keeper still holds the lease; nothing here can renew or release it.
+        owner = journal._request["owner"] | journal._identity
+        manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+        role = c.loads(prepared["fence-role.json"], canonical=True)
+        evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+        c.require(manifest["activation_sha256"] == journal._request["activation_sha256"] == c.sha(journal._inputs["activation"]),
+                  "prepared/request/input activation_sha256")
+        c.require(manifest["preparation"]["deadline"] == stage["preparation_deadline"]
+                  and manifest["preparation"]["admitted_at"] == stage["admitted_at"], "original preparation is the close stage")
+        c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
+        c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
+        c.require(journal._inputs["expirations"] == close_expirations(authority, api), "close-drain authenticated expirations")
+        cases = {case["case_id"]: case for case in evaluation["cases"]}
+        derived = lr.fence_policy_scope(governance, role["policy"])
+        table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
+        c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
+                  "capability scope recomputed from prepared policy")
+        scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine}
+        journal.guard()
+        attached = aws.call("iam", "list_attached_role_policies", RoleName=authority.application_fragment["application_role_name"],
+                            MaxItems=100)
+        application_unfrozen(attached, governance["account_id"])
         prepared_sha256 = c.sha(prepared["fence-prepared.json"])
         session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
                                         prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
@@ -1454,7 +1565,7 @@ def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sle
 
     next_event is the authenticated event producer; handlers holds only the
     closed-ready dispatch. Stage advancement (close-drain, B, API) is not an
-    event here: close-drain stays rejected by the 2026-11-13 amendment item 7.
+    event here: close_drain_capability exists but is not a keeper event until the execute wiring.
     Any exception leaves the lease held; finish() refuses under uncertainty.
     """
     c.require(type(handlers) is dict and set(handlers) == {"closed-ready"}, "closed keeper handlers")

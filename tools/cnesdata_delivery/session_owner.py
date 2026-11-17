@@ -26,6 +26,7 @@ class Authority:
     expires_at: float
     namespace: dict | None
     application_fragment: dict | None = field(default=None, repr=False)
+    proof_sha256: str | None = None
 
 
 def authenticate_lifecycle(governance, api, source, role, purpose, now):
@@ -57,7 +58,23 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
         fragment = application_fragment(governance, now)
         c.require(measured.get("application_fragment_sha256") == c.sha(c.canonical(fragment)),
                   "original owner private fragment commitment")
-    return Authority(pin, expiry, None, fragment)
+    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]))
+
+
+FREEZE_POLICY = "cnesdata-budget-freeze"
+
+
+def application_unfrozen(attached, account):
+    """Decision 3a: the budget freeze is its own refusal; any other attachment keeps the original one.
+
+    Freeze source: personal-infra-live#2 readback 6883013198, managed policy cnesdata-budget-freeze at path /.
+    """
+    c.require(type(attached) is dict and attached.get("IsTruncated") is False and type(attached.get("AttachedPolicies")) is list,
+              "application has no attached policies")
+    freeze = "arn:aws:iam::" + account + ":policy/" + FREEZE_POLICY
+    if any(type(item) is dict and item.get("PolicyArn") == freeze for item in attached["AttachedPolicies"]):
+        raise ValueError("freeze=attached")
+    c.require(attached["AttachedPolicies"] == [], "application has no attached policies")
 
 
 def application_configuration(value, account):
@@ -208,7 +225,7 @@ def verify_application(aws, authority, session_expires, guard, *, clock=time.tim
         attached = client.call("iam", "list_attached_role_policies", RoleName=name, MaxItems=100)
         c.require(inline.get("IsTruncated") is False and len(inline["PolicyNames"]) == len(policies)
                   and set(inline["PolicyNames"]) == set(policies), "exact application inline policy inventory")
-        c.require(attached.get("IsTruncated") is False and attached["AttachedPolicies"] == [], "application has no attached policies")
+        application_unfrozen(attached, fragment["application_role_arn"].split(":")[4])
         for policy, digest in policies.items():
             response = client.call("iam", "get_role_policy", RoleName=name, PolicyName=policy)
             c.require(response["RoleName"] == name and response["PolicyName"] == policy

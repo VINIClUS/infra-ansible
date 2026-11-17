@@ -1060,6 +1060,7 @@ def _adapter_case(operation="inventory"):
               "admitted_at": 1000, "deadline": 1900, "decision": None, "preparation_deadline": 1900,
               "sequence": 1, "checkpoint_sha256": "f" * 64, **lc.application_identity(owner)}
     names = {"inventory": ("candidate", "dashboard-artifact", "archive", "static-baseline"),
+             "close-drain": ("activation", "expirations"),
              "closed-ready": ("activation", "close-drain", "phase-b", "membership")}[operation]
     if operation == "closed-ready":
         window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
@@ -1072,7 +1073,7 @@ def _adapter_case(operation="inventory"):
     return request, owner, window, inputs
 
 
-@pytest.mark.parametrize("operation", ["inventory", "closed-ready"])
+@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready"])
 @pytest.mark.parametrize("mutation", [None, "extra", "owner", "checkpoint", "stage-time", "bytes", "missing", "extra-input", "readiness", "noncanonical", "source", "canary-old", "activation"])
 def test_adapter_request_binds_original_bytes_owner_phase_and_closed_inputs(operation, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -1336,7 +1337,7 @@ def _durable_closed_ready_case(monkeypatch):
     native = {"role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": {
         "TableName": "cnesdata-prod-control", "Key": {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}}, "ConsistentRead": True}}
     scope = {"account": "111122223333", "control_table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
-             "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor", "members": []}
+             "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod", "members": []}
     governance = {"role": "application", "account_id": "111122223333", "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/"}
     store = Store()
     monkeypatch.setattr(ag.time, "time", lambda: 1760000000)
@@ -1654,7 +1655,7 @@ def execute_shared_operation(operation, request, context):
 def test_closed_ready_probe_request_is_fresh_exact_member_and_metadata_only(resolution, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     request, _, _, _ = _adapter_case("closed-ready")
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     member = {"dispatch_id": "a" * 16, "request_sha256": "b" * 64, "generation": 3, "initial_state": "RESERVED",
               "execution_ref": execution if resolution == "TERMINAL" else None, "resolution": resolution,
@@ -1665,7 +1666,7 @@ def test_closed_ready_probe_request_is_fresh_exact_member_and_metadata_only(reso
     if mutation == "metadata":
         params["includedData"] = "ALL_DATA"
     if mutation == "machine":
-        params["executionArn"] = execution.replace("cnesdata-prod-processor", "foreign")
+        params["executionArn"] = execution.replace(":cnesdata-prod:", ":foreign:")
     if mutation == "dispatch":
         params["executionArn"] = execution[:-16] + "f" * 16
     if mutation == "member-ref":
@@ -1700,7 +1701,7 @@ def test_closed_ready_dynamodb_read_is_only_strong_fence_and_semaphore(target):
         params["TableName"] = "other"
     args = {"request": request, "role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": params,
             "account": "111122223333", "control_table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
-            "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor", "members": []}
+            "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod", "members": []}
     if target in {"fence", "semaphore"}:
         assert lc.validate_closed_ready_call(**args) == params
     else:
@@ -1711,7 +1712,7 @@ def test_closed_ready_dynamodb_read_is_only_strong_fence_and_semaphore(target):
 @pytest.mark.parametrize("mutation", [None, "input", "output", "execution", "machine", "status"])
 def test_closed_ready_probe_response_never_serializes_unexpected_execution_payload(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     raw = {"executionArn": execution, "stateMachineArn": machine, "name": "a" * 16, "status": "SUCCEEDED",
            "startDate": c.utc(1000), "stopDate": c.utc(1001), "cause": "not exported", "traceHeader": "not exported"}
@@ -1730,6 +1731,663 @@ def test_closed_ready_probe_response_never_serializes_unexpected_execution_paylo
     else:
         result = lc.closed_ready_probe_response(raw, execution_arn=execution, machine_arn=machine)
         assert set(result) == {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"}
+
+
+
+@pytest.mark.parametrize("name", ["cnesdata-prod", "cnesdata-prod-processor", "cnesdata-prod-x", "cnesdata-production", "foreign"])
+def test_fence_scope_admits_only_the_exact_cnesdata_prod_state_machine(name):
+    """Correction 2 (6906181994): the real machine is exactly `cnesdata-prod` (step_functions.tf:13, name_prefix)."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, session_policy
+    account = "111122223333"
+    machine = f"arn:aws:states:us-east-2:{account}:stateMachine:{name}"
+    prefix = machine.replace(":stateMachine:", ":execution:") + ":"
+    table = f"arn:aws:dynamodb:us-east-2:{account}:table/cnesdata-prod-control-plane"
+    request, _, _, _ = _adapter_case("closed-ready")
+    member = {"dispatch_id": "a" * 16, "request_sha256": "b" * 64, "generation": 1, "initial_state": "NOT_SENT",
+              "execution_ref": None, "resolution": "CANCEL_BEFORE_SEND", "proof_sha256": "c" * 64,
+              "observed_at": c.utc(1200), "send_disabled_at": c.utc(1199)}
+    policy = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": prefix + "*"}]}
+    checks = {
+        "validator": lambda: lc.validate_closed_ready_call(
+            request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
+            parameters={"executionArn": prefix + "a" * 16, "includedData": "METADATA_ONLY"}, account=account,
+            control_table_arn=table, machine_arn=machine, members=[member]),
+        "scope": lambda: lr.fence_policy_scope({"account_id": account}, policy),
+        "session": lambda: session_policy.fence_session_policy(control_table_arn=table, execution_prefix=prefix, deadline=1480),
+        "close-validator": lambda: lc.validate_close_drain_call(
+            request=_adapter_case("close-drain")[0], role="fence_operator", service="dynamodb", operation="get_item",
+            parameters={"TableName": "cnesdata-prod-control-plane", "Key": {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}},
+                        "ConsistentRead": True}, account=account, control_table_arn=table, machine_arn=machine),
+    }
+    for site, check in checks.items():
+        if name != "cnesdata-prod":
+            with pytest.raises(ValueError):
+                check()
+            continue
+        result = check()
+        if site == "scope":
+            assert result == {"control_table_arn": table, "execution_prefix": prefix, "machine_arn": machine}
+
+
+CLOSE_ACCOUNT = "111122223333"
+CLOSE_SCOPE = {"account": CLOSE_ACCOUNT,
+               "control_table_arn": f"arn:aws:dynamodb:us-east-2:{CLOSE_ACCOUNT}:table/cnesdata-prod-control-plane",
+               "machine_arn": f"arn:aws:states:us-east-2:{CLOSE_ACCOUNT}:stateMachine:cnesdata-prod"}
+CLOSE_SEMAPHORE = {"pk": {"S": "ENV#prod#SEMAPHORE"}, "sk": {"S": "UNIT"}, "token": {"S": "t-1"},
+                   "fence_version": {"N": "3"}, "updated_at": {"S": "2026-11-17T10:00:00Z"}}
+CLOSE_ORDER = ("describe_execution", "get_item", "get_item-semaphore", "transact_write_items", "describe_execution",
+               "update_item", "get_item")
+
+
+def _semaphore_check(check, item, names):
+    check["ExpressionAttributeNames"] = {f"#v{index}": name for index, name in enumerate(names)}
+    check["ConditionExpression"] = " AND ".join(f"#v{index} = :v{index}" if name in item else f"attribute_not_exists(#v{index})"
+                                                for index, name in enumerate(names))
+    check["ExpressionAttributeValues"] = {f":v{index}": item[name] for index, name in enumerate(names) if name in item}
+    return check
+
+
+def _close_drain_calls(owner_sha256, *, item=CLOSE_SEMAPHORE, variant=0):
+    """Concrete product calls rebuilt from the pinned vector: probe, strong reads, close, confirm."""
+    import copy
+    from fixtures.cnesdata_delivery_lifecycle import CLOSE_DRAIN_CALL_VECTOR as vector
+    calls = {call["operation"] + ("-semaphore" if "SEMAPHORE" in c.canonical(call).decode() else ""): copy.deepcopy(call)
+             for call in vector["calls"]}
+    calls["describe_execution"]["parameters"]["executionArn"] = (
+        CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":0123456789abcdef")
+    update = copy.deepcopy(vector["close_transaction"]["update"][variant]["Update"])
+    concrete = {":changed": {"S": "2026-11-17T10:01:00Z"}, ":entity": {"S": "PROMOTIONFENCE"}, ":expected": {"N": "3"},
+                ":membership": {"S": "[]"}, ":membership_sha": {"S": "7" * 64}, ":open": {"S": "OPEN"},
+                ":promotion": {"S": owner_sha256}, ":receipt": {"S": "{}"}, ":state": {"S": "CLOSED"}, ":version": {"N": "4"}}
+    update["ExpressionAttributeValues"] = {key: concrete[key] for key in update["ExpressionAttributeValues"]}
+    check = copy.deepcopy(vector["close_transaction"]["condition_check"][0 if item else 1]["ConditionCheck"])
+    if item:
+        check = _semaphore_check(check, item, sorted(set(item) - {"pk", "sk"} | {"holder_run_id"}))
+    calls["transact_write_items"]["parameters"] = {"TransactItems": [{"Update": update}, {"ConditionCheck": check}]}
+    calls["update_item"]["parameters"]["ExpressionAttributeValues"] = {
+        ":closed": {"S": "CLOSED"}, ":confirmed": {"S": "2026-11-17T10:01:01Z"}, ":version": {"N": "4"}}
+    return calls
+
+
+def _close_responses(item):
+    fence = {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}, "state": {"S": "OPEN"}, "version": {"N": "3"}}
+    return {"describe_execution": {"Error": {"Code": "ExecutionDoesNotExist"}}, "get_item": {"Item": fence},
+            "get_item-semaphore": {"Item": item} if item else {}, "transact_write_items": {}, "update_item": {}}
+
+
+def test_close_drain_templates_are_the_pinned_product_vector():
+    """Correction 6906038586 item 3: CnesData 2c66f62c close_drain_call_vector.json, sha256 44d0cf91...4b63."""
+    from fixtures.cnesdata_delivery_lifecycle import CLOSE_DRAIN_CALL_VECTOR as vector
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert c.sha(c.canonical(vector)) == "44d0cf91a69cd21ff91347887313026402ca19a483391946b046deefe93c4b63"
+    expected = {}
+    for call in vector["calls"]:
+        expected.setdefault(call["operation"], set()).add(c.sha(c.canonical(call)))
+    for name, items in vector["close_transaction"].items():
+        expected["close_transaction." + name] = {c.sha(c.canonical(item)) for item in items}
+    assert lc.CLOSE_DRAIN_TEMPLATES == {key: frozenset(value) for key, value in expected.items()}
+    assert lc.FENCE_SDK_OPERATIONS == {
+        "closed-ready": {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
+        "close-drain": {(call["service"], call["operation"]) for call in vector["calls"]}}
+    assert vector["role"] == "fence_operator" and vector["execution_arn"].endswith(":execution:cnesdata-prod:<dispatch_id>")
+
+
+@pytest.mark.parametrize("variant", [0, 1])
+@pytest.mark.parametrize("semaphore", ["held", "absent"])
+def test_close_drain_calls_admit_the_product_vector_in_close_order(variant, semaphore):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    request, *_ = _adapter_case("close-drain")
+    item = CLOSE_SEMAPHORE if semaphore == "held" else None
+    calls, responses, history = _close_drain_calls(request["owner"]["owner_sha256"], item=item, variant=variant), _close_responses(item), []
+    for name in CLOSE_ORDER:
+        call = calls[name]
+        assert lc.validate_close_drain_call(request=request, history=history, **call, **CLOSE_SCOPE) == call["parameters"]
+        assert lc.validate_fence_call(request=request, history=history, **call, **CLOSE_SCOPE) == call["parameters"]
+        history.append({"call": call, "response": responses[name]})
+
+
+CLOSE_MUTATIONS = {
+    "put-item": "transact_write_items", "role": "get_item", "stage-api": "describe_execution", "closed-stage": "describe_execution",
+    "machine": "describe_execution", "table": "get_item", "execution-foreign": "describe_execution", "execution-name": "describe_execution",
+    "all-data": "describe_execution", "eventual": "get_item", "tenant-key": "get_item", "no-semaphore-read": "transact_write_items",
+    "second-close": "transact_write_items", "confirm-first": "update_item", "second-confirm": "update_item",
+    "promotion": "transact_write_items", "open-state": "transact_write_items", "entity": "transact_write_items",
+    "version-zero": "transact_write_items", "cas-value": "transact_write_items", "cas-missing": "transact_write_items",
+    "cas-unsorted": "transact_write_items", "cas-absent-variant": "transact_write_items",
+    "cas-held-variant": "transact_write_items", "update-extra": "transact_write_items", "three-items": "transact_write_items",
+    "confirm-version": "update_item", "confirm-closed": "update_item", "confirm-untyped": "update_item",
+    "closed-ready-request": "describe_execution", "open-value": "transact_write_items",
+    "no-read-absent": "transact_write_items"}
+
+
+@pytest.mark.parametrize("mutation", sorted(CLOSE_MUTATIONS))
+def test_close_drain_calls_refuse_anything_outside_the_pinned_close(mutation):
+    import copy
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    request, *_ = _adapter_case("close-drain")
+    item = None if mutation in {"cas-held-variant", "no-read-absent"} else CLOSE_SEMAPHORE
+    calls, responses, history = _close_drain_calls(request["owner"]["owner_sha256"], item=item), _close_responses(item), []
+    scope = dict(CLOSE_SCOPE)
+    order = list(CLOSE_ORDER)
+    if mutation in {"no-semaphore-read", "no-read-absent"}: order.remove("get_item-semaphore")
+    if mutation == "second-close": order.insert(4, "transact_write_items")
+    if mutation == "confirm-first": order.remove("transact_write_items")
+    if mutation == "second-confirm": order.insert(6, "update_item")
+    target = {"second-close": 4, "second-confirm": 6}.get(mutation, order.index(CLOSE_MUTATIONS[mutation]))
+    if mutation == "stage-api": request = _adapter_case("closed-ready")[0] | {"operation": "close-drain"}
+    if mutation == "closed-stage": request["stage"]["close"] = 1000
+    if mutation == "closed-ready-request": request["operation"] = "closed-ready"
+    if mutation == "machine": scope["machine_arn"] += "-x"
+    if mutation == "table": scope["control_table_arn"] = scope["control_table_arn"].replace("control-plane", "other")
+    for index, name in enumerate(order):
+        call = copy.deepcopy(calls[name])
+        if index == target:
+            parameters, update = call["parameters"], call["parameters"].get("TransactItems", [{}])[0].get("Update", {})
+            values = update.get("ExpressionAttributeValues", parameters.get("ExpressionAttributeValues", {}))
+            check = call["parameters"].get("TransactItems", [{}, {}])[1].get("ConditionCheck", {})
+            if mutation == "put-item": call["operation"] = "put_item"
+            if mutation == "role": call["role"] = "observer"
+            if mutation == "execution-foreign": parameters["executionArn"] = parameters["executionArn"].replace(":cnesdata-prod:", ":foreign:")
+            if mutation == "execution-name": parameters["executionArn"] = parameters["executionArn"][:-1]
+            if mutation == "all-data": parameters["includedData"] = "ALL_DATA"
+            if mutation == "eventual": parameters["ConsistentRead"] = False
+            if mutation == "tenant-key": parameters["Key"]["pk"]["S"] = "TENANT#private"
+            if mutation == "promotion": values[":promotion"] = {"S": "5" * 64}
+            if mutation == "open-state": values[":state"] = {"S": "OPEN"}
+            if mutation == "open-value": values[":open"] = {"S": "CLOSED"}
+            if mutation == "entity": values[":entity"] = {"S": "UNITPERMIT"}
+            if mutation == "version-zero": values[":version"] = {"N": "0"}
+            if mutation == "cas-value": check["ExpressionAttributeValues"][":v2"] = {"S": "t-2"}
+            if mutation == "cas-missing": _semaphore_check(check, CLOSE_SEMAPHORE, ["holder_run_id", "token", "updated_at"])
+            if mutation == "cas-unsorted": _semaphore_check(check, CLOSE_SEMAPHORE, ["updated_at", "token", "holder_run_id", "fence_version"])
+            if mutation == "cas-absent-variant":
+                call["parameters"]["TransactItems"][1] = {"ConditionCheck": {key: check[key] for key in ("TableName", "Key")}
+                                                          | {"ConditionExpression": "attribute_not_exists(pk)"}}
+            if mutation == "cas-held-variant": _semaphore_check(check, CLOSE_SEMAPHORE, sorted(set(CLOSE_SEMAPHORE) - {"pk", "sk"}))
+            if mutation == "update-extra": update["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
+            if mutation == "three-items": parameters["TransactItems"].append(copy.deepcopy(parameters["TransactItems"][1]))
+            if mutation == "confirm-version": values[":version"] = {"N": "5"}
+            if mutation == "confirm-closed": values[":closed"] = {"S": "OPEN"}
+            if mutation == "confirm-untyped": values[":confirmed"] = {"N": "1"}
+            with pytest.raises(ValueError):
+                lc.validate_close_drain_call(request=request, history=history, **call, **scope)
+            return
+        assert lc.validate_fence_call(request=request, history=history, **call, **scope) == call["parameters"]
+        history.append({"call": call, "response": responses[name]})
+    pytest.fail("mutation target not reached")
+
+
+def _close_role_policy():
+    from fixtures.cnesdata_delivery_lifecycle import fence_projection_case
+    *_, readbacks = fence_projection_case(probe=True)
+    return next(row["observed"]["PolicyDocument"] for row in readbacks if row["operation"] == "get_role_policy")
+
+
+def test_fence_close_session_policy_is_the_per_item_subset_of_the_fence_operator_role():
+    """Decision 4: TransactWriteItems is authorized per item; it is not an IAM action (Service Authorization Reference)."""
+    from tools.cnesdata_delivery import session_policy
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    role = _close_role_policy()
+    table, prefix = role["Statement"][0]["Resource"], role["Statement"][-1]["Resource"][:-1]
+    session = session_policy.fence_close_session_policy(control_table_arn=table, execution_prefix=prefix, deadline=1900)
+    encoded = c.canonical(session).decode().strip()
+    assert len(encoded) <= 2048 and "TransactWriteItems" not in encoded and "*" not in encoded.replace(prefix + "*", "")
+    for statement in session["Statement"]:
+        condition = dict(statement["Condition"])
+        assert condition.pop("DateLessThan") == {"aws:CurrentTime": c.utc(1900)}
+        assert ({"Effect": "Allow", "Action": statement["Action"], "Resource": statement["Resource"]}
+                | ({"Condition": condition} if condition else {})) in role["Statement"]
+    grants = {("dynamodb:GetItem", "ENV#prod#FENCE"), ("dynamodb:GetItem", "ENV#prod#SEMAPHORE"),
+              ("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")}
+    live = {"aws:CurrentTime": c.utc(1899)}
+    for action in ("dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:PutItem",
+                   "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:TransactWriteItems"):
+        for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE", "TENANT#private"):
+            context = live | {"dynamodb:LeadingKeys": [key]}
+            assert effective_iam(role, [session], action, table, context) is ((action, key) in grants), (action, key)
+            assert effective_iam(role, [session], action, table, context | {"aws:CurrentTime": c.utc(1900)}) is False
+    assert effective_iam(role, [session], "states:DescribeExecution", prefix + "0" * 16, live) is True
+    assert effective_iam(role, [session], "states:DescribeExecution", prefix + "0" * 16, {"aws:CurrentTime": c.utc(1900)}) is False
+
+
+@pytest.mark.parametrize("builder", ["fence_session_policy", "fence_close_session_policy"])
+@pytest.mark.parametrize("mutation", ["prefix-wildcard", "prefix-colon", "prefix-machine", "table", "deadline-bool"])
+def test_fence_close_and_ready_session_policies_reject_non_exact_scope(builder, mutation):
+    from tools.cnesdata_delivery import session_policy
+    build = getattr(session_policy, builder)
+    kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:", deadline=1480)
+    build(**kwargs)
+    if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
+    if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]
+    if mutation == "prefix-machine": kwargs["execution_prefix"] = kwargs["execution_prefix"].replace("cnesdata-prod:", "cnesdata-prod-x:")
+    if mutation == "table": kwargs["control_table_arn"] += "*"
+    if mutation == "deadline-bool": kwargs["deadline"] = True
+    with pytest.raises(ValueError):
+        build(**kwargs)
+
+
+def _close_drain_broker_case(monkeypatch, *, item=CLOSE_SEMAPHORE):
+    """Real shared journal, evidence and broker over a close-drain request; S3, the native SDK and the clock are fakes."""
+    from email.utils import formatdate
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    request, owner, window, inputs = _adapter_case("close-drain")
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = {"role": "application", "account_id": CLOSE_ACCOUNT, "evidence_bucket": "synthetic-evidence",
+                  "evidence_prefix": "cnesdata/prod/evidence/"}
+    session = ag._FenceSession(None, "9" * 64, CLOSE_SCOPE, 1900, c.sha(c.canonical(journal._request)))
+    objects, native, errors = {}, [], {}
+    class Evidence:
+        def get(self, bucket, key, *, maximum, absent=False):
+            return objects.get(key), "etag"
+        def put(self, bucket, key, raw):
+            assert key not in objects
+            objects[key] = raw
+    class NativeError(Exception):
+        def __init__(self, code, **extra):
+            self.response = {"Error": {"Code": code, "Message": "never retained native text"}, **extra,
+                             "ResponseMetadata": {"RequestId": "native-error", "HTTPStatusCode": 400,
+                                                  "HTTPHeaders": {"date": formatdate(1300, usegmt=True)}}}
+    responses = _close_responses(item)
+    def sdk(service, operation, **parameters):
+        name = operation + ("-semaphore" if "SEMAPHORE" in c.canonical(parameters).decode() and operation == "get_item" else "")
+        native.append(name)
+        if name in errors:
+            raise errors[name]
+        if name == "describe_execution":
+            raise NativeError("ExecutionDoesNotExist")
+        metadata = {"RequestId": "native-" + str(len(native)), "HTTPStatusCode": 200,
+                    "HTTPHeaders": {"date": formatdate(1300, usegmt=True)}}
+        return responses[name] | {"ResponseMetadata": metadata}
+    session.client = SimpleNamespace(call=sdk)
+    monkeypatch.setattr(ag.time, "time", lambda: 1300)
+    broker = ag.ClosedReadyBroker(Evidence(), governance, journal, session, prepared_sha256="3" * 64, clock=lambda: 1300)
+    calls = _close_drain_calls(request["owner"]["owner_sha256"], item=item)
+    frames = {name: c.canonical({"kind": "call", **call}) for name, call in calls.items()}
+    return ag, journal, broker, frames, native, objects, errors, NativeError
+
+
+@pytest.mark.parametrize("semaphore", ["held", "absent"])
+def test_close_drain_broker_runs_the_product_close_with_one_durable_attempt_per_call(monkeypatch, semaphore):
+    """Decision 4: one durable intent, response and receipt per call; writes return only an empty result."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    item = CLOSE_SEMAPHORE if semaphore == "held" else None
+    ag, journal, broker, frames, native, objects, _, _ = _close_drain_broker_case(monkeypatch, item=item)
+    replies = [ag._adapter_message(frames[name], journal) for name in CLOSE_ORDER]
+    assert [result for _, result in replies] == [None] * len(CLOSE_ORDER) and native == list(CLOSE_ORDER)
+    assert replies[0][0] == replies[4][0] == {"kind": "sdk-error", "code": "ExecutionDoesNotExist"}
+    assert replies[3][0] == replies[5][0] == {"kind": "sdk-result", "value": {}}
+    assert replies[2][0] == {"kind": "sdk-result", "value": {"Item": item} if item else {}}
+    assert len(journal.call_receipts) == len(CLOSE_ORDER) == len(objects) // 3 and not journal.unknown and not broker.uncertainty
+    assert all(b"never retained" not in raw for raw in objects.values())
+    first = broker.evidence[0]
+    intent = c.loads(objects[first._keys["intent"]], canonical=True)
+    frame = c.loads(frames["describe_execution"], canonical=True)
+    assert intent["operation"] == "close-drain" and intent["call"] == {key: frame[key] for key in frame if key != "kind"}
+    request = journal._request
+    keys = lr.closed_ready_evidence_keys({"evidence_prefix": "cnesdata/prod/evidence/"}, owner=request["owner"],
+        caller=journal._identity, checkpoint_sha256=request["checkpoint_sha256"], sequence=0, operation="close-drain")
+    assert first._keys == keys and "/close-drain/sdk-" in keys["intent"]
+    assert keys != lr.closed_ready_evidence_keys({"evidence_prefix": "cnesdata/prod/evidence/"}, owner=request["owner"],
+        caller=journal._identity, checkpoint_sha256=request["checkpoint_sha256"], sequence=0)
+
+
+def test_closed_ready_evidence_keys_stay_byte_identical():
+    """The prepared evaluation binds the closed-ready intent key; close-drain gets its own namespace and hash."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    request, owner, _, _ = _adapter_case("closed-ready")
+    arguments = dict(owner=request["owner"], caller=lc.application_identity(owner, required=True),
+                     checkpoint_sha256=request["checkpoint_sha256"], sequence=0)
+    governance = {"evidence_prefix": "cnesdata/prod/evidence/"}
+    keys = lr.closed_ready_evidence_keys(governance, **arguments)
+    assert keys == lr.closed_ready_evidence_keys(governance, **arguments, operation="closed-ready")
+    assert keys["intent"] == ("cnesdata/prod/evidence/lifecycle/" + "a" * 40
+                              + "/41/1/closed-ready/sdk-eee52cd9849f5e15082ab0f2a1f9a1af2d7e5cc4-intent.json")
+    close = lr.closed_ready_evidence_keys(governance, **arguments, operation="close-drain")
+    assert close["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/close-drain/sdk-")
+    assert close["intent"].rsplit("/", 1)[1] != keys["intent"].rsplit("/", 1)[1]
+    with pytest.raises(ValueError):
+        lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+
+
+R12_ERRORS = {
+    "close-conditional": ("transact_write_items", "TransactionCanceledException",
+                          {"CancellationReasons": [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}]}),
+    "close-conflict": ("transact_write_items", "TransactionCanceledException",
+                       {"CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}]}),
+    "confirm-conditional": ("update_item", "ConditionalCheckFailedException", {}),
+    "close-throttled": ("transact_write_items", "ThrottlingException", {}),
+    "read-throttled": ("get_item-semaphore", "ProvisionedThroughputExceededException", {}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(R12_ERRORS))
+def test_close_drain_conflict_poisons_the_journal_and_never_retries_or_returns_sdk_error(monkeypatch, case):
+    """R12: a native conflict is recovery, not an adapter result; the intent stays the uncertainty witness."""
+    ag, journal, broker, frames, native, objects, errors, NativeError = _close_drain_broker_case(monkeypatch)
+    target, code, extra = R12_ERRORS[case]
+    errors[target] = NativeError(code, **extra)
+    order = list(CLOSE_ORDER[:CLOSE_ORDER.index(target) + 1])
+    for name in order[:-1]:
+        ag._adapter_message(frames[name], journal)
+    settled = len(journal.call_receipts)
+    with pytest.raises(ValueError, match="native SDK outcome unknown"):
+        ag._adapter_message(frames[target], journal)
+    ledger = broker.evidence[-1]
+    assert journal._failed and journal.unknown and broker.uncertainty == ledger.uncertainty != []
+    assert ledger._keys["intent"] in objects and ledger._keys["response"] not in objects and ledger._keys["receipt"] not in objects
+    assert len(journal.call_receipts) == settled and all(b"never retained" not in raw for raw in objects.values())
+    with pytest.raises(ValueError):
+        ag._adapter_message(frames[target], journal)
+    assert native.count(target) == 1
+
+
+@pytest.mark.parametrize("case", ["close-capacity", "confirm-attributes", "read-capacity", "close-item"])
+def test_close_drain_broker_refuses_write_or_read_responses_beyond_the_finite_fields(monkeypatch, case):
+    ag, journal, broker, frames, native, objects, errors, _ = _close_drain_broker_case(monkeypatch)
+    target, extra = {"close-capacity": ("transact_write_items", {"ConsumedCapacity": [{"TableName": "t"}]}),
+                     "confirm-attributes": ("update_item", {"Attributes": {"state": {"S": "CLOSED"}}}),
+                     "read-capacity": ("get_item", {"ConsumedCapacity": {"TableName": "t"}}),
+                     "close-item": ("transact_write_items", {"Item": {"state": {"S": "CLOSED"}}})}[case]
+    original = broker.session.client.call
+    def sdk(service, operation, **parameters):
+        response = original(service, operation, **parameters)
+        return response | extra if native[-1] == target else response
+    broker.session.client.call = sdk
+    order = list(CLOSE_ORDER[:CLOSE_ORDER.index(target) + 1])
+    for name in order[:-1]:
+        ag._adapter_message(frames[name], journal)
+    with pytest.raises(ValueError, match="finite native DynamoDB response"):
+        ag._adapter_message(frames[target], journal)
+    assert journal._failed and journal.unknown and broker.uncertainty
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+@pytest.mark.parametrize("call", ["get_item", "update_item", "transact_write_items", "put_item", "delete_item"])
+def test_journal_records_only_the_operation_finite_sdk_set_and_write_responses_stay_empty(operation, call):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    raw = c.canonical({"role": "fence_operator", "service": "dynamodb", "operation": call, "parameters": {}})
+    if ("dynamodb", call) not in lc.FENCE_SDK_OPERATIONS[operation]:
+        with pytest.raises(ValueError, match="closed SDK journal operation"):
+            journal.begin_sdk_call(raw, role_session_sha256="9" * 64)
+        return
+    from email.utils import formatdate
+    ticket = journal.begin_sdk_call(raw, role_session_sha256="9" * 64)
+    response = c.canonical({"Item": {"pk": {"S": "ENV#prod#FENCE"}}})
+    if call == "get_item":
+        assert journal.complete_sdk_call(ticket, response, request_id="r", server_date=formatdate(usegmt=True))
+    else:
+        with pytest.raises(ValueError, match="SDK response already sanitized"):
+            journal.complete_sdk_call(ticket, response, request_id="r", server_date=formatdate(usegmt=True))
+        assert journal._failed and journal.unknown
+
+
+_FREEZE_ACCOUNT = "111122223333"
+_FREEZE = {"PolicyName": "cnesdata-budget-freeze", "PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/cnesdata-budget-freeze"}
+
+
+@pytest.mark.parametrize("case, refusal", [
+    ("none", None), ("freeze", "freeze=attached"), ("freeze-and-other", "freeze=attached"),
+    ("other", "application has no attached policies"), ("foreign-freeze", "application has no attached policies"),
+    ("path-freeze", "application has no attached policies"), ("truncated-freeze", "application has no attached policies"),
+    ("untyped", "application has no attached policies")])
+def test_application_unfrozen_refuses_the_budget_freeze_as_its_own_reason(case, refusal):
+    """Queue item 3a: cnesdata-budget-freeze (personal-infra-live#2 6883013198, path /) refuses as freeze=attached."""
+    from tools.cnesdata_delivery import session_owner
+    other = {"PolicyName": "other", "PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/other"}
+    attached = {"none": [], "freeze": [_FREEZE], "freeze-and-other": [other, _FREEZE], "other": [other],
+                "foreign-freeze": [_FREEZE | {"PolicyArn": _FREEZE["PolicyArn"].replace(_FREEZE_ACCOUNT, "999900001111")}],
+                "path-freeze": [_FREEZE | {"PolicyArn": _FREEZE["PolicyArn"].replace(":policy/", ":policy/x/")}],
+                "truncated-freeze": [_FREEZE], "untyped": None}[case]
+    response = {"IsTruncated": case == "truncated-freeze", "AttachedPolicies": attached}
+    if refusal is None:
+        assert session_owner.application_unfrozen(response, _FREEZE_ACCOUNT) is None
+        return
+    with pytest.raises(ValueError, match=refusal):
+        session_owner.application_unfrozen(response, _FREEZE_ACCOUNT)
+
+
+def _close_role_session_case(monkeypatch, mutation=None):
+    """Finite close session over the fence SDK boundary fakes; the role carries the promotion_fence_operator grants."""
+    from tools.cnesdata_delivery import application_gate as ag
+    native_mutations = {"arn", "role-id", "account", "packed", "expiration"}
+    ag, args, calls, native = _fence_sdk_boundary_case(monkeypatch, mutation=mutation if mutation in native_mutations else None)
+    operation = "closed-ready" if mutation == "closed-ready-prepare" else "close-drain"
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    if mutation == "closed-ready-prepare":
+        journal._request["stage"] = _adapter_case("close-drain")[0]["stage"]
+    role = args["role"]
+    statements = []
+    for action, keys in (("GetItem", ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]), ("UpdateItem", ["ENV#prod#FENCE"]),
+                         ("ConditionCheckItem", ["ENV#prod#SEMAPHORE"])):
+        if (mutation, action) not in {("no-write-grant", "UpdateItem"), ("no-check-grant", "ConditionCheckItem")}:
+            statements.append({"Effect": "Allow", "Action": "dynamodb:" + action, "Resource": CLOSE_SCOPE["control_table_arn"],
+                               "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": keys},
+                                             "Null": {"dynamodb:LeadingKeys": "false"}}})
+    statements.append({"Effect": "Allow", "Action": "states:DescribeExecution",
+                       "Resource": CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":*"})
+    role["policy"] = {"Version": "2012-10-17", "Statement": statements}
+    scope = dict(CLOSE_SCOPE)
+    if mutation == "members-scope": scope["members"] = []
+    if mutation == "synthetic-table": scope["control_table_arn"] = scope["control_table_arn"].replace("control-plane", "control")
+    stage = journal._request["stage"]
+    if mutation == "api-stage": stage.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
+    if mutation == "closed": stage["close"] = 1000
+    if mutation == "deadline": stage["deadline"] = 1899
+    if mutation == "late": stage.update(deadline=1340, preparation_deadline=1340)
+    if mutation == "future-admission": stage["admitted_at"] = 1301
+    args.update(journal=journal, scope=scope, credential_limit=2199 if mutation == "credential" else 3000)
+    return ag, args, calls, native
+
+
+_CLOSE_SESSION_REFUSALS = {"api-stage": "preparation/credential window", "closed": "preparation/credential window",
+                           "deadline": "preparation/credential window", "late": "preparation/credential window",
+                           "future-admission": "preparation/credential window", "credential": "preparation/credential window",
+                           "closed-ready-prepare": "API/credential window", "members-scope": "closed object fields",
+                           "synthetic-table": "close-drain pinned get_item template",
+                           "no-write-grant": "effective close-write grant", "no-check-grant": "effective close-write grant"}
+
+
+@pytest.mark.parametrize("mutation", [None, *sorted(_CLOSE_SESSION_REFUSALS), "arn", "role-id", "account", "packed", "expiration"])
+def test_finite_close_session_is_the_preparation_window_per_item_policy(monkeypatch, mutation):
+    """Decision 4: application-prepare, close/decision unset, deadline = preparation_deadline, per-item grants."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, calls, native = _close_role_session_case(monkeypatch, mutation)
+    if mutation in _CLOSE_SESSION_REFUSALS:
+        with pytest.raises(ValueError, match=_CLOSE_SESSION_REFUSALS[mutation]):
+            ag._assume_fence_session(**args)
+        assert calls == native == []
+        return
+    if mutation:
+        with pytest.raises(ValueError):
+            ag._assume_fence_session(**args)
+        assert len(calls) == 1
+        return
+    session = ag._assume_fence_session(**args)
+    assert session.scope == CLOSE_SCOPE and session.deadline == 1900 and len(calls) == len(native) == 1
+    expected = session_policy.fence_close_session_policy(control_table_arn=CLOSE_SCOPE["control_table_arn"],
+        execution_prefix=CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
+    assert calls[0][2]["Policy"] == c.canonical(expected).decode().strip() and calls[0][2]["DurationSeconds"] == 900
+
+
+def _close_drain_capability_case(monkeypatch, mutation=None):
+    """Connected close-drain composition: real prepared producer/codec, real broker; S3/STS/IAM are external fakes."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import Authority
+    kwargs, _, fragment = _fence_prepare_package_case(monkeypatch)
+    activation = b"original-ext2-payload-bytes"
+    kwargs["activation_sha256"] = c.sha(activation)
+    files = lr.fence_prepare_package(**kwargs)
+    if mutation == "evaluation-scope":
+        evaluation = c.loads(files["fence-evaluation.json"], canonical=True)
+        next(case for case in evaluation["cases"] if case["case_id"] == "get-fence")["resource"] += "-other"
+        files["fence-evaluation.json"] = c.canonical(evaluation)
+    prepared = lr.PreparedFence(files)
+    owner, pin = kwargs["owner"], kwargs["authority"].pin
+    if mutation == "owner": owner = owner | {"generation": owner["generation"] + 1}
+    preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
+    _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
+    authority = Authority(pin, 5000.0, None, fragment, "3" * 64)
+    api = SimpleNamespace(expiries={(c.REPOSITORY, 81): 6000.0}, digests={(c.REPOSITORY, 81): "2" * 64})
+    expirations = ag.close_expirations(authority, api)
+    if mutation == "expirations": api.expiries[(c.REPOSITORY, 81)] = 5900.0
+    if mutation == "late-artifact": api.expiries[(c.REPOSITORY, 82)], api.digests[(c.REPOSITORY, 82)] = 6100.0, "4" * 64
+    inputs = {"activation": activation if mutation != "activation" else b"other", "expirations": expirations}
+    window = {"close": None, "fixed_deadline": None, "input_deadline": None, "stage": "application-prepare",
+              "admitted_at": preparation["admitted_at"] - (mutation == "admitted") + (mutation == "admitted-later"),
+              "deadline": preparation["deadline"] - (mutation == "preparation"),
+              "decision": None, "preparation_deadline": preparation["deadline"] - (mutation == "preparation"),
+              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), **lc.application_identity(owner)}
+    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
+               "activation_sha256": c.sha(inputs["activation"]),
+               "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = dict(sts_args["governance"])
+    if mutation == "delegation":
+        governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
+    events = []
+    attached = {"freeze": [_FREEZE], "attached": [{"PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/other"}]}.get(mutation, [])
+    class Application:
+        def call(self, service, operation, **parameters):
+            events.append((service, operation))
+            if service == "iam":
+                assert operation == "list_attached_role_policies"
+                assert parameters == {"RoleName": fragment["application_role_name"], "MaxItems": 100}
+                return {"IsTruncated": False, "AttachedPolicies": attached}
+            return sts_args["aws"].call(service, operation, **parameters)
+    keeper = ag.Keeper.__new__(ag.Keeper)
+    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: events.append(("lease", "check")) or {"held": True})
+    args = dict(aws=Application(), api=api, governance=governance, authority=authority, journal=journal, keeper=keeper,
+                prepared=prepared, credential_limit=3000, clock=lambda: 1300)
+    return ag, args, sts_calls, keeper, journal, events
+
+
+_CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "preparation": "original preparation is the close stage",
+                              "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
+                              "admitted-later": "original preparation is the close stage", "owner": "prepared current owner",
+                              "evaluation-scope": "capability scope recomputed from prepared policy",
+                              "expirations": "close-drain authenticated expirations",
+                              "late-artifact": "close-drain authenticated expirations",
+                              "freeze": "freeze=attached", "attached": "application has no attached policies"}
+
+
+@pytest.mark.parametrize("mutation", [None, *sorted(_CLOSE_CAPABILITY_REFUSALS)])
+def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_before_sts(monkeypatch, mutation):
+    """Decision 4 and 3a: every refusal mints no credential, poisons the journal and keeps the lease held."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError, match=_CLOSE_CAPABILITY_REFUSALS[mutation]):
+            ag.close_drain_capability(**args)
+        assert sts_calls == [] and journal._failed is True and keeper.uncertainty() == [{"kind": "context-failed"}]
+        assert ("sts", "assume_role") not in events
+        assert (("iam", "list_attached_role_policies") in events) is (mutation in {"freeze", "attached"})
+        return
+    broker = ag.close_drain_capability(**args)
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker] and keeper.uncertainty() == []
+    assert events == [("lease", "check"), ("iam", "list_attached_role_policies"), ("sts", "assume_role")]
+    scope = broker.session.scope
+    assert set(scope) == {"account", "control_table_arn", "machine_arn"} and broker.session.deadline == 1900
+    expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
+        execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
+    assert len(sts_calls) == 1 and sts_calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+
+
+@pytest.mark.parametrize("capability", ["close_drain_capability", "closed_ready_capability"])
+def test_fence_capabilities_refuse_the_other_operation_before_any_io(monkeypatch, capability):
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    if capability == "closed_ready_capability":
+        args.update(request={}, run={}, guard=None)
+        args.pop("authority")
+    else:
+        journal._request = dict(journal._request, operation="closed-ready")
+    with pytest.raises(ValueError, match="only; every other operation remains rejected"):
+        getattr(ag, capability)(**args)
+    assert sts_calls == [] and events == [] and keeper._contexts == []
+
+
+@pytest.mark.parametrize("case", ["leaf", "decoy", "missing", "root-decoy"])
+def test_adapter_child_loads_product_packages_by_authorized_path_with_stub_parents(tmp_path, case):
+    """Queue item 3c: cnes_domain/cnes_infra load by authorized path; parent __init__ never runs; no fallback."""
+    import subprocess
+    from tools.cnesdata_delivery.application_gate import AdapterJournal, invoke_adapter
+    product = tmp_path / "product"
+    imports = {"leaf": "from cnes_infra.codec import VALUE", "decoy": "from cnes_domain.missing import VALUE",
+               "missing": "from cnes_domain.orchestration.absent import VALUE", "root-decoy": "from cnes_domain.missing import VALUE"}
+    code = r"""import hashlib, json, sys
+IMPORT
+
+def canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+def execute_shared_operation(operation, request, context):
+    observed = canonical({'value': VALUE, 'stub_file': getattr(sys.modules.get('cnes_infra'), '__file__', None),
+                          'domain_path': list(getattr(sys.modules['cnes_domain'], '__path__', []))})
+    digest = context.observe('inventory', observed)
+    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+            'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
+            'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
+            'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
+"""
+    stub = "raise RuntimeError('stub parent __init__ executed')\n"
+    files = {"scripts/promotion/promote_api.py": code.replace("IMPORT", imports[case]),
+             "packages/cnes_domain/src/cnes_domain/__init__.py": stub,
+             "packages/cnes_domain/src/cnes_domain/orchestration/__init__.py": stub,
+             "packages/cnes_domain/src/cnes_domain/orchestration/leaf.py": "import json\nVALUE = json.dumps({'leaf': __name__})\n",
+             "packages/cnes_infra/src/cnes_infra/__init__.py": stub,
+             "packages/cnes_infra/src/cnes_infra/codec.py": "from cnes_domain.orchestration.leaf import VALUE\n",
+             "cnes_domain/__init__.py": "", "cnes_domain/missing.py": "VALUE = 'decoy outside the authorized path'\n"}
+    if case == "root-decoy":
+        files = {name: text for name, text in files.items() if not name.startswith("packages/cnes_domain/")}
+    for name, text in files.items():
+        (product / name).parent.mkdir(parents=True, exist_ok=True)
+        (product / name).write_text(text)
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=product, check=True, capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "loader fixture")
+    source = git("rev-parse", "HEAD")
+    manifest = {"version": 1, "source_sha": source, "files": {name: c.sha((product / name).read_bytes()) for name in files}}
+    request, owner, window, inputs = _adapter_case()
+    owner["source_sha"] = request["source_sha"] = request["owner"]["source_sha"] = source
+    class Guard:
+        def check(self, seconds=1): pass
+    journal = AdapterJournal(c.canonical(request), operation="inventory", owner=owner, window=window, inputs=inputs,
+                             activation_sha256=request["activation_sha256"], guard=Guard())
+    args = {"product": product, "source": source, "manifest": manifest, "manifest_sha256": c.sha(c.canonical(manifest)),
+            "journal": journal, "timeout": 10}
+    if case != "leaf":
+        with pytest.raises(ValueError, match="adapter child failed|adapter complete result frame"):
+            invoke_adapter(**args)
+        assert journal.observations == []
+        return
+    result = c.loads(invoke_adapter(**args), canonical=True)
+    observed = c.loads(journal.observation_bytes[result["observations"][0]["sha256"]], canonical=True)
+    root = str(product.resolve() / "packages/cnes_domain/src/cnes_domain")
+    assert observed == {"value": '{"leaf": "cnes_domain.orchestration.leaf"}', "stub_file": None, "domain_path": [root]}
+    assert git("status", "--porcelain", "--ignored", "--untracked-files=all") == ""
 
 
 
@@ -2252,6 +2910,56 @@ def test_application_cli_preflight_uses_real_public_admission(monkeypatch, tmp_p
 
 
 
+def test_artifact_digests_retain_only_the_authenticated_download_digest():
+    """Correction 6906038586 item 1: the digest comes from the same authenticated download, never a new read."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    calls = []
+    class Inner:
+        expiries = {}
+        def artifact(self, reference, now, **options):
+            calls.append((reference["artifact_id"], now, options))
+            if reference["artifact_id"] == 13:
+                raise ValueError("artifact metadata")
+            self.expiries[reference["repository"], reference["artifact_id"]] = 6000.0
+            return {"index.json": b"{}"}
+        def read(self, path):
+            return "read:" + path
+    inner = Inner()
+    api = lr.ArtifactDigests(inner)
+    reference = {"repository": c.REPOSITORY, "artifact_id": 12, "artifact_digest": "sha256:" + "a" * 64}
+    assert api.artifact(reference, 1000, r2=True) == {"index.json": b"{}"}
+    with pytest.raises(ValueError, match="artifact metadata"):
+        api.artifact(reference | {"artifact_id": 13, "artifact_digest": "sha256:" + "b" * 64}, 1000)
+    assert api.digests == {(c.REPOSITORY, 12): "a" * 64} and set(api.digests) == set(api.expiries)
+    assert api.expiries is inner.expiries and api.read("repos/x") == "read:repos/x"
+    assert calls == [(12, 1000, {"r2": True}), (13, 1000, {})]
+
+
+@pytest.mark.parametrize("role", ["application", "plan"])
+def test_admission_retains_artifact_digests_only_for_the_application_role(monkeypatch, role):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    governance = {"activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
+                  "lifecycle_steps": {"keeper": {"role": role, "purpose": "application-prepare", "input_jobs": {}}}}
+    request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
+                           "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
+    for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(governance).decode(), "REQUEST_DESCRIPTOR": request.decode(),
+                       "REQUEST_DESCRIPTOR_SHA256": c.sha(request), "EXPECTED_SOURCE_SHA": "b" * 40,
+                       "PURPOSE": "application-prepare", "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2"}.items():
+        monkeypatch.setenv(key, value)
+    inner, seen = object(), []
+    monkeypatch.setattr(lr, "GitHub", lambda: inner)
+    def stop(governance, api, *args):
+        seen.append(api)
+        raise ValueError("stop after GitHub construction")
+    monkeypatch.setattr(lr, "source_admission", stop)
+    with pytest.raises(ValueError, match="stop after GitHub construction"):
+        lr.admission(role)
+    if role == "application":
+        assert type(seen[0]) is lr.ArtifactDigests and seen[0]._inner is inner
+    else:
+        assert seen == [inner]
+
+
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
 @pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "caller", "ref", "pin", "attempt", "source"])
 def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch, tmp_path, purpose, mutation):
@@ -2656,7 +3364,7 @@ def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
     documents, _, package, _ = _fence_contract_case()
     role = copy.deepcopy(documents["fence-role.json"])
     table = "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control"
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     role["policy"] = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table, "Condition": {
@@ -3002,7 +3710,7 @@ def execute_shared_operation(operation, request, context):
     for params in (fence, sem, fence, sem):
         observed.append(context.call('fence_operator', 'dynamodb', 'get_item', params))
     observed.append(context.call('fence_operator', 'stepfunctions', 'describe_execution', {
-        'executionArn': 'arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:' + 'a' * 16, 'includedData': 'METADATA_ONLY'}))
+        'executionArn': 'arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:' + 'a' * 16, 'includedData': 'METADATA_ONLY'}))
     for params in (fence, sem):
         observed.append(context.call('fence_operator', 'dynamodb', 'get_item', params))
     raw = canonical({'fixture_only': True, 'observed': observed})
@@ -3399,7 +4107,7 @@ def test_fence_sts_policy_is_the_single_pure_fence_session_policy(monkeypatch):
 def test_fence_session_policy_rejects_non_exact_scope(mutation):
     from tools.cnesdata_delivery import session_policy
     kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
-                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:", deadline=1480)
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:", deadline=1480)
     session_policy.fence_session_policy(**kwargs)
     if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
     if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]
@@ -4030,7 +4738,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     from tools.cnesdata_delivery import application_gate as ag
     root = Path(__file__).resolve().parents[1]
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
-               "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window"}
+               "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
+               "close_expirations", "close_drain_capability"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4057,6 +4766,10 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "run_closed_ready", "KeeperGuard"),              # run_closed_ready itself has no production caller
         (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
+        (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller
+        (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
+        (gate, "close_drain_capability", "_assume_fence_session"),
+        (gate, "close_drain_capability", "ClosedReadyBroker"),
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]

@@ -62,6 +62,24 @@ def authenticate_application_predecessor(api, governance, current):
     return reference
 
 
+class ArtifactDigests:
+    """Correction 6906038586 item 1: each authenticated artifact digest beside its expiry.
+
+    Recorded only after the inner authenticated download succeeds; everything else delegates.
+    """
+    def __init__(self, inner):
+        self._inner = inner
+        self.digests = {}
+
+    def artifact(self, reference, now, **options):
+        files = self._inner.artifact(reference, now, **options)
+        self.digests[reference["repository"], reference["artifact_id"]] = reference["artifact_digest"].removeprefix("sha256:")
+        return files
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
@@ -78,7 +96,7 @@ def admission(role):
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
     c.require(step["purpose"] in lc.PURPOSES or role == "application", "closed purpose")
     c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
-    api = GitHub()
+    api = ArtifactDigests(GitHub()) if role == "application" else GitHub()
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
     from tools.cnesdata_delivery.provenance import application_caller
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
@@ -454,18 +472,19 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
-def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence):
-    """Single derivation of own-run closed-ready intent/response/receipt keys.
+def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence, operation="closed-ready"):
+    """Single derivation of own-run fence SDK intent/response/receipt keys, one namespace per operation.
 
-    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2).
+    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2); closed-ready bytes are unchanged.
     """
+    c.require(operation in lc.FENCE_SDK_OPERATIONS, "fence evidence operation")
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
-    operation = c.sha(c.canonical({"schema_version": 2, "operation": "closed-ready", "owner": owner, "caller": caller,
-                                   "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
-    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": "closed-ready"},
+    digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,
+                                "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
+    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": operation},
                        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
-    return {name: prefix + "sdk-" + operation[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
+    return {name: prefix + "sdk-" + digest[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
 
 
 def _allowed_resources(policy, action):
@@ -493,7 +512,7 @@ def fence_policy_scope(governance, policy):
     table = _allowed_resources(policy, "dynamodb:GetItem")
     c.require(re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/cnesdata-prod-[A-Za-z0-9_.-]+", table),
               "fence policy protected table")
-    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod-[A-Za-z0-9_-]+):)\*",
+    match = re.fullmatch(r"(arn:aws:states:us-east-2:" + account + r":execution:(cnesdata-prod):)\*",
                          _allowed_resources(policy, "states:DescribeExecution"))
     c.require(match is not None, "fence execution prefix single final wildcard")
     return {"control_table_arn": table, "execution_prefix": match[1],

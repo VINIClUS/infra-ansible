@@ -216,6 +216,59 @@ def test_infra_expiration_bound_refuses_when_any_source_is_missing(missing):
         ag.infra_expiration_bound(authority, api)
 
 
+def _bound_api(*values):
+    keys = [("VINIClUS/CnesData", index) for index in range(1, len(values) + 1)]
+    return SimpleNamespace(expiries=dict(zip(keys, values)), digests={key: str(key[1]) * 64 for key in keys})
+
+
+def _close_authority(**changes):
+    from dataclasses import replace
+    return replace(_authority(**changes), proof_sha256="3" * 64)
+
+
+def test_close_expirations_are_the_authenticated_originals_and_their_minimum_is_the_infra_bound():
+    """Correction 6906038586 item 1: credential, artifact and platform originals, sorted and unique."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    authority, api = _close_authority(), _bound_api(6000.0, 4800.0)
+    raw = ag.close_expirations(authority, api)
+    value = c.loads(raw, canonical=True)
+    assert raw == c.canonical(value) and value == [
+        {"kind": "artifact", "object_sha256": "1" * 64, "expires_at": c.utc(6000)},
+        {"kind": "artifact", "object_sha256": "2" * 64, "expires_at": c.utc(4800)},
+        {"kind": "credential", "object_sha256": "3" * 64, "expires_at": c.utc(5000)},
+        *sorted([{"kind": "platform", "object_sha256": c.sha(c.canonical(authority.application_fragment)), "expires_at": c.utc(5200)},
+                 {"kind": "platform", "object_sha256": c.sha(c.canonical(authority.pin)), "expires_at": c.utc(5500)}],
+                key=lambda item: item["object_sha256"])]
+    assert {item["kind"] for item in value} <= lc.CLOSE_EXPIRATION_KINDS - {"envelope"}
+    bound = ag.infra_expiration_bound(authority, api)
+    assert min(int(c.instant(item["expires_at"])) for item in value) == bound == 4800
+    envelope = {"kind": "envelope", "object_sha256": "9" * 64, "expires_at": c.utc(2800)}
+    product = sorted([*value, envelope], key=lambda item: (item["kind"], item["object_sha256"]))
+    window = _close(_close_drain(input_expirations=product), infra_bound=bound)
+    assert window["input_deadline"] == 2800 and window["fixed_deadline"] == 2800
+
+
+@pytest.mark.parametrize("mutation", ["no-proof", "proof-digest", "no-digests", "missing-digest", "extra-digest", "digest-prefix",
+                                      "duplicate-artifact", "duplicate-platform", "no-expiries"])
+def test_close_expirations_refuse_unbound_or_duplicate_originals(mutation):
+    from dataclasses import replace
+    from tools.cnesdata_delivery import application_gate as ag
+    authority, api = _close_authority(), _bound_api(6000.0, 7000.0)
+    first, second = list(api.expiries)
+    if mutation == "no-proof": authority = replace(authority, proof_sha256=None)
+    if mutation == "proof-digest": authority = replace(authority, proof_sha256="3" * 63)
+    if mutation == "no-digests": del api.digests
+    if mutation == "missing-digest": api.digests.pop(second)
+    if mutation == "extra-digest": api.digests[("VINIClUS/CnesData", 9)] = "9" * 64
+    if mutation == "digest-prefix": api.digests[first] = "sha256:" + "1" * 64
+    if mutation == "duplicate-artifact": api.digests[second] = api.digests[first]
+    if mutation == "duplicate-platform": authority = replace(authority, pin={"enabled_until": c.utc(5200), "frozen_until": c.utc(5200)},
+                                                            application_fragment={"enabled_until": c.utc(5200), "frozen_until": c.utc(5200)})
+    if mutation == "no-expiries": api = SimpleNamespace(expiries={}, digests={})
+    with pytest.raises(ValueError):
+        ag.close_expirations(authority, api)
+
+
 def _archive(index):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as output:

@@ -189,7 +189,7 @@ CALLER_BINDING_FIELDS = ("application_purpose context_kind repository workflow_p
                          "run_id run_attempt producer_workflow_sha producer_source_closure_sha256")
 ADAPTER_INPUTS = {
     "inventory": "candidate dashboard-artifact archive static-baseline",
-    "close-drain": "activation canary membership",
+    "close-drain": "activation expirations",
     "closed-ready": "activation close-drain phase-b membership",
     "publish-static": "candidate dashboard-artifact static-plan inventory host-receipt",
     "rollback-api-static": "static-plan inventory publication host-recovery-receipt recovery-decision",
@@ -764,7 +764,7 @@ def validate_closed_ready_call(*, request, role, service, operation, parameters,
               "closed-ready finite SDK operation")
     c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account), "closed-ready account")
     table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
-    c.require(table and re.fullmatch(r"arn:aws:states:us-east-2:" + account + r":stateMachine:cnesdata-prod-[A-Za-z0-9_-]+", machine_arn),
+    c.require(table and re.fullmatch(r"arn:aws:states:us-east-2:" + account + r":stateMachine:cnesdata-prod", machine_arn),
               "closed-ready protected resource scope")
     if service == "dynamodb":
         c.closed(parameters, "TableName Key ConsistentRead")
@@ -802,6 +802,150 @@ def closed_ready_probe_response(response, *, execution_arn, machine_arn):
               and response.get("status") in {"RUNNING", "SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"}
               and "startDate" in response, "closed-ready original execution response")
     return {key: response[key] for key in ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate") if key in response}
+
+
+FENCE_SDK_OPERATIONS = {
+    "closed-ready": frozenset({("dynamodb", "get_item"), ("stepfunctions", "describe_execution")}),
+    "close-drain": frozenset({("dynamodb", "get_item"), ("dynamodb", "update_item"), ("dynamodb", "transact_write_items"),
+                              ("stepfunctions", "describe_execution")}),
+}
+# Correction 6906038586 item 3: sha256 of each canonical template of the product call vector
+# (CnesData 2c66f62c tests/production/delivery/close_drain_call_vector.json, sha256 44d0cf91...).
+CLOSE_DRAIN_TEMPLATES = {
+    "describe_execution": frozenset({"73abbbba755b953e02c6f9438ad7970e1700692cb4e01d4f8c811139a59b1ac8"}),
+    "get_item": frozenset({"d61d73ab325a8325b9f6116c7e587d18d6a8ff343c49237632a35b17928a8ac3",
+                           "6a14005ede4a28abbae4e8d0d38e6b8a4270d6570e263b59b6ef212162e5aacf"}),
+    "transact_write_items": frozenset({"488182a89ce72bff7532ce45a759f334518b81702afddc421b9fb64251673d43"}),
+    "update_item": frozenset({"20178d9ee8df5eb38a3b210d97631fd81384ebed7ffd4cd66e4dc953a201b42f"}),
+    "close_transaction.update": frozenset({"e571c06ad956c46aed25786e104768ea1bfc10a12e1c967d1ccea63ee70b2ab8",
+                                           "2e7ecb7704b6e3f94c01ede6c3ef22816d7383511b545c13fddc41882fda730e"}),
+    "close_transaction.condition_check": frozenset({"6df09e291a7b1db922f9428fb32b3291ba85ceff4fd1683e37ffc0adfb91a1f5",
+                                                    "ab59c7ddffe33fdf00a4e0cf8a73494c955e5ca5ef7dc7d08b57aa3ceb74880a"}),
+}
+CLOSE_DRAIN_PLACEHOLDERS = {
+    "execution": "<state-machine-execution>:<dispatch_id>",
+    "semaphore": "<AND over sorted semaphore attributes: #vN = :vN | attribute_not_exists(#vN)>",
+    "transact": ["<close_transaction.update>", "<close_transaction.condition_check>"],
+}
+_DYNAMODB_TYPES = frozenset({"S", "N", "B", "SS", "NS", "BS", "M", "L", "NULL", "BOOL"})
+
+
+def _pinned(kind, template):
+    c.require(c.sha(c.canonical(template, limit=128 * 1024)) in CLOSE_DRAIN_TEMPLATES[kind], "close-drain pinned " + kind + " template")
+
+
+def _semaphore_check(check, item):
+    if item is None:
+        return check
+    c.closed(check, "TableName Key ConditionExpression ExpressionAttributeNames ExpressionAttributeValues")
+    names, values = check["ExpressionAttributeNames"], check["ExpressionAttributeValues"]
+    c.require(type(names) is dict and 1 <= len(names) <= 64 and set(names) == {f"#v{index}" for index in range(len(names))},
+              "close-drain semaphore attribute names")
+    attributes = [names[f"#v{index}"] for index in range(len(names))]
+    c.require(all(type(name) is str for name in attributes) and attributes == sorted(set(attributes))
+              and not {"pk", "sk"} & set(attributes) and set(item) - {"pk", "sk"} <= set(attributes),
+              "close-drain semaphore sorted attributes")
+    conditions, expected = [], {}
+    for index, name in enumerate(attributes):
+        if name in item:
+            conditions.append(f"#v{index} = :v{index}")
+            expected[f":v{index}"] = item[name]
+        else:
+            conditions.append(f"attribute_not_exists(#v{index})")
+    c.require(check["ConditionExpression"] == " AND ".join(conditions)
+              and c.canonical(values) == c.canonical(expected), "close-drain semaphore CAS equals the strong read")
+    return {key: check[key] for key in ("TableName", "Key")} | {
+        key: CLOSE_DRAIN_PLACEHOLDERS["semaphore"] for key in ("ConditionExpression", "ExpressionAttributeNames", "ExpressionAttributeValues")}
+
+
+def _close_history(history):
+    c.require(type(history) in (list, tuple) and len(history) <= 8192, "close-drain journal history")
+    semaphore, writes = (), []
+    for entry in history:
+        c.closed(entry, "call response")
+        call = entry["call"]
+        if call["operation"] == "get_item" and call["parameters"]["Key"]["pk"]["S"] == "ENV#prod#SEMAPHORE":
+            semaphore = (entry["response"].get("Item"),)
+        if call["operation"] in {"update_item", "transact_write_items"}:
+            writes.append(call)
+    return semaphore, writes
+
+
+def _typed_values(values):
+    c.require(type(values) is dict and 1 <= len(values) <= 64
+              and all(type(item) is dict and len(item) == 1 and set(item) <= _DYNAMODB_TYPES for item in values.values()),
+              "close-drain typed expression values")
+    return sorted(values)
+
+
+def _close_transaction(parameters, item, owner_sha256, call, table):
+    c.closed(parameters, "TransactItems")
+    items = parameters["TransactItems"]
+    c.require(type(items) is list and len(items) == 2 and type(items[0]) is dict and list(items[0]) == ["Update"]
+              and type(items[1]) is dict and list(items[1]) == ["ConditionCheck"]
+              and type(items[0]["Update"]) is dict and type(items[1]["ConditionCheck"]) is dict, "close transaction shape")
+    _pinned("transact_write_items", call | {"parameters": {"TransactItems": CLOSE_DRAIN_PLACEHOLDERS["transact"]}})
+    update, check = items[0]["Update"], items[1]["ConditionCheck"]
+    values = update.get("ExpressionAttributeValues")
+    _pinned("close_transaction.update", {"Update": update | {"ExpressionAttributeValues": _typed_values(values)}})
+    c.require(update["TableName"] == check.get("TableName") == table and values[":state"] == {"S": "CLOSED"}
+              and values[":entity"] == {"S": "PROMOTIONFENCE"} and values[":promotion"] == {"S": owner_sha256}
+              and values.get(":open", {"S": "OPEN"}) == {"S": "OPEN"}
+              and re.fullmatch(r"[1-9][0-9]{0,17}", values[":version"].get("N", "")), "close transaction original owner values")
+    _pinned("close_transaction.condition_check", {"ConditionCheck": _semaphore_check(check, item)})
+
+
+def _close_confirm(parameters, transact, call, table):
+    c.closed(parameters, "TableName Key UpdateExpression ConditionExpression ExpressionAttributeNames ExpressionAttributeValues")
+    values = parameters["ExpressionAttributeValues"]
+    _pinned("update_item", call | {"parameters": parameters | {"ExpressionAttributeValues": _typed_values(values)}})
+    version = transact["parameters"]["TransactItems"][0]["Update"]["ExpressionAttributeValues"][":version"]
+    c.require(parameters["TableName"] == table and values[":closed"] == {"S": "CLOSED"} and values[":version"] == version
+              and list(values[":confirmed"]) == ["S"], "close confirm of the transaction version")
+
+
+def validate_close_drain_call(*, request, role, service, operation, parameters, account, control_table_arn, machine_arn, history=()):
+    """Decision 4 and correction 6906038586: finite close-drain scope pinned to the product vector.
+
+    Writes stay inside the close: one transaction after a strong SEMAPHORE read, then one
+    confirm of that version, then none. This is not artifact or domain authentication.
+    """
+    stage = request["stage"]
+    c.require(request["operation"] == "close-drain" and stage["stage"] == "application-prepare" and stage["close"] is None
+              and stage["decision"] is None and role == "fence_operator"
+              and (service, operation) in FENCE_SDK_OPERATIONS["close-drain"], "close-drain finite SDK operation")
+    c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account) and type(control_table_arn) is str
+              and type(machine_arn) is str and type(parameters) is dict, "close-drain account/scope")
+    table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
+    c.require(table and machine_arn == "arn:aws:states:us-east-2:" + account + ":stateMachine:cnesdata-prod",
+              "close-drain protected resource scope")
+    call = {"role": role, "service": service, "operation": operation}
+    if operation == "describe_execution":
+        c.closed(parameters, "executionArn includedData")
+        prefix, arn = machine_arn.replace(":stateMachine:", ":execution:") + ":", parameters["executionArn"]
+        c.require(type(arn) is str and arn.startswith(prefix) and re.fullmatch(r"[0-9a-f]{16}", arn[len(prefix):]),
+                  "close-drain exact execution probe")
+        _pinned("describe_execution", call | {"parameters": parameters | {"executionArn": CLOSE_DRAIN_PLACEHOLDERS["execution"]}})
+        return parameters
+    if operation == "get_item":
+        c.require(parameters.get("TableName") == table[1], "close-drain protected table")
+        _pinned("get_item", call | {"parameters": parameters})
+        return parameters
+    semaphore, writes = _close_history(history)
+    if operation == "transact_write_items":
+        c.require(not writes and semaphore != (), "close transaction once, after a strong SEMAPHORE read")
+        _close_transaction(parameters, semaphore[0], request["owner"]["owner_sha256"], call, table[1])
+    else:
+        c.require([write["operation"] for write in writes] == ["transact_write_items"], "close confirm once, after the transaction")
+        _close_confirm(parameters, writes[0], call, table[1])
+    return parameters
+
+
+def validate_fence_call(*, request, history=(), **arguments):
+    """Per-operation fence SDK scope; closed-ready keeps its frozen-member validator."""
+    if request["operation"] == "close-drain":
+        return validate_close_drain_call(request=request, history=history, **arguments)
+    return validate_closed_ready_call(request=request, **arguments)
 
 
 def application_caller_binding(evidence, producer):
