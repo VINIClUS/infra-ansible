@@ -531,9 +531,67 @@ same reader. None of this has a production call site: `keeper_loop` still accept
 execute wiring. No dispatch and no reusable input or output was added; the transitions after
 the API need their own amendment naming each event source.
 
-Second slice, remaining: the `close-drain` capability (amendment item 7 keeps it rejected
-until then); the real terminal validators; `KEEPER_EVENT_SOURCE = stage_event_source` and the
-binding of `execute` to the operational Keeper.
+Close-drain capability, freeze and child loader (second slice PR-C, amendment 6886977054
+decision 4 and queue items 3a and 3c, corrections 6906038586 and 6906181994, `Refs #55`).
+The state machine is exactly `cnesdata-prod` (CnesData `step_functions.tf:13`): the closed-ready
+validator, `fence_policy_scope` and the session constructors refuse any suffix. `close-drain`
+takes `activation expirations`. `application_gate.close_expirations` builds the `expirations`
+input at call time from the authenticated originals of errata 6887682424 only: `credential` is
+the owner proof (sha256 of its authenticated bytes, `Authority.proof_sha256`), `artifact` is each
+`api.expiries` entry with its authenticated digest without prefix, and `platform` is the fragment
+`enabled_until` and the pin `frozen_until` with the sha256 of each canonical document. The list is
+sorted and unique by kind and object; a duplicate pair refuses, and its minimum equals
+`infra_expiration_bound`. The product adds `envelope`. The digest is retained by
+`lifecycle_runtime.ArtifactDigests`, only in the application admission, from the same
+authenticated download; an expiry without its digest refuses.
+
+`validate_close_drain_call` pins the product call vector (CnesData 2c66f62c,
+`tests/production/delivery/close_drain_call_vector.json`, sha256 44d0cf91...4b63, a literal of
+the lifecycle fixture): each call, normalized to the vector form, must hash into
+`CLOSE_DRAIN_TEMPLATES`. Derived for the audit: the close Update sets `:state` CLOSED, `:entity`
+PROMOTIONFENCE and `:promotion` equal to the owner's `owner_sha256`; the SEMAPHORE ConditionCheck
+is rebuilt from the latest strong SEMAPHORE read in the journal itself (`#vN = :vN` with the read
+value for each named attribute present, `attribute_not_exists` otherwise, sorted names covering
+the read; `attribute_not_exists(pk)` only when nothing was read); writes are one transaction after
+that read, then one confirm (`:closed` CLOSED) of the same `:version`, then none. Probes are any
+16-hex dispatch of the exact machine with `METADATA_ONLY`. This is scope, not domain acceptance.
+`fence_close_session_policy` grants GetItem on FENCE and SEMAPHORE, UpdateItem on FENCE,
+ConditionCheckItem on SEMAPHORE and DescribeExecution on the execution prefix, each a subset of
+the `promotion_fence_operator` role. DynamoDB has no `TransactWriteItems` IAM action; each item
+of the transaction is authorized by its own action (Service Authorization Reference for Amazon
+DynamoDB).
+
+The journal, evidence and broker take their SDK set from the operation; closed-ready is
+unchanged and its evidence keys keep their bytes, while close-drain has its own step namespace
+and hash. DynamoDB writes return only an empty result. `ExecutionDoesNotExist` reaches the
+product for a closed-ready `CANCEL_BEFORE_SEND` member or any validated close-drain probe.
+R12 (correction 2, accepted risk): every other native error, including `ConditionalCheckFailed`
+and `TransactionConflict` in the close, poisons the journal, keeps the intent as the unknown
+witness and the lease held, and is never retried or returned; a transient conflict also falls
+to recovery, and a retry needs its own amendment. `_assume_fence_session` for close-drain
+requires `application-prepare` with close and decision unset, `deadline = preparation_deadline`,
+and grants checked per item action. `close_drain_capability` checks, before STS, the lease,
+the prepared manifest, role and evaluation, the activation, `preparation.admitted_at` and
+`deadline` equal to the stage's, the fence_operator delegation, the owner, the `expirations`
+input recomputed now and the scope recomputed by `fence_policy_scope`; the freeze reread is the
+last check. Freeze (3a): `session_owner.application_unfrozen` refuses `freeze=attached` when
+`arn:aws:iam::<account>:policy/cnesdata-budget-freeze` is attached (personal-infra-live#2
+readback 6883013198, path `/`), at the admission in `verify_application` and in that reread;
+any other attachment keeps the original refusal and `read_resource_arns` is unchanged. Any
+failure poisons the journal and mints no credential. Child loader (3c): the adapter child maps
+`cnes_domain` and `cnes_infra` to `packages/<name>/src/<name>`; a directory is a stub package
+whose `__init__` never runs, a `.py` file loads by path, and any other name under those roots
+fails closed without falling back to `sys.path`. The Git closure is still authenticated before
+and after. R13 (recorded risk): the real handler of CnesData #521 still does not load in the
+`-I` child, because `promote_api` imports `promote_close` at module top and pydantic is absent
+from the runtime venv; no operation loads until the product or an amendment fixes it.
+`close_drain_capability` and `close_expirations` have no production call site, and
+`keeper_loop` still accepts only `closed-ready` and `terminal`: close-drain is not a keeper event
+until the execute wiring.
+
+Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
+handlers (execute wiring); the real terminal validators; `KEEPER_EVENT_SOURCE =
+stage_event_source` and the binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
@@ -541,7 +599,10 @@ and inline documents as a union); the global NotResource premise; quotas with re
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
 IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
 present on the plan and deploy runners (which may use another image than the EXT2 gate);
-keeper stage advancement (the `prepared` and `phase-b` handlers); the event producer against
+keeper stage advancement (the `prepared` and `phase-b` handlers); the close-drain capability
+against real IAM, STS and DynamoDB (per-item authorization of the close transaction, the freeze
+reread through the application identity, the product handler in the child, R13); the event
+producer against
 real GitHub runs, including its request budget (one jobs read per poll, about 720 per hour at
 the five-second poll, against the token's hourly limit); the product terminal validators. No
 operational readiness, applied IAM, production acceptance or integrated-code status is implied.

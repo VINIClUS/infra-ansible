@@ -1565,7 +1565,7 @@ def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sle
 
     next_event is the authenticated event producer; handlers holds only the
     closed-ready dispatch. Stage advancement (close-drain, B, API) is not an
-    event here: close-drain stays rejected by the 2026-11-13 amendment item 7.
+    event here: close_drain_capability exists but is not a keeper event until the execute wiring.
     Any exception leaves the lease held; finish() refuses under uncertainty.
     """
     c.require(type(handlers) is dict and set(handlers) == {"closed-ready"}, "closed keeper handlers")
