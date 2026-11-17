@@ -5515,7 +5515,7 @@ def test_publish_static_refuses_without_exactly_one_matching_closed_ready_observ
 
 
 @pytest.mark.parametrize("mutation", ["extra-field", "missing-field", "version", "version-bool", "kind", "noncanonical",
-                                      "not-json", "list"])
+                                      "not-json", "list", "oversized"])
 def test_publish_static_refuses_a_host_receipt_outside_the_v1_handoff(mutation):
     from tools.cnesdata_delivery import application_gate as ag
     def receipt(value):
@@ -5527,6 +5527,7 @@ def test_publish_static_refuses_a_host_receipt_outside_the_v1_handoff(mutation):
         if mutation == "noncanonical": return c.canonical(value) + b" "
         if mutation == "not-json": return b"host-handoff\n"
         if mutation == "list": return c.canonical([value])
+        if mutation == "oversized": value["operation_id"] = "x" * 1024**2
     keeper, publish, _ = _publish_static_case(receipt=receipt)
     with pytest.raises(ValueError):
         ag.publish_static_closed_ready(publish, keeper)
