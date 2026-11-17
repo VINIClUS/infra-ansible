@@ -541,14 +541,22 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_policy import validate_response
-    c.require(type(journal) is AdapterJournal and journal._request["operation"] == "closed-ready"
+    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain"}
               and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
     request, stage = journal._request, journal._request["stage"]
-    c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
-              and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
-              and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
-              and clock() + 900 <= credential_limit, "fence original API/credential window")
-    c.closed(scope, "account control_table_arn machine_arn members")
+    close = request["operation"] == "close-drain"
+    if close:
+        deadline = stage["preparation_deadline"]
+        c.require(stage["stage"] == "application-prepare" and stage["close"] is None and stage["decision"] is None
+                  and stage["deadline"] == deadline and stage["admitted_at"] <= clock() and clock() + 40 < deadline
+                  and clock() + 900 <= credential_limit, "fence original preparation/credential window")
+    else:
+        deadline = stage["deadline"]
+        c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
+                  and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
+                  and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
+                  and clock() + 900 <= credential_limit, "fence original API/credential window")
+    c.closed(scope, "account control_table_arn machine_arn" + ("" if close else " members"))
     c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
               and role["role_arn"] == governance["application_delegations"]["fence_operator"]
               and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
@@ -556,22 +564,26 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
               and role["session_name"] == "promotion-fence-" + role["release_id"]
               and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
     probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
+    validate = lc.validate_close_drain_call if close else lc.validate_closed_ready_call
     for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
-        lc.validate_closed_ready_call(request=request, role="fence_operator", service="dynamodb", operation="get_item",
+        validate(request=request, role="fence_operator", service="dynamodb", operation="get_item",
             parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
                         "ConsistentRead": True}, **scope)
-    for member in scope["members"]:
+    for member in [] if close else scope["members"]:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    from tools.cnesdata_delivery.session_policy import fence_session_policy
-    policy = fence_session_policy(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix,
-                                  deadline=stage["deadline"])
+    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_session_policy
+    build = fence_close_session_policy if close else fence_session_policy
+    policy = build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline)
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
     context = {"aws:CurrentTime": c.utc(clock())}
     for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE"):
         c.require(effective_iam(role["policy"], [policy], "dynamodb:GetItem", scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective strong-read grant")
+    for action, key in (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")) if close else ():
+        c.require(effective_iam(role["policy"], [policy], action, scope["control_table_arn"],
+                                context | {"dynamodb:LeadingKeys": [key]}), "fence original effective close-write grant")
     c.require(effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context),
               "fence original effective metadata-probe grant")
     journal._guard.check(40)
@@ -594,13 +606,13 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
               and response["AssumedRoleUser"] == {"Arn": expected_arn, "AssumedRoleId": expected_id},
               "fence exact native role ID/session/account")
     journal.guard()
-    c.require(clock() + 20 < stage["deadline"], "fence STS completed in original API window")
+    c.require(clock() + 20 < deadline, "fence STS completed in original API window")
     binding = c.sha(c.canonical(request))
     commitment = c.sha(c.canonical({"prepared_sha256": c.digest(prepared_sha256), "request_sha256": binding,
         "role_arn": role["role_arn"], "role_id": role["role_id"], "session_name": role["session_name"],
         "policy_sha256": c.sha(c.canonical(policy)), "expires_at": c.utc(expiry.timestamp()),
         "account": scope["account"], "arn": expected_arn, "user_id": expected_id}))
-    return _FenceSession(client, commitment, scope, stage["deadline"], binding)
+    return _FenceSession(client, commitment, scope, deadline, binding)
 
 
 class AdapterJournal:
@@ -1198,6 +1210,55 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
             lc.validate_closed_ready_call(request=journal._request, role="fence_operator", service="stepfunctions",
                 operation="describe_execution", parameters={"executionArn": prefix + member["dispatch_id"],
                 "includedData": "METADATA_ONLY"}, **scope)
+        prepared_sha256 = c.sha(prepared["fence-prepared.json"])
+        session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
+        broker = ClosedReadyBroker(aws, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
+
+
+def close_drain_capability(*, aws, api, governance, authority, journal, keeper, prepared, credential_limit, clock=time.time):
+    """Close-drain capability factory, sibling of closed_ready_capability (decision 4, queue item 3a).
+
+    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations and the
+    finite close session. The freeze reread is the last check before STS; any failure poisons the
+    journal, keeps the lease held and mints no credential. No production caller until PR-F.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import application_unfrozen
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper and type(prepared) is lr.PreparedFence,
+              "close-drain original journal/keeper/prepared authority")
+    c.require(journal._request["operation"] == "close-drain" and getattr(journal, "_broker", None) is None,
+              "close-drain only; every other operation remains rejected")
+    try:
+        stage = journal._request["stage"]
+        keeper.lease.check()  # The original keeper still holds the lease; nothing here can renew or release it.
+        owner = journal._request["owner"] | journal._identity
+        manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+        role = c.loads(prepared["fence-role.json"], canonical=True)
+        evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+        c.require(manifest["activation_sha256"] == journal._request["activation_sha256"] == c.sha(journal._inputs["activation"]),
+                  "prepared/request/input activation_sha256")
+        c.require(manifest["preparation"]["deadline"] == stage["preparation_deadline"]
+                  and manifest["preparation"]["admitted_at"] == stage["admitted_at"], "original preparation is the close stage")
+        c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
+        c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
+        c.require(journal._inputs["expirations"] == close_expirations(authority, api), "close-drain authenticated expirations")
+        cases = {case["case_id"]: case for case in evaluation["cases"]}
+        derived = lr.fence_policy_scope(governance, role["policy"])
+        table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
+        c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
+                  "capability scope recomputed from prepared policy")
+        scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine}
+        journal.guard()
+        attached = aws.call("iam", "list_attached_role_policies", RoleName=authority.application_fragment["application_role_name"],
+                            MaxItems=100)
+        application_unfrozen(attached, governance["account_id"])
         prepared_sha256 = c.sha(prepared["fence-prepared.json"])
         session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
                                         prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
