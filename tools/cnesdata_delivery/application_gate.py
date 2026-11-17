@@ -99,13 +99,17 @@ TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
 # SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
 TERMINAL_READBACK_FIELDS = "version kind members quiescent state_clean pending unknown observed_at"
-# host_gate.validate_closed_ready: member identity, frozen member shape, resolved set, closed-ready.
-MEMBER_IDENTITY = "dispatch_id request_sha256 generation initial_state execution_ref resolution"
+# host_gate.validate_closed_ready: member identity (exact types of _closed_members), frozen member
+# shape, resolved set, closed-ready.
+MEMBER_IDENTITY_TYPES = {"dispatch_id": (str,), "request_sha256": (str,), "generation": (int,), "initial_state": (str,),
+                         "execution_ref": (str, type(None)), "resolution": (str,)}
+MEMBER_IDENTITY = " ".join(MEMBER_IDENTITY_TYPES)
 FROZEN_MEMBER_FIELDS = MEMBER_IDENTITY + " proof_sha256 observed_at send_disabled_at"
 MEMBER_RESOLVED = frozenset({"TERMINAL", "ABSENT_PROVEN", "CANCEL_BEFORE_SEND"})
 CLOSED_READY_FIELDS = ("version kind common close_drain_sha256 phase_b_sha256 fence permit members proofs observed_at "
                        "exclusion stage decision")
-# CnesData 9cdd452f scripts/promotion/_api_static_records.py PUBLICATION_SCHEMA/PUBLICATION_FIELDS.
+# CnesData 9cdd452f scripts/promotion/_api_static_records.py PUBLICATION_SCHEMA/PUBLICATION_FIELDS;
+# field types of publish_dashboard.PublicationReceipt.
 PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
 PUBLICATION_FIELDS = "schema plan_sha256 closed_ready_sha256 uploaded already_published invalidation_id"
 # host_gate.py public handoff (version 1) and validate_recovery_decision.
@@ -139,6 +143,11 @@ def _versioned(value, kind, fields):
     return value
 
 
+def _member(member, fields):
+    c.closed(member, fields)
+    c.require(all(type(member[key]) in kinds for key, kinds in MEMBER_IDENTITY_TYPES.items()), "terminal member identity types")
+
+
 def routing_terminal_validator(source, *, owner, window, observations):
     """Routing facts from the `routing` journal observation (reopen)."""
     value = _versioned(_terminal_sources("routing", source, observations)["routing"], "routing", ROUTING_FIELDS)
@@ -152,6 +161,11 @@ def static_terminal_validator(source, *, owner, window, observations):
     publication = c.closed(found["publication"], PUBLICATION_FIELDS)
     _versioned(found["closed-ready"], "closed-ready", CLOSED_READY_FIELDS)
     c.digest(publication["plan_sha256"])
+    uploaded, already = publication["uploaded"], publication["already_published"]
+    c.require(type(uploaded) is list and all(type(item) is list and len(item) == 2
+                                             and all(type(part) is str for part in item) for item in uploaded)
+              and type(already) is list and all(type(key) is str for key in already)
+              and type(publication["invalidation_id"]) in (str, type(None)), "terminal static publication types")
     c.require(publication["schema"] == PUBLICATION_SCHEMA and publication["closed_ready_sha256"] == source["closed-ready"],
               "terminal static publication binding")
     return {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": True}}
@@ -166,9 +180,9 @@ def membership_terminal_validator(source, *, owner, window, observations):
     c.require(type(frozen) is list and type(final) is list
               and close["frozen_membership_sha256"] == c.sha(c.canonical(frozen)), "terminal frozen membership")
     for member in frozen:
-        c.closed(member, FROZEN_MEMBER_FIELDS)
+        _member(member, FROZEN_MEMBER_FIELDS)
     for member in final:
-        c.closed(member, MEMBER_IDENTITY)
+        _member(member, MEMBER_IDENTITY)
 
     def identity(member):
         return [member[key] for key in MEMBER_IDENTITY.split()]
