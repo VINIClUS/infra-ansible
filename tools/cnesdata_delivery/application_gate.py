@@ -334,11 +334,27 @@ class _TerminalStore:
 
 
 _ADAPTER_CHILD = r'''
-import base64, importlib.util, sys
+import base64, importlib.machinery, importlib.util, os, sys
 sys.path.insert(0, sys.argv[2])
 from tools.cnesdata_delivery import contract as c
 product = sys.argv[1]
 sys.path.insert(0, product)
+class AuthorizedPackages:
+    # Queue item 3c: closed roots by authorized path; parents are stubs, leaves load by file, nothing falls back.
+    ROOTS = {"cnes_domain": "packages/cnes_domain/src/cnes_domain", "cnes_infra": "packages/cnes_infra/src/cnes_infra"}
+    def find_spec(self, name, path=None, target=None):
+        parts = name.split(".")
+        if parts[0] not in self.ROOTS:
+            return None
+        base = os.path.join(product, self.ROOTS[parts[0]], *parts[1:])
+        if os.path.isdir(base):
+            spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
+            spec.submodule_search_locations = [base]
+            return spec
+        if os.path.isfile(base + ".py"):
+            return importlib.util.spec_from_file_location(name, base + ".py")
+        raise ModuleNotFoundError("adapter authorized path " + name, name=name)
+sys.meta_path.insert(0, AuthorizedPackages())
 def receive():
     raw = sys.stdin.buffer.readline(192 * 1024**2 + 1)
     return c.loads(raw, canonical=True, limit=192 * 1024**2)
