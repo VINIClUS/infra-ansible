@@ -1060,6 +1060,7 @@ def _adapter_case(operation="inventory"):
               "admitted_at": 1000, "deadline": 1900, "decision": None, "preparation_deadline": 1900,
               "sequence": 1, "checkpoint_sha256": "f" * 64, **lc.application_identity(owner)}
     names = {"inventory": ("candidate", "dashboard-artifact", "archive", "static-baseline"),
+             "close-drain": ("activation", "expirations"),
              "closed-ready": ("activation", "close-drain", "phase-b", "membership")}[operation]
     if operation == "closed-ready":
         window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
@@ -1072,7 +1073,7 @@ def _adapter_case(operation="inventory"):
     return request, owner, window, inputs
 
 
-@pytest.mark.parametrize("operation", ["inventory", "closed-ready"])
+@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready"])
 @pytest.mark.parametrize("mutation", [None, "extra", "owner", "checkpoint", "stage-time", "bytes", "missing", "extra-input", "readiness", "noncanonical", "source", "canary-old", "activation"])
 def test_adapter_request_binds_original_bytes_owner_phase_and_closed_inputs(operation, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -2283,6 +2284,56 @@ def test_application_cli_preflight_uses_real_public_admission(monkeypatch, tmp_p
                            + gov["gate_shas"]["application"]) == 1
     assert store.get() == before
 
+
+
+def test_artifact_digests_retain_only_the_authenticated_download_digest():
+    """Correction 6906038586 item 1: the digest comes from the same authenticated download, never a new read."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    calls = []
+    class Inner:
+        expiries = {}
+        def artifact(self, reference, now, **options):
+            calls.append((reference["artifact_id"], now, options))
+            if reference["artifact_id"] == 13:
+                raise ValueError("artifact metadata")
+            self.expiries[reference["repository"], reference["artifact_id"]] = 6000.0
+            return {"index.json": b"{}"}
+        def read(self, path):
+            return "read:" + path
+    inner = Inner()
+    api = lr.ArtifactDigests(inner)
+    reference = {"repository": c.REPOSITORY, "artifact_id": 12, "artifact_digest": "sha256:" + "a" * 64}
+    assert api.artifact(reference, 1000, r2=True) == {"index.json": b"{}"}
+    with pytest.raises(ValueError, match="artifact metadata"):
+        api.artifact(reference | {"artifact_id": 13, "artifact_digest": "sha256:" + "b" * 64}, 1000)
+    assert api.digests == {(c.REPOSITORY, 12): "a" * 64} and set(api.digests) == set(api.expiries)
+    assert api.expiries is inner.expiries and api.read("repos/x") == "read:repos/x"
+    assert calls == [(12, 1000, {"r2": True}), (13, 1000, {})]
+
+
+@pytest.mark.parametrize("role", ["application", "plan"])
+def test_admission_retains_artifact_digests_only_for_the_application_role(monkeypatch, role):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    governance = {"activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
+                  "lifecycle_steps": {"keeper": {"role": role, "purpose": "application-prepare", "input_jobs": {}}}}
+    request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
+                           "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
+    for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(governance).decode(), "REQUEST_DESCRIPTOR": request.decode(),
+                       "REQUEST_DESCRIPTOR_SHA256": c.sha(request), "EXPECTED_SOURCE_SHA": "b" * 40,
+                       "PURPOSE": "application-prepare", "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2"}.items():
+        monkeypatch.setenv(key, value)
+    inner, seen = object(), []
+    monkeypatch.setattr(lr, "GitHub", lambda: inner)
+    def stop(governance, api, *args):
+        seen.append(api)
+        raise ValueError("stop after GitHub construction")
+    monkeypatch.setattr(lr, "source_admission", stop)
+    with pytest.raises(ValueError, match="stop after GitHub construction"):
+        lr.admission(role)
+    if role == "application":
+        assert type(seen[0]) is lr.ArtifactDigests and seen[0]._inner is inner
+    else:
+        assert seen == [inner]
 
 
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])

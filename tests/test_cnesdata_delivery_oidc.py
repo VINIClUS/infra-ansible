@@ -384,6 +384,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
     assert authority.application_fragment == fragment
     assert authority.application_fragment is not fragment
+    assert authority.proof_sha256 == c.sha(api.owner_files["proof.json"])
     # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.
     coordination = outputs["application_coordination_policy"]
     assert coordination["sensitive"] is True
