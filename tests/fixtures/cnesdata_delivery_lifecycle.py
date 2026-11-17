@@ -774,3 +774,16 @@ STATIC_SESSION_VECTOR = {'binding': {'generation': 2,
               'recovery': ['sp-abort-6c76f3e9809846bdba336bcdb888f597a2b29969',
                            'sp-readback-362b1debfb4c4b1375b9ab48b147e5d312145be1',
                            'sp-rollback-fbde760d26305b75ebccba6ac13d9f80cb7f7380']}}
+# #498 locals.static_policies.normal for the smallest per-reference plan the variable validation admits
+# (candidate_keys ["assets/a"], rollback_versions [], retire_versions [{"key": "assets/a", "version_id": <one char of
+# STATIC_VERSION_CHARS, in order>}] * n, distribution id "A", enabled_until 2027-02-12T00:00:00Z, SYNTHETIC account
+# 111122223333, bucket from the pinned name_prefix), rendered by `tofu console` (OpenTofu 1.13.9, no provider) over
+# the same locals block as STATIC_SESSION_VECTOR: sha256 and length of the jsonencode text, never the bytes.
+STATIC_VERSION_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~+/=-"
+STATIC_MINIMAL_NORMAL_POLICY = {
+    0: {"sha256": "887e1f7bd9e4a0a138488e8769015712f229d3b565a0708c7b43a8f53fcf2a13", "length": 616},
+    1: {"sha256": "d7a1e18673630ff918e667469681a59912869a76ae1b83835856bf5afe868ad0", "length": 837},
+    2: {"sha256": "c7bc45c4096ce9bb7e49491bc02657c046b960e399cde301973cb4c375ca8ae3", "length": 1058},
+    43: {"sha256": "24fd592ac7e710a50feb546c5c1628bab69b0b09e523fd1b34e99ad9dcdbcd90", "length": 10119},
+    44: {"sha256": "b159a490a0876270d8b82bd0d6ce3610fd90d9a8a18ad9a26bc6cb15109e5201", "length": 10340},
+}

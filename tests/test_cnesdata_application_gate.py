@@ -5579,3 +5579,105 @@ def test_publish_static_refuses_while_the_keeper_holds_sdk_uncertainty(held):
     with pytest.raises(ValueError, match="publish-static keeper uncertainty"):
         ag.publish_static_closed_ready(publish, keeper)
     assert publish._failed is True and any(item is publish for item in keeper._contexts)
+
+
+def _retire_static_plan_bound():
+    """Decision 5: largest retire_versions count #498 admits, from the pinned source's policy size rule."""
+    import re
+    from pathlib import Path
+    from fixtures.cnesdata_delivery_lifecycle import (STATIC_MINIMAL_NORMAL_POLICY, STATIC_PROMOTION_SOURCE_SHA256,
+                                                      STATIC_VERSION_CHARS)
+    raw = (Path(__file__).resolve().parent
+           / "fixtures/cnesdata_delivery_sources/infra/opentofu/modules/runtime-iam/static-promotion.tf").read_bytes()
+    assert c.sha(raw) == STATIC_PROMOTION_SOURCE_SHA256
+    source = raw.decode()
+    limit = int(re.fullmatch(r"(?s).*\}\)\) : length\(policy\) <= (\d+)\]\),.*", source).group(1))
+    bucket = "arn:aws:s3:::" + re.search(r'var\.name_prefix ==\s*"([a-z0-9-]+)"', source).group(1) + "-static-web"
+    expiry = {"DateLessThan": {"aws:CurrentTime": "2027-02-12T00:00:00Z"}}
+
+    def normal(count):
+        statements = [{"Effect": "Allow", "Action": action, "Resource": [bucket + "/assets/a"], "Condition": expiry}
+                      for action in ("s3:PutObject", "s3:GetObject")]
+        statements.append({"Effect": "Allow", "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
+                           "Resource": "arn:aws:cloudfront::111122223333:distribution/A", "Condition": expiry})
+        statements += [{"Effect": "Allow", "Action": "s3:DeleteObjectVersion", "Resource": bucket + "/assets/a",
+                        "Condition": expiry | {"StringEquals": {"s3:VersionId": version}}}
+                       for version in STATIC_VERSION_CHARS[:count]]
+        return json.dumps({"Version": "2012-10-17", "Statement": statements}, sort_keys=True, separators=(",", ":"))
+    for count, rendered in STATIC_MINIMAL_NORMAL_POLICY.items():
+        assert {"sha256": c.sha(normal(count).encode()), "length": len(normal(count))} == rendered, count
+    count = 0
+    while count < len(STATIC_VERSION_CHARS) and len(normal(count + 1)) <= limit:
+        count += 1
+    assert count < len(STATIC_VERSION_CHARS), "the size rule, not the one-char version id space, bounds the plan"
+    assert STATIC_MINIMAL_NORMAL_POLICY[count]["length"] <= limit < STATIC_MINIMAL_NORMAL_POLICY[count + 1]["length"]
+    return count
+
+
+def _retire_static_deletes(latency, *, plan, durable, watchdog):
+    """Deletes completed in `final` (reopen and finish take 0 s) by the only SDK broker shape that exists.
+
+    Each AWS op takes `latency`. Fence STS: +40 before, +20 after (application_gate.py:717-724, :775). Per call
+    (ClosedReadyBroker.call): +20 before and after the reservation (:1146, :1160); durable evidence is 5 S3 ops in
+    reserve() and 4 in complete() (:1070-1112), each after guard.check(20) (:1022, :1030), as is the native call
+    (:1161). watchdog=True: the guard is LifecycleWatchdog.check -> lc.phase_capacity(max(20, s)); False: KeeperGuard
+    (no capacity check).
+    """
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    window = dict(_adapter_case("retire-static")[2])
+    window["deadline"] = window["admitted_at"] + lc.STAGES["final"][0]
+    clock = {"now": float(window["admitted_at"])}
+    credential = clock["now"] + 900
+
+    def op(reserve=True):
+        if reserve and watchdog:
+            lc.phase_capacity(window, now=clock["now"], credential_deadline=credential, operation_seconds=20)
+        clock["now"] += latency
+
+    def within(seconds):
+        c.require(clock["now"] + seconds < window["deadline"], "budget")
+    done = 0
+    try:
+        within(40), op(reserve=False), within(20)
+        while done < plan:
+            within(20)
+            for _ in range(5 if durable else 0):
+                op()
+            within(20)
+            for _ in range(5 if durable else 1):
+                op()
+            c.require(clock["now"] < window["deadline"], "budget")
+            done += 1
+    except ValueError:
+        pass
+    return done
+
+
+def test_retire_static_does_not_fit_the_final_budget_for_the_largest_498_plan_in_the_worst_case():
+    """R16 (decision 5): pins the stop condition reported before merge; retire-static stays without call site."""
+    import inspect
+    from tools.cnesdata_delivery import aws_boundary, lifecycle_contract as lc
+    plan = _retire_static_plan_bound()
+    worst = inspect.signature(aws_boundary.bounded).parameters["timeout"].default
+    variants = [(durable, watchdog) for durable in (True, False) for watchdog in (True, False)]
+    assert {(d, w): _retire_static_deletes(worst, plan=plan, durable=d, watchdog=w) for d, w in variants} == {
+        (True, True): 0, (True, False): 0, (False, True): 0, (False, False): 1}
+    assert {(d, w): _retire_static_deletes(1, plan=plan, durable=d, watchdog=w) for d, w in variants} == {
+        (True, True): 0, (True, False): 4, (False, True): 2, (False, False): 39}
+    thresholds = {}
+    for durable, watchdog in variants:
+        low, high = 0.0, float(worst)
+        assert _retire_static_deletes(low, plan=plan, durable=durable, watchdog=watchdog) == plan
+        for _ in range(40):
+            middle = (low + high) / 2
+            fits = _retire_static_deletes(middle, plan=plan, durable=durable, watchdog=watchdog) == plan
+            low, high = (middle, high) if fits else (low, middle)
+        thresholds[durable, watchdog] = low
+    # Closed forms over the 60 s of decision 5: (60 - 20 [- 37]) / (AWS ops before the last capacity check).
+    assert lc.STAGES["final"] == (60, 0)
+    assert thresholds == {
+        (True, True): pytest.approx((60 - 20 - 37) / (1 + 10 * (plan - 1) + 9), abs=1e-6),
+        (True, False): pytest.approx((60 - 20) / (1 + 10 * (plan - 1) + 5), abs=1e-6),
+        (False, True): pytest.approx((60 - 20 - 37) / (1 + (plan - 1)), abs=1e-6),
+        (False, False): pytest.approx((60 - 20) / (1 + (plan - 1)), abs=1e-6)}
+    assert max(thresholds.values()) < 1
