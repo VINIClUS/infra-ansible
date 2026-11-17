@@ -5477,7 +5477,7 @@ def _publish_static_case(*, receipt=lambda value: None, ready=(("closed-ready",)
         keeper.attach(journal)
         if broker:
             wrapper = ClosedReadyBroker.__new__(ClosedReadyBroker)
-            wrapper.journal = journal
+            wrapper.journal, wrapper.evidence = journal, []
             keeper.attach(wrapper)
     if other is not None:
         journal = _static_journal(other)
@@ -5545,3 +5545,23 @@ def test_publish_static_binding_takes_only_a_publish_static_journal_and_the_keep
         ag.publish_static_closed_ready(publish, object())
     with pytest.raises(ValueError, match="publish-static original journal/keeper"):
         ag.publish_static_closed_ready(publish._request, keeper)
+
+
+@pytest.mark.parametrize("held", ["closed-ready-failed", "closed-ready-pending", "other-context-failed", "inflight"])
+def test_publish_static_refuses_while_the_keeper_holds_sdk_uncertainty(held):
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, publish, _ = _publish_static_case()
+    source = keeper._contexts[0]
+    if held == "closed-ready-failed":
+        source._failed = True
+    if held == "closed-ready-pending":
+        source._pending.append({"kind": "sdk-pending"})
+    if held == "inflight":
+        source._inflight = {"kind": "sdk-inflight"}
+    if held == "other-context-failed":
+        other = _static_journal("close-drain")
+        other._failed = True
+        keeper.attach(other)
+    with pytest.raises(ValueError, match="publish-static keeper uncertainty"):
+        ag.publish_static_closed_ready(publish, keeper)
+    assert publish._failed is True and any(item is publish for item in keeper._contexts)
