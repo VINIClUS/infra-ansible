@@ -5799,9 +5799,10 @@ class _Stream:
         self.raw, self.step, self.kind, self.reads = raw, step, kind, []
 
     def read(self, amount):
-        self.reads.append(amount)
+        assert not self.reads or self.reads[-1] is not None, "read after EOF"
         size = amount if self.step is None else min(amount, self.step)
         chunk, self.raw = self.raw[:size], self.raw[size:]
+        self.reads.append(amount if chunk else None)
         return self.kind(chunk)
 
 
@@ -5811,7 +5812,18 @@ def test_s3_body_value_reads_at_most_the_bound_and_returns_base64(raw, step):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     stream = _Stream(raw, step)
     assert lc.s3_body_value(stream, maximum=10) == {"base64": _b64(raw)}
-    assert stream.raw == b"" and 1 <= min(stream.reads) and max(stream.reads) <= 11
+    amounts = [amount for amount in stream.reads if amount is not None]
+    assert stream.raw == b"" and all(1 <= amount <= 11 for amount in amounts)
+
+
+@pytest.mark.parametrize("raw", [b"", b"z"])
+def test_s3_body_value_admits_a_zero_bound_for_an_empty_body_only(raw):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    if raw:
+        with pytest.raises(ValueError, match="S3 Body bound"):
+            lc.s3_body_value(_Stream(raw), maximum=0)
+    else:
+        assert lc.s3_body_value(_Stream(raw), maximum=0) == {"base64": ""}
 
 
 @pytest.mark.parametrize("step", [None, 1, 4])
