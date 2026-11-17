@@ -659,8 +659,8 @@ class AdapterJournal:
         """
         request = c.loads(raw, canonical=True, limit=128 * 1024)
         c.closed(request, "role service operation parameters")
-        c.require(self._request["operation"] == "closed-ready" and request["role"] == "fence_operator"
-                  and (request["service"], request["operation"]) in {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
+        c.require(request["role"] == "fence_operator"
+                  and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(self._request["operation"], ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -696,7 +696,7 @@ class AdapterJournal:
             c._secrets(response)
             _sdk_private_fields(response)
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
-            allowed = ({"Item"} if request["service"] == "dynamodb" else
+            allowed = ({"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
             absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
@@ -714,6 +714,12 @@ class AdapterJournal:
         except BaseException:
             self.fail_sdk_call(ticket)
             raise
+
+    def _settled_calls(self):
+        """This journal's own guarded receipts as call/response pairs; the close-drain write history."""
+        return [{"call": c.loads(self._call_bytes[receipt["request_sha256"]], canonical=True),
+                 "response": c.loads(self._call_bytes[receipt["response_sha256"]], canonical=True)}
+                for receipt in self._call_receipts]
 
     def fail_sdk_call(self, ticket):
         """Unresolved IO poisons this context; no exception/credential is stored."""
@@ -793,15 +799,16 @@ class ClosedReadyEvidence:
     def __init__(self, aws, governance, journal, native_raw, *, prepared_sha256, role_session_sha256, scope):
         from tools.cnesdata_delivery.lifecycle_runtime import closed_ready_evidence_keys
         c.require(type(journal) is AdapterJournal and governance["role"] == "application", "shared closed-ready journal")
-        c.closed(scope, "account control_table_arn machine_arn members")
+        operation = journal._request["operation"]
+        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation == "closed-ready" else ""))
         c.require(scope["account"] == governance["account_id"], "original journal account")
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
         c.closed(native, "role service operation parameters")
-        lc.validate_closed_ready_call(request=journal._request, **native, **scope)
+        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), **native, **scope)
         _sdk_private_fields(native)
         request = journal._request
         sequence, previous = journal._next_durable()
-        intent = {"schema_version": 2, "operation": "closed-ready", "owner": request["owner"],
+        intent = {"schema_version": 2, "operation": operation, "owner": request["owner"],
                   "sequence": sequence, "previous_receipt_sha256": previous,
                   "caller": journal._identity, "adapter_request_sha256": c.sha(c.canonical(request)),
                   "checkpoint_sha256": request["checkpoint_sha256"], "activation_sha256": request["activation_sha256"],
@@ -814,7 +821,8 @@ class ClosedReadyEvidence:
         self._sequence, self._previous = sequence, previous
         c.require(request["source_sha"] == request["owner"]["source_sha"], "closed-ready evidence source")
         self._keys = closed_ready_evidence_keys(governance, owner=request["owner"], caller=journal._identity,
-                                                checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence)
+                                                checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence,
+                                                operation=operation)
         self._aws, self._bucket, self._journal = aws, governance["evidence_bucket"], journal
         self._native_sha256, self._session_sha256 = c.sha(native_raw), role_session_sha256
         self._binding = c.sha(c.canonical({key: request[key] for key in ("owner", "checkpoint_sha256", "activation_sha256", "stage")}))
@@ -935,7 +943,11 @@ class ClosedReadyEvidence:
 
 
 class ClosedReadyBroker:
-    """Finite private SDK dispatcher with a durable reservation before native IO."""
+    """Finite private SDK dispatcher with a durable reservation before native IO.
+
+    The SDK set is per operation (closed-ready reads; close-drain adds the pinned close writes).
+    Any native error but a validated ExecutionDoesNotExist is unknown (R12): poison, never retry.
+    """
     def __init__(self, aws, governance, journal, session, *, prepared_sha256, clock=None):
         c.require(type(journal) is AdapterJournal and type(session) is _FenceSession
                   and session.request_binding == c.sha(c.canonical(journal._request))
@@ -954,8 +966,8 @@ class ClosedReadyBroker:
         journal.guard()
         c.require(session.request_binding == c.sha(c.canonical(journal._request))
                   and self.clock() + 20 < session.deadline, "original finite SDK request/window")
-        lc.validate_closed_ready_call(request=journal._request, role=role, service=service, operation=operation,
-                                      parameters=parameters, **session.scope)
+        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), role=role, service=service,
+                               operation=operation, parameters=parameters, **session.scope)
         native = {"role": role, "service": service, "operation": operation, "parameters": parameters}
         raw = c.canonical(native, limit=128 * 1024)
         ledger = ClosedReadyEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
@@ -976,9 +988,9 @@ class ClosedReadyBroker:
                 response = getattr(error, "response", {})
                 c.require(service == "stepfunctions" and operation == "describe_execution"
                           and response.get("Error", {}).get("Code") == "ExecutionDoesNotExist"
-                          and any(member["resolution"] == "CANCEL_BEFORE_SEND" and member["execution_ref"] is None
+                          and (journal._request["operation"] == "close-drain" or any(member["resolution"] == "CANCEL_BEFORE_SEND" and member["execution_ref"] is None
                                   and parameters["executionArn"] == session.scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + member["dispatch_id"]
-                                  for member in session.scope["members"]), "native SDK outcome unknown")
+                                  for member in session.scope["members"])), "native SDK outcome unknown")
                 absent = True
             metadata = response.get("ResponseMetadata", {})
             c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == (400 if absent else 200),
@@ -986,8 +998,9 @@ class ClosedReadyBroker:
             if absent:
                 value = {"Error": {"Code": "ExecutionDoesNotExist"}}
             elif service == "dynamodb":
-                c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
-                value = {key: response[key] for key in ("Item",) if key in response}
+                fields = ("Item",) if operation == "get_item" else ()
+                c.require(set(response) <= {*fields, "ResponseMetadata"}, "finite native DynamoDB response")
+                value = {key: response[key] for key in fields if key in response}
             else:
                 value = lc.closed_ready_probe_response(response, execution_arn=parameters["executionArn"], machine_arn=session.scope["machine_arn"])
             from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates

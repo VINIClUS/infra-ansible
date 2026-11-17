@@ -472,18 +472,19 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
-def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence):
-    """Single derivation of own-run closed-ready intent/response/receipt keys.
+def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence, operation="closed-ready"):
+    """Single derivation of own-run fence SDK intent/response/receipt keys, one namespace per operation.
 
-    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2).
+    Used by ClosedReadyEvidence and by the prepared evaluation scope (item 2); closed-ready bytes are unchanged.
     """
+    c.require(operation in lc.FENCE_SDK_OPERATIONS, "fence evidence operation")
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
-    operation = c.sha(c.canonical({"schema_version": 2, "operation": "closed-ready", "owner": owner, "caller": caller,
-                                   "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
-    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": "closed-ready"},
+    digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,
+                                "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
+    prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": operation},
                        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
-    return {name: prefix + "sdk-" + operation[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
+    return {name: prefix + "sdk-" + digest[:40] + "-" + name + ".json" for name in ("intent", "response", "receipt")}
 
 
 def _allowed_resources(policy, action):
