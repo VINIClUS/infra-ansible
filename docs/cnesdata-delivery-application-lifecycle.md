@@ -644,11 +644,72 @@ admitted in `application-prepare`, so that terminal does not close in this slice
 membership host-receipt static-receipt decision`, none of which has an original producer before
 close, and it reads `routing` back instead of producing it.
 
+Static stage (second slice PR-E, amendment 6886977054 decision 5 and queue items 3d, 3e, 3f and
+6, `Refs #55`). `retire-static` is an ABI operation: its inputs are `static-plan inventory publication
+routing`, it is admitted only in `final` (after the verified reopen), and its observation is `retirement`.
+`static_session` reproduces #498 `locals.static_sessions` byte for byte:
+`sp-<op>-sha256(jsonencode(binding + operation) + LF)[:40]`. The inventory name commits to no plan
+(`static_plan_sha256` null) and is written `i`. The fixture vector was evaluated by `tofu console` over
+the pinned `static-promotion.tf` (sha256 15098669...1e). `static_sessions` maps each ABI operation to
+its delegations:
+- `inventory`: observer `sp-i-`.
+- `publish-static`: normal `sp-publish-` plus observer `sp-i-`. This is 3e: the observer re-inventories
+  in the static stage.
+- `retire-static`: normal `sp-retire-` only.
+
+A name is not an STS admission. This slice has no static broker, no static STS and no static call
+validator.
+
+Item 6, `publish_static_closed_ready`:
+- It refuses first while `Keeper.uncertainty()` is not empty.
+- The publish-static `host-receipt` must be the host handoff v1: canonical, at most 1 MiB, closed
+  field set, `version` 1, `kind` `host-handoff`.
+- Its `closed_ready_sha256` must equal the digest of the single `closed-ready` observation across the
+  keeper journals. A broker and its own journal count once.
+- Any failure poisons the publish-static journal and attaches it, so the lease stays held.
+- The receipt's `status` and `caller` stay the product's check: CnesData 9cdd452f
+  `promote_api.py:236-245` and `rollback_api_static.py:205-213`.
+
+3d, the S3 `Body` on the broker:
+- `s3_body_bytes` decodes `{"base64": ...}` strictly: ASCII only, `validate=True`, and re-encoding must
+  give the same text. This is the product's `b64`.
+- `s3_put_body` requires `ChecksumSHA256 = base64(sha256(bytes))` over the decoded bytes.
+- `s3_body_value` reads a GetObject Body up to `maximum + 1` bytes and refuses anything past `maximum`.
+- The request side adds no size of its own. The canonical native request limit of the journal (128 KiB)
+  bounds the text, so a PutObject body above about 96 KiB cannot cross the existing journal.
+
+R4, evaluated on the source only:
+- `iam_boundary.effective_iam` runs over the #498 normal and observer policies. The model is checked by
+  sha256 against the tofu renderings.
+- The observer only reads the namespace and lists the bucket. Its document has no `DateLessThan`.
+- The normal role writes and reads only the candidate keys and invalidates the distribution. It
+  deletes only the exact `retire_versions` (`s3:VersionId`), and only before `enabled_until`.
+- No static session policy exists, so each identity document stands as its own session. Applied IAM
+  is not evaluated.
+
+R16, the decision-5 budget does not fit (stop condition reported before merge):
+- The largest plan #498 admits is 43 `retire_versions`. The normal policy is limited to 10240 bytes;
+  the smallest per-reference plan measures 616 + 221·n bytes, and tofu renders 43 at 10119 bytes and
+  44 at 10340.
+- The only SDK broker shape that exists does 10 AWS ops per call when durable and 1 when in memory. Each
+  op sits behind `guard.check(20)` and the `+20`/`+40` window checks.
+- Driving `lc.phase_capacity` and `STAGES["final"]` with an injected clock at 20 s per op (the
+  `aws_boundary.bounded` timeout) completes 0 deletes, or 1 in memory under `KeeperGuard`.
+- The nominal fit needs less than 7.0 ms, 93.9 ms, 69.8 ms or 0.93 s per op (durable or in memory, under
+  `LifecycleWatchdog` or `KeeperGuard`). Reopen and finish share the same 60 s and are counted as 0 s.
+- `retire-static`, the codecs and item 6 have no production call site.
+
 Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
 handlers (execute wiring); the registration of the terminal validators; validators for `unit`,
 `recovery`, `audit` and `restoration`, which need a source rule in their own amendment; a source
 for `failed-prepare-quiescent` in `application-prepare`;
 `KEEPER_EVENT_SOURCE = stage_event_source` and the binding of `execute` to the operational Keeper.
+Static stage, remaining:
+- the call validators for `inventory`, `publish-static` and `retire-static`, which wait on the S3
+  catalogue decision (ABI table versus product wire names);
+- a static broker and STS for the static roles;
+- the retire input binding to `static-plan`;
+- the R16 choice (per-run cap, batched delete or a `static-maintenance` run), in its own amendment.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
@@ -663,5 +724,7 @@ producer against
 real GitHub runs, including its request budget (one jobs read per poll, about 720 per hour at
 the five-second poll, against the token's hourly limit); the terminal validators against real
 product bytes (the routing and terminal-readback shapes are synthetic, and no caller authenticates
-the host-handoff artifact or the recovery-decision input for them yet). No
+the host-handoff artifact or the recovery-decision input for them yet); the static calls against
+real S3 and CloudFront, real static STS, `retire-static` inside the `final` budget (R16), and product
+assets above about 96 KiB through the journal. No
 operational readiness, applied IAM, production acceptance or integrated-code status is implied.
