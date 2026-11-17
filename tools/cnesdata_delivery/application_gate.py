@@ -89,6 +89,156 @@ def _terminal_required(kind, window):
     return required
 
 
+# Amendment 6886977054 decision 6: pure in-process terminal validators over keeper journal
+# observations or bytes a caller authenticated, never caller JSON. `source` is a closed role ->
+# sha256 map; a journal role selects observation bytes of its own kind, an artifact role only the
+# factory's authenticated bytes, and the result commits to the map. Nothing registers them yet.
+TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
+                         "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision"}
+TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
+# SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
+ROUTING_FIELDS = "version kind fence routes_match"
+TERMINAL_READBACK_FIELDS = "version kind members quiescent state_clean pending unknown observed_at"
+# host_gate.validate_closed_ready: member identity (exact types of _closed_members), frozen member
+# shape, resolved set, closed-ready.
+MEMBER_IDENTITY_TYPES = {"dispatch_id": (str,), "request_sha256": (str,), "generation": (int,), "initial_state": (str,),
+                         "execution_ref": (str, type(None)), "resolution": (str,)}
+MEMBER_IDENTITY = " ".join(MEMBER_IDENTITY_TYPES)
+FROZEN_MEMBER_FIELDS = MEMBER_IDENTITY + " proof_sha256 observed_at send_disabled_at"
+MEMBER_RESOLVED = frozenset({"TERMINAL", "ABSENT_PROVEN", "CANCEL_BEFORE_SEND"})
+CLOSED_READY_FIELDS = ("version kind common close_drain_sha256 phase_b_sha256 fence permit members proofs observed_at "
+                       "exclusion stage decision")
+# CnesData 9cdd452f scripts/promotion/_api_static_records.py PUBLICATION_SCHEMA/PUBLICATION_FIELDS;
+# field types of publish_dashboard.PublicationReceipt.
+PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
+PUBLICATION_FIELDS = "schema plan_sha256 closed_ready_sha256 uploaded already_published invalidation_id"
+# host_gate.py public handoff (version 1) and validate_recovery_decision.
+HOST_HANDOFF_FIELDS = ("version kind caller producer_sha closed_ready_sha256 original_request_sha256 status response_sha256 "
+                       "proof_sha256 receipt_sha256 witness_sha256 operation_id binding_sha256 generation recovery_decision "
+                       "recovery_proof_sha256")
+HOST_HANDOFF_STATUS = frozenset({"accepted", "rolled_back", "recovery_required"})
+CLOSED_READY_COMMON = ("repository release_id source_sha candidate_sha256 canary_id activation_sha256 promotion_id "
+                       "promotion_generation caller")
+RECOVERY_DECISION_FIELDS = ("version operation_id binding_sha256 generation choice_at choice_monotonic_ms clock_boot_id "
+                            "fixed_deadline recovery_deadline allocated_seconds convergence_budget_seconds "
+                            "finalization_budget_seconds uncertainty_budget_seconds checkpoint_sha256")
+
+
+def _terminal_sources(kind, source, observations, authenticated=None):
+    c.closed(source, TERMINAL_SOURCE_ROLES[kind])
+    c.require(type(observations) is dict, "terminal journal observations")
+    found = {}
+    for role in TERMINAL_SOURCE_ROLES[kind].split():
+        digest = c.digest(source[role])
+        raw = (authenticated or {}).get(role) if role in TERMINAL_ARTIFACT_ROLES else observations.get(digest)
+        c.require(type(raw) is bytes and c.sha(raw) == digest, f"terminal source role={role}")
+        found[role] = c.loads(raw, canonical=True, limit=1024**2)
+    return found
+
+
+def _versioned(value, kind, fields):
+    c.closed(value, fields)
+    c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == kind,
+              f"terminal source kind={kind}")
+    return value
+
+
+def _member(member, fields):
+    c.closed(member, fields)
+    c.require(all(type(member[key]) in kinds for key, kinds in MEMBER_IDENTITY_TYPES.items()), "terminal member identity types")
+
+
+def routing_terminal_validator(source, *, owner, window, observations):
+    """Routing facts from the `routing` journal observation (reopen)."""
+    value = _versioned(_terminal_sources("routing", source, observations)["routing"], "routing", ROUTING_FIELDS)
+    c.require(value["fence"] in {"OPEN", "CLOSED"} and type(value["routes_match"]) is bool, "terminal routing facts")
+    return {"sha256": c.sha(c.canonical(source)), "facts": {"fence": value["fence"], "routes_match": value["routes_match"]}}
+
+
+def static_terminal_validator(source, *, owner, window, observations):
+    """Static acceptance: the `publication` observation bound to the closed-ready observation digest."""
+    found = _terminal_sources("static", source, observations)
+    publication = c.closed(found["publication"], PUBLICATION_FIELDS)
+    _versioned(found["closed-ready"], "closed-ready", CLOSED_READY_FIELDS)
+    c.digest(publication["plan_sha256"])
+    uploaded, already = publication["uploaded"], publication["already_published"]
+    c.require(type(uploaded) is list and all(type(item) is list and len(item) == 2
+                                             and all(type(part) is str for part in item) for item in uploaded)
+              and type(already) is list and all(type(key) is str for key in already)
+              and type(publication["invalidation_id"]) in (str, type(None)), "terminal static publication types")
+    c.require(publication["schema"] == PUBLICATION_SCHEMA and publication["closed_ready_sha256"] == source["closed-ready"],
+              "terminal static publication binding")
+    return {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": True}}
+
+
+def membership_terminal_validator(source, *, owner, window, observations):
+    """Membership resolution: frozen close-drain members against the terminal-readback members."""
+    found = _terminal_sources("membership", source, observations)
+    close = _versioned(found["close-drain"], "close-drain", lc.CLOSE_DRAIN_FIELDS)
+    readback = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
+    frozen, final = close["members"], readback["members"]
+    c.require(type(frozen) is list and type(final) is list
+              and close["frozen_membership_sha256"] == c.sha(c.canonical(frozen)), "terminal frozen membership")
+    for member in frozen:
+        _member(member, FROZEN_MEMBER_FIELDS)
+    for member in final:
+        _member(member, MEMBER_IDENTITY)
+
+    def identity(member):
+        return [member[key] for key in MEMBER_IDENTITY.split()]
+    resolved = ([identity(member) for member in frozen] == [identity(member) for member in final]
+                and all(member["resolution"] in MEMBER_RESOLVED for member in final))
+    return {"sha256": c.sha(c.canonical(source)), "facts": {"resolved": resolved}}
+
+
+def quiescence_terminal_validator(uncertainty):
+    """Factory over the keeper's uncertainty(); held SDK uncertainty is reported as unknown, never dropped."""
+    c.require(callable(uncertainty), "keeper uncertainty source")
+
+    def validator(source, *, owner, window, observations):
+        found = _terminal_sources("quiescence", source, observations)
+        value = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
+        c.require(type(value["quiescent"]) is bool and type(value["state_clean"]) is bool
+                  and type(value["pending"]) is list and type(value["unknown"]) is list, "terminal quiescence facts")
+        held = uncertainty()
+        c.require(type(held) is list, "keeper uncertainty")
+        return {"sha256": c.sha(c.canonical(source)), "facts": {
+            "quiescent": value["quiescent"], "state_clean": value["state_clean"], "pending": value["pending"],
+            "unknown": value["unknown"] + held, "observed_at": int(c.instant(value["observed_at"]))}}
+    return validator
+
+
+def host_terminal_validator(handoff_raw):
+    """Factory over host-handoff bytes a caller authenticated (artifact cnesdata-host-handoff-<run>-<attempt>)."""
+    c.require(type(handoff_raw) is bytes, "authenticated host handoff bytes")
+
+    def validator(source, *, owner, window, observations):
+        found = _terminal_sources("host", source, observations, {"host-handoff": handoff_raw})
+        handoff = _versioned(found["host-handoff"], "host-handoff", HOST_HANDOFF_FIELDS)
+        ready = _versioned(found["closed-ready"], "closed-ready", CLOSED_READY_FIELDS)
+        common = c.closed(ready["common"], CLOSED_READY_COMMON)
+        c.require(handoff["status"] in HOST_HANDOFF_STATUS and handoff["closed_ready_sha256"] == source["closed-ready"]
+                  and handoff["caller"] == common["caller"], "terminal host handoff binding")
+        return {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": handoff["status"] == "accepted"}}
+    return validator
+
+
+def decision_terminal_validator(decision_raw):
+    """Factory over the authenticated recovery-decision input; it binds the lease decision and adds no fact."""
+    c.require(type(decision_raw) is bytes, "authenticated recovery decision bytes")
+
+    def validator(source, *, owner, window, observations):
+        found = _terminal_sources("decision", source, observations, {"recovery-decision": decision_raw})
+        value = c.closed(found["recovery-decision"], RECOVERY_DECISION_FIELDS)
+        decision = window["decision"]
+        c.require(type(value["version"]) is int and value["version"] == 1 and decision is not None
+                  and decision["choice_at"] == int(c.instant(value["choice_at"]))
+                  and decision["deadline"] == int(c.instant(value["recovery_deadline"]))
+                  and window["fixed_deadline"] == int(c.instant(value["fixed_deadline"])), "terminal recovery decision binding")
+        return {"sha256": c.sha(c.canonical(source)), "facts": {}}
+    return validator
+
+
 def _verify_cas_chain(evidence, released):
     """Order by ETags, not timestamps: several writes may share one UTC second."""
     checkpoints, renewals = evidence["checkpoints"], evidence["renewals"]
