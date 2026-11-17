@@ -616,19 +616,34 @@ journal. Every object must match its own closed field set and `version`/`kind` (
   equal the lease decision `choice_at` and `deadline` and the window F; it adds no fact.
 
 The `routing` and `terminal` shapes are SYNTHETIC: the product has neither handler (R3). The host,
-closed-ready and publication field sets are copied literals, not shared code. `unit`, `recovery`,
-`audit` and `restoration` have no validator. No authority text says when a mode is accepted from
-the mode-canary v2 record (it has no verdict field), or how the six restoration booleans follow
-from the product rollback observation, which covers only the static channel. So `finish()` keeps
-refusing every terminal that requires them. Nothing registers a validator: `TERMINAL_VALIDATORS`
-stays empty, no production code calls `register_terminal_validator` or any validator, and
-`execute` still refuses. Reachability gap: `failed-prepare-quiescent`, the only reachable terminal
-of this slice, requires `restoration` and `routing`, but their sources (`rollback-api-static`,
-`reopen`) are not admitted in `application-prepare`.
+closed-ready and publication field sets are copied literals, not shared code. Nothing registers a
+validator: `TERMINAL_VALIDATORS` stays empty, no production code calls
+`register_terminal_validator` or any validator, and `execute` still refuses.
+
+Four types have no validator. Amendment 6886977054 decision 6 applies: with no validator for a
+required type, `finish()` keeps refusing; no rule or source is invented.
+
+- `unit`, `recovery`, `audit`: the proposal names the mode-canary v2 record plus the `phase-c-*`
+  job checkpoint. The record (CnesData 9cdd452f `mode_canary.py:279`) has no verdict field, there
+  is no `phase-c-unit` job, and no authority text says when a mode is accepted. Only
+  `accepted-open` requires them, in the `final` stage, which this slice does not reach (R5 of
+  6886977054).
+- `restoration`: the proposal names the `rollback` and `routing` observations. The product
+  rollback observation (`cnesdata.static-rollback/v1`, CnesData 9cdd452f `promote_api.py:166-187`)
+  covers only the static channel, so `unit`, `recovery`, `audit`, `api` and `first_static_absent`
+  do not follow from it. Both failure terminals require it.
+
+Reachability gap, against decision 3: `failed-prepare-quiescent` requires `restoration`, `routing`
+and `quiescence`, but the sources of the first two (`rollback-api-static`, `reopen`) are not
+admitted in `application-prepare`, so that terminal does not close in this slice either. The
+`terminal-readback` admitted there is no substitute: its closed input set requires `routing
+membership host-receipt static-receipt decision`, none of which has an original producer before
+close, and it reads `routing` back instead of producing it.
 
 Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
 handlers (execute wiring); the registration of the terminal validators; validators for `unit`,
-`recovery`, `audit` and `restoration`, which need a source rule in their own amendment;
+`recovery`, `audit` and `restoration`, which need a source rule in their own amendment; a source
+for `failed-prepare-quiescent` in `application-prepare`;
 `KEEPER_EVENT_SOURCE = stage_event_source` and the binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
