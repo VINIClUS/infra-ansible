@@ -1756,6 +1756,10 @@ def test_fence_scope_admits_only_the_exact_cnesdata_prod_state_machine(name):
             control_table_arn=table, machine_arn=machine, members=[member]),
         "scope": lambda: lr.fence_policy_scope({"account_id": account}, policy),
         "session": lambda: session_policy.fence_session_policy(control_table_arn=table, execution_prefix=prefix, deadline=1480),
+        "close-validator": lambda: lc.validate_close_drain_call(
+            request=_adapter_case("close-drain")[0], role="fence_operator", service="dynamodb", operation="get_item",
+            parameters={"TableName": "cnesdata-prod-control-plane", "Key": {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}},
+                        "ConsistentRead": True}, account=account, control_table_arn=table, machine_arn=machine),
     }
     for site, check in checks.items():
         if name != "cnesdata-prod":
@@ -1854,7 +1858,8 @@ CLOSE_MUTATIONS = {
     "cas-unsorted": "transact_write_items", "cas-absent-variant": "transact_write_items",
     "cas-held-variant": "transact_write_items", "update-extra": "transact_write_items", "three-items": "transact_write_items",
     "confirm-version": "update_item", "confirm-closed": "update_item", "confirm-untyped": "update_item",
-    "closed-ready-request": "describe_execution", "open-value": "transact_write_items"}
+    "closed-ready-request": "describe_execution", "open-value": "transact_write_items",
+    "no-read-absent": "transact_write_items"}
 
 
 @pytest.mark.parametrize("mutation", sorted(CLOSE_MUTATIONS))
@@ -1862,11 +1867,11 @@ def test_close_drain_calls_refuse_anything_outside_the_pinned_close(mutation):
     import copy
     from tools.cnesdata_delivery import lifecycle_contract as lc
     request, *_ = _adapter_case("close-drain")
-    item = None if mutation == "cas-held-variant" else CLOSE_SEMAPHORE
+    item = None if mutation in {"cas-held-variant", "no-read-absent"} else CLOSE_SEMAPHORE
     calls, responses, history = _close_drain_calls(request["owner"]["owner_sha256"], item=item), _close_responses(item), []
     scope = dict(CLOSE_SCOPE)
     order = list(CLOSE_ORDER)
-    if mutation == "no-semaphore-read": order.remove("get_item-semaphore")
+    if mutation in {"no-semaphore-read", "no-read-absent"}: order.remove("get_item-semaphore")
     if mutation == "second-close": order.insert(4, "transact_write_items")
     if mutation == "confirm-first": order.remove("transact_write_items")
     if mutation == "second-confirm": order.insert(6, "update_item")
@@ -2083,12 +2088,13 @@ def test_close_drain_conflict_poisons_the_journal_and_never_retries_or_returns_s
     assert native.count(target) == 1
 
 
-@pytest.mark.parametrize("case", ["close-capacity", "confirm-attributes", "read-capacity"])
+@pytest.mark.parametrize("case", ["close-capacity", "confirm-attributes", "read-capacity", "close-item"])
 def test_close_drain_broker_refuses_write_or_read_responses_beyond_the_finite_fields(monkeypatch, case):
     ag, journal, broker, frames, native, objects, errors, _ = _close_drain_broker_case(monkeypatch)
     target, extra = {"close-capacity": ("transact_write_items", {"ConsumedCapacity": [{"TableName": "t"}]}),
                      "confirm-attributes": ("update_item", {"Attributes": {"state": {"S": "CLOSED"}}}),
-                     "read-capacity": ("get_item", {"ConsumedCapacity": {"TableName": "t"}})}[case]
+                     "read-capacity": ("get_item", {"ConsumedCapacity": {"TableName": "t"}}),
+                     "close-item": ("transact_write_items", {"Item": {"state": {"S": "CLOSED"}}})}[case]
     original = broker.session.client.call
     def sdk(service, operation, **parameters):
         response = original(service, operation, **parameters)
@@ -2228,8 +2234,13 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     activation = b"original-ext2-payload-bytes"
     kwargs["activation_sha256"] = c.sha(activation)
     files = lr.fence_prepare_package(**kwargs)
+    if mutation == "evaluation-scope":
+        evaluation = c.loads(files["fence-evaluation.json"], canonical=True)
+        next(case for case in evaluation["cases"] if case["case_id"] == "get-fence")["resource"] += "-other"
+        files["fence-evaluation.json"] = c.canonical(evaluation)
     prepared = lr.PreparedFence(files)
     owner, pin = kwargs["owner"], kwargs["authority"].pin
+    if mutation == "owner": owner = owner | {"generation": owner["generation"] + 1}
     preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
     _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
     authority = Authority(pin, 5000.0, None, fragment, "3" * 64)
@@ -2239,7 +2250,7 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     if mutation == "late-artifact": api.expiries[(c.REPOSITORY, 82)], api.digests[(c.REPOSITORY, 82)] = 6100.0, "4" * 64
     inputs = {"activation": activation if mutation != "activation" else b"other", "expirations": expirations}
     window = {"close": None, "fixed_deadline": None, "input_deadline": None, "stage": "application-prepare",
-              "admitted_at": preparation["admitted_at"] - (mutation == "admitted"),
+              "admitted_at": preparation["admitted_at"] - (mutation == "admitted") + (mutation == "admitted-later"),
               "deadline": preparation["deadline"] - (mutation == "preparation"),
               "decision": None, "preparation_deadline": preparation["deadline"] - (mutation == "preparation"),
               "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), **lc.application_identity(owner)}
@@ -2274,6 +2285,8 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
 
 _CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "preparation": "original preparation is the close stage",
                               "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
+                              "admitted-later": "original preparation is the close stage", "owner": "prepared current owner",
+                              "evaluation-scope": "capability scope recomputed from prepared policy",
                               "expirations": "close-drain authenticated expirations",
                               "late-artifact": "close-drain authenticated expirations",
                               "freeze": "freeze=attached", "attached": "application has no attached policies"}
@@ -2314,14 +2327,14 @@ def test_fence_capabilities_refuse_the_other_operation_before_any_io(monkeypatch
     assert sts_calls == [] and events == [] and keeper._contexts == []
 
 
-@pytest.mark.parametrize("case", ["leaf", "decoy", "missing"])
+@pytest.mark.parametrize("case", ["leaf", "decoy", "missing", "root-decoy"])
 def test_adapter_child_loads_product_packages_by_authorized_path_with_stub_parents(tmp_path, case):
     """Queue item 3c: cnes_domain/cnes_infra load by authorized path; parent __init__ never runs; no fallback."""
     import subprocess
     from tools.cnesdata_delivery.application_gate import AdapterJournal, invoke_adapter
     product = tmp_path / "product"
     imports = {"leaf": "from cnes_infra.codec import VALUE", "decoy": "from cnes_domain.missing import VALUE",
-               "missing": "from cnes_domain.orchestration.absent import VALUE"}
+               "missing": "from cnes_domain.orchestration.absent import VALUE", "root-decoy": "from cnes_domain.missing import VALUE"}
     code = r"""import hashlib, json, sys
 IMPORT
 
@@ -2345,6 +2358,8 @@ def execute_shared_operation(operation, request, context):
              "packages/cnes_infra/src/cnes_infra/__init__.py": stub,
              "packages/cnes_infra/src/cnes_infra/codec.py": "from cnes_domain.orchestration.leaf import VALUE\n",
              "cnes_domain/__init__.py": "", "cnes_domain/missing.py": "VALUE = 'decoy outside the authorized path'\n"}
+    if case == "root-decoy":
+        files = {name: text for name, text in files.items() if not name.startswith("packages/cnes_domain/")}
     for name, text in files.items():
         (product / name).parent.mkdir(parents=True, exist_ok=True)
         (product / name).write_text(text)
