@@ -1063,9 +1063,15 @@ def _adapter_case(operation="inventory"):
               "sequence": 1, "checkpoint_sha256": "f" * 64, **lc.application_identity(owner)}
     names = {"inventory": ("candidate", "dashboard-artifact", "archive", "static-baseline"),
              "close-drain": ("activation", "expirations"),
-             "closed-ready": ("activation", "close-drain", "phase-b", "membership")}[operation]
+             "closed-ready": ("activation", "close-drain", "phase-b", "membership"),
+             "publish-static": ("candidate", "dashboard-artifact", "static-plan", "inventory", "host-receipt"),
+             "retire-static": ("static-plan", "inventory", "publication", "routing")}[operation]
     if operation == "closed-ready":
         window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
+    if operation == "publish-static":
+        window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="static", admitted_at=1500, deadline=1680)
+    if operation == "retire-static":
+        window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="final", admitted_at=2100, deadline=2160)
     inputs = {name: c.canonical({"fixture_only": name}) for name in names}
     request = {"abi_version": 2, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
@@ -1075,7 +1081,7 @@ def _adapter_case(operation="inventory"):
     return request, owner, window, inputs
 
 
-@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready"])
+@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready", "publish-static", "retire-static"])
 @pytest.mark.parametrize("mutation", [None, "extra", "owner", "checkpoint", "stage-time", "bytes", "missing", "extra-input", "readiness", "noncanonical", "source", "canary-old", "activation"])
 def test_adapter_request_binds_original_bytes_owner_phase_and_closed_inputs(operation, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -5322,3 +5328,121 @@ def test_static_validator_refuses_publication_fields_of_the_wrong_type(change):
     vectors = _synthetic_terminal_vectors(publication=lambda value: value.update(change))
     with pytest.raises(ValueError, match="terminal static publication types"):
         _validate("static", vectors)
+
+
+# Second slice PR-E (amendment 6886977054 decision 5 and queue items 3e/3f): static stage ABI.
+def _static_binding(**changes):
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_SESSION_VECTOR
+    return copy.deepcopy(STATIC_SESSION_VECTOR["binding"]) | changes
+
+
+def test_retire_static_abi_row_is_decision_5():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert lc.ADAPTER_INPUTS["retire-static"] == "static-plan inventory publication routing"
+    assert lc.ADAPTER_STAGES["retire-static"] == {"final"}
+    assert lc.ADAPTER_OBSERVATIONS["retire-static"] == "retirement"
+    assert set(lc.ADAPTER_INPUTS) == set(lc.ADAPTER_STAGES) == set(lc.ADAPTER_OBSERVATIONS)
+
+
+@pytest.mark.parametrize("stage", ["static", "recovery", "api", "unit", "phase-c-audit"])
+def test_retire_static_request_refuses_every_stage_but_final(stage):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    request, owner, window, inputs = _adapter_case("retire-static")
+    window["stage"] = request["stage"]["stage"] = stage
+    with pytest.raises(ValueError, match="adapter original stage"):
+        lc.validate_adapter_request(c.canonical(request), operation="retire-static", owner=owner, window=window,
+                                    inputs=inputs, activation_sha256=request["activation_sha256"])
+
+
+@pytest.mark.parametrize("kind", ["retirement", "publication", "routing", "terminal"])
+def test_retire_static_result_and_journal_take_only_the_retirement_observation(kind):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    request, owner, window, inputs = _adapter_case("retire-static")
+    class Guard:
+        def check(self, seconds=1):
+            pass
+    journal = AdapterJournal(c.canonical(request), operation="retire-static", owner=owner, window=window, inputs=inputs,
+                             activation_sha256=request["activation_sha256"], guard=Guard())
+    raw = c.canonical({"fixture_only": "retirement"})
+    observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
+    result = {"abi_version": 2, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
+              "generation": request["owner"]["generation"], "checkpoint_sha256": request["checkpoint_sha256"],
+              "observations": observations, "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
+    args = {"request": request, "observations": observations, "call_receipts": [], "pending": [], "unknown": []}
+    if kind == "retirement":
+        assert journal.observe(kind, raw) == c.sha(raw)
+        assert lc.validate_adapter_result(c.canonical(result), **args) == result
+    else:
+        with pytest.raises(ValueError, match="adapter operation observation"):
+            journal.observe(kind, raw)
+        with pytest.raises(ValueError, match="adapter operation observation"):
+            lc.validate_adapter_result(c.canonical(result), **args)
+
+
+def test_static_session_names_equal_the_498_tofu_vector():
+    from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_PROMOTION_SOURCE_SHA256, STATIC_SESSION_VECTOR as vector
+    source = Path(__file__).resolve().parent / "fixtures/cnesdata_delivery_sources/infra/opentofu/modules/runtime-iam/static-promotion.tf"
+    assert c.sha(source.read_bytes()) == STATIC_PROMOTION_SOURCE_SHA256
+    binding = _static_binding()
+    assert lc.static_session(binding, "inventory") == vector["sessions"]["observer"][0]
+    assert [lc.static_session(binding, operation) for operation in ("publish", "retire")] == vector["sessions"]["normal"]
+    assert lc.static_session(_static_binding(static_plan_sha256=None), "inventory") == vector["sessions"]["observer"][0]
+    assert lc.static_session(_static_binding(static_plan_sha256="d" * 64), "inventory") == vector["sessions"]["observer"][0]
+    assert lc.static_session(_static_binding(static_plan_sha256="d" * 64), "retire") != vector["sessions"]["normal"][1]
+    assert binding == _static_binding()
+
+
+def test_static_sessions_admit_the_observer_in_static_and_retire_only_as_normal():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.session_policy import application_request
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_SESSION_VECTOR as vector
+    observer, (publish, retire) = vector["sessions"]["observer"][0], vector["sessions"]["normal"]
+    sessions = {operation: lc.static_sessions(_static_binding(), operation)
+                for operation in ("inventory", "publish-static", "retire-static")}
+    assert sessions == {"inventory": {"observer": observer}, "publish-static": {"normal": publish, "observer": observer},
+                        "retire-static": {"normal": retire}}
+    roles = {alias: "arn:aws:iam::111122223333:role/cnesdata-prod-" + suffix for alias, suffix in lc.APPLICATION_DELEGATIONS.items()}
+    governance = {"account_id": "111122223333", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
+                  "evidence_prefix": "cnesdata/prod/evidence/", "application_delegations": roles,
+                  "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/00000000-0000-4000-8000-000000000002",
+                  "roles": {"application": "arn:aws:iam::111122223333:role/cnesdata-prod-application"}}
+    for operation, chosen in sessions.items():
+        request = application_request(governance, "b" * 40, 44, 1, operation, application_purpose="promotion",
+                                      delegations=sorted(chosen), sessions=chosen)
+        statements = json.loads(request["Policy"])["Statement"]
+        assert {(statement["Resource"], statement["Condition"]["StringNotEquals"]["sts:RoleSessionName"]) for statement in statements
+                if "StringNotEquals" in statement.get("Condition", {})} == {(roles[alias], name) for alias, name in chosen.items()}
+    for operation in ("rollback-api-static", "closed-ready", "close-drain", "reopen", "terminal-readback", "publish"):
+        with pytest.raises(ValueError, match="closed static session operation"):
+            lc.static_sessions(_static_binding(), operation)
+
+
+@pytest.mark.parametrize("operation", ["inventory", "publish", "retire"])
+@pytest.mark.parametrize("mutation", [
+    "extra-field", "missing-field", "release-upper", "release-long", "release-hyphen-end", "run-zero", "run-bool", "run-string",
+    "attempt-zero", "generation-zero", "product-short", "shared-upper", "plan-short", "plan-null", "operation"])
+def test_static_session_refuses_bindings_outside_the_498_contract(operation, mutation):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    binding = _static_binding()
+    changes = {"release-upper": {"release_id": "R0123"}, "release-long": {"release_id": "r" * 33},
+               "release-hyphen-end": {"release_id": "r0123-"}, "run-zero": {"run_id": 0}, "run-bool": {"run_id": True},
+               "run-string": {"run_id": "42448000000"}, "attempt-zero": {"run_attempt": 0}, "generation-zero": {"generation": 0},
+               "product-short": {"product_source_sha": "a" * 39}, "shared-upper": {"shared_source_sha": "B" * 40},
+               "plan-short": {"static_plan_sha256": "c" * 63}, "plan-null": {"static_plan_sha256": None}}
+    if mutation == "extra-field":
+        binding["operation"] = operation
+    elif mutation == "missing-field":
+        binding.pop("generation")
+    elif mutation == "operation":
+        operation = {"inventory": "i", "publish": "publish-static", "retire": "rollback"}[operation]
+    else:
+        binding |= changes[mutation]
+    if mutation in {"plan-short", "plan-null"} and operation == "inventory":
+        if mutation == "plan-null":
+            assert lc.static_session(binding, operation).startswith("sp-i-")
+            return
+    with pytest.raises(ValueError):
+        lc.static_session(binding, operation)

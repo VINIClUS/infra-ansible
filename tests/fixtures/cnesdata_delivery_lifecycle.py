@@ -755,3 +755,22 @@ CLOSE_DRAIN_CALL_VECTOR = {'calls': [{'operation': 'describe_execution',
  'role': 'fence_operator',
  'source': 'VINIClUS/CnesData#473 C-2 close-drain',
  'version': 1}
+
+
+# #498 static session names, evaluated by `tofu console` (OpenTofu 1.13.9, no provider) over the `locals`
+# block of cnesdata_delivery_sources/infra/opentofu/modules/runtime-iam/static-promotion.tf (sha256 below)
+# with this SYNTHETIC binding. A re-pin of that file must re-evaluate these literals.
+STATIC_PROMOTION_SOURCE_SHA256 = "1509866973b7fe516c41d1a9a88950002b73ee3d4546238cd7831ba186031e1e"
+STATIC_SESSION_VECTOR = {'binding': {'generation': 2,
+             'product_source_sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+             'release_id': 'r0123456789abcdef0123456789abcde',
+             'run_attempt': 1,
+             'run_id': 42448000000,
+             'shared_source_sha': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+             'static_plan_sha256': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'},
+ 'sessions': {'normal': ['sp-publish-0a0f9470dbc330f1bf846639cc0cc9628999eba9',
+                         'sp-retire-eec56df6d685c3eb3282e411a3ff8036e2799e9c'],
+              'observer': ['sp-i-8f954d899944c0933e7704e715b134b94cea3bbe'],
+              'recovery': ['sp-abort-6c76f3e9809846bdba336bcdb888f597a2b29969',
+                           'sp-readback-362b1debfb4c4b1375b9ab48b147e5d312145be1',
+                           'sp-rollback-fbde760d26305b75ebccba6ac13d9f80cb7f7380']}}
