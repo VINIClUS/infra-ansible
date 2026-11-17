@@ -589,9 +589,47 @@ from the runtime venv; no operation loads until the product or an amendment fixe
 `keeper_loop` still accepts only `closed-ready` and `terminal`: close-drain is not a keeper event
 until the execute wiring.
 
+Terminal validators (second slice PR-D, amendment 6886977054 decision 6 without item 3b, and
+6861676353 item 8, `Refs #55`). They are pure in-process functions in `application_gate`, with no
+product import and no network. Each kind has a closed `source` map of role to sha256
+(`TERMINAL_SOURCE_ROLES`). A journal role selects the keeper journal observation bytes under that
+digest: the sha256 is rechecked, and the bytes must be canonical and at most 1 MiB. An artifact role
+(`host-handoff`, `recovery-decision`) selects only the bytes its factory was built with, never the
+journal. Every object must match its own closed field set and `version`/`kind` (the publication:
+`schema`), so bytes of another kind refuse. The result sha256 is the digest of the canonical map.
+
+- `routing`: `fence` (OPEN or CLOSED) and `routes_match` from the `routing` observation (reopen).
+- `static`: the `publication` observation, with the closed fields and schema of CnesData 9cdd452f
+  `_api_static_records.py` (`cnesdata.static-publication/v1`), whose `closed_ready_sha256` equals
+  the digest of the `closed-ready` observation (the item 6 equality); accepted.
+- `membership`: the frozen `close-drain` members (host member shape, `frozen_membership_sha256`
+  commitment) against the `terminal` readback members. `resolved` only with the same host identity
+  tuples in the same order and every resolution TERMINAL, ABSENT_PROVEN or CANCEL_BEFORE_SEND.
+- `quiescence`: a factory over `Keeper.uncertainty()`. `quiescent`, `state_clean`, `pending` and
+  `observed_at` come from the `terminal` readback; `unknown` is the readback's plus the held
+  uncertainty, never dropped.
+- `host`: a factory over authenticated host-handoff bytes (host gate public handoff, version 1).
+  The status is in the closed set, `closed_ready_sha256` equals the closed-ready observation digest
+  and `caller` equals its `common.caller`; accepted only for `accepted`.
+- `decision`: a factory over the authenticated `recovery-decision` input (host
+  `validate_recovery_decision` fields). Its `choice_at`, `recovery_deadline` and `fixed_deadline`
+  equal the lease decision `choice_at` and `deadline` and the window F; it adds no fact.
+
+The `routing` and `terminal` shapes are SYNTHETIC: the product has neither handler (R3). The host,
+closed-ready and publication field sets are copied literals, not shared code. `unit`, `recovery`,
+`audit` and `restoration` have no validator. No authority text says when a mode is accepted from
+the mode-canary v2 record (it has no verdict field), or how the six restoration booleans follow
+from the product rollback observation, which covers only the static channel. So `finish()` keeps
+refusing every terminal that requires them. Nothing registers a validator: `TERMINAL_VALIDATORS`
+stays empty, no production code calls `register_terminal_validator` or any validator, and
+`execute` still refuses. Reachability gap: `failed-prepare-quiescent`, the only reachable terminal
+of this slice, requires `restoration` and `routing`, but their sources (`rollback-api-static`,
+`reopen`) are not admitted in `application-prepare`.
+
 Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
-handlers (execute wiring); the real terminal validators; `KEEPER_EVENT_SOURCE =
-stage_event_source` and the binding of `execute` to the operational Keeper.
+handlers (execute wiring); the registration of the terminal validators; validators for `unit`,
+`recovery`, `audit` and `restoration`, which need a source rule in their own amendment;
+`KEEPER_EVENT_SOURCE = stage_event_source` and the binding of `execute` to the operational Keeper.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
@@ -604,5 +642,7 @@ against real IAM, STS and DynamoDB (per-item authorization of the close transact
 reread through the application identity, the product handler in the child, R13); the event
 producer against
 real GitHub runs, including its request budget (one jobs read per poll, about 720 per hour at
-the five-second poll, against the token's hourly limit); the product terminal validators. No
+the five-second poll, against the token's hourly limit); the terminal validators against real
+product bytes (the routing and terminal-readback shapes are synthetic, and no caller authenticates
+the host-handoff artifact or the recovery-decision input for them yet). No
 operational readiness, applied IAM, production acceptance or integrated-code status is implied.
