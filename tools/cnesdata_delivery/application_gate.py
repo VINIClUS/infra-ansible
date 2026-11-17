@@ -92,7 +92,8 @@ def _terminal_required(kind, window):
 # Amendment 6886977054 decision 6: pure in-process terminal validators over keeper journal
 # observations, never caller JSON. `source` is a closed role -> sha256 map; each role selects
 # journal bytes of its own kind and the result commits to the map. Nothing registers them yet.
-TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal"}
+TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
+                         "quiescence": "terminal"}
 # SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
 TERMINAL_READBACK_FIELDS = "version kind members quiescent state_clean pending unknown observed_at"
@@ -162,6 +163,23 @@ def membership_terminal_validator(source, *, owner, window, observations):
     resolved = ([identity(member) for member in frozen] == [identity(member) for member in final]
                 and all(member["resolution"] in MEMBER_RESOLVED for member in final))
     return {"sha256": c.sha(c.canonical(source)), "facts": {"resolved": resolved}}
+
+
+def quiescence_terminal_validator(uncertainty):
+    """Factory over the keeper's uncertainty(); held SDK uncertainty is reported as unknown, never dropped."""
+    c.require(callable(uncertainty), "keeper uncertainty source")
+
+    def validator(source, *, owner, window, observations):
+        found = _terminal_sources("quiescence", source, observations)
+        value = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
+        c.require(type(value["quiescent"]) is bool and type(value["state_clean"]) is bool
+                  and type(value["pending"]) is list and type(value["unknown"]) is list, "terminal quiescence facts")
+        held = uncertainty()
+        c.require(type(held) is list, "keeper uncertainty")
+        return {"sha256": c.sha(c.canonical(source)), "facts": {
+            "quiescent": value["quiescent"], "state_clean": value["state_clean"], "pending": value["pending"],
+            "unknown": value["unknown"] + held, "observed_at": int(c.instant(value["observed_at"]))}}
+    return validator
 
 
 def _verify_cas_chain(evidence, released):
