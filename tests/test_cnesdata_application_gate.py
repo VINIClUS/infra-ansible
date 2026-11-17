@@ -5257,3 +5257,67 @@ def test_membership_validator_refuses_readback_larger_than_the_journal_observati
     source = {"close-drain": c.sha(raws["close-drain"]), "terminal": c.sha(raws["terminal"])}
     with pytest.raises(ValueError, match="JSON size"):
         _validate("membership", source=source, observations=observations)
+
+
+@pytest.mark.parametrize("fence", ["HALF", "AJAR", "open", ""])
+def test_routing_validator_refuses_fence_outside_the_closed_set(fence):
+    with pytest.raises(ValueError, match="terminal routing facts"):
+        _validate("routing", _synthetic_terminal_vectors(routing=lambda value: value.update(fence=fence)))
+
+
+@pytest.mark.parametrize("resolution", ["OUTCOME_UNKNOWN", "PENDING", "terminal"])
+def test_membership_validator_reports_resolution_outside_the_closed_set_as_unresolved(resolution):
+    def both(value):
+        value["members"][0]["resolution"] = resolution
+        if "frozen_membership_sha256" in value:
+            value["frozen_membership_sha256"] = c.sha(c.canonical(value["members"]))
+    vectors = _synthetic_terminal_vectors(terminal=both, **{"close-drain": both})
+    assert _validate("membership", vectors)[0]["facts"] == {"resolved": False}
+
+
+@pytest.mark.parametrize("status", ["unknown", "x", "ACCEPTED"])
+def test_host_validator_refuses_status_outside_the_closed_set(status):
+    vectors = _synthetic_terminal_vectors()
+    artifacts = _synthetic_terminal_artifacts(vectors, **{"host-handoff": lambda value: value.update(status=status)})
+    with pytest.raises(ValueError, match="terminal host handoff binding"):
+        _validate_artifact("host", vectors=vectors, artifacts=artifacts)
+
+
+@pytest.mark.parametrize("mutation", ["final-generation-bool", "frozen-generation-bool", "generation-text", "dispatch-int",
+                                      "request-null", "initial-list", "execution-int", "resolution-list",
+                                      "final-resolution-list"])
+def test_membership_validator_refuses_identity_fields_of_the_wrong_type(mutation):
+    field, value, where = {
+        "final-generation-bool": ("generation", True, "final"), "frozen-generation-bool": ("generation", True, "frozen"),
+        "generation-text": ("generation", "1", "both"), "dispatch-int": ("dispatch_id", 1, "both"),
+        "request-null": ("request_sha256", None, "both"), "initial-list": ("initial_state", ["NOT_SENT"], "both"),
+        "execution-int": ("execution_ref", 1, "both"), "resolution-list": ("resolution", ["TERMINAL"], "both"),
+        "final-resolution-list": ("resolution", ["TERMINAL"], "final"),
+    }[mutation]
+    def frozen(close):
+        if where in {"frozen", "both"}:
+            close["members"][0][field] = value
+            close["frozen_membership_sha256"] = c.sha(c.canonical(close["members"]))
+    def final(readback):
+        if where in {"final", "both"}:
+            readback["members"][0][field] = value
+    with pytest.raises(ValueError, match="terminal member identity types"):
+        _validate("membership", _synthetic_terminal_vectors(terminal=final, **{"close-drain": frozen}))
+
+
+@pytest.mark.parametrize("change", [
+    {"uploaded": []}, {"already_published": ["assets/app.js"]}, {"invalidation_id": None},
+    {"uploaded": [["index.html", "v1"], ["assets/app.js", "v2"]]}])
+def test_static_validator_accepts_the_product_publication_shapes(change):
+    vectors = _synthetic_terminal_vectors(publication=lambda value: value.update(change))
+    assert _validate("static", vectors)[0]["facts"] == {"accepted": True}
+
+
+@pytest.mark.parametrize("change", [
+    {"uploaded": {}}, {"uploaded": ["index.html"]}, {"uploaded": [["index.html"]]}, {"uploaded": [["index.html", 1]]},
+    {"uploaded": [["index.html", "v1", "extra"]]}, {"already_published": "index.html"}, {"already_published": [1]},
+    {"invalidation_id": 7}, {"invalidation_id": ["SYNTHETICINVALIDATION"]}])
+def test_static_validator_refuses_publication_fields_of_the_wrong_type(change):
+    vectors = _synthetic_terminal_vectors(publication=lambda value: value.update(change))
+    with pytest.raises(ValueError, match="terminal static publication types"):
+        _validate("static", vectors)
