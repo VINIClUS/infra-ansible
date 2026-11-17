@@ -4114,7 +4114,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     from tools.cnesdata_delivery import application_gate as ag
     root = Path(__file__).resolve().parents[1]
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
-               "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window"}
+               "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
+               "close_expirations"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4141,6 +4142,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "run_closed_ready", "KeeperGuard"),              # run_closed_ready itself has no production caller
         (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
+        (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]

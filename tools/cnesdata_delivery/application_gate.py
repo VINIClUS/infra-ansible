@@ -1102,6 +1102,27 @@ def infra_expiration_bound(authority, api):
                     c.instant(authority.pin["frozen_until"])]))
 
 
+
+def close_expirations(authority, api):
+    """Correction 6906038586 item 1: the close-drain `expirations` input from authenticated originals.
+
+    credential = owner proof bytes, artifact = each authenticated download, platform =
+    fragment enabled_until and pin frozen_until. Unbound or duplicate (kind, object) refuses.
+    """
+    infra_expiration_bound(authority, api)
+    c.require(type(authority.proof_sha256) is str and type(getattr(api, "digests", None)) is dict
+              and set(api.digests) == set(api.expiries), "close expirations authenticated objects")
+    fragment, pin = authority.application_fragment, authority.pin
+    entries = sorted([("credential", c.digest(authority.proof_sha256), authority.expires_at),
+                      ("platform", c.sha(c.canonical(fragment)), c.instant(fragment["enabled_until"])),
+                      ("platform", c.sha(c.canonical(pin)), c.instant(pin["frozen_until"])),
+                      *[("artifact", c.digest(api.digests[key]), api.expiries[key]) for key in api.expiries]])
+    keys = [entry[:2] for entry in entries]
+    c.require(len(set(keys)) == len(keys), "close expirations unique originals")
+    return c.canonical([{"kind": kind, "object_sha256": digest, "expires_at": c.utc(int(expiry))}
+                        for kind, digest, expiry in entries])
+
+
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
                             guard, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).

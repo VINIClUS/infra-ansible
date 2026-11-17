@@ -26,6 +26,7 @@ class Authority:
     expires_at: float
     namespace: dict | None
     application_fragment: dict | None = field(default=None, repr=False)
+    proof_sha256: str | None = None
 
 
 def authenticate_lifecycle(governance, api, source, role, purpose, now):
@@ -57,7 +58,7 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
         fragment = application_fragment(governance, now)
         c.require(measured.get("application_fragment_sha256") == c.sha(c.canonical(fragment)),
                   "original owner private fragment commitment")
-    return Authority(pin, expiry, None, fragment)
+    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]))
 
 
 def application_configuration(value, account):

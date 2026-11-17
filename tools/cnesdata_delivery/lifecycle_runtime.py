@@ -62,6 +62,24 @@ def authenticate_application_predecessor(api, governance, current):
     return reference
 
 
+class ArtifactDigests:
+    """Correction 6906038586 item 1: each authenticated artifact digest beside its expiry.
+
+    Recorded only after the inner authenticated download succeeds; everything else delegates.
+    """
+    def __init__(self, inner):
+        self._inner = inner
+        self.digests = {}
+
+    def artifact(self, reference, now, **options):
+        files = self._inner.artifact(reference, now, **options)
+        self.digests[reference["repository"], reference["artifact_id"]] = reference["artifact_digest"].removeprefix("sha256:")
+        return files
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
@@ -78,7 +96,7 @@ def admission(role):
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
     c.require(step["purpose"] in lc.PURPOSES or role == "application", "closed purpose")
     c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
-    api = GitHub()
+    api = ArtifactDigests(GitHub()) if role == "application" else GitHub()
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
     from tools.cnesdata_delivery.provenance import application_caller
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)

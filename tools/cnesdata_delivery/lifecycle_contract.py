@@ -189,7 +189,7 @@ CALLER_BINDING_FIELDS = ("application_purpose context_kind repository workflow_p
                          "run_id run_attempt producer_workflow_sha producer_source_closure_sha256")
 ADAPTER_INPUTS = {
     "inventory": "candidate dashboard-artifact archive static-baseline",
-    "close-drain": "activation canary membership",
+    "close-drain": "activation expirations",
     "closed-ready": "activation close-drain phase-b membership",
     "publish-static": "candidate dashboard-artifact static-plan inventory host-receipt",
     "rollback-api-static": "static-plan inventory publication host-recovery-receipt recovery-decision",
