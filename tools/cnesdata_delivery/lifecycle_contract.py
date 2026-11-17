@@ -195,16 +195,53 @@ ADAPTER_INPUTS = {
     "rollback-api-static": "static-plan inventory publication host-recovery-receipt recovery-decision",
     "reopen": "activation routing canaries membership",
     "terminal-readback": "routing membership host-receipt static-receipt decision",
+    "retire-static": "static-plan inventory publication routing",
 }
+# Amendment 6886977054 decision 5: retire-static only in the final stage, after the verified reopen.
 ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
-    "terminal-readback": {"application-prepare", "final", "recovery"},
+    "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": {"final"},
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
     "publish-static": "publication", "rollback-api-static": "rollback", "reopen": "routing", "terminal-readback": "terminal",
+    "retire-static": "retirement",
 }
+STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
+# #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
+# (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
+STATIC_SESSION_OPERATIONS = {
+    "inventory": {"observer": "inventory"},
+    "publish-static": {"normal": "publish", "observer": "inventory"},
+    "retire-static": {"normal": "retire"},
+}
+
+
+def static_session(binding, operation):
+    """#498 locals.static_sessions: sp-<op>-sha256(jsonencode(binding + operation) + LF)[:40].
+
+    The inventory name commits to no plan (static_plan_sha256 null), so it exists before the plan.
+    c.canonical equals jsonencode on this closed ASCII binding. A name is not an STS admission.
+    """
+    c.closed(binding, STATIC_BINDING_FIELDS)
+    c.require(operation in {"inventory", "publish", "retire"}, "closed static session operation")
+    c.require(type(binding["release_id"]) is str and re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?", binding["release_id"]),
+              "static session release id")
+    for key in ("run_id", "run_attempt", "generation"):
+        c.integer(binding[key])
+    for key in ("product_source_sha", "shared_source_sha"):
+        c.digest(binding[key], 40)
+    if operation != "inventory" or binding["static_plan_sha256"] is not None:
+        c.digest(binding["static_plan_sha256"])
+    value = binding | {"operation": operation} | ({"static_plan_sha256": None} if operation == "inventory" else {})
+    return "sp-" + ("i" if operation == "inventory" else operation) + "-" + c.sha(c.canonical(value))[:40]
+
+
+def static_sessions(binding, operation):
+    """Exact delegation -> session names for one static ABI operation; the caller authenticates the binding."""
+    c.require(operation in STATIC_SESSION_OPERATIONS, "closed static session operation")
+    return {alias: static_session(binding, name) for alias, name in STATIC_SESSION_OPERATIONS[operation].items()}
 ADAPTER_STAGE_FIELDS = "close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence checkpoint_sha256"
 FENCE_PREPARE_PRODUCER = {
     "workflow_path": ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml", "job": "execute", "step_id": "gate",
