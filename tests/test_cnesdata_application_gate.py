@@ -1963,6 +1963,169 @@ def test_fence_close_and_ready_session_policies_reject_non_exact_scope(builder, 
         build(**kwargs)
 
 
+def _close_drain_broker_case(monkeypatch, *, item=CLOSE_SEMAPHORE):
+    """Real shared journal, evidence and broker over a close-drain request; S3, the native SDK and the clock are fakes."""
+    from email.utils import formatdate
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    request, owner, window, inputs = _adapter_case("close-drain")
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    governance = {"role": "application", "account_id": CLOSE_ACCOUNT, "evidence_bucket": "synthetic-evidence",
+                  "evidence_prefix": "cnesdata/prod/evidence/"}
+    session = ag._FenceSession(None, "9" * 64, CLOSE_SCOPE, 1900, c.sha(c.canonical(journal._request)))
+    objects, native, errors = {}, [], {}
+    class Evidence:
+        def get(self, bucket, key, *, maximum, absent=False):
+            return objects.get(key), "etag"
+        def put(self, bucket, key, raw):
+            assert key not in objects
+            objects[key] = raw
+    class NativeError(Exception):
+        def __init__(self, code, **extra):
+            self.response = {"Error": {"Code": code, "Message": "never retained native text"}, **extra,
+                             "ResponseMetadata": {"RequestId": "native-error", "HTTPStatusCode": 400,
+                                                  "HTTPHeaders": {"date": formatdate(1300, usegmt=True)}}}
+    responses = _close_responses(item)
+    def sdk(service, operation, **parameters):
+        name = operation + ("-semaphore" if "SEMAPHORE" in c.canonical(parameters).decode() and operation == "get_item" else "")
+        native.append(name)
+        if name in errors:
+            raise errors[name]
+        if name == "describe_execution":
+            raise NativeError("ExecutionDoesNotExist")
+        metadata = {"RequestId": "native-" + str(len(native)), "HTTPStatusCode": 200,
+                    "HTTPHeaders": {"date": formatdate(1300, usegmt=True)}}
+        return responses[name] | {"ResponseMetadata": metadata}
+    session.client = SimpleNamespace(call=sdk)
+    monkeypatch.setattr(ag.time, "time", lambda: 1300)
+    broker = ag.ClosedReadyBroker(Evidence(), governance, journal, session, prepared_sha256="3" * 64, clock=lambda: 1300)
+    calls = _close_drain_calls(request["owner"]["owner_sha256"], item=item)
+    frames = {name: c.canonical({"kind": "call", **call}) for name, call in calls.items()}
+    return ag, journal, broker, frames, native, objects, errors, NativeError
+
+
+@pytest.mark.parametrize("semaphore", ["held", "absent"])
+def test_close_drain_broker_runs_the_product_close_with_one_durable_attempt_per_call(monkeypatch, semaphore):
+    """Decision 4: one durable intent, response and receipt per call; writes return only an empty result."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    item = CLOSE_SEMAPHORE if semaphore == "held" else None
+    ag, journal, broker, frames, native, objects, _, _ = _close_drain_broker_case(monkeypatch, item=item)
+    replies = [ag._adapter_message(frames[name], journal) for name in CLOSE_ORDER]
+    assert [result for _, result in replies] == [None] * len(CLOSE_ORDER) and native == list(CLOSE_ORDER)
+    assert replies[0][0] == replies[4][0] == {"kind": "sdk-error", "code": "ExecutionDoesNotExist"}
+    assert replies[3][0] == replies[5][0] == {"kind": "sdk-result", "value": {}}
+    assert replies[2][0] == {"kind": "sdk-result", "value": {"Item": item} if item else {}}
+    assert len(journal.call_receipts) == len(CLOSE_ORDER) == len(objects) // 3 and not journal.unknown and not broker.uncertainty
+    assert all(b"never retained" not in raw for raw in objects.values())
+    first = broker.evidence[0]
+    intent = c.loads(objects[first._keys["intent"]], canonical=True)
+    frame = c.loads(frames["describe_execution"], canonical=True)
+    assert intent["operation"] == "close-drain" and intent["call"] == {key: frame[key] for key in frame if key != "kind"}
+    request = journal._request
+    keys = lr.closed_ready_evidence_keys({"evidence_prefix": "cnesdata/prod/evidence/"}, owner=request["owner"],
+        caller=journal._identity, checkpoint_sha256=request["checkpoint_sha256"], sequence=0, operation="close-drain")
+    assert first._keys == keys and "/close-drain/sdk-" in keys["intent"]
+    assert keys != lr.closed_ready_evidence_keys({"evidence_prefix": "cnesdata/prod/evidence/"}, owner=request["owner"],
+        caller=journal._identity, checkpoint_sha256=request["checkpoint_sha256"], sequence=0)
+
+
+def test_closed_ready_evidence_keys_stay_byte_identical():
+    """The prepared evaluation binds the closed-ready intent key; close-drain gets its own namespace and hash."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
+    request, owner, _, _ = _adapter_case("closed-ready")
+    arguments = dict(owner=request["owner"], caller=lc.application_identity(owner, required=True),
+                     checkpoint_sha256=request["checkpoint_sha256"], sequence=0)
+    governance = {"evidence_prefix": "cnesdata/prod/evidence/"}
+    keys = lr.closed_ready_evidence_keys(governance, **arguments)
+    assert keys == lr.closed_ready_evidence_keys(governance, **arguments, operation="closed-ready")
+    assert keys["intent"] == ("cnesdata/prod/evidence/lifecycle/" + "a" * 40
+                              + "/41/1/closed-ready/sdk-eee52cd9849f5e15082ab0f2a1f9a1af2d7e5cc4-intent.json")
+    close = lr.closed_ready_evidence_keys(governance, **arguments, operation="close-drain")
+    assert close["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/close-drain/sdk-")
+    assert close["intent"].rsplit("/", 1)[1] != keys["intent"].rsplit("/", 1)[1]
+    with pytest.raises(ValueError):
+        lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+
+
+R12_ERRORS = {
+    "close-conditional": ("transact_write_items", "TransactionCanceledException",
+                          {"CancellationReasons": [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}]}),
+    "close-conflict": ("transact_write_items", "TransactionCanceledException",
+                       {"CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}]}),
+    "confirm-conditional": ("update_item", "ConditionalCheckFailedException", {}),
+    "close-throttled": ("transact_write_items", "ThrottlingException", {}),
+    "read-throttled": ("get_item-semaphore", "ProvisionedThroughputExceededException", {}),
+}
+
+
+@pytest.mark.parametrize("case", sorted(R12_ERRORS))
+def test_close_drain_conflict_poisons_the_journal_and_never_retries_or_returns_sdk_error(monkeypatch, case):
+    """R12: a native conflict is recovery, not an adapter result; the intent stays the uncertainty witness."""
+    ag, journal, broker, frames, native, objects, errors, NativeError = _close_drain_broker_case(monkeypatch)
+    target, code, extra = R12_ERRORS[case]
+    errors[target] = NativeError(code, **extra)
+    order = list(CLOSE_ORDER[:CLOSE_ORDER.index(target) + 1])
+    for name in order[:-1]:
+        ag._adapter_message(frames[name], journal)
+    settled = len(journal.call_receipts)
+    with pytest.raises(ValueError, match="native SDK outcome unknown"):
+        ag._adapter_message(frames[target], journal)
+    ledger = broker.evidence[-1]
+    assert journal._failed and journal.unknown and broker.uncertainty == ledger.uncertainty != []
+    assert ledger._keys["intent"] in objects and ledger._keys["response"] not in objects and ledger._keys["receipt"] not in objects
+    assert len(journal.call_receipts) == settled and all(b"never retained" not in raw for raw in objects.values())
+    with pytest.raises(ValueError):
+        ag._adapter_message(frames[target], journal)
+    assert native.count(target) == 1
+
+
+@pytest.mark.parametrize("case", ["close-capacity", "confirm-attributes", "read-capacity"])
+def test_close_drain_broker_refuses_write_or_read_responses_beyond_the_finite_fields(monkeypatch, case):
+    ag, journal, broker, frames, native, objects, errors, _ = _close_drain_broker_case(monkeypatch)
+    target, extra = {"close-capacity": ("transact_write_items", {"ConsumedCapacity": [{"TableName": "t"}]}),
+                     "confirm-attributes": ("update_item", {"Attributes": {"state": {"S": "CLOSED"}}}),
+                     "read-capacity": ("get_item", {"ConsumedCapacity": {"TableName": "t"}})}[case]
+    original = broker.session.client.call
+    def sdk(service, operation, **parameters):
+        response = original(service, operation, **parameters)
+        return response | extra if native[-1] == target else response
+    broker.session.client.call = sdk
+    order = list(CLOSE_ORDER[:CLOSE_ORDER.index(target) + 1])
+    for name in order[:-1]:
+        ag._adapter_message(frames[name], journal)
+    with pytest.raises(ValueError, match="finite native DynamoDB response"):
+        ag._adapter_message(frames[target], journal)
+    assert journal._failed and journal.unknown and broker.uncertainty
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+@pytest.mark.parametrize("call", ["get_item", "update_item", "transact_write_items", "put_item", "delete_item"])
+def test_journal_records_only_the_operation_finite_sdk_set_and_write_responses_stay_empty(operation, call):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    request, owner, window, inputs = _adapter_case(operation)
+    class Guard:
+        def check(self, seconds=0): pass
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    raw = c.canonical({"role": "fence_operator", "service": "dynamodb", "operation": call, "parameters": {}})
+    if ("dynamodb", call) not in lc.FENCE_SDK_OPERATIONS[operation]:
+        with pytest.raises(ValueError, match="closed SDK journal operation"):
+            journal.begin_sdk_call(raw, role_session_sha256="9" * 64)
+        return
+    from email.utils import formatdate
+    ticket = journal.begin_sdk_call(raw, role_session_sha256="9" * 64)
+    response = c.canonical({"Item": {"pk": {"S": "ENV#prod#FENCE"}}})
+    if call == "get_item":
+        assert journal.complete_sdk_call(ticket, response, request_id="r", server_date=formatdate(usegmt=True))
+    else:
+        with pytest.raises(ValueError, match="SDK response already sanitized"):
+            journal.complete_sdk_call(ticket, response, request_id="r", server_date=formatdate(usegmt=True))
+        assert journal._failed and journal.unknown
+
+
 def _product_context_request(wrapper, **extra):
     import json
     return (json.dumps({"mode_canary": {"context_manifest": wrapper}, **extra}, ensure_ascii=False,
