@@ -5423,7 +5423,8 @@ def test_static_sessions_admit_the_observer_in_static_and_retire_only_as_normal(
 @pytest.mark.parametrize("operation", ["inventory", "publish", "retire"])
 @pytest.mark.parametrize("mutation", [
     "extra-field", "missing-field", "release-upper", "release-long", "release-hyphen-end", "run-zero", "run-bool", "run-string",
-    "attempt-zero", "generation-zero", "product-short", "shared-upper", "plan-short", "plan-null", "operation"])
+    "attempt-zero", "generation-zero", "product-short", "shared-upper", "plan-short", "plan-null", "operation",
+    "release-hyphen-start", "release-int", "run-over-int53"])
 def test_static_session_refuses_bindings_outside_the_498_contract(operation, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     binding = _static_binding()
@@ -5431,7 +5432,9 @@ def test_static_session_refuses_bindings_outside_the_498_contract(operation, mut
                "release-hyphen-end": {"release_id": "r0123-"}, "run-zero": {"run_id": 0}, "run-bool": {"run_id": True},
                "run-string": {"run_id": "42448000000"}, "attempt-zero": {"run_attempt": 0}, "generation-zero": {"generation": 0},
                "product-short": {"product_source_sha": "a" * 39}, "shared-upper": {"shared_source_sha": "B" * 40},
-               "plan-short": {"static_plan_sha256": "c" * 63}, "plan-null": {"static_plan_sha256": None}}
+               "plan-short": {"static_plan_sha256": "c" * 63}, "plan-null": {"static_plan_sha256": None},
+               "release-hyphen-start": {"release_id": "-r0123"}, "release-int": {"release_id": 123},
+               "run-over-int53": {"run_id": 2**53}}
     if mutation == "extra-field":
         binding["operation"] = operation
     elif mutation == "missing-field":
@@ -5446,6 +5449,15 @@ def test_static_session_refuses_bindings_outside_the_498_contract(operation, mut
             return
     with pytest.raises(ValueError):
         lc.static_session(binding, operation)
+
+
+@pytest.mark.parametrize("operation", ["inventory", "publish", "retire"])
+@pytest.mark.parametrize("release_id", ["r", "0", "a-b", "r" * 32])
+def test_static_session_admits_the_498_release_id_bounds(operation, release_id):
+    import re
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    prefix = "sp-" + {"inventory": "i"}.get(operation, operation) + "-"
+    assert re.fullmatch(re.escape(prefix) + "[0-9a-f]{40}", lc.static_session(_static_binding(release_id=release_id), operation))
 
 
 class _QuietGuard:
