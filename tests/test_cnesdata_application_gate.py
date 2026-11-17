@@ -1906,7 +1906,7 @@ def test_close_drain_calls_refuse_anything_outside_the_pinned_close(mutation):
             if mutation == "confirm-closed": values[":closed"] = {"S": "OPEN"}
             if mutation == "confirm-untyped": values[":confirmed"] = {"N": "1"}
             with pytest.raises(ValueError):
-                lc.validate_fence_call(request=request, history=history, **call, **scope)
+                lc.validate_close_drain_call(request=request, history=history, **call, **scope)
             return
         assert lc.validate_fence_call(request=request, history=history, **call, **scope) == call["parameters"]
         history.append({"call": call, "response": responses[name]})

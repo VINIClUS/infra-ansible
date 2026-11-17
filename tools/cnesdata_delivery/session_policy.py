@@ -88,17 +88,40 @@ def fence_session_policy(*, control_table_arn, execution_prefix, deadline):
     Shared by the prepared evaluation and the real STS call; only the
     DateLessThan value differs between preparation and the API stage.
     """
-    c.require(type(control_table_arn) is str and re.fullmatch(
-        r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
-    c.require(type(execution_prefix) is str and re.fullmatch(
-        r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod:", execution_prefix), "fence session execution prefix")
-    c.integer(deadline)
-    condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
+    condition = _fence_session_condition(control_table_arn, execution_prefix, deadline)
     return {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": control_table_arn, "Condition": condition | {
             "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]},
             "Null": {"dynamodb:LeadingKeys": "false"}}},
         {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": execution_prefix + "*", "Condition": condition}]}
+
+
+def fence_close_session_policy(*, control_table_arn, execution_prefix, deadline):
+    """Finite close-drain fence session (amendment 6886977054 decision 4).
+
+    TransactWriteItems has no IAM action of its own: each item is authorized by its
+    per-item action, Update by UpdateItem on FENCE and ConditionCheck by ConditionCheckItem on SEMAPHORE.
+    """
+    condition = _fence_session_condition(control_table_arn, execution_prefix, deadline)
+    def keys(*values):
+        return condition | {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": list(values)},
+                            "Null": {"dynamodb:LeadingKeys": "false"}}
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": control_table_arn,
+         "Condition": keys("ENV#prod#FENCE", "ENV#prod#SEMAPHORE")},
+        {"Effect": "Allow", "Action": "dynamodb:UpdateItem", "Resource": control_table_arn, "Condition": keys("ENV#prod#FENCE")},
+        {"Effect": "Allow", "Action": "dynamodb:ConditionCheckItem", "Resource": control_table_arn,
+         "Condition": keys("ENV#prod#SEMAPHORE")},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": execution_prefix + "*", "Condition": condition}]}
+
+
+def _fence_session_condition(control_table_arn, execution_prefix, deadline):
+    c.require(type(control_table_arn) is str and re.fullmatch(
+        r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
+    c.require(type(execution_prefix) is str and re.fullmatch(
+        r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod:", execution_prefix), "fence session execution prefix")
+    c.integer(deadline)
+    return {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
 
 
 def predecessor_keys(governance, selector):
