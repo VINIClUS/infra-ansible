@@ -1336,7 +1336,7 @@ def _durable_closed_ready_case(monkeypatch):
     native = {"role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": {
         "TableName": "cnesdata-prod-control", "Key": {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}}, "ConsistentRead": True}}
     scope = {"account": "111122223333", "control_table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
-             "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor", "members": []}
+             "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod", "members": []}
     governance = {"role": "application", "account_id": "111122223333", "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/"}
     store = Store()
     monkeypatch.setattr(ag.time, "time", lambda: 1760000000)
@@ -1654,7 +1654,7 @@ def execute_shared_operation(operation, request, context):
 def test_closed_ready_probe_request_is_fresh_exact_member_and_metadata_only(resolution, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     request, _, _, _ = _adapter_case("closed-ready")
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     member = {"dispatch_id": "a" * 16, "request_sha256": "b" * 64, "generation": 3, "initial_state": "RESERVED",
               "execution_ref": execution if resolution == "TERMINAL" else None, "resolution": resolution,
@@ -1665,7 +1665,7 @@ def test_closed_ready_probe_request_is_fresh_exact_member_and_metadata_only(reso
     if mutation == "metadata":
         params["includedData"] = "ALL_DATA"
     if mutation == "machine":
-        params["executionArn"] = execution.replace("cnesdata-prod-processor", "foreign")
+        params["executionArn"] = execution.replace(":cnesdata-prod:", ":foreign:")
     if mutation == "dispatch":
         params["executionArn"] = execution[:-16] + "f" * 16
     if mutation == "member-ref":
@@ -1700,7 +1700,7 @@ def test_closed_ready_dynamodb_read_is_only_strong_fence_and_semaphore(target):
         params["TableName"] = "other"
     args = {"request": request, "role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": params,
             "account": "111122223333", "control_table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
-            "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor", "members": []}
+            "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod", "members": []}
     if target in {"fence", "semaphore"}:
         assert lc.validate_closed_ready_call(**args) == params
     else:
@@ -1711,7 +1711,7 @@ def test_closed_ready_dynamodb_read_is_only_strong_fence_and_semaphore(target):
 @pytest.mark.parametrize("mutation", [None, "input", "output", "execution", "machine", "status"])
 def test_closed_ready_probe_response_never_serializes_unexpected_execution_payload(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     raw = {"executionArn": execution, "stateMachineArn": machine, "name": "a" * 16, "status": "SUCCEEDED",
            "startDate": c.utc(1000), "stopDate": c.utc(1001), "cause": "not exported", "traceHeader": "not exported"}
@@ -1731,6 +1731,39 @@ def test_closed_ready_probe_response_never_serializes_unexpected_execution_paylo
         result = lc.closed_ready_probe_response(raw, execution_arn=execution, machine_arn=machine)
         assert set(result) == {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"}
 
+
+
+@pytest.mark.parametrize("name", ["cnesdata-prod", "cnesdata-prod-processor", "cnesdata-prod-x", "cnesdata-production", "foreign"])
+def test_fence_scope_admits_only_the_exact_cnesdata_prod_state_machine(name):
+    """Correction 2 (6906181994): the real machine is exactly `cnesdata-prod` (step_functions.tf:13, name_prefix)."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, session_policy
+    account = "111122223333"
+    machine = f"arn:aws:states:us-east-2:{account}:stateMachine:{name}"
+    prefix = machine.replace(":stateMachine:", ":execution:") + ":"
+    table = f"arn:aws:dynamodb:us-east-2:{account}:table/cnesdata-prod-control-plane"
+    request, _, _, _ = _adapter_case("closed-ready")
+    member = {"dispatch_id": "a" * 16, "request_sha256": "b" * 64, "generation": 1, "initial_state": "NOT_SENT",
+              "execution_ref": None, "resolution": "CANCEL_BEFORE_SEND", "proof_sha256": "c" * 64,
+              "observed_at": c.utc(1200), "send_disabled_at": c.utc(1199)}
+    policy = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table},
+        {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": prefix + "*"}]}
+    checks = {
+        "validator": lambda: lc.validate_closed_ready_call(
+            request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
+            parameters={"executionArn": prefix + "a" * 16, "includedData": "METADATA_ONLY"}, account=account,
+            control_table_arn=table, machine_arn=machine, members=[member]),
+        "scope": lambda: lr.fence_policy_scope({"account_id": account}, policy),
+        "session": lambda: session_policy.fence_session_policy(control_table_arn=table, execution_prefix=prefix, deadline=1480),
+    }
+    for site, check in checks.items():
+        if name != "cnesdata-prod":
+            with pytest.raises(ValueError):
+                check()
+            continue
+        result = check()
+        if site == "scope":
+            assert result == {"control_table_arn": table, "execution_prefix": prefix, "machine_arn": machine}
 
 
 def _product_context_request(wrapper, **extra):
@@ -2656,7 +2689,7 @@ def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
     documents, _, package, _ = _fence_contract_case()
     role = copy.deepcopy(documents["fence-role.json"])
     table = "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control"
-    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
     execution = machine.replace(":stateMachine:", ":execution:") + ":" + "a" * 16
     role["policy"] = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table, "Condition": {
@@ -3002,7 +3035,7 @@ def execute_shared_operation(operation, request, context):
     for params in (fence, sem, fence, sem):
         observed.append(context.call('fence_operator', 'dynamodb', 'get_item', params))
     observed.append(context.call('fence_operator', 'stepfunctions', 'describe_execution', {
-        'executionArn': 'arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:' + 'a' * 16, 'includedData': 'METADATA_ONLY'}))
+        'executionArn': 'arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:' + 'a' * 16, 'includedData': 'METADATA_ONLY'}))
     for params in (fence, sem):
         observed.append(context.call('fence_operator', 'dynamodb', 'get_item', params))
     raw = canonical({'fixture_only': True, 'observed': observed})
@@ -3399,7 +3432,7 @@ def test_fence_sts_policy_is_the_single_pure_fence_session_policy(monkeypatch):
 def test_fence_session_policy_rejects_non_exact_scope(mutation):
     from tools.cnesdata_delivery import session_policy
     kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
-                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:", deadline=1480)
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:", deadline=1480)
     session_policy.fence_session_policy(**kwargs)
     if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
     if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]

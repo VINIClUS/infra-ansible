@@ -971,14 +971,14 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
     fragment = {"policy_sha256": _terraform_document_digest(coordination), "enabled_until": "2030-01-01T00:00:00Z"}
     pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": "2029-12-31T23:59:00Z"}
     table = "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control"
-    prefix = "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processor:"
+    prefix = "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:"
     policy = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": table,
          "Condition": {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]}, "Null": {"dynamodb:LeadingKeys": "false"}}},
         {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": prefix + "*"}]}
     if mutation == "two-tables": policy["Statement"].append({"Effect": "Allow", "Action": ["dynamodb:GetItem"], "Resource": table + "-other"})
     if mutation == "prefix-exact": policy["Statement"][1]["Resource"] = prefix + "original"
-    if mutation == "prefix-two-wildcards": policy["Statement"][1]["Resource"] = prefix.replace("processor", "proc*") + "*"
+    if mutation == "prefix-two-wildcards": policy["Statement"][1]["Resource"] = prefix.replace("cnesdata-prod:", "cnesdata-pro*:") + "*"
     role = {"role_arn": roles["fence_operator"], "session_name": "promotion-fence-r1", "policy": policy}
     owner = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1, "release_sha256": "1" * 64,
              "generation": 3, "session_sha256": "2" * 64, "owner_sha256": "3" * 64, "application_purpose": "promotion",
@@ -997,7 +997,7 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
         return
     scope, execution_prefix, documents = produce()
     assert execution_prefix == prefix and scope["execution_arn"] == prefix + "0" * 16
-    assert scope["foreign_execution_arn"] == prefix.replace("cnesdata-prod-processor:", "cnesdata-prod-processor-foreign:") + "0" * 16
+    assert scope["foreign_execution_arn"] == prefix.replace(":cnesdata-prod:", ":cnesdata-prod-foreign:") + "0" * 16
     keys = lr.closed_ready_evidence_keys(gov, owner={k: owner[k] for k in [*lc.OWNER_FIELDS, "owner_sha256"]},
         caller=lc.application_identity(owner, required=True), checkpoint_sha256="5" * 64, sequence=0)
     assert scope["evidence_arn"] == "arn:aws:s3:::synthetic-evidence/" + keys["intent"]
