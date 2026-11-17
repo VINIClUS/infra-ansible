@@ -649,3 +649,109 @@ def fence_projection_case(*, probe=False):
         {"service": "iam", "operation": "get_role_policy", "observed": {"RoleName": name, "PolicyName": name + "-gate", "PolicyDocument": policy}}]
     for row in old_readbacks: row["sha256"] = c.sha(c.canonical(row["observed"]))
     return plan, inputs, state, sources, old_readbacks
+
+# Correction 6906038586 item 3: frozen product close-drain call vector, not live acceptance.
+# Source VINIClUS/CnesData@2c66f62c tests/production/delivery/close_drain_call_vector.json,
+# sha256 44d0cf91a69cd21ff91347887313026402ca19a483391946b046deefe93c4b63 (bytes == contract.canonical).
+CLOSE_DRAIN_CALL_VECTOR = {'calls': [{'operation': 'describe_execution',
+            'parameters': {'executionArn': '<state-machine-execution>:<dispatch_id>',
+                           'includedData': 'METADATA_ONLY'},
+            'role': 'fence_operator',
+            'service': 'stepfunctions'},
+           {'operation': 'get_item',
+            'parameters': {'ConsistentRead': True,
+                           'Key': {'pk': {'S': 'ENV#prod#FENCE'}, 'sk': {'S': 'FENCE'}},
+                           'TableName': 'cnesdata-prod-control-plane'},
+            'role': 'fence_operator',
+            'service': 'dynamodb'},
+           {'operation': 'get_item',
+            'parameters': {'ConsistentRead': True,
+                           'Key': {'pk': {'S': 'ENV#prod#SEMAPHORE'}, 'sk': {'S': 'UNIT'}},
+                           'TableName': 'cnesdata-prod-control-plane'},
+            'role': 'fence_operator',
+            'service': 'dynamodb'},
+           {'operation': 'transact_write_items',
+            'parameters': {'TransactItems': ['<close_transaction.update>', '<close_transaction.condition_check>']},
+            'role': 'fence_operator',
+            'service': 'dynamodb'},
+           {'operation': 'update_item',
+            'parameters': {'ConditionExpression': '#version = :version AND #state = :closed AND '
+                                                  'attribute_not_exists(#confirmed)',
+                           'ExpressionAttributeNames': {'#confirmed': 'confirmed_at',
+                                                        '#state': 'state',
+                                                        '#version': 'version'},
+                           'ExpressionAttributeValues': [':closed', ':confirmed', ':version'],
+                           'Key': {'pk': {'S': 'ENV#prod#FENCE'}, 'sk': {'S': 'FENCE'}},
+                           'TableName': 'cnesdata-prod-control-plane',
+                           'UpdateExpression': 'SET #confirmed = :confirmed'},
+            'role': 'fence_operator',
+            'service': 'dynamodb'}],
+ 'close_transaction': {'condition_check': [{'ConditionCheck': {'ConditionExpression': '<AND over sorted semaphore '
+                                                                                      'attributes: #vN = :vN | '
+                                                                                      'attribute_not_exists(#vN)>',
+                                                               'ExpressionAttributeNames': '<AND over sorted '
+                                                                                           'semaphore attributes: '
+                                                                                           '#vN = :vN | '
+                                                                                           'attribute_not_exists(#vN)>',
+                                                               'ExpressionAttributeValues': '<AND over sorted '
+                                                                                            'semaphore attributes: '
+                                                                                            '#vN = :vN | '
+                                                                                            'attribute_not_exists(#vN)>',
+                                                               'Key': {'pk': {'S': 'ENV#prod#SEMAPHORE'},
+                                                                       'sk': {'S': 'UNIT'}},
+                                                               'TableName': 'cnesdata-prod-control-plane'}},
+                                           {'ConditionCheck': {'ConditionExpression': 'attribute_not_exists(pk)',
+                                                               'Key': {'pk': {'S': 'ENV#prod#SEMAPHORE'},
+                                                                       'sk': {'S': 'UNIT'}},
+                                                               'TableName': 'cnesdata-prod-control-plane'}}],
+                       'update': [{'Update': {'ConditionExpression': '#version = :expected AND #state = :open',
+                                              'ExpressionAttributeNames': {'#changed': 'changed_at',
+                                                                           '#entity': 'entity',
+                                                                           '#promotion': 'promotion_id',
+                                                                           '#state': 'state',
+                                                                           '#version': 'version'},
+                                              'ExpressionAttributeValues': [':changed',
+                                                                            ':entity',
+                                                                            ':expected',
+                                                                            ':membership',
+                                                                            ':membership_sha',
+                                                                            ':open',
+                                                                            ':promotion',
+                                                                            ':receipt',
+                                                                            ':state',
+                                                                            ':version'],
+                                              'Key': {'pk': {'S': 'ENV#prod#FENCE'}, 'sk': {'S': 'FENCE'}},
+                                              'TableName': 'cnesdata-prod-control-plane',
+                                              'UpdateExpression': 'SET #entity = :entity, #state = :state, '
+                                                                  '#promotion = :promotion, #version = :version, '
+                                                                  '#changed = :changed, closed_membership = '
+                                                                  ':membership, closed_membership_sha256 = '
+                                                                  ':membership_sha, close_receipt = :receipt REMOVE '
+                                                                  'confirmed_at'}},
+                                  {'Update': {'ConditionExpression': 'attribute_not_exists(pk)',
+                                              'ExpressionAttributeNames': {'#changed': 'changed_at',
+                                                                           '#entity': 'entity',
+                                                                           '#promotion': 'promotion_id',
+                                                                           '#state': 'state',
+                                                                           '#version': 'version'},
+                                              'ExpressionAttributeValues': [':changed',
+                                                                            ':entity',
+                                                                            ':membership',
+                                                                            ':membership_sha',
+                                                                            ':promotion',
+                                                                            ':receipt',
+                                                                            ':state',
+                                                                            ':version'],
+                                              'Key': {'pk': {'S': 'ENV#prod#FENCE'}, 'sk': {'S': 'FENCE'}},
+                                              'TableName': 'cnesdata-prod-control-plane',
+                                              'UpdateExpression': 'SET #entity = :entity, #state = :state, '
+                                                                  '#promotion = :promotion, #version = :version, '
+                                                                  '#changed = :changed, closed_membership = '
+                                                                  ':membership, closed_membership_sha256 = '
+                                                                  ':membership_sha, close_receipt = :receipt REMOVE '
+                                                                  'confirmed_at'}}]},
+ 'execution_arn': 'arn:aws:states:us-east-2:<account from '
+                  'activation.revisions>:execution:cnesdata-prod:<dispatch_id>',
+ 'role': 'fence_operator',
+ 'source': 'VINIClUS/CnesData#473 C-2 close-drain',
+ 'version': 1}

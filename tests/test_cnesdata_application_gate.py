@@ -1767,6 +1767,202 @@ def test_fence_scope_admits_only_the_exact_cnesdata_prod_state_machine(name):
             assert result == {"control_table_arn": table, "execution_prefix": prefix, "machine_arn": machine}
 
 
+CLOSE_ACCOUNT = "111122223333"
+CLOSE_SCOPE = {"account": CLOSE_ACCOUNT,
+               "control_table_arn": f"arn:aws:dynamodb:us-east-2:{CLOSE_ACCOUNT}:table/cnesdata-prod-control-plane",
+               "machine_arn": f"arn:aws:states:us-east-2:{CLOSE_ACCOUNT}:stateMachine:cnesdata-prod"}
+CLOSE_SEMAPHORE = {"pk": {"S": "ENV#prod#SEMAPHORE"}, "sk": {"S": "UNIT"}, "token": {"S": "t-1"},
+                   "fence_version": {"N": "3"}, "updated_at": {"S": "2026-11-17T10:00:00Z"}}
+CLOSE_ORDER = ("describe_execution", "get_item", "get_item-semaphore", "transact_write_items", "describe_execution",
+               "update_item", "get_item")
+
+
+def _semaphore_check(check, item, names):
+    check["ExpressionAttributeNames"] = {f"#v{index}": name for index, name in enumerate(names)}
+    check["ConditionExpression"] = " AND ".join(f"#v{index} = :v{index}" if name in item else f"attribute_not_exists(#v{index})"
+                                                for index, name in enumerate(names))
+    check["ExpressionAttributeValues"] = {f":v{index}": item[name] for index, name in enumerate(names) if name in item}
+    return check
+
+
+def _close_drain_calls(owner_sha256, *, item=CLOSE_SEMAPHORE, variant=0):
+    """Concrete product calls rebuilt from the pinned vector: probe, strong reads, close, confirm."""
+    import copy
+    from fixtures.cnesdata_delivery_lifecycle import CLOSE_DRAIN_CALL_VECTOR as vector
+    calls = {call["operation"] + ("-semaphore" if "SEMAPHORE" in c.canonical(call).decode() else ""): copy.deepcopy(call)
+             for call in vector["calls"]}
+    calls["describe_execution"]["parameters"]["executionArn"] = (
+        CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":0123456789abcdef")
+    update = copy.deepcopy(vector["close_transaction"]["update"][variant]["Update"])
+    concrete = {":changed": {"S": "2026-11-17T10:01:00Z"}, ":entity": {"S": "PROMOTIONFENCE"}, ":expected": {"N": "3"},
+                ":membership": {"S": "[]"}, ":membership_sha": {"S": "7" * 64}, ":open": {"S": "OPEN"},
+                ":promotion": {"S": owner_sha256}, ":receipt": {"S": "{}"}, ":state": {"S": "CLOSED"}, ":version": {"N": "4"}}
+    update["ExpressionAttributeValues"] = {key: concrete[key] for key in update["ExpressionAttributeValues"]}
+    check = copy.deepcopy(vector["close_transaction"]["condition_check"][0 if item else 1]["ConditionCheck"])
+    if item:
+        check = _semaphore_check(check, item, sorted(set(item) - {"pk", "sk"} | {"holder_run_id"}))
+    calls["transact_write_items"]["parameters"] = {"TransactItems": [{"Update": update}, {"ConditionCheck": check}]}
+    calls["update_item"]["parameters"]["ExpressionAttributeValues"] = {
+        ":closed": {"S": "CLOSED"}, ":confirmed": {"S": "2026-11-17T10:01:01Z"}, ":version": {"N": "4"}}
+    return calls
+
+
+def _close_responses(item):
+    fence = {"pk": {"S": "ENV#prod#FENCE"}, "sk": {"S": "FENCE"}, "state": {"S": "OPEN"}, "version": {"N": "3"}}
+    return {"describe_execution": {"Error": {"Code": "ExecutionDoesNotExist"}}, "get_item": {"Item": fence},
+            "get_item-semaphore": {"Item": item} if item else {}, "transact_write_items": {}, "update_item": {}}
+
+
+def test_close_drain_templates_are_the_pinned_product_vector():
+    """Correction 6906038586 item 3: CnesData 2c66f62c close_drain_call_vector.json, sha256 44d0cf91...4b63."""
+    from fixtures.cnesdata_delivery_lifecycle import CLOSE_DRAIN_CALL_VECTOR as vector
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert c.sha(c.canonical(vector)) == "44d0cf91a69cd21ff91347887313026402ca19a483391946b046deefe93c4b63"
+    expected = {}
+    for call in vector["calls"]:
+        expected.setdefault(call["operation"], set()).add(c.sha(c.canonical(call)))
+    for name, items in vector["close_transaction"].items():
+        expected["close_transaction." + name] = {c.sha(c.canonical(item)) for item in items}
+    assert lc.CLOSE_DRAIN_TEMPLATES == {key: frozenset(value) for key, value in expected.items()}
+    assert lc.FENCE_SDK_OPERATIONS == {
+        "closed-ready": {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
+        "close-drain": {(call["service"], call["operation"]) for call in vector["calls"]}}
+    assert vector["role"] == "fence_operator" and vector["execution_arn"].endswith(":execution:cnesdata-prod:<dispatch_id>")
+
+
+@pytest.mark.parametrize("variant", [0, 1])
+@pytest.mark.parametrize("semaphore", ["held", "absent"])
+def test_close_drain_calls_admit_the_product_vector_in_close_order(variant, semaphore):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    request, *_ = _adapter_case("close-drain")
+    item = CLOSE_SEMAPHORE if semaphore == "held" else None
+    calls, responses, history = _close_drain_calls(request["owner"]["owner_sha256"], item=item, variant=variant), _close_responses(item), []
+    for name in CLOSE_ORDER:
+        call = calls[name]
+        assert lc.validate_close_drain_call(request=request, history=history, **call, **CLOSE_SCOPE) == call["parameters"]
+        assert lc.validate_fence_call(request=request, history=history, **call, **CLOSE_SCOPE) == call["parameters"]
+        history.append({"call": call, "response": responses[name]})
+
+
+CLOSE_MUTATIONS = {
+    "put-item": "transact_write_items", "role": "get_item", "stage-api": "describe_execution", "closed-stage": "describe_execution",
+    "machine": "describe_execution", "table": "get_item", "execution-foreign": "describe_execution", "execution-name": "describe_execution",
+    "all-data": "describe_execution", "eventual": "get_item", "tenant-key": "get_item", "no-semaphore-read": "transact_write_items",
+    "second-close": "transact_write_items", "confirm-first": "update_item", "second-confirm": "update_item",
+    "promotion": "transact_write_items", "open-state": "transact_write_items", "entity": "transact_write_items",
+    "version-zero": "transact_write_items", "cas-value": "transact_write_items", "cas-missing": "transact_write_items",
+    "cas-unsorted": "transact_write_items", "cas-absent-variant": "transact_write_items",
+    "cas-held-variant": "transact_write_items", "update-extra": "transact_write_items", "three-items": "transact_write_items",
+    "confirm-version": "update_item", "confirm-closed": "update_item", "confirm-untyped": "update_item",
+    "closed-ready-request": "describe_execution"}
+
+
+@pytest.mark.parametrize("mutation", sorted(CLOSE_MUTATIONS))
+def test_close_drain_calls_refuse_anything_outside_the_pinned_close(mutation):
+    import copy
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    request, *_ = _adapter_case("close-drain")
+    item = None if mutation == "cas-held-variant" else CLOSE_SEMAPHORE
+    calls, responses, history = _close_drain_calls(request["owner"]["owner_sha256"], item=item), _close_responses(item), []
+    scope = dict(CLOSE_SCOPE)
+    order = list(CLOSE_ORDER)
+    if mutation == "no-semaphore-read": order.remove("get_item-semaphore")
+    if mutation == "second-close": order.insert(4, "transact_write_items")
+    if mutation == "confirm-first": order.remove("transact_write_items")
+    if mutation == "second-confirm": order.insert(6, "update_item")
+    target = {"second-close": 4, "second-confirm": 6}.get(mutation, order.index(CLOSE_MUTATIONS[mutation]))
+    if mutation == "stage-api": request = _adapter_case("closed-ready")[0] | {"operation": "close-drain"}
+    if mutation == "closed-stage": request["stage"]["close"] = 1000
+    if mutation == "closed-ready-request": request["operation"] = "closed-ready"
+    if mutation == "machine": scope["machine_arn"] += "-x"
+    if mutation == "table": scope["control_table_arn"] = scope["control_table_arn"].replace("control-plane", "other")
+    for index, name in enumerate(order):
+        call = copy.deepcopy(calls[name])
+        if index == target:
+            parameters, update = call["parameters"], call["parameters"].get("TransactItems", [{}])[0].get("Update", {})
+            values = update.get("ExpressionAttributeValues", parameters.get("ExpressionAttributeValues", {}))
+            check = call["parameters"].get("TransactItems", [{}, {}])[1].get("ConditionCheck", {})
+            if mutation == "put-item": call["operation"] = "put_item"
+            if mutation == "role": call["role"] = "observer"
+            if mutation == "execution-foreign": parameters["executionArn"] = parameters["executionArn"].replace(":cnesdata-prod:", ":foreign:")
+            if mutation == "execution-name": parameters["executionArn"] = parameters["executionArn"][:-1]
+            if mutation == "all-data": parameters["includedData"] = "ALL_DATA"
+            if mutation == "eventual": parameters["ConsistentRead"] = False
+            if mutation == "tenant-key": parameters["Key"]["pk"]["S"] = "TENANT#private"
+            if mutation == "promotion": values[":promotion"] = {"S": "5" * 64}
+            if mutation == "open-state": values[":state"] = {"S": "OPEN"}
+            if mutation == "entity": values[":entity"] = {"S": "UNITPERMIT"}
+            if mutation == "version-zero": values[":version"] = {"N": "0"}
+            if mutation == "cas-value": check["ExpressionAttributeValues"][":v2"] = {"S": "t-2"}
+            if mutation == "cas-missing": _semaphore_check(check, CLOSE_SEMAPHORE, ["holder_run_id", "token", "updated_at"])
+            if mutation == "cas-unsorted": _semaphore_check(check, CLOSE_SEMAPHORE, ["updated_at", "token", "holder_run_id", "fence_version"])
+            if mutation == "cas-absent-variant":
+                call["parameters"]["TransactItems"][1] = {"ConditionCheck": {key: check[key] for key in ("TableName", "Key")}
+                                                          | {"ConditionExpression": "attribute_not_exists(pk)"}}
+            if mutation == "cas-held-variant": _semaphore_check(check, CLOSE_SEMAPHORE, sorted(set(CLOSE_SEMAPHORE) - {"pk", "sk"}))
+            if mutation == "update-extra": update["ReturnValuesOnConditionCheckFailure"] = "ALL_OLD"
+            if mutation == "three-items": parameters["TransactItems"].append(copy.deepcopy(parameters["TransactItems"][1]))
+            if mutation == "confirm-version": values[":version"] = {"N": "5"}
+            if mutation == "confirm-closed": values[":closed"] = {"S": "OPEN"}
+            if mutation == "confirm-untyped": values[":confirmed"] = {"N": "1"}
+            with pytest.raises(ValueError):
+                lc.validate_fence_call(request=request, history=history, **call, **scope)
+            return
+        assert lc.validate_fence_call(request=request, history=history, **call, **scope) == call["parameters"]
+        history.append({"call": call, "response": responses[name]})
+    pytest.fail("mutation target not reached")
+
+
+def _close_role_policy():
+    from fixtures.cnesdata_delivery_lifecycle import fence_projection_case
+    *_, readbacks = fence_projection_case(probe=True)
+    return next(row["observed"]["PolicyDocument"] for row in readbacks if row["operation"] == "get_role_policy")
+
+
+def test_fence_close_session_policy_is_the_per_item_subset_of_the_fence_operator_role():
+    """Decision 4: TransactWriteItems is authorized per item; it is not an IAM action (Service Authorization Reference)."""
+    from tools.cnesdata_delivery import session_policy
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    role = _close_role_policy()
+    table, prefix = role["Statement"][0]["Resource"], role["Statement"][-1]["Resource"][:-1]
+    session = session_policy.fence_close_session_policy(control_table_arn=table, execution_prefix=prefix, deadline=1900)
+    encoded = c.canonical(session).decode().strip()
+    assert len(encoded) <= 2048 and "TransactWriteItems" not in encoded and "*" not in encoded.replace(prefix + "*", "")
+    for statement in session["Statement"]:
+        condition = dict(statement["Condition"])
+        assert condition.pop("DateLessThan") == {"aws:CurrentTime": c.utc(1900)}
+        assert ({"Effect": "Allow", "Action": statement["Action"], "Resource": statement["Resource"]}
+                | ({"Condition": condition} if condition else {})) in role["Statement"]
+    grants = {("dynamodb:GetItem", "ENV#prod#FENCE"), ("dynamodb:GetItem", "ENV#prod#SEMAPHORE"),
+              ("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")}
+    live = {"aws:CurrentTime": c.utc(1899)}
+    for action in ("dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:PutItem",
+                   "dynamodb:DeleteItem", "dynamodb:Query", "dynamodb:TransactWriteItems"):
+        for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE", "TENANT#private"):
+            context = live | {"dynamodb:LeadingKeys": [key]}
+            assert effective_iam(role, [session], action, table, context) is ((action, key) in grants), (action, key)
+            assert effective_iam(role, [session], action, table, context | {"aws:CurrentTime": c.utc(1900)}) is False
+    assert effective_iam(role, [session], "states:DescribeExecution", prefix + "0" * 16, live) is True
+    assert effective_iam(role, [session], "states:DescribeExecution", prefix + "0" * 16, {"aws:CurrentTime": c.utc(1900)}) is False
+
+
+@pytest.mark.parametrize("builder", ["fence_session_policy", "fence_close_session_policy"])
+@pytest.mark.parametrize("mutation", ["prefix-wildcard", "prefix-colon", "prefix-machine", "table", "deadline-bool"])
+def test_fence_close_and_ready_session_policies_reject_non_exact_scope(builder, mutation):
+    from tools.cnesdata_delivery import session_policy
+    build = getattr(session_policy, builder)
+    kwargs = dict(control_table_arn="arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control",
+                  execution_prefix="arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:", deadline=1480)
+    build(**kwargs)
+    if mutation == "prefix-wildcard": kwargs["execution_prefix"] += "*"
+    if mutation == "prefix-colon": kwargs["execution_prefix"] = kwargs["execution_prefix"][:-1]
+    if mutation == "prefix-machine": kwargs["execution_prefix"] = kwargs["execution_prefix"].replace("cnesdata-prod:", "cnesdata-prod-x:")
+    if mutation == "table": kwargs["control_table_arn"] += "*"
+    if mutation == "deadline-bool": kwargs["deadline"] = True
+    with pytest.raises(ValueError):
+        build(**kwargs)
+
+
 def _product_context_request(wrapper, **extra):
     import json
     return (json.dumps({"mode_canary": {"context_manifest": wrapper}, **extra}, ensure_ascii=False,
