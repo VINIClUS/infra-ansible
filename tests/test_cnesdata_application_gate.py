@@ -2313,6 +2313,68 @@ def test_fence_capabilities_refuse_the_other_operation_before_any_io(monkeypatch
     assert sts_calls == [] and events == [] and keeper._contexts == []
 
 
+@pytest.mark.parametrize("case", ["leaf", "decoy", "missing"])
+def test_adapter_child_loads_product_packages_by_authorized_path_with_stub_parents(tmp_path, case):
+    """Queue item 3c: cnes_domain/cnes_infra load by authorized path; parent __init__ never runs; no fallback."""
+    import subprocess
+    from tools.cnesdata_delivery.application_gate import AdapterJournal, invoke_adapter
+    product = tmp_path / "product"
+    imports = {"leaf": "from cnes_infra.codec import VALUE", "decoy": "from cnes_domain.missing import VALUE",
+               "missing": "from cnes_domain.orchestration.absent import VALUE"}
+    code = r"""import hashlib, json, sys
+IMPORT
+
+def canonical(value):
+    return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
+
+def execute_shared_operation(operation, request, context):
+    observed = canonical({'value': VALUE, 'stub_file': getattr(sys.modules.get('cnes_infra'), '__file__', None),
+                          'domain_path': list(getattr(sys.modules['cnes_domain'], '__path__', []))})
+    digest = context.observe('inventory', observed)
+    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+            'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
+            'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
+            'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
+"""
+    stub = "raise RuntimeError('stub parent __init__ executed')\n"
+    files = {"scripts/promotion/promote_api.py": code.replace("IMPORT", imports[case]),
+             "packages/cnes_domain/src/cnes_domain/__init__.py": stub,
+             "packages/cnes_domain/src/cnes_domain/orchestration/__init__.py": stub,
+             "packages/cnes_domain/src/cnes_domain/orchestration/leaf.py": "import json\nVALUE = json.dumps({'leaf': __name__})\n",
+             "packages/cnes_infra/src/cnes_infra/__init__.py": stub,
+             "packages/cnes_infra/src/cnes_infra/codec.py": "from cnes_domain.orchestration.leaf import VALUE\n",
+             "cnes_domain/__init__.py": "", "cnes_domain/missing.py": "VALUE = 'decoy outside the authorized path'\n"}
+    for name, text in files.items():
+        (product / name).parent.mkdir(parents=True, exist_ok=True)
+        (product / name).write_text(text)
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=product, check=True, capture_output=True).stdout.decode().strip()
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "loader fixture")
+    source = git("rev-parse", "HEAD")
+    manifest = {"version": 1, "source_sha": source, "files": {name: c.sha((product / name).read_bytes()) for name in files}}
+    request, owner, window, inputs = _adapter_case()
+    owner["source_sha"] = request["source_sha"] = request["owner"]["source_sha"] = source
+    class Guard:
+        def check(self, seconds=1): pass
+    journal = AdapterJournal(c.canonical(request), operation="inventory", owner=owner, window=window, inputs=inputs,
+                             activation_sha256=request["activation_sha256"], guard=Guard())
+    args = {"product": product, "source": source, "manifest": manifest, "manifest_sha256": c.sha(c.canonical(manifest)),
+            "journal": journal, "timeout": 10}
+    if case != "leaf":
+        with pytest.raises(ValueError, match="adapter child failed|adapter complete result frame"):
+            invoke_adapter(**args)
+        assert journal.observations == []
+        return
+    result = c.loads(invoke_adapter(**args), canonical=True)
+    observed = c.loads(journal.observation_bytes[result["observations"][0]["sha256"]], canonical=True)
+    root = str(product.resolve() / "packages/cnes_domain/src/cnes_domain")
+    assert observed == {"value": '{"leaf": "cnes_domain.orchestration.leaf"}', "stub_file": None, "domain_path": [root]}
+    assert git("status", "--porcelain", "--ignored", "--untracked-files=all") == ""
+
+
+
 def _product_context_request(wrapper, **extra):
     import json
     return (json.dumps({"mode_canary": {"context_manifest": wrapper}, **extra}, ensure_ascii=False,
