@@ -4739,7 +4739,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     root = Path(__file__).resolve().parents[1]
     guarded = {"keeper_loop", "run_closed_ready", "closed_ready_capability", "KeeperGuard", "Keeper", "_assume_fence_session",
                "ClosedReadyBroker", "stage_event_source", "infra_expiration_bound", "close_window", "api_window",
-               "close_expirations", "close_drain_capability"}
+               "close_expirations", "close_drain_capability", "register_terminal_validator", "routing_terminal_validator",
+               "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4823,17 +4824,21 @@ def _journal_observations(vectors):
     return {name: c.sha(raw) for name, raw in raws.items()}, {c.sha(raw): raw for raw in raws.values()}
 
 
-def _observation_validators():
+OBSERVATION_VALIDATORS = ("routing", "static", "membership", "quiescence")
+
+
+def _observation_validator(kind, uncertainty=lambda: []):
     from tools.cnesdata_delivery import application_gate as ag
-    return {"routing": ag.routing_terminal_validator, "static": ag.static_terminal_validator,
-            "membership": ag.membership_terminal_validator}
+    if kind == "quiescence":
+        return ag.quiescence_terminal_validator(uncertainty)
+    return getattr(ag, kind + "_terminal_validator")
 
 
 def _validate(kind, vectors=None, *, source=None, observations=None, validator=None, window=None):
     from tools.cnesdata_delivery import application_gate as ag
     digests, journal = _journal_observations(vectors or _synthetic_terminal_vectors())
     source = {role: digests[role] for role in ag.TERMINAL_SOURCE_ROLES[kind].split()} if source is None else source
-    validator = _observation_validators()[kind] if validator is None else validator
+    validator = _observation_validator(kind) if validator is None else validator
     return validator(source, owner={"owner_sha256": "a" * 64}, window=window or {"stage": "final"},
                      observations=journal if observations is None else observations), source
 
@@ -4933,7 +4938,7 @@ TERMINAL_VARIANTS = {"routing": lambda value: value.update(fence="CLOSED"),
                      "terminal": lambda value: value.update(observed_at=c.utc(999))}
 
 
-@pytest.mark.parametrize("kind", ["routing", "static", "membership"])
+@pytest.mark.parametrize("kind", ["routing", "static", "membership", "quiescence"])
 @pytest.mark.parametrize("mutation", ["absent", "digest-mismatch", "cross-kind", "extra-role", "missing-role", "string",
                                       "malformed-digest"])
 def test_terminal_validator_reads_only_journal_observation_bytes_of_its_own_kind(kind, mutation):
@@ -4955,3 +4960,89 @@ def test_terminal_validator_reads_only_journal_observation_bytes_of_its_own_kind
         if mutation == "malformed-digest": source[role] = source[role].upper()
         with pytest.raises(ValueError):
             _validate(kind, source=source, observations=observations)
+
+
+def test_quiescence_validator_reports_terminal_readback_and_keeper_uncertainty():
+    from tools.cnesdata_delivery import application_gate as ag
+    held = []
+    validator = ag.quiescence_terminal_validator(lambda: list(held))
+    result, source = _validate("quiescence", validator=validator)
+    assert set(source) == {"terminal"}
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {
+        "quiescent": True, "state_clean": True, "pending": [], "unknown": [], "observed_at": 1000}}
+    held.append({"kind": "sdk-call", "reference_sha256": "f" * 64})
+    noisy = _synthetic_terminal_vectors(terminal=lambda value: value.update(
+        quiescent=False, state_clean=False, pending=["intent"], unknown=["late-effect"], observed_at=c.utc(1234)))
+    assert _validate("quiescence", noisy, validator=validator)[0]["facts"] == {
+        "quiescent": False, "state_clean": False, "pending": ["intent"],
+        "unknown": ["late-effect", {"kind": "sdk-call", "reference_sha256": "f" * 64}], "observed_at": 1234}
+
+
+@pytest.mark.parametrize("mutation", ["quiescent-type", "state-clean-type", "pending-type", "unknown-type", "observed-format",
+                                      "uncertainty-type", "factory-uncallable", "extra-field", "kind"])
+def test_quiescence_validator_refuses_malformed_readback_or_uncertainty(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    if mutation == "factory-uncallable":
+        with pytest.raises(ValueError, match="keeper uncertainty source"):
+            ag.quiescence_terminal_validator([])
+        return
+    def change(value):
+        if mutation == "quiescent-type": value["quiescent"] = 1
+        if mutation == "state-clean-type": value["state_clean"] = "true"
+        if mutation == "pending-type": value["pending"] = {}
+        if mutation == "unknown-type": value["unknown"] = None
+        if mutation == "observed-format": value["observed_at"] = "1970-01-01T00:16:40+00:00"
+        if mutation == "extra-field": value["fence"] = "OPEN"
+        if mutation == "kind": value["kind"] = "routing"
+    validator = ag.quiescence_terminal_validator((lambda: ()) if mutation == "uncertainty-type" else (lambda: []))
+    with pytest.raises(ValueError):
+        _validate("quiescence", _synthetic_terminal_vectors(terminal=change), validator=validator)
+
+
+def _observation_terminal_case(vectors=None):
+    """Real observation validators replace the SYNTHETIC ones; unit/recovery/audit/host stay SYNTHETIC labelled."""
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, store = _accepted_terminal_case()
+    digests, raws = _journal_observations(vectors or _synthetic_terminal_vectors())
+    journal = _journal_with()
+    journal._observation_bytes = raws
+    keeper.attach(journal)
+    reference = _terminal_reference(keeper)
+    for kind in OBSERVATION_VALIDATORS:
+        keeper._terminal_validators.pop(kind)
+        keeper.register_terminal_validator(kind, _observation_validator(kind, keeper.uncertainty), label="observation-" + kind)
+        reference["sources"][kind] = {role: digests[role] for role in ag.TERMINAL_SOURCE_ROLES[kind].split()}
+    return keeper, store, reference, journal
+
+
+def test_keeper_finish_accepts_through_registered_observation_validators():
+    keeper, store, reference, _ = _observation_terminal_case()
+    files = keeper.finish(reference)
+    terminal = c.loads(files["terminal.json"], canonical=True)
+    checkpoint = c.loads(files["checkpoint.json"], canonical=True)
+    assert terminal["promotion_status"] == "accepted" and store.get()[0]["status"] == "released"
+    assert terminal["assessment"] | {"accepted_modes": []} == {
+        "kind": "accepted-open", "fence": "OPEN", "routes_match": True, "state_clean": True, "quiescent": True,
+        "pending": [], "unknown": [], "observed_at": 1000, "accepted_modes": []}
+    for kind in ("routing", "static", "membership", "quiescence"):
+        assert checkpoint["inputs"][kind] == c.sha(c.canonical(reference["sources"][kind]))
+
+
+@pytest.mark.parametrize("mutation", ["routing-closed", "routes-mismatch", "unresolved", "stale", "pending", "unattached",
+                                      "foreign-publication"])
+def test_keeper_finish_refuses_when_observation_validators_report_failure(mutation):
+    changes = {
+        "routing-closed": {"routing": lambda value: value.update(fence="CLOSED")},
+        "routes-mismatch": {"routing": lambda value: value.update(routes_match=False)},
+        "unresolved": {"terminal": lambda value: value["members"].pop()},
+        "stale": {"terminal": lambda value: value.update(observed_at=c.utc(969))},
+        "pending": {"terminal": lambda value: value.update(pending=["intent"])},
+        "foreign-publication": {"publication": lambda value: value.update(closed_ready_sha256="f" * 64)},
+    }.get(mutation, {})
+    keeper, store, reference, journal = _observation_terminal_case(_synthetic_terminal_vectors(**changes))
+    if mutation == "unattached":
+        journal._observation_bytes = {}
+    before = store.get()
+    with pytest.raises(ValueError):
+        keeper.finish(reference)
+    assert store.get() == before and store.get()[0]["status"] == "held"
