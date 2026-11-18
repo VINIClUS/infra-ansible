@@ -640,6 +640,16 @@ def test_prepared_handler_bounds_the_close_drain_timeout_by_the_deadline_and_the
     assert world.invoke[0]["timeout"] == expected
 
 
+@pytest.mark.parametrize("window_change, message", [
+    ({"preparation_deadline": 1500}, "pre-fence prepare deadline"), ({"stage": "phase-b"}, "pre-fence prepare deadline")])
+def test_close_drain_seconds_is_admitted_by_the_window_capacity_not_only_by_the_arithmetic(monkeypatch, window_change, message):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    assert ag._close_drain_seconds(world.window, 6000, 1105) == world.window["deadline"] - 1105 - 158
+    with pytest.raises(ValueError, match=message):
+        ag._close_drain_seconds(dict(world.window) | window_change, 6000, 1105)
+
+
 @pytest.mark.parametrize("capability_seconds, credential_limit", [(5, 1105 + 121), (5, 1000), (1900 - 1100 - 158, 6000), (800, 6000)])
 def test_prepared_handler_refuses_without_capacity_after_the_capability_and_never_runs_the_child(
         monkeypatch, capability_seconds, credential_limit):
