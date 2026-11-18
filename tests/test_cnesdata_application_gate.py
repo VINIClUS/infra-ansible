@@ -5954,6 +5954,7 @@ class _HostWorld:
     def _archive_large(self): self._replace([("host-handoff.json", self.raw), ("pad.bin", bytes(range(256)) * 300)])
     def _producer(self): self._rewrite(producer_sha="f" * 40)
     def _caller_run(self): self._rewrite(caller=dict(HOST_OWNER, run_id=45))
+    def _caller_attempt(self): self._rewrite(caller=dict(HOST_OWNER, run_attempt=2))
     def _caller_source(self): self._rewrite(caller=dict(HOST_OWNER, source_sha="a" * 40))
     def _caller_repository(self): self._rewrite(caller=dict(HOST_OWNER, repository="VINIClUS/other"))
 
@@ -6036,7 +6037,8 @@ _HOST_HANDOFF_REFUSALS = {
     "digest": "host handoff digest", "member-name": "host handoff member", "member-twice": "host handoff member",
     "member-empty": "host handoff member", "member-large": "host handoff member", "noncanonical": "noncanonical JSON bytes",
     "archive-large": "oversized archive|host handoff digest", "producer": "host handoff producer/caller",
-    "caller-run": "host handoff producer/caller", "caller-source": "host handoff producer/caller",
+    "caller-run": "host handoff producer/caller", "caller-attempt": "host handoff producer/caller",
+    "caller-source": "host handoff producer/caller",
     "caller-repository": "host handoff producer/caller"}
 
 
