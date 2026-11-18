@@ -713,6 +713,16 @@ def test_phase_b_handler_refuses_a_checkpoint_that_is_not_the_child_of_the_prepa
     assert _lifecycle(world) == before and world.store.get()[0]["status"] == "held"
 
 
+@pytest.mark.parametrize("name", ["checkpoint.json", "approval.json"])
+def test_phase_b_handler_refuses_noncanonical_b_publication_bytes(monkeypatch, name):
+    world = _prepared_world(monkeypatch)
+    world.b_files[name] = json.dumps(c.loads(world.b_files[name], canonical=True), indent=1).encode()
+    before = _lifecycle(world)
+    with pytest.raises(ValueError, match="noncanonical JSON bytes"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert _lifecycle(world) == before and world.store.get()[0]["status"] == "held"
+
+
 def test_phase_b_handler_refuses_a_keeper_that_never_handled_the_prepared_stage(monkeypatch):
     world = _stage_world(monkeypatch)
     with pytest.raises(ValueError, match="phase-b follows the prepared stage handled by this keeper"):
