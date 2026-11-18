@@ -1,7 +1,7 @@
 # Gates de infraestrutura CnesData
 
 Este produtor fornece dois reusable workflows, somente `workflow_call`, e duas roles
-OIDC separadas. O caller do CnesData continua manual (`workflow_dispatch` em `develop`).
+OIDC separadas. O caller do CnesData continua manual (`workflow_dispatch` em `main`).
 Este código não executa apply no merge, não cria um provider OIDC, não cria buckets/CMKs,
 não altera o host e não fornece o fragmento host_deploy_role_arn.
 
@@ -49,7 +49,7 @@ somente manual/main/repositório esperado/`true` habilita o job após Validate.
 Aceite de Código e merge não autorizam uma chamada de Produção. O aceite de
 Produção continua dependente das decisões dos owners, auditoria do SHA exato,
 checks obrigatórios e handoffs existentes; este patch não modifica settings do
-environment nem comprova apply. O caller CnesData em `develop` e os reusable
+environment nem comprova apply. O caller CnesData em `main` e os reusable
 workflows continuam com suas próprias fronteiras, independentes desse deploy legado.
 
 ## Workflow ABI e fronteiras
@@ -85,7 +85,7 @@ inline consulta o run autenticado e deriva o SHA real de `referenced_workflows` 
 path exato do reusable em SHA40. Busca somente a lista fixa de helpers naquele SHA.
 Não faz checkout do produtor em github.sha, de input arbitrário, branch ou tag. O gate
 compara esse pin à configuração governada e autentica novamente source/ref/workflow,
-develop containment, checks e artifacts antes de solicitar OIDC. Reexecuta a admissão
+main containment, checks e artifacts antes de solicitar OIDC. Reexecuta a admissão
 no job privilegiado e imediatamente antes de assumir a role.
 
 `producer.workflow_path/workflow_sha` no A3 identificam o workflow CALLER CnesData.
@@ -282,8 +282,8 @@ novo receipt, nova revisão ou filho ToFu. Expiração continua negada antes de 
 
 Provider compartilhado é data por ARN governado; readback URL/client IDs/thumbprint,
 nenhum managed provider novo. O narrow amendment troca §4.1 SOMENTE para estes gates:
-repo/context/job_workflow_ref com environment production, audience sts.amazonaws.com,
-subject exato com SHA integrado/auditado/CI-verde. Trust tem prazo revisado e roles
+sub padrão (repo e environment production) mais condição job_workflow_ref separada, audience
+sts.amazonaws.com, reusable no SHA integrado/auditado/CI-verde. Trust tem prazo revisado e roles
 distintas, deny cross-assume. Null github_delivery conserva default fechado e RA intacta.
 Output github fornece somente infrastructure_plan_role_arn/infrastructure_deploy_role_arn.
 

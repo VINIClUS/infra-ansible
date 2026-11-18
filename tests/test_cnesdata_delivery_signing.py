@@ -1646,7 +1646,7 @@ def test_publisher_record_uses_real_uploader_outputs_and_api_job_identity(gate):
     assert "arn:" not in record and "synthetic-ext2-evidence" not in record
 
 
-def test_workflow_pins_custom_sub_and_publisher_closure():
+def test_workflow_pins_production_environment_and_publisher_closure():
     import yaml
 
     path = (
