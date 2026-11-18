@@ -20,6 +20,10 @@ variable "application_promotion" {
     error_message = "Application requires the existing provider, immutable producer, expiry and ten exact same-product delegation ARNs."
   }
   validation {
+    condition     = var.application_promotion == null ? true : try(var.application_promotion.source_closure_sha256 != "0000000000000000000000000000000000000000000000000000000000000000", false)
+    error_message = "Application source_closure_sha256 cannot be the 64-zero sentinel; use the value computed on the approved head."
+  }
+  validation {
     condition = try(var.application_promotion.predecessor_read, null) == null ? true : try(
       toset(keys(var.application_promotion.predecessor_read)) == toset(["protocol", "source_sha", "run_id", "run_attempt", "status", "purpose"]) &&
       can(regex("^[1-9][0-9]*$", jsonencode(var.application_promotion.predecessor_read.run_id))) &&

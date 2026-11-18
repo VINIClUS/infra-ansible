@@ -63,6 +63,12 @@ def _current_caller(governance, binding, purpose="promotion"):
             "caller_binding_sha256": c.sha(c.canonical(caller))}
 
 
+def _phase_a_release_sha256():
+    """sha256 of the original Phase A plan release in the SYNTHETIC `_phase_a_carrier_case`."""
+    envelope = c.loads(_phase_a_carrier_case()[1]["envelope.json"], canonical=True)
+    return c.sha(c.canonical(envelope["plan"]["release"]))
+
+
 def test_original_legacy_checkpoint_enters_new_keeper_without_relabeling(monkeypatch, tmp_path):
     from tools.cnesdata_delivery.application_gate import authenticated_previous
     chain, aws, api, store, previous, reference = _legacy_history_fixture(monkeypatch, tmp_path)
@@ -72,7 +78,7 @@ def test_original_legacy_checkpoint_enters_new_keeper_without_relabeling(monkeyp
         reads.append(copy.deepcopy(value))
         return authenticated_previous(aws, api, chain.gov, value)
     binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+               "release_sha256": _phase_a_release_sha256(), "session_sha256": "d" * 64, "lifecycle_version": 1}
     binding |= _current_caller(chain.gov, binding)
     keeper = Keeper(store, binding, authenticate, api=api, governance=chain.gov)
     state_reader = aws.get_state
@@ -220,11 +226,12 @@ def _terminal_reference(keeper):
             "sources": {name: "synthetic-" + name for name in proof["inputs"]}}
 
 
-def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False):
+def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False, observations=()):
     from tools.cnesdata_delivery.application_gate import AdapterJournal
     journal = AdapterJournal.__new__(AdapterJournal)
     journal._pending, journal._unknown, journal._inflight, journal._failed = list(pending), list(unknown), inflight, failed
-    journal._observation_bytes = {}
+    journal._observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)} for kind, raw in observations]
+    journal._observation_bytes = {c.sha(raw): raw for _, raw in observations}
     return journal
 
 
@@ -259,6 +266,32 @@ def _accepted_terminal_case():
                              "routes_match": True, "state_clean": True, "quiescent": True, "pending": [], "unknown": [], "observed_at": 1000},
                  checkpoint=checkpoint,
                  inputs={name: "e" * 64 for name in ("unit", "recovery", "audit", "host", "static", "routing", "membership", "quiescence")})
+    return keeper, store
+
+
+class _MemoryStore:
+    def __init__(self):
+        self.value, self.etag, self.writes = None, None, 0
+
+    def get(self):
+        return copy.deepcopy(self.value), self.etag
+
+    def put(self, value, etag):
+        assert etag == self.etag
+        self.writes += 1
+        self.value, self.etag = copy.deepcopy(value), str(self.writes)
+        return self.etag
+
+
+def _prepare_stage_keeper(run_id=4242):
+    """Real Keeper/Lease at the original application-prepare window (sequence 0); every later write is a real CAS."""
+    historical = {"state_after": {"lineage": "original-lineage", "serial": 1, "state_sha256": "a" * 64}, "state_object": {"VersionId": "prior"}}
+    store = _MemoryStore()
+    store.put({"status": "released", "checkpoint_sha256": c.sha(c.canonical(historical)), "run_id": 1}, None)
+    binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": run_id, "run_attempt": 1,
+               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+    binding |= _current_caller({}, binding)
+    keeper, _ = _admitted_terminal_keeper(store, binding, historical, {})
     return keeper, store
 
 
@@ -488,7 +521,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
 
 
 @pytest.mark.parametrize("application_purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered"])
+@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release"])
 def test_published_original_lifecycle_terminal_allows_successor_without_state_access(monkeypatch, tmp_path, mutation, application_purpose):
     aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
     previous = store.get()[0]
@@ -508,7 +541,8 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
     governance.update(lifecycle_predecessor=reference, predecessor_read={"protocol": "lifecycle",
         "source_sha": previous["source_sha"], "run_id": 44, "run_attempt": 1, "status": "terminal", "purpose": "application"})
     binding = {"repository": c.REPOSITORY, "source_sha": "c" * 40, "run_id": 45, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "f" * 64, "lifecycle_version": 1}
+               "release_sha256": "c" * 64 if mutation == "release" else _phase_a_release_sha256(),
+               "session_sha256": "f" * 64, "lifecycle_version": 1}
     binding |= _current_caller(governance, binding, application_purpose)
     keeper = Keeper(store, binding,
                     lambda value: authenticated_previous(aws, api, governance, value),
@@ -520,7 +554,7 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
         before = store.get()
         writes = store.writes
         monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("invalid history reached Lease.acquire"))
-        with pytest.raises((ValueError, KeyError)):
+        with pytest.raises((ValueError, KeyError), match="application release" if mutation == "release" else None):
             keeper.acquire(preparation_deadline=2000)
         assert store.writes == writes and store.get() == before
         assert objects == original_bytes
@@ -675,7 +709,7 @@ def _legacy_history_fixture(monkeypatch, tmp_path, *, job_failed=False):
     return chain, aws, api, store, previous, reference
 
 
-@pytest.mark.parametrize("mutation", [None, "generation", "job", "checkpoint-bytes", "current-run", "entry-replay"])
+@pytest.mark.parametrize("mutation", [None, "generation", "job", "checkpoint-bytes", "release", "current-run", "entry-replay"])
 def test_original_receipt_governs_keeper_and_exact_first_plan_checkpoint(monkeypatch, tmp_path, mutation):
     from tools.cnesdata_delivery.application_gate import authenticated_previous
     from tools.cnesdata_delivery.lifecycle_runtime import authenticate_predecessor, historical_checkpoint
@@ -686,12 +720,15 @@ def test_original_receipt_governs_keeper_and_exact_first_plan_checkpoint(monkeyp
         raw, version = chain.objects[key]
         chain.objects[key] = (raw + b"changed", version)
     binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+               "release_sha256": "c" * 64 if mutation == "release" else _phase_a_release_sha256(),
+               "session_sha256": "d" * 64, "lifecycle_version": 1}
     binding |= _current_caller(chain.gov, binding)
     keeper = Keeper(store, binding, lambda value: authenticated_previous(aws, api, chain.gov, value), api=api, governance=chain.gov)
     before = store.get()
-    if mutation in {"generation", "job", "checkpoint-bytes"}:
-        with pytest.raises(ValueError): keeper.acquire(preparation_deadline=int(time.time()) + 900)
+    if mutation in {"generation", "job", "checkpoint-bytes", "release"}:
+        monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("release mismatch reached Lease.acquire"))
+        with pytest.raises(ValueError, match="application release" if mutation == "release" else None):
+            keeper.acquire(preparation_deadline=int(time.time()) + 900)
         assert store.get() == before
         return
     original_state_reader = aws.get_state
@@ -2320,6 +2357,20 @@ def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_be
     expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
         execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
     assert len(sts_calls) == 1 and sts_calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+
+
+@pytest.mark.parametrize("window_change", [{}, {"sequence": 0, "checkpoint_sha256": "a" * 64}])
+def test_close_drain_journal_builds_the_request_the_real_capability_admits(monkeypatch, window_change):
+    """The request is bound to the keeper window as it is at the prepared event; nothing compares it with the prepared checkpoint."""
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    owner, window = journal._request["owner"] | journal._identity, journal._request["stage"] | journal._identity | window_change
+    rebuilt = ag._close_drain_journal(guard=journal._guard, owner=owner, window=window, activation=journal._inputs["activation"],
+                                      expirations=journal._inputs["expirations"])
+    if not window_change:
+        assert c.canonical(rebuilt._request) == c.canonical(journal._request)
+    assert rebuilt._request["stage"]["sequence"] == window["sequence"] and rebuilt._request["checkpoint_sha256"] == window["checkpoint_sha256"]
+    broker = ag.close_drain_capability(**args | {"journal": rebuilt})
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker] and len(sts_calls) == 1
 
 
 @pytest.mark.parametrize("capability", ["close_drain_capability", "closed_ready_capability"])
@@ -4542,106 +4593,170 @@ def test_keeper_terminal_proof_only_through_closed_validator_registry(mutation):
 
 def test_keeper_terminal_validators_receive_registered_journal_observations():
     keeper, _ = _accepted_terminal_case()
-    journal = _journal_with()
-    journal._observation_bytes = {"a" * 64: b'{"observed":true}\n'}
+    raw = b'{"observed":true}\n'
+    journal = _journal_with(observations=[("routing", raw)])
     keeper.attach(journal)
     seen = []
     label, original = keeper._terminal_validators["routing"]
     keeper._terminal_validators["routing"] = (label, lambda source, **kw: seen.append(kw["observations"]) or original(source, **kw))
     files = keeper.finish(_terminal_reference(keeper))
-    assert seen == [{"a" * 64: b'{"observed":true}\n'}]
+    assert seen == [{c.sha(raw): raw}]
     assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
 
 
-def _keeper_loop_case(*, attach=None):
-    """Connected keeper loop over the real Keeper/Lease/finish chain.
+def _routing_bytes(routes_match):
+    return c.canonical({"version": 1, "kind": "routing", "fence": "OPEN", "routes_match": routes_match})
 
-    The API window is reached only through keeper.lease.checkpoint validated by
-    checkpoint_transition (inside _accepted_terminal_case); the event producer,
-    publication and closed-ready handler are external fakes. Terminal validators
-    are the SYNTHETIC labelled ones (item 8).
-    """
-    from tools.cnesdata_delivery import application_gate as ag
+
+def _latest_routing_case(*journals):
+    """Real routing validator over keeper journals; the other kinds keep their SYNTHETIC validators."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
     keeper, store = _accepted_terminal_case()
-    reference = _terminal_reference(keeper)
-    events = [{"kind": "closed-ready", "reference": {"fixture": "closed-ready"}}, None, {"kind": "terminal", "reference": reference}]
-    seen, handled, published, slept = [], [], [], []
+    for journal in journals:
+        keeper.attach(journal)
+    keeper._terminal_validators["routing"] = ("real-routing", ag.routing_terminal_validator)
+    record = keeper.lease.check()
+    def proof(raw):
+        reference = _terminal_reference(keeper)
+        reference["sources"]["routing"] = {"routing": c.sha(raw)}
+        return keeper._terminal_proof(reference, lc.owner_binding(record), record["lifecycle"])
+    return keeper, proof
+
+
+def test_terminal_proof_reads_only_the_latest_observation_of_each_kind():
+    """Disposition (3d) of 6963008338: a stale, well-formed observation of the same kind is not a source."""
+    older, newer = _routing_bytes(True), _routing_bytes(False)
+    _, proof = _latest_routing_case(_journal_with(observations=[("routing", older), ("routing", newer)]))
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(older)
+    assert proof(newer)["assessment"]["routes_match"] is False
+
+
+def test_terminal_proof_orders_journals_by_attach_and_counts_a_broker_once():
+    from tools.cnesdata_delivery import application_gate as ag
+    older, newer = _routing_bytes(True), _routing_bytes(False)
+    first = _journal_with(observations=[("routing", older)])
+    second = _journal_with(observations=[("routing", newer)])
+    broker = ag.ClosedReadyBroker.__new__(ag.ClosedReadyBroker)
+    broker.journal, broker._uncertainty = first, []
+    _, proof = _latest_routing_case(first, second, broker)
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(older)
+    assert proof(newer)["assessment"]["routes_match"] is False
+
+
+def test_terminal_proof_ignores_bytes_without_a_registered_observation():
+    raw = _routing_bytes(True)
+    journal = _journal_with()
+    journal._observation_bytes = {c.sha(raw): raw}
+    _, proof = _latest_routing_case(journal)
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(raw)
+
+
+GOVERNANCE_RELEASE = {"release_id": "synthetic-release", "source_sha": "b" * 40, "candidate_sha256": "1" * 64,
+                      "canary_id": "0123456789abcdef0123456789abcdef", "binding_sha256": "2" * 64,
+                      "image_digest": "sha256:" + "3" * 64}
+
+
+def test_application_release_sha256_hashes_the_closed_governance_release():
+    """6974253889 section 1: the opaque owner release_sha256 is sha256(canonical(closed six-field release))."""
+    from tools.cnesdata_delivery import application_gate as ag
+    assert ag.application_release_sha256({"release": GOVERNANCE_RELEASE}) == c.sha(c.canonical(GOVERNANCE_RELEASE))
+    assert ag.application_release_sha256({"release": dict(reversed(GOVERNANCE_RELEASE.items()))}) == c.sha(c.canonical(GOVERNANCE_RELEASE))
+
+
+@pytest.mark.parametrize("mutation", ["absent", "none", "list", "missing-field", "extra-field"])
+def test_application_release_sha256_refuses_a_governance_without_the_closed_release(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    governance = {"release": dict(GOVERNANCE_RELEASE)}
+    if mutation == "absent": governance.pop("release")
+    if mutation == "none": governance["release"] = None
+    if mutation == "list": governance["release"] = list(GOVERNANCE_RELEASE.values())
+    if mutation == "missing-field": governance["release"].pop("image_digest")
+    if mutation == "extra-field": governance["release"]["note"] = "x"
+    with pytest.raises(ValueError, match="^application governance release$"):
+        ag.application_release_sha256(governance)
+
+
+def _keeper_loop_case():
+    """Real Keeper/Lease/transition chain at application-prepare; the event producer and handlers are external fakes."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    keeper, store = _prepare_stage_keeper()
+    keeper.finish = lambda reference: pytest.fail("the stage loop never finishes the keeper")
+    handled, seen, slept = [], [], []
+    def advance(current, **changes):
+        record = current.lease.check()["lifecycle"]
+        current.lease.checkpoint(record | {"sequence": record["sequence"] + 1} | changes)
+    def prepared(current, reference):
+        handled.append(("prepared", reference))
+        advance(current, close=1000, fixed_deadline=2800, input_deadline=4000, stage="phase-b", admitted_at=1000,
+                deadline=1360, checkpoint_sha256="e" * 64)
+    def phase_b(current, reference):
+        handled.append(("phase-b", reference))
+        advance(current, stage="api", admitted_at=1000, deadline=1180, checkpoint_sha256="f" * 64)
+    events = {"application-prepare": [None, {"kind": "prepared", "reference": {"fixture": "prepared"}}],
+              "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}]}
     def next_event(window):
         seen.append(window["stage"])
-        return events.pop(0)
-    def handler(current, event_reference):
-        assert current is keeper and event_reference == {"fixture": "closed-ready"}
-        handled.append(event_reference)
-        if attach is not None:
-            current.attach(attach)
-    run = lambda: ag.keeper_loop(keeper, next_event=next_event, handlers={"closed-ready": handler},
-                                 publish=lambda files: published.append(files) or "receipt", sleep=slept.append)
-    return ag, keeper, store, run, seen, handled, published, slept
+        if window["stage"] not in lc.STAGE_TRIGGERS:
+            raise ValueError(f"stage trigger not connected stage={window['stage']}")
+        return events[window["stage"]].pop(0)
+    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b},
+                                                      "sleep": slept.append} | changes))
+    return ag, keeper, store, run, seen, handled, slept
 
 
-def test_keeper_loop_dispatches_closed_ready_then_publishes_original_terminal():
-    ag, keeper, store, run, seen, handled, published, slept = _keeper_loop_case(attach=_journal_with())
-    assert run() == "receipt"
-    assert handled == [{"fixture": "closed-ready"}] and slept == [5] and seen[0] == "final"
-    assert store.get()[0]["status"] == "released" and len(published) == 1
-    assert set(published[0]) == {"checkpoint.json", "terminal.json", "lease.json"}
-    assert c.loads(published[0]["terminal.json"], canonical=True)["promotion_status"] == "accepted"
-
-
-@pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed"])
-def test_keeper_loop_keeps_lease_held_while_dispatch_is_uncertain(context):
-    journal = _journal_with(**{"pending": {"pending": [{"kind": "intent"}]}, "unknown": {"unknown": [{"kind": "lost"}]},
-                               "inflight": {"inflight": {"kind": "call"}}, "failed": {"failed": True}}[context])
-    ag, keeper, store, run, _, handled, published, _ = _keeper_loop_case(attach=journal)
-    with pytest.raises(ValueError, match="unresolved SDK uncertainty; lease remains held"):
+def test_keeper_loop_dispatches_each_stage_trigger_and_stops_at_the_api_stage():
+    ag, keeper, store, run, seen, handled, slept = _keeper_loop_case()
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=api$"):
         run()
-    assert handled and published == [] and store.get()[0]["status"] == "held"
+    assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"})] and slept == [5]
+    assert seen == ["application-prepare", "application-prepare", "phase-b", "api"]
+    record = store.get()[0]
+    assert record["status"] == "held" and record["lifecycle"]["stage"] == "api" and keeper.uncertainty() == []
 
 
-def test_keeper_loop_capability_failure_holds_lease_and_never_publishes():
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
+    import inspect
+    from tools.cnesdata_delivery import application_gate as ag
+    assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
+    assert ag.KEEPER_EVENTS == ("prepared", "phase-b")
+
+
+@pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b", "closed-ready"),
+                                   ("prepared", "phase-b", "terminal")])
+def test_keeper_loop_connects_only_the_two_stage_triggers(names):
+    ag, keeper, store, run, _, _, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match="closed keeper handlers"):
+        run(handlers={name: None for name in names}, next_event=lambda window: pytest.fail("no event before handler check"))
+    assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
+
+
+@pytest.mark.parametrize("event, message", [({"kind": "closed-ready", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "terminal", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "advance", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "prepared"}, "closed object fields"),
+                                            ({"kind": "prepared", "reference": {}, "extra": 1}, "closed object fields")])
+def test_keeper_loop_refuses_events_outside_the_stage_triggers(event, message):
+    ag, keeper, store, run, _, handled, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match=message):
+        run(next_event=lambda window: event, handlers={"prepared": lambda *a: pytest.fail("no dispatch"),
+                                                       "phase-b": lambda *a: pytest.fail("no dispatch")})
+    assert store.get()[0]["status"] == "held" and handled == []
+
+
+def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty():
+    ag, keeper, store, run, _, _, _ = _keeper_loop_case()
     def failing(current, reference):
         journal = _journal_with()
         current.attach(journal)
         journal._failed = True
-        raise ValueError("closed-ready capability refused before STS")
-    events = [{"kind": "closed-ready", "reference": {}}, {"kind": "terminal", "reference": {}}]
+        raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        ag.keeper_loop(keeper, next_event=lambda window: events.pop(0), handlers={"closed-ready": failing},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == [] and keeper.uncertainty() == [{"kind": "context-failed"}]
-    with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
-        keeper.finish(_terminal_reference(keeper))
-
-
-@pytest.mark.parametrize("event", [{"kind": "advance", "reference": {}}, {"kind": "close-drain", "reference": {}},
-                                   {"kind": "terminal"}, {"kind": "terminal", "reference": {}, "extra": 1}])
-def test_keeper_loop_refuses_stage_advancement_and_open_events(event):
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
-    with pytest.raises(ValueError):
-        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == []
-
-
-@pytest.mark.parametrize("kind", ["advance", "close-drain"])
-def test_keeper_loop_refuses_unknown_event_whose_terminal_reference_would_finish(kind):
-    """Synthetic validators are registered and the reference finishes as `terminal`; only KEEPER_EVENTS refuses."""
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
-    event = {"kind": kind, "reference": _terminal_reference(keeper)}
-    with pytest.raises(ValueError, match="closed keeper event; stage advancement not connected"):
-        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == []
-    assert c.loads(keeper.finish(event["reference"])["terminal.json"], canonical=True)["promotion_status"] == "accepted"
-
-
-@pytest.mark.parametrize("handlers", [{}, {"closed-ready": None, "close-drain": None}, {"close-drain": None}])
-def test_keeper_loop_connects_only_closed_ready(handlers):
-    ag, keeper, store, _, _, _, _, _ = _keeper_loop_case()
-    with pytest.raises(ValueError, match="closed keeper handlers"):
-        ag.keeper_loop(keeper, next_event=lambda window: pytest.fail("no event before handler check"), handlers=handlers,
-                       publish=None, sleep=None)
+        run(handlers={"prepared": failing, "phase-b": failing})
+    assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
+    assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
 
 def test_keeper_guard_renews_lease_during_quiet_adapter_run():
@@ -4694,14 +4809,13 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
 
 
 @pytest.mark.parametrize("validators,events,message", [
-    (None, None, "terminal validator unavailable; lifecycle disabled"),
     ({"quiescence": object()}, None, "terminal validator unavailable; lifecycle disabled"),
     ({"quiescence": object(), "routing": object(), "foreign": object()}, None, "terminal validator unavailable"),
-    ({"quiescence": object(), "routing": object()}, None, "keeper event producer not connected; lifecycle disabled"),
+    (None, "not-callable", "keeper event producer not connected; lifecycle disabled"),
 ])
-def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch, validators, events, message):
+def test_execute_refuses_an_incomplete_registry_or_event_source_before_any_effect(monkeypatch, validators, events, message):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
-    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
     monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
@@ -4711,36 +4825,147 @@ def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch,
         ag.execute(({}, {"source_sha": "b" * 40}, {}, None, {}, {}), validators=validators, event_source=events)
 
 
-def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch):
+def test_application_main_execute_hands_the_admitted_tuple_to_execute(monkeypatch):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
-    admitted = ({}, {"source_sha": "b" * 40}, {}, None, {}, {})
+    admitted, handed = ({}, {"source_sha": "b" * 40}, {}, None, {}, {}), []
     monkeypatch.setattr(lr, "admission", lambda role: admitted)
     monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
     monkeypatch.setattr(ag, "verify_source_closure", lambda governance, api: None)
-    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
-    with pytest.raises(ValueError, match="terminal validator unavailable; lifecycle disabled"):
-        ag.main(["execute"])
+    monkeypatch.setattr(ag, "execute", lambda *args, **kwargs: handed.append((args, kwargs)))
+    ag.main(["execute"])
+    assert handed == [((admitted,), {})]
 
 
-def test_execute_with_both_registries_supplied_still_refuses_before_any_effect(monkeypatch):
-    """Inactive by design: even with validators and an event producer, keeper construction is not connected."""
-    from tools.cnesdata_delivery import application_gate as ag, aws_boundary, lifecycle_runtime as lr
-    for module, name in ((lr, "AWS"), (aws_boundary, "AWS"), (lr, "S3LeaseStore"), (aws_boundary, "S3LeaseStore"),
-                         (lr, "oidc_credentials"), (ag, "Keeper"), (ag, "Lease"), (ag, "KeeperGuard"), (ag, "keeper_loop"),
-                         (ag, "run_closed_ready"), (ag, "closed_ready_capability"), (ag, "invoke_adapter")):
-        monkeypatch.setattr(module, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached while lifecycle is disabled"))
-    closures = []
-    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *args: closures.append(args))
-    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64}
-    events = []
-    with pytest.raises(ValueError, match="keeper construction from protected binding not connected; lifecycle disabled"):
-        ag.execute((governance, {"source_sha": "b" * 40}, {}, None, {}, {}),
-                   validators={"quiescence": object(), "routing": object()}, event_source=events.append, product="product")
-    assert closures == [("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)] and events == []
+class _Stop(Exception):
+    pass
+
+
+def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None):
+    """The composition of execute over boundary fakes: every effect is a recorded call, the order is the contract."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
+    from tools.cnesdata_delivery.session_owner import Authority
+    now = int(time.time())
+    calls = []
+    caller = {"application_purpose": "promotion", "context_kind": "promotion", "repository": c.REPOSITORY, "source_sha": "b" * 40}
+    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64,
+                  "authenticated_application_caller": caller, "account_id": "111122223333"}
+    if release: governance["release"] = dict(GOVERNANCE_RELEASE)
+    request, run, api = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}, SimpleNamespace(marker="api")
+    role = "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+    fragment = {"application_role_arn": role, "enabled_until": c.utc(now + enabled_ttl)}
+    authority = Authority({"role_arn": role, "frozen_until": c.utc(now + 9500)}, float(now + authority_ttl), None, fragment, "3" * 64)
+    if expiration == "auto": monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", c.utc(now + 7000))
+    elif expiration is None: monkeypatch.delenv("AWS_CREDENTIAL_EXPIRATION", raising=False)
+    else: monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", expiration)
+    def record(name, result=None):
+        def spy(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            if isinstance(result, Exception): raise result
+            return result() if callable(result) else result
+        return spy
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", record("closure"))
+    monkeypatch.setattr(session_owner, "authenticate_lifecycle", record("authority", authority))
+    arn = "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-1"
+    fake_aws = SimpleNamespace(identity={"Account": "111122223333", "Arn": arn, "UserId": "AROAFIXTURE:cnesdata-4242-1"} | (identity or {}))
+    monkeypatch.setattr(lr, "AWS", record("aws", fake_aws))
+    monkeypatch.setattr(session_owner, "verify_application", record("readback", {"role_id": "AROAFIXTURE"}))
+    monkeypatch.setattr(lr, "S3LeaseStore", record("store", "lease-store"))
+    class FakeKeeper:
+        def __init__(self, store, binding, previous, **kwargs):
+            calls.append(("keeper", (store, binding, previous), kwargs))
+            self.clock = lambda: 1000.4
+        def acquire(self, **kwargs):
+            calls.append(("acquire", (), kwargs))
+            return {"owner": "acquired"}
+    monkeypatch.setattr(ag, "Keeper", FakeKeeper)
+    monkeypatch.setattr(ag, "register_terminal_validators", record("register"))
+    monkeypatch.setattr(ag, "stage_handlers", record("handlers", {"prepared": "h1", "phase-b": "h2"}))
+    monkeypatch.setattr(ag, "keeper_loop", record("loop", _Stop("loop reached")))
+    return ag, (governance, request, {}, api, run, {}), calls, SimpleNamespace(authority=authority, aws=fake_aws, now=now, api=api,
+                                                                              run=run, request=request)
+
+
+def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    ag, admitted, calls, world = _execute_case(monkeypatch)
+    governance = admitted[0]
+    factory = []
+    def event_source(**kwargs):
+        calls.append(("events", (), kwargs))
+        return "next-event"
+    validators = {"quiescence": ("synthetic-quiescence", object()), "routing": ("synthetic-routing", object())}
+    with pytest.raises(_Stop, match="loop reached"):
+        ag.execute(admitted, validators=validators, event_source=event_source, product="product")
+    assert [name for name, _, _ in calls] == ["closure", "authority", "aws", "readback", "store", "keeper", "register", "acquire",
+                                              "events", "handlers", "loop"]
+    by_name = {name: (args, kwargs) for name, args, kwargs in calls}
+    assert by_name["closure"][0] == ("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)
+    assert by_name["authority"][0][:5] == (governance, world.api, "b" * 40, "application", "application-prepare")
+    assert abs(by_name["authority"][0][5] - time.time()) < 60
+    assert by_name["aws"][0] == (governance,) and by_name["store"][0] == (world.aws,)
+    caller = governance["authenticated_application_caller"]
+    session = c.sha(c.canonical({"principal": world.aws.identity["Arn"], "run_id": 4242, "run_attempt": 1, "gate": "application"}))
+    (store, binding, previous), keeper_kwargs = by_name["keeper"]
+    assert store == "lease-store" and callable(previous)
+    assert binding == {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 4242, "run_attempt": 1,
+                       "session_sha256": session, "release_sha256": c.sha(c.canonical(GOVERNANCE_RELEASE)), "lifecycle_version": 1,
+                       "application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": c.sha(c.canonical(caller))}
+    assert keeper_kwargs == {"api": world.api, "governance": governance, "evidence_aws": world.aws}
+    assert by_name["register"][0][1] is validators and by_name["acquire"][1] == {"preparation_deadline": 1000 + 900}
+    events_kwargs = by_name["events"][1]
+    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "clock"} and events_kwargs["owner"] == {"owner": "acquired"}
+    assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
+    handler_kwargs = by_name["handlers"][1]
+    assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit", "clock"}
+    assert handler_kwargs["authority"] is world.authority and handler_kwargs["product"] == "product"
+    assert handler_kwargs["credential_limit"] == world.now + 5000 and handler_kwargs["clock"]() == 1000.4
+    assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2"}}
+    assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
+
+
+@pytest.mark.parametrize("authority_ttl, enabled_ttl, expiration_ttl, expected", [(5000, 9000, 7000, 5000), (9000, 4000, 7000, 4000),
+                                                                                  (9000, 9500, 3000, 3000)])
+def test_execute_credential_limit_is_the_earliest_of_the_session_proof_and_fragment(monkeypatch, authority_ttl, enabled_ttl,
+                                                                                    expiration_ttl, expected):
+    from tools.cnesdata_delivery import application_gate as ag
+    ag_mod, admitted, calls, world = _execute_case(monkeypatch, authority_ttl=authority_ttl, enabled_ttl=enabled_ttl,
+                                                   expiration=c.utc(int(time.time()) + expiration_ttl))
+    with pytest.raises(_Stop):
+        ag.execute(admitted, event_source=lambda **kwargs: "next-event", product="product")
+    credential_limit = next(kwargs["credential_limit"] for name, _, kwargs in calls if name == "handlers")
+    assert abs(credential_limit - (world.now + expected)) <= 2
+
+
+@pytest.mark.parametrize("mutation, message", [("no-release", "application governance release"),
+                                               ("no-expiration", "application credential expiration"),
+                                               ("expired", "application credential expiration"),
+                                               ("identity", "original bootstrap GetCallerIdentity")])
+def test_execute_refuses_before_the_next_effect(monkeypatch, mutation, message):
+    from tools.cnesdata_delivery import application_gate as ag
+    options = {"no-release": {"release": False}, "no-expiration": {"expiration": None},
+               "expired": {"expiration": c.utc(int(time.time()) - 5)}, "identity": {"identity": {"UserId": "AROAother:cnesdata-4242-1"}}}
+    ag_mod, admitted, calls, world = _execute_case(monkeypatch, **options[mutation])
+    with pytest.raises(ValueError, match=message):
+        ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
+    names = [name for name, _, _ in calls]
+    expected = {"no-release": [], "no-expiration": ["closure", "authority"], "expired": ["closure", "authority"],
+                "identity": ["closure", "authority", "aws", "readback"]}[mutation]
+    assert names == expected
+
+
+def test_execute_refuses_a_credential_expiring_exactly_now(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    with monkeypatch.context() as pinned:
+        pinned.setattr(ag.time, "time", lambda: 1_800_000_000.0)
+        ag_mod, admitted, calls, world = _execute_case(pinned, expiration=c.utc(1_800_000_000))
+        with pytest.raises(ValueError, match="application credential expiration"):
+            ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
+    assert [name for name, _, _ in calls] == ["closure", "authority"]
 
 
 def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
-    """Static proof: the only production path to the keeper is main -> execute(admitted), which refuses."""
+    """Static proof: the only production path to the keeper is main -> execute(admitted); every other site is internal."""
     import ast
     from pathlib import Path
     from tools.cnesdata_delivery import application_gate as ag
@@ -4751,7 +4976,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
-               "validate_static_call"}
+               "validate_static_call", "stage_handlers"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4782,6 +5007,22 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
         (gate, "close_drain_capability", "_assume_fence_session"),
         (gate, "close_drain_capability", "ClosedReadyBroker"),
+        (gate, "register_terminal_validators", "register_terminal_validator"),  # no production caller of the registration
+        (gate, "_quiescence_validator", "quiescence_terminal_validator"),      # registry providers, built per keeper
+        (gate, "validator", "KeeperGuard"),                                     # lazy host/decision validators
+        (gate, "validator", "host_terminal_validator"),
+        (gate, "validator", "decision_terminal_validator"),
+        (gate, "execute", "Keeper"),                                            # the one production path: main -> execute
+        (gate, "execute", "KeeperGuard"),
+        (gate, "execute", "stage_handlers"),
+        (gate, "execute", "keeper_loop"),
+        (gate, "prepared", "KeeperGuard"),                                      # stage_handlers' own handlers
+        (gate, "prepared", "close_expirations"),
+        (gate, "prepared", "close_drain_capability"),
+        (gate, "prepared", "infra_expiration_bound"),
+        (gate, "prepared", "close_window"),
+        (gate, "phase_b", "KeeperGuard"),
+        (gate, "phase_b", "api_window"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call
@@ -4790,7 +5031,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
     assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
-    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
 
 
 TERMINAL_MEMBER_IDENTITY = ("dispatch_id", "request_sha256", "generation", "initial_state", "execution_ref", "resolution")
@@ -5031,6 +5272,7 @@ def _observation_terminal_case(vectors=None):
     keeper, store = _accepted_terminal_case()
     digests, raws = _journal_observations(vectors or _synthetic_terminal_vectors())
     journal = _journal_with()
+    journal._observations = [{"kind": name, "sha256": digest, "size": len(raws[digest])} for name, digest in digests.items()]
     journal._observation_bytes = raws
     keeper.attach(journal)
     reference = _terminal_reference(keeper)
@@ -5206,6 +5448,349 @@ def test_keeper_finish_accepts_with_authenticated_host_handoff_validator():
     files = keeper.finish(reference)
     assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
     assert c.loads(files["checkpoint.json"], canonical=True)["inputs"]["host"] == c.sha(c.canonical(reference["sources"]["host"]))
+
+
+HOST_REUSABLE_SHA = "e" * 40  # SYNTHETIC: the production caller reads producer_sha from the run, never from a literal
+HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH frames",
+                  "Publish only the closed public handoff projection",
+                  "Fail only after the original recovery handoff is available")
+SIX_VALIDATORS = {"routing", "static", "membership", "quiescence", "host", "decision"}
+HOST_OWNER = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
+
+
+def _zip_bytes(members, total=None):
+    import io
+    import zipfile
+    out = io.BytesIO()
+    comment = b"x" * (total - len(_zip_bytes(members))) if total else b""
+    with zipfile.ZipFile(out, "w") as archive:
+        for name, raw, *mode in members:
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.external_attr = (mode[0] << 16) if mode else 0
+            archive.writestr(info, raw)
+        archive.comment = comment
+    return out.getvalue()
+
+
+class _HostWorld:
+    """SYNTHETIC GitHub run 44/1: host-gate job and cnesdata-host-handoff artifact (consumer shape of CnesData 9cdd452f)."""
+    def __init__(self, mutation=None, handoff=None):
+        vectors = _synthetic_terminal_vectors()
+        value = c.loads(_synthetic_terminal_artifacts(vectors)["host-handoff"], canonical=True) | {"producer_sha": HOST_REUSABLE_SHA}
+        value.update(handoff or {})
+        self.raw = c.canonical(value)
+        self.archive = _zip_bytes([("host-handoff.json", self.raw)])
+        root, run_id = f"repos/{c.REPOSITORY}/actions", 44
+        steps = [{"name": name, "number": number, "status": "completed", "conclusion": conclusion}
+                 for number, (name, conclusion) in enumerate(zip(HOST_JOB_STEPS, ("success", "success", "skipped")), 2)]
+        self.job = {"id": 77, "run_id": run_id, "run_attempt": 1, "head_sha": "b" * 40, "name": "host-gate / execute", "status": "completed",
+                    "conclusion": "success", "started_at": c.utc(1100), "completed_at": c.utc(1250), "steps": steps}
+        self.meta = {"id": 78, "name": "cnesdata-host-handoff-44-1", "digest": "sha256:" + c.sha(self.archive), "expired": False,
+                     "workflow_run": {"id": run_id, "head_sha": "b" * 40}, "created_at": c.utc(1200)}
+        self.run = {"id": run_id, "run_attempt": 1, "head_sha": "b" * 40, "referenced_workflows": [
+            {"path": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@" + HOST_REUSABLE_SHA,
+             "sha": HOST_REUSABLE_SHA}]}
+        self.jobs, self.total_jobs, self.artifacts, self.total_artifacts = [self.job], None, [self.meta], None
+        self.reads, self.log = [], []
+        self.root = root
+        getattr(self, "_" + mutation.replace("-", "_"))() if mutation else None
+        self.responses = {
+            root + "/runs/44/attempts/1": self.run,
+            root + "/runs/44/attempts/1/jobs?per_page=100&page=1": {
+                "jobs": self.jobs, "total_count": len(self.jobs) if self.total_jobs is None else self.total_jobs},
+            root + "/runs/44/artifacts?per_page=100&page=1": {
+                "artifacts": self.artifacts, "total_count": len(self.artifacts) if self.total_artifacts is None else self.total_artifacts},
+            root + "/artifacts/78/zip": self.archive}
+
+    def read(self, path, *, raw=False, maximum=192 * 1024**2):
+        self.reads.append(path)
+        self.log.append(("read", path))
+        assert raw is path.endswith("/zip"), "only the artifact zip is read raw"
+        value = self.responses[path]
+        assert not raw or len(value) <= maximum, "oversized archive must be refused by the read bound"
+        return value
+
+    def _run_attempt(self): self.run["run_attempt"] = 2
+    def _run_source(self): self.run["head_sha"] = "a" * 40
+    def _reusable_missing(self): self.run["referenced_workflows"] = []
+    def _reusable_twice(self): self.run["referenced_workflows"] = self.run["referenced_workflows"] * 2
+    def _reusable_path(self): self.run["referenced_workflows"][0]["path"] = self.run["referenced_workflows"][0]["path"][:-1] + "f"
+    def _job_missing(self): self.jobs = []
+    def _job_twice(self): self.jobs = [self.job, self.job | {"id": 80}]
+    def _job_incomplete(self): self.total_jobs = 2
+    def _job_run(self): self.job["run_id"] = 45
+    def _job_attempt(self): self.job["run_attempt"] = 2
+    def _job_source(self): self.job["head_sha"] = "a" * 40
+    def _job_status(self): self.job["status"] = "in_progress"
+    def _job_conclusion(self): self.job["conclusion"] = "cancelled"
+    def _step_missing(self): self.job["steps"].pop(0)
+    def _step_order(self): self.job["steps"][0]["number"] = 9
+    def _step_order_gate_handoff(self): self.job["steps"][0]["number"] = self.job["steps"][1]["number"]
+    def _step_order_handoff_final(self): self.job["steps"][1]["number"] = self.job["steps"][2]["number"]
+    def _jobs_at_limit(self): self.jobs = [self.job | {"id": 1000 + n, "name": "other"} for n in range(99)] + [self.job]
+    def _jobs_over_limit(self): self.jobs = [self.job | {"id": 1000 + n, "name": "other"} for n in range(100)] + [self.job]
+    def _artifacts_at_limit(self):
+        self.artifacts = [self.meta | {"id": 2000 + n, "name": "other"} for n in range(99)] + [self.meta]
+    def _artifacts_over_limit(self):
+        self.artifacts = [self.meta | {"id": 2000 + n, "name": "other"} for n in range(100)] + [self.meta]
+    def _step_gate(self): self.job["steps"][0]["conclusion"] = "failure"
+    def _step_handoff(self): self.job["steps"][1]["conclusion"] = "skipped"
+    def _final_step(self): self.job["steps"][2]["conclusion"] = "failure"
+    def _final_step_failed_job(self): self.job["conclusion"] = "failure"
+    def _artifact_missing(self): self.artifacts = []
+    def _artifact_twice(self): self.artifacts = [self.meta, self.meta | {"id": 79}]
+    def _artifact_incomplete(self): self.total_artifacts = 2
+    def _artifact_name(self): self.meta["name"] = "cnesdata-host-handoff-44-2"
+    def _artifact_expired(self): self.meta["expired"] = True
+    def _artifact_run(self): self.meta["workflow_run"]["id"] = 45
+    def _artifact_source(self): self.meta["workflow_run"]["head_sha"] = "a" * 40
+    def _artifact_at_job_start(self): self.meta["created_at"] = c.utc(1100)
+    def _artifact_after_job(self): self.meta["created_at"] = c.utc(1251)
+    def _digest(self): self.meta["digest"] = "sha256:" + "0" * 64
+    def _member_name(self): self._replace([("other.json", self.raw)])
+    def _member_twice(self): self._replace([("host-handoff.json", self.raw), ("extra.json", b"{}")])
+    def _member_empty(self): self._replace([("host-handoff.json", b"")])
+    def _member_large(self): self._replace([("host-handoff.json", self.raw + b" " * 32768)])
+    def _member_regular_file(self):
+        import stat
+        self._replace([("host-handoff.json", self.raw, stat.S_IFREG | 0o644)])
+
+    def _member_symlink(self):
+        import stat
+        self._replace([("host-handoff.json", self.raw, stat.S_IFLNK | 0o777)])
+
+    def _member_one_byte(self): self._replace([("host-handoff.json", b"x")])
+
+    def _member_encrypted(self):
+        packed = bytearray(self.archive)
+        packed[packed.index(b"PK\x01\x02") + 8] |= 1
+        self.archive = bytes(packed)
+        self.meta["digest"] = "sha256:" + c.sha(self.archive)
+
+    def _artifact_at_job_end(self): self.meta["created_at"] = self.job["completed_at"]
+
+    def _member_over_by_one(self): self._replace([("host-handoff.json", self.raw + b" " * (32769 - len(self.raw)))])
+    def _member_at_limit(self): self._rewrite(pad="x" * (32768 - len(c.canonical(c.loads(self.raw, canonical=True) | {"pad": ""}))))
+    def _archive_at_limit(self): self._replace([("host-handoff.json", self.raw)], total=65536)
+    def _archive_over_by_one(self): self._replace([("host-handoff.json", self.raw)], total=65537)
+    def _noncanonical(self): self._replace([("host-handoff.json", b'{ "kind": "host-handoff" }\n')])
+    def _archive_large(self): self._replace([("host-handoff.json", self.raw), ("pad.bin", bytes(range(256)) * 300)])
+    def _producer(self): self._rewrite(producer_sha="f" * 40)
+    def _caller_run(self): self._rewrite(caller=dict(HOST_OWNER, run_id=45))
+    def _caller_source(self): self._rewrite(caller=dict(HOST_OWNER, source_sha="a" * 40))
+    def _caller_repository(self): self._rewrite(caller=dict(HOST_OWNER, repository="VINIClUS/other"))
+
+    def _replace(self, members, total=None):
+        self.archive = _zip_bytes(members, total)
+        self.meta["digest"] = "sha256:" + c.sha(self.archive)
+
+    def _rewrite(self, **changes):
+        self.raw = c.canonical(c.loads(self.raw, canonical=True) | changes)
+        self._replace([("host-handoff.json", self.raw)])
+
+
+class _NoGuard:
+    def __init__(self, log=None): self.checks, self.log = [], log if log is not None else []
+    def check(self, seconds=0): self.checks.append(seconds), self.log.append(("check", seconds))
+
+
+def test_host_handoff_caller_authenticates_the_original_public_artifact():
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld()
+    guard = _NoGuard(world.log)
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=guard) == world.raw
+    assert world.reads[0].endswith("/runs/44/attempts/1") and world.reads[-1].endswith("/artifacts/78/zip")
+    expected = []
+    for path in world.reads:
+        expected += [("check", 20), ("read", path), ("check", 0)]
+    assert world.log == expected and len(world.reads) == 4
+
+
+def test_host_handoff_caller_accepts_a_regular_file_member_with_unix_mode():
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld("member-regular-file")
+    assert world.archive != _zip_bytes([("host-handoff.json", world.raw)])
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
+
+
+def test_host_handoff_caller_sends_a_one_byte_member_to_the_canonical_check_not_the_size_refusal():
+    from tools.cnesdata_delivery import application_gate as ag
+    with pytest.raises(Exception) as refusal:
+        ag.authenticate_host_handoff(_HostWorld("member-one-byte"), dict(HOST_OWNER), guard=_NoGuard())
+    assert "host handoff member size" not in str(refusal.value)
+
+
+@pytest.mark.parametrize("mutation", ["jobs-at-limit", "artifacts-at-limit", "member-at-limit", "archive-at-limit",
+                                      "artifact-at-job-end"])
+def test_host_handoff_caller_accepts_each_inventory_and_size_exactly_at_its_limit(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld(mutation)
+    assert {"jobs-at-limit": len(world.jobs) == 100, "artifacts-at-limit": len(world.artifacts) == 100,
+            "member-at-limit": len(world.raw) == 32768, "archive-at-limit": len(world.archive) == 65536,
+            "artifact-at-job-end": world.meta["created_at"] == world.job["completed_at"]}[mutation]
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
+
+
+def test_host_handoff_caller_accepts_the_failed_job_of_a_recovery_handoff():
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld("final-step-failed-job", handoff={"status": "recovery_required"})
+    world.job["steps"][2]["conclusion"] = "failure"
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
+
+
+_HOST_HANDOFF_REFUSALS = {
+    "run-attempt": "host handoff run", "run-source": "host handoff run", "reusable-missing": "host handoff reusable",
+    "reusable-twice": "host handoff reusable", "reusable-path": "host handoff reusable",
+    "job-missing": "host handoff job inventory", "job-twice": "host handoff job inventory",
+    "job-incomplete": "host handoff job inventory", "job-run": "host handoff job identity",
+    "job-attempt": "host handoff job identity", "job-source": "host handoff job identity",
+    "jobs-over-limit": "host handoff job inventory", "artifacts-over-limit": "host handoff artifact inventory",
+    "step-order-gate-handoff": "host handoff job steps", "step-order-handoff-final": "host handoff job steps",
+    "member-over-by-one": "host handoff member size", "member-symlink": "host handoff member",
+    "member-encrypted": "host handoff member", "archive-over-by-one": "oversized archive|host handoff digest",
+    "job-status": "host handoff job identity", "job-conclusion": "host handoff job identity",
+    "step-missing": "host handoff job steps", "step-order": "host handoff job steps", "step-gate": "host handoff job steps",
+    "step-handoff": "host handoff job steps", "final-step": "host handoff job steps",
+    "final-step-failed-job": "host handoff job steps", "artifact-missing": "host handoff artifact unique",
+    "artifact-twice": "host handoff artifact unique", "artifact-incomplete": "host handoff artifact inventory",
+    "artifact-name": "host handoff artifact unique", "artifact-expired": "host handoff artifact identity",
+    "artifact-run": "host handoff artifact identity", "artifact-source": "host handoff artifact identity",
+    "artifact-at-job-start": "host handoff artifact identity", "artifact-after-job": "host handoff artifact identity",
+    "digest": "host handoff digest", "member-name": "host handoff member", "member-twice": "host handoff member",
+    "member-empty": "host handoff member", "member-large": "host handoff member", "noncanonical": "noncanonical JSON bytes",
+    "archive-large": "oversized archive|host handoff digest", "producer": "host handoff producer/caller",
+    "caller-run": "host handoff producer/caller", "caller-source": "host handoff producer/caller",
+    "caller-repository": "host handoff producer/caller"}
+
+
+@pytest.mark.parametrize("mutation", sorted(_HOST_HANDOFF_REFUSALS))
+def test_host_handoff_caller_refuses_anything_but_the_original_public_artifact(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    handoff = {"recovery_decision": None} if mutation != "final-step-failed-job" else {}
+    world = _HostWorld(mutation, handoff=handoff)
+    with pytest.raises((ValueError, AssertionError), match=_HOST_HANDOFF_REFUSALS[mutation]):
+        ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard())
+
+
+def test_register_terminal_validators_accepts_the_whole_closed_kind_set():
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    registry = {kind: ("label-" + kind, lambda current: (lambda source, **kw: None)) for kind in ag.TERMINAL_VALIDATOR_FACTS}
+    ag.register_terminal_validators(keeper, registry)
+    assert set(keeper._terminal_validators) == set(ag.TERMINAL_VALIDATOR_FACTS)
+
+
+@pytest.mark.parametrize("mutation", ["keeper-type", "registry-type", "unknown-kind"])
+def test_register_terminal_validators_refuses_a_foreign_keeper_registry_or_kind(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    registry = {"routing": ("synthetic-routing", ag.TERMINAL_VALIDATORS["routing"][1])}
+    if mutation == "keeper-type": keeper = object()
+    if mutation == "registry-type": registry = list(registry)
+    if mutation == "unknown-kind": registry["foreign"] = registry["routing"]
+    with pytest.raises(ValueError, match="terminal validator registry"):
+        ag.register_terminal_validators(keeper, registry)
+
+
+def test_production_terminal_validator_registry_is_the_six_synthetic_kinds():
+    from tools.cnesdata_delivery import application_gate as ag
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS
+    assert all(type(label) is str and label.startswith("synthetic-") and callable(provider)
+               for label, provider in ag.TERMINAL_VALIDATORS.values())
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    assert set(keeper._terminal_validators) == SIX_VALIDATORS
+    assert {kind: label for kind, (label, _) in keeper._terminal_validators.items()} == {
+        kind: label for kind, (label, _) in ag.TERMINAL_VALIDATORS.items()}
+    with pytest.raises(ValueError, match="closed terminal validator registry"):
+        ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+
+
+def test_registered_quiescence_validator_reads_the_keeper_uncertainty_at_invocation():
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    vectors = _synthetic_terminal_vectors()
+    digests, observations = _journal_observations(vectors)
+    journal = _journal_with(observations=[("terminal", c.canonical(vectors["terminal"]))])
+    keeper.attach(journal)
+    validator = keeper._terminal_validators["quiescence"][1]
+    source = {"terminal": digests["terminal"]}
+    assert validator(source, owner={}, window={}, observations=observations)["facts"]["unknown"] == []
+    journal._unknown.append({"kind": "late"})
+    assert validator(source, owner={}, window={}, observations=observations)["facts"]["unknown"] == [{"kind": "late"}]
+
+
+def _lazy_case(monkeypatch, *, mutation=None, handoff=None):
+    from tools.cnesdata_delivery import application_gate as ag
+    vectors = _synthetic_terminal_vectors()
+    world = _HostWorld(mutation, handoff=handoff)
+    keeper, _ = _accepted_terminal_case()
+    keeper.api = world
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    order = []
+    for name in ("host_terminal_validator", "decision_terminal_validator"):
+        original = getattr(ag, name)
+        monkeypatch.setattr(ag, name, lambda raw, _original=original, _name=name: order.append((_name, raw)) or _original(raw))
+    return ag, vectors, world, keeper, order
+
+
+def test_registered_host_validator_authenticates_the_handoff_before_building_the_factory(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    assert world.reads == [] and order == []  # Registration never reads the host run.
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": c.sha(world.raw), "closed-ready": digests["closed-ready"]}
+    original = world.read
+    world.read = lambda path, **kw: order.append(("read", path)) or original(path, **kw)
+    result = keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+    assert result["facts"] == {"accepted": True}
+    kinds = [item[0] for item in order]
+    assert kinds[-1] == "host_terminal_validator" and set(kinds[:-1]) == {"read"} and len(kinds) == len(world.reads) + 1
+    assert order[-1][1] == world.raw
+
+
+def test_registered_host_validator_never_builds_the_factory_for_an_unauthenticated_handoff(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch, mutation="digest")
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": c.sha(world.raw), "closed-ready": digests["closed-ready"]}
+    with pytest.raises(ValueError, match="host handoff digest"):
+        keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+    assert order == []
+
+
+def test_registered_host_validator_refuses_a_source_that_is_not_the_authenticated_bytes(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": "f" * 64, "closed-ready": digests["closed-ready"]}
+    with pytest.raises(ValueError, match="terminal source role=host-handoff"):
+        keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+
+
+def test_registered_decision_validator_binds_the_canonical_recovery_decision_of_the_handoff(monkeypatch):
+    vectors = _synthetic_terminal_vectors()
+    decision = c.loads(_synthetic_terminal_artifacts(vectors)["recovery-decision"], canonical=True)
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch, handoff={"status": "recovery_required", "recovery_decision": decision})
+    window = copy.deepcopy(RECOVERY_WINDOW)
+    source = {"recovery-decision": c.sha(c.canonical(decision))}
+    result = keeper._terminal_validators["decision"][1](source, owner=dict(HOST_OWNER), window=window, observations={})
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {}}
+    assert order == [("decision_terminal_validator", c.canonical(decision))]
+    source = {"recovery-decision": "f" * 64}
+    with pytest.raises(ValueError, match="terminal source role=recovery-decision"):
+        keeper._terminal_validators["decision"][1](source, owner=dict(HOST_OWNER), window=window, observations={})
+
+
+def test_registered_decision_validator_refuses_a_handoff_without_a_recovery_decision(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    with pytest.raises(ValueError, match="host handoff recovery decision"):
+        keeper._terminal_validators["decision"][1]({"recovery-decision": "f" * 64}, owner=dict(HOST_OWNER),
+                                                   window=copy.deepcopy(RECOVERY_WINDOW), observations={})
+    assert order == []
 
 
 def _recovery_terminal_case(vectors, artifacts):
@@ -6146,3 +6731,32 @@ def test_static_plan_refuses_unicode_digits_oversize_and_non_str_buckets(case):
     bucket = Bucket(_STATIC_BUCKET) if case == "bucket-str-subclass" else _STATIC_BUCKET
     with pytest.raises(ValueError):
         lc.static_plan(c.canonical(value, limit=8 * 1024**2) if case == "oversized" else c.canonical(value), bucket=bucket)
+
+
+def _terminal_window_case(kind):
+    from tools.cnesdata_delivery import application_gate as ag
+    if kind == "failed-prepare-quiescent":
+        keeper, store = _prepare_stage_keeper()
+    else:
+        keeper, store = _accepted_terminal_case()
+        if kind == "failed-closed-quiescent":
+            value = store.get()[0]
+            value["lifecycle"] |= {"stage": "recovery", "decision": {"choice_at": 1100, "deadline": 1520, "checkpoint_sha256": "9" * 64}}
+            store.value = value
+    keeper._terminal_validators = {}
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    return ag, keeper, store
+
+
+@pytest.mark.parametrize("kind, missing", [("accepted-open", {"unit", "recovery", "audit"}), ("failed-closed-quiescent", {"restoration"}),
+                                          ("failed-prepare-quiescent", {"restoration"})])
+def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
+    """The registry has no unit/recovery/audit/restoration validator: finish refuses every terminal kind, so API is the only end."""
+    ag, keeper, store = _terminal_window_case(kind)
+    window = store.get()[0]["lifecycle"]
+    required = ag._terminal_required(kind, window)
+    assert required - set(ag.TERMINAL_VALIDATORS) == missing
+    before = store.get()
+    with pytest.raises(ValueError, match="^terminal validator unavailable; lifecycle disabled$"):
+        keeper.finish({"kind": kind, "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
+    assert store.get() == before and before[0]["status"] == "held"

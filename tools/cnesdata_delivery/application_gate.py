@@ -1,7 +1,8 @@
 """Protected application admission, own-role bootstrap, keeper and finite IPC.
 
-Operational execution remains disabled until complete capability admission and
-the protected producer/keeper dispatch are connected. Defaults grant no access.
+Operational execution composes the original keeper and stops at the API stage
+with the lease held (R18); finish, publication and the closed-ready dispatch are
+not connected. Defaults grant no access.
 """
 import time
 
@@ -92,7 +93,7 @@ def _terminal_required(kind, window):
 # Amendment 6886977054 decision 6: pure in-process terminal validators over keeper journal
 # observations or bytes a caller authenticated, never caller JSON. `source` is a closed role ->
 # sha256 map; a journal role selects observation bytes of its own kind, an artifact role only the
-# factory's authenticated bytes, and the result commits to the map. Nothing registers them yet.
+# factory's authenticated bytes, and the result commits to the map. TERMINAL_VALIDATORS registers them.
 TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
                          "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
@@ -1314,6 +1315,16 @@ def close_expirations(authority, api):
                         for kind, digest, expiry in entries])
 
 
+RELEASE_FIELDS = "release_id source_sha candidate_sha256 canary_id binding_sha256 image_digest"
+
+
+def application_release_sha256(governance):
+    """Owner release_sha256 of 6974253889 section 1: the opaque hash of the closed governance release."""
+    release = governance.get("release")
+    c.require(type(release) is dict and set(release) == set(RELEASE_FIELDS.split()), "application governance release")
+    return c.sha(c.canonical(release))
+
+
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
                             guard, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).
@@ -1523,6 +1534,9 @@ class Keeper:
             c.require(reference["protocol"] == "lifecycle", "readiness requires original lifecycle predecessor")
         self.predecessor_reference = c.loads(c.canonical(reference), canonical=True)
         self._previous(previous)  # Complete protected binding before Lease.acquire/CAS.
+        original_release = lc.phase_a_originals(self.phase_a_originals)["envelope"]["plan"]["release"]
+        c.require(c.sha(c.canonical(original_release)) == c.digest(self.lease.binding["release_sha256"]),
+                  "application release binds the original Phase A plan release")
         self.lease.acquire()  # Revalidates the record read by the original CAS owner.
         c.require(self.predecessor is not None, "original predecessor missing")
         now = int(self.clock())
@@ -1561,6 +1575,23 @@ class Keeper:
                   and type(label) is str and 0 < len(label) <= 128, "closed terminal validator registry")
         self._terminal_validators[kind] = (label, validator)
 
+    def _latest_observation_bytes(self):
+        """Disposition 3d of 6963008338: bytes only of the latest registered observation of each kind.
+
+        Journals follow attach order, a broker counts once through its journal, and the
+        entries of one journal follow its own `_observations` order.
+        """
+        journals = []
+        for context in self._contexts:
+            found = context.journal if type(context) is ClosedReadyBroker else context
+            journals += [] if any(known is found for known in journals) else [found]
+        latest = {}
+        for journal in journals:
+            for entry in journal._observations:
+                latest[entry["kind"]] = (journal, entry["sha256"])
+        return {digest: journal._observation_bytes[digest] for journal, digest in latest.values()
+                if digest in journal._observation_bytes}
+
     def _terminal_proof(self, reference, owner, window):
         """Assemble the assessment from registered validator results, never from caller JSON."""
         c.closed(reference, "kind checkpoint_raw sources")
@@ -1568,10 +1599,7 @@ class Keeper:
         required = _terminal_required(reference["kind"], window)
         c.require(set(reference["sources"]) == required and required <= set(self._terminal_validators),
                   "terminal validator unavailable; lifecycle disabled")
-        observations = {}
-        for context in self._contexts:
-            journal = context.journal if type(context) is ClosedReadyBroker else context
-            observations.update(journal.observation_bytes)
+        observations = self._latest_observation_bytes()
         inputs, facts = {}, {}
         for kind in sorted(required):
             label, validator = self._terminal_validators[kind]
@@ -1696,13 +1724,141 @@ def publish_static_closed_ready(journal, keeper):
         raise
 
 
-# Closed production registries. They are code constants, never read from
-# governance, environment or request. Both are empty until the product adapter
-# (CnesData #473/#474) and an authorized keeper event producer exist, so execute
-# refuses before any AWS construction, lease write or STS call.
-TERMINAL_VALIDATORS = {}
-KEEPER_EVENT_SOURCE = None
-KEEPER_EVENTS = ("closed-ready", "terminal")
+# CnesData 9cdd452f scripts/promotion/_api_static_handoff.py as labelled literals: the keeper-side caller of the
+# public host-handoff artifact. Unlike the product, producer_sha is the run's own reusable pin, never a literal.
+HOST_JOB = "host-gate / execute"
+HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH frames",
+                  "Publish only the closed public handoff projection",
+                  "Fail only after the original recovery handoff is available")
+HOST_REUSABLE = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
+HOST_MEMBER, HOST_MEMBER_LIMIT, HOST_ZIP_LIMIT = "host-handoff.json", 32768, 65536
+
+
+def _host_job(api, owner, guard):
+    run_id, attempt = owner["run_id"], owner["run_attempt"]
+    guard.check(20)
+    listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page=1")
+    guard.check()
+    found = [job for job in listing["jobs"] if job["name"] == HOST_JOB]
+    c.require(listing["total_count"] == len(listing["jobs"]) <= 100 and len(found) == 1, "host handoff job inventory")
+    job = found[0]
+    c.require((job["run_id"], job["run_attempt"], job["head_sha"]) == (run_id, attempt, owner["source_sha"])
+              and job["status"] == "completed" and job["conclusion"] in {"success", "failure"}, "host handoff job identity")
+    steps = {step["name"]: step for step in job["steps"]}
+    c.require(all(name in steps for name in HOST_JOB_STEPS), "host handoff job steps")
+    gate, handoff, final = (steps[name] for name in HOST_JOB_STEPS)
+    c.require(gate["number"] < handoff["number"] < final["number"]
+              and (gate["conclusion"], handoff["conclusion"]) == ("success", "success")
+              and final["conclusion"] == ("failure" if job["conclusion"] == "failure" else "skipped"), "host handoff job steps")
+    return job
+
+
+def _host_handoff_archive(api, owner, job, guard):
+    run_id = owner["run_id"]
+    guard.check(20)
+    listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100&page=1")
+    guard.check()
+    c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "host handoff artifact inventory")
+    found = [item for item in listing["artifacts"] if item["name"] == f"cnesdata-host-handoff-{run_id}-{owner['run_attempt']}"]
+    c.require(len(found) == 1, "host handoff artifact unique")
+    meta = found[0]
+    c.require(meta["expired"] is False and meta["workflow_run"]["id"] == run_id
+              and meta["workflow_run"]["head_sha"] == owner["source_sha"]
+              and c.instant(job["started_at"]) < c.instant(meta["created_at"]) <= c.instant(job["completed_at"]),
+              "host handoff artifact identity")
+    guard.check(20)
+    archive = api.read(f"repos/{c.REPOSITORY}/actions/artifacts/{meta['id']}/zip", raw=True, maximum=HOST_ZIP_LIMIT)
+    guard.check()
+    c.require(type(archive) is bytes and len(archive) <= HOST_ZIP_LIMIT and meta["digest"] == "sha256:" + c.sha(archive),
+              "host handoff digest")
+    return archive
+
+
+def _host_handoff_member(archive):
+    import io
+    import stat
+    import zipfile
+    try:
+        packed = zipfile.ZipFile(io.BytesIO(archive))
+    except zipfile.BadZipFile as error:
+        raise ValueError("host handoff member") from error
+    with packed:
+        members = packed.infolist()
+        c.require(len(members) == 1 and members[0].filename == HOST_MEMBER and not members[0].is_dir()
+                  and stat.S_IFMT(members[0].external_attr >> 16) in {0, stat.S_IFREG} and not members[0].flag_bits & 1,
+                  "host handoff member")
+        with packed.open(members[0]) as stream:
+            raw = stream.read(HOST_MEMBER_LIMIT + 1)
+    c.require(0 < len(raw) <= HOST_MEMBER_LIMIT, "host handoff member size")
+    return raw
+
+
+def authenticate_host_handoff(api, owner, *, guard):
+    """Authenticated host-handoff bytes of the owner run: job and steps, artifact, digest, member, canonical JSON.
+
+    Args: api GitHub reader, owner binding, keeper guard. Returns: the exact artifact member bytes.
+    Raises: ValueError on any missing or divergent proof.
+    """
+    run_id, attempt = owner["run_id"], owner["run_attempt"]
+    guard.check(20)
+    run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
+    guard.check()
+    c.require((run["id"], run["run_attempt"], run["head_sha"]) == (run_id, attempt, owner["source_sha"]), "host handoff run")
+    refs = [item for item in run.get("referenced_workflows", []) if item["path"].startswith(HOST_REUSABLE)]
+    c.require(len(refs) == 1 and refs[0]["path"] == HOST_REUSABLE + c.digest(refs[0]["sha"], 40), "host handoff reusable")
+    job = _host_job(api, owner, guard)
+    raw = _host_handoff_member(_host_handoff_archive(api, owner, job, guard))
+    value = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)
+    caller = value.get("caller") if type(value) is dict else None
+    c.require(type(caller) is dict and value.get("producer_sha") == refs[0]["sha"]
+              and (caller.get("repository"), caller.get("source_sha"), caller.get("run_id"), caller.get("run_attempt"))
+              == (c.REPOSITORY, owner["source_sha"], run_id, attempt), "host handoff producer/caller")
+    return raw
+
+
+def _journal_validator(validator):
+    return lambda keeper: validator
+
+
+def _quiescence_validator(keeper):
+    return quiescence_terminal_validator(keeper.uncertainty)
+
+
+def _handoff_validator(role):
+    """Lazy artifact validator: the handoff is authenticated when the keeper invokes it, before the factory is built."""
+    def provider(keeper):
+        def validator(source, *, owner, window, observations):
+            raw = authenticate_host_handoff(keeper.api, owner, guard=KeeperGuard(keeper))
+            if role == "host-handoff":
+                return host_terminal_validator(raw)(source, owner=owner, window=window, observations=observations)
+            decision = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)["recovery_decision"]
+            c.require(decision is not None, "host handoff recovery decision")
+            return decision_terminal_validator(c.canonical(decision))(source, owner=owner, window=window,
+                                                                      observations=observations)
+        return validator
+    return provider
+
+
+# Closed production registries. They are code constants, never read from governance, environment or
+# request. Each kind maps to a SYNTHETIC label (R3: the product has no routing or terminal-readback
+# handler) and a provider that builds the validator for one keeper. Only six kinds exist; unit,
+# recovery, audit and restoration stay without a validator, so finish() refuses their terminals.
+TERMINAL_VALIDATORS = {
+    "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
+    "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
+    "membership": ("synthetic-membership", _journal_validator(membership_terminal_validator)),
+    "quiescence": ("synthetic-quiescence", _quiescence_validator),
+    "host": ("synthetic-host", _handoff_validator("host-handoff")),
+    "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+}
+KEEPER_EVENT_SOURCE = stage_event_source
+
+
+def register_terminal_validators(keeper, registry):
+    c.require(type(keeper) is Keeper and type(registry) is dict and set(registry) <= set(TERMINAL_VALIDATOR_FACTS),
+              "terminal validator registry")
+    for kind, (label, provider) in sorted(registry.items()):
+        keeper.register_terminal_validator(kind, provider(keeper), label=label)
 
 
 class KeeperGuard:
@@ -1735,15 +1891,129 @@ def run_closed_ready(*, keeper, request_raw, owner, window, inputs, activation_s
                           journal=journal, timeout=timeout)
 
 
-def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over a closed event set; no finally-release.
+class _ArtifactTap:
+    """Keeps the artifact metadata that lifecycle_artifact already authenticated; every other read is delegated."""
+    def __init__(self, inner):
+        self._inner, self.metadata = inner, {}
 
-    next_event is the authenticated event producer; handlers holds only the
-    closed-ready dispatch. Stage advancement (close-drain, B, API) is not an
-    event here: close_drain_capability exists but is not a keeper event until the execute wiring.
-    Any exception leaves the lease held; finish() refuses under uncertainty.
+    def read(self, path, **kwargs):
+        value = self._inner.read(path, **kwargs)
+        head = f"repos/{c.REPOSITORY}/actions/artifacts/"
+        if path.startswith(head) and not path.endswith("/zip"):
+            self.metadata[int(path.removeprefix(head))] = value
+        return value
+
+
+def _close_drain_journal(*, guard, owner, window, activation, expirations):
+    """The close-drain ABI2 request, bound to the keeper window exactly as it is at the prepared event."""
+    inputs = {"activation": activation, "expirations": expirations}
+    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+               "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(activation),
+               "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    return AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                          activation_sha256=request["activation_sha256"], guard=guard)
+
+
+def _plan_activation(*, aws, api, governance, request, run, prepared, owner, window, guard, now):
+    """Ratification 6974253889 section 3: the activation bytes of the authenticated same-run plan carrier.
+
+    The plan download joins api.expiries/api.digests, so close_expirations binds it as one more artifact.
     """
-    c.require(type(handlers) is dict and set(handlers) == {"closed-ready"}, "closed keeper handlers")
+    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
+    current = c.loads(prepared["fence-origins.json"], canonical=True)["current_plan"]
+    name = current["step"]
+    step = governance["lifecycle_steps"].get(name)
+    c.require(type(step) is dict and step.get("role") == "plan" and step.get("purpose") == "application-prepare"
+              and step.get("mode") == "operational" and type(step.get("job_name")) is str, "activation plan step")
+    tap = _ArtifactTap(api)
+    job = _same_run_job(tap, run, kind="plan", job_name=step["job_name"], guard=guard)
+    reference, public = _same_run_publication(tap, run, owner, job, kind="plan", step=name, guard=guard, now=now)
+    key = (c.REPOSITORY, reference["artifact_id"])
+    api.expiries[key] = c.instant(tap.metadata[reference["artifact_id"]]["expires_at"])
+    api.digests[key] = c.digest(reference["artifact_digest"].removeprefix("sha256:"))
+    c.require(c.sha(public["index.json"]) == current["index_sha256"], "activation plan index")
+    inputs = private_payload(aws, governance, request, run, public, guard=guard, names={"inputs.json"})[1]["inputs.json"]
+    c.require(c.sha(inputs) == c.loads(prepared["approval.json"], canonical=True)["inputs_sha256"], "activation plan inputs")
+    decoded = lc.inputs_envelope(inputs, owner=owner, window=window)
+    c.require(decoded["activation_sha256"] == c.loads(prepared["fence-prepared.json"], canonical=True)["activation_sha256"],
+              "activation bytes")
+    return decoded["activation"]["payload"]
+
+
+def _close_drain_seconds(window, credential_limit, now):
+    """Largest whole-second timeout that phase_capacity still admits; sampled right before the child starts."""
+    seconds = int(min(window["deadline"] - now - 158, credential_limit - now - 121))
+    c.require(seconds >= 1, "close-drain capacity")
+    lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
+    return seconds
+
+
+def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, clock=time.time):
+    """Handlers of the two ratified stage triggers (amendment 6886977054 decision 3, ratification 6974253889).
+
+    prepared: authenticated fence package, activation from the plan carrier, close-drain, close window.
+    phase-b: B checkpoint ancestry from the prepared checkpoint, API window. The API stage ends this slice.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    state = {}
+
+    def prepared(current, reference):
+        guard = KeeperGuard(current)
+        record = current.lease.check()
+        window, owner = record["lifecycle"], lc.owner_binding(record)
+        files = lr.fence_prepared_payload(api, aws, governance, request, run, reference, owner=owner, now=clock(),
+            predecessor_raw=current.predecessor["raw"], predecessor_reference=current.predecessor_reference, guard=guard)
+        activation = _plan_activation(aws=aws, api=api, governance=governance, request=request, run=run, prepared=files,
+                                      owner=owner, window=window, guard=guard, now=clock())
+        journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
+                                       expirations=close_expirations(authority, api))
+        current.attach(journal)
+        close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal, keeper=current,
+                               prepared=files, credential_limit=credential_limit, clock=clock)
+        seconds = _close_drain_seconds(window, credential_limit, clock())
+        invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                       manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        observed = [entry for entry in journal._observations if entry["kind"] == "close-drain"]
+        c.require(len(journal._observations) == len(observed) == 1 and not current.uncertainty(),
+                  "close-drain single observation without uncertainty")
+        closed = lc.close_window(current.lease.check()["lifecycle"], journal._observation_bytes[observed[0]["sha256"]],
+                                 checkpoint_sha256=c.sha(files["checkpoint.json"]),
+                                 infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
+        current.lease.checkpoint(closed)
+        state["prepared"] = files
+
+    def phase_b(current, reference):
+        files = state.get("prepared")
+        c.require(files is not None, "phase-b follows the prepared stage handled by this keeper")
+        owner = lc.owner_binding(current.lease.check())
+        published = _phase_b_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock())
+        b_checkpoint = c.loads(published["checkpoint.json"], canonical=True)
+        b_approval = c.loads(published["approval.json"], canonical=True)
+        c.require(b_approval["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
+                  and b_approval["plan_sha256"] == b_checkpoint["plan_sha256"] and b_checkpoint["purpose"] == "phase-b"
+                  and c.canonical(b_checkpoint["owner"]) == c.canonical(owner), "preparation -> B checkpoint ancestry")
+        admitted = clock()
+        window = current.lease.check()["lifecycle"]
+        c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
+        current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
+                                               now=admitted))
+
+    return {"prepared": prepared, "phase-b": phase_b}
+
+
+KEEPER_EVENTS = ("prepared", "phase-b")
+
+
+def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
+    """The single keeper polling loop over the two ratified stage triggers; it never returns.
+
+    next_event is the authenticated event producer and handlers holds exactly the two stage
+    handlers. After the API stage the producer refuses and the lease stays held (R18): there
+    is no finish, publish or dispatch here. Any exception leaves the lease held.
+    """
+    c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
     while True:
         keeper.tick()
@@ -1752,27 +2022,68 @@ def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sle
             sleep(poll)
             continue
         c.closed(event, "kind reference")
-        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event; stage advancement not connected")
-        if event["kind"] == "closed-ready":
-            handlers["closed-ready"](keeper, event["reference"])
-            continue
-        files = keeper.finish(event["reference"])
-        return publish(files)
+        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
+        handlers[event["kind"]](keeper, event["reference"])
+
+
+def _verify_session(client, governance, authority, run, expires):
+    """Exact own-role session readback shared by credentials and execute; returns the expiry/freeze guard."""
+    from tools.cnesdata_delivery import session_owner
+    class Guard:
+        def check(self, seconds=0):
+            c.require(time.time() + seconds < expires <= min(authority.expires_at,
+                      c.instant(authority.application_fragment["enabled_until"])), "original bootstrap credential/freeze window")
+    report = session_owner.verify_application(client, authority, expires, Guard(), clock=time.time, include_documents=True)
+    name = f"cnesdata-{run['id']}-{run['run_attempt']}"
+    expected = authority.application_fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + name
+    c.require(all(client.identity.get(key) == expected_value for key, expected_value in
+                     {"Account": governance["account_id"], "Arn": expected, "UserId": report["role_id"] + ":" + name}.items()),
+              "original bootstrap GetCallerIdentity")
+    return Guard()
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry, disabled by default before any effect."""
+    """Operational keeper entry: compose the original keeper and run the stage loop to the API stage.
+
+    The order is the contract: release, adapter closure, owner authority, credential window, AWS and
+    session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    """
+    import os
     from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner
     validators = TERMINAL_VALIDATORS if validators is None else validators
     event_source = KEEPER_EVENT_SOURCE if event_source is None else event_source
     c.require(type(validators) is dict and {"quiescence", "routing"} <= set(validators) <= set(TERMINAL_VALIDATOR_FACTS),
               "terminal validator unavailable; lifecycle disabled")
     c.require(callable(event_source), "keeper event producer not connected; lifecycle disabled")
     governance, request, step, api, run, _ = admitted
+    release_sha256 = application_release_sha256(governance)
     product = Path.cwd() / "product" if product is None else product
     authenticate_adapter_closure(product, request["source_sha"], governance["application_product_source_manifest"],
                                  governance["application_product_source_closure_sha256"])
-    raise ValueError("keeper construction from protected binding not connected; lifecycle disabled")
+    authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"],
+                                                     "application", "application-prepare", time.time())
+    c.require(type(os.environ.get("AWS_CREDENTIAL_EXPIRATION")) is str, "application credential expiration")
+    expires = c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"])
+    c.require(time.time() < expires, "application credential expiration")
+    credential_limit = min(expires, authority.expires_at, c.instant(authority.application_fragment["enabled_until"]))
+    aws = lr.AWS(governance)
+    _verify_session(aws, governance, authority, run, expires)
+    caller = governance["authenticated_application_caller"]
+    session = c.sha(c.canonical({"principal": aws.identity["Arn"], "run_id": run["id"], "run_attempt": run["run_attempt"],
+                                 "gate": "application"}))
+    binding = {"repository": c.REPOSITORY, "source_sha": request["source_sha"], "run_id": run["id"],
+               "run_attempt": run["run_attempt"], "session_sha256": session, "release_sha256": release_sha256,
+               "lifecycle_version": 1, "application_purpose": caller["application_purpose"],
+               "context_kind": caller["context_kind"], "caller_binding_sha256": c.sha(c.canonical(caller))}
+    keeper = Keeper(lr.S3LeaseStore(aws), binding, lambda previous: authenticated_previous(aws, api, governance, previous),
+                    api=api, governance=governance, evidence_aws=aws)
+    register_terminal_validators(keeper, validators)
+    owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
+    next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), clock=keeper.clock)
+    handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
+                              authority=authority, product=product, credential_limit=credential_limit, clock=keeper.clock)
+    keeper_loop(keeper, next_event=next_event, handlers=handlers)
 
 
 def credentials(admitted, *, product=None):
@@ -1794,19 +2105,10 @@ def credentials(admitted, *, product=None):
         request["step"], application_purpose=request["application_purpose"])
     value = lr.oidc_credentials(governance, "application", restriction, run)
     expires = value["Expiration"].timestamp()
-    class Guard:
-        def check(self, seconds=0):
-            c.require(time.time() + seconds < expires <= min(authority.expires_at,
-                      c.instant(authority.application_fragment["enabled_until"])), "original bootstrap credential/freeze window")
     client = lr.AWS(governance, credentials=value)
-    report = session_owner.verify_application(client, authority, expires, Guard(), clock=time.time, include_documents=True)
-    name = f"cnesdata-{run['id']}-{run['run_attempt']}"
-    expected = authority.application_fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + name
-    c.require(all(client.identity.get(key) == expected_value for key, expected_value in
-                     {"Account": governance["account_id"], "Arn": expected, "UserId": report["role_id"] + ":" + name}.items()),
-              "original bootstrap GetCallerIdentity")
+    guard = _verify_session(client, governance, authority, run, expires)
     authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
-    Guard().check()
+    guard.check()
     lr.export_credentials(value)
 
 
