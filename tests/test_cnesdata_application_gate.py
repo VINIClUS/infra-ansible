@@ -1081,7 +1081,7 @@ def _adapter_case(operation="inventory"):
     return request, owner, window, inputs
 
 
-@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready", "publish-static", "retire-static"])
+@pytest.mark.parametrize("operation", ["inventory", "close-drain", "closed-ready", "publish-static"])
 @pytest.mark.parametrize("mutation", [None, "extra", "owner", "checkpoint", "stage-time", "bytes", "missing", "extra-input", "readiness", "noncanonical", "source", "canary-old", "activation"])
 def test_adapter_request_binds_original_bytes_owner_phase_and_closed_inputs(operation, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -5339,34 +5339,35 @@ def _static_binding(**changes):
     return copy.deepcopy(STATIC_SESSION_VECTOR["binding"]) | changes
 
 
-def test_retire_static_abi_row_is_decision_5():
+def test_retire_static_abi_row_is_decision_5_with_no_admitted_stage_r16():
     from tools.cnesdata_delivery import lifecycle_contract as lc
     assert lc.ADAPTER_INPUTS["retire-static"] == "static-plan inventory publication routing"
-    assert lc.ADAPTER_STAGES["retire-static"] == {"final"}
+    assert lc.ADAPTER_STAGES["retire-static"] == set()
     assert lc.ADAPTER_OBSERVATIONS["retire-static"] == "retirement"
     assert set(lc.ADAPTER_INPUTS) == set(lc.ADAPTER_STAGES) == set(lc.ADAPTER_OBSERVATIONS)
 
 
-@pytest.mark.parametrize("stage", ["static", "recovery", "api", "unit", "phase-c-audit"])
-def test_retire_static_request_refuses_every_stage_but_final(stage):
+@pytest.mark.parametrize("stage", ["application-prepare", "phase-b", "api", "static", "unit", "phase-c-recovery",
+                                   "phase-c-audit", "final", "recovery"])
+def test_retire_static_request_refuses_every_stage_r16(stage):
+    """6963763481 decision 1: in this slice retire-static is admitted in no stage, not even final."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
     request, owner, window, inputs = _adapter_case("retire-static")
     window["stage"] = request["stage"]["stage"] = stage
     with pytest.raises(ValueError, match="adapter original stage"):
         lc.validate_adapter_request(c.canonical(request), operation="retire-static", owner=owner, window=window,
                                     inputs=inputs, activation_sha256=request["activation_sha256"])
+    with pytest.raises(ValueError, match="adapter original stage"):
+        AdapterJournal(c.canonical(request), operation="retire-static", owner=owner, window=window, inputs=inputs,
+                       activation_sha256=request["activation_sha256"], guard=_QuietGuard())
 
 
 @pytest.mark.parametrize("kind", ["retirement", "publication", "routing", "terminal"])
-def test_retire_static_result_and_journal_take_only_the_retirement_observation(kind):
+def test_retire_static_result_takes_only_the_retirement_observation(kind):
+    """No stage admits retire-static (R16), so no journal exists; the result codec still closes the observation."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    from tools.cnesdata_delivery.application_gate import AdapterJournal
-    request, owner, window, inputs = _adapter_case("retire-static")
-    class Guard:
-        def check(self, seconds=1):
-            pass
-    journal = AdapterJournal(c.canonical(request), operation="retire-static", owner=owner, window=window, inputs=inputs,
-                             activation_sha256=request["activation_sha256"], guard=Guard())
+    request = _adapter_case("retire-static")[0]
     raw = c.canonical({"fixture_only": "retirement"})
     observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
     result = {"abi_version": 2, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
@@ -5374,11 +5375,8 @@ def test_retire_static_result_and_journal_take_only_the_retirement_observation(k
               "observations": observations, "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
     args = {"request": request, "observations": observations, "call_receipts": [], "pending": [], "unknown": []}
     if kind == "retirement":
-        assert journal.observe(kind, raw) == c.sha(raw)
         assert lc.validate_adapter_result(c.canonical(result), **args) == result
     else:
-        with pytest.raises(ValueError, match="adapter operation observation"):
-            journal.observe(kind, raw)
         with pytest.raises(ValueError, match="adapter operation observation"):
             lc.validate_adapter_result(c.canonical(result), **args)
 
@@ -5549,7 +5547,7 @@ def test_publish_static_refuses_a_host_receipt_outside_the_v1_handoff(mutation):
     assert publish._failed is True
 
 
-@pytest.mark.parametrize("operation", ["closed-ready", "retire-static", "inventory"])
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain", "inventory"])
 def test_publish_static_binding_takes_only_a_publish_static_journal_and_the_keeper(operation):
     from tools.cnesdata_delivery import application_gate as ag
     keeper, publish, _ = _publish_static_case()
