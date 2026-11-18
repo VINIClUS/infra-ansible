@@ -581,6 +581,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     live = session_owner.authenticate_lifecycle(gov, api, source, "application", "application-prepare", time.time())
     window = native_credentials["Expiration"].timestamp()
     guard = ag._verify_session(BootstrapIAM(gov, credentials=native_credentials), gov, live, run, window)
+    from dataclasses import replace
+    edge = ag._verify_session(BootstrapIAM(gov, credentials=native_credentials), gov, replace(live, expires_at=window), run, window)
     with monkeypatch.context() as pinned:
         pinned.setattr(ag.time, "time", lambda: window)
         with pytest.raises(ValueError, match="original bootstrap credential/freeze window"):
@@ -589,6 +591,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
         guard.check()
         with pytest.raises(ValueError, match="original bootstrap credential/freeze window"):
             guard.check(1)
+        edge.check()
     for field, value in (("UserId", "AROAother:cnesdata-44-1"), ("Account", "999900001111"), ("Arn", "arn:aws:sts::111122223333:assumed-role/foreign/cnesdata-44-1")):
         identity_change.clear()
         identity_change[field] = value

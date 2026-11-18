@@ -4954,6 +4954,16 @@ def test_execute_refuses_before_the_next_effect(monkeypatch, mutation, message):
     assert names == expected
 
 
+def test_execute_refuses_a_credential_expiring_exactly_now(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    with monkeypatch.context() as pinned:
+        pinned.setattr(ag.time, "time", lambda: 1_800_000_000.0)
+        ag_mod, admitted, calls, world = _execute_case(pinned, expiration=c.utc(1_800_000_000))
+        with pytest.raises(ValueError, match="application credential expiration"):
+            ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
+    assert [name for name, _, _ in calls] == ["closure", "authority"]
+
+
 def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     """Static proof: the only production path to the keeper is main -> execute(admitted); every other site is internal."""
     import ast
