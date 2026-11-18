@@ -13,7 +13,7 @@ from tools.cnesdata_delivery import contract as c
 APPLICATION_CONTEXTS = {"promotion": "promotion", "mode-readiness-drill": "readiness"}
 APPLICATION_CALLERS = {
     purpose: {"repository": c.REPOSITORY, "workflow_path": ".github/workflows/" + workflow,
-              "ref": "refs/heads/develop", "environment": "production"}
+              "ref": "refs/heads/main", "environment": "production"}
     for purpose, workflow in (("promotion", "promote-production.yml"),
                               ("mode-readiness-drill", "readiness-production.yml"))
 }

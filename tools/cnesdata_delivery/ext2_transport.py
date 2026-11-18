@@ -358,7 +358,7 @@ def _authenticate_source(
         and type(run.get("run_attempt")) is int
         and run["run_attempt"] == int(ref["run_attempt"])
         and run.get("head_sha") == profile["source_sha"]
-        and run.get("head_branch") == "develop"
+        and run.get("head_branch") == "main"
         and run.get("event") == "workflow_dispatch"
         and run.get("path", "").split("@")[0] == profile["caller_workflow_path"],
         "run_identity",
@@ -396,9 +396,9 @@ def _authenticate_source(
     )
     authenticate_closure(github, profile)
     compare = _read(
-        github, f"repos/{REPOSITORY}/compare/{profile['source_sha']}...develop"
+        github, f"repos/{REPOSITORY}/compare/{profile['source_sha']}...main"
     )
-    require(compare.get("status") in {"identical", "ahead"}, "develop_containment")
+    require(compare.get("status") in {"identical", "ahead"}, "main_containment")
     checks = _read(
         github,
         f"repos/{REPOSITORY}/commits/{profile['source_sha']}/check-runs?per_page=100",

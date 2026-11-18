@@ -25,7 +25,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
     c.integer(run_id)
     c.integer(attempt)
     c.require(role in {"plan", "deploy", "application"} and source == governance["source_sha"], "governed source/role")
-    c.require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and os.environ.get("GITHUB_REF") == "refs/heads/develop"
+    c.require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and os.environ.get("GITHUB_REF") == "refs/heads/main"
               and os.environ.get("GITHUB_REPOSITORY") == c.REPOSITORY, "manual production caller")
     purpose = governance["application_purpose"]
     c.require(purpose in lc.APPLICATION_CONTEXTS and governance["context_kind"] == lc.APPLICATION_CONTEXTS[purpose],
@@ -34,14 +34,14 @@ def source_admission(governance, api, role, source, run_id, attempt):
     run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
     c.require(run["id"] == run_id and run["run_attempt"] == attempt and run["head_sha"] == source
               and run["repository"]["full_name"] == c.REPOSITORY and run["event"] == "workflow_dispatch"
-              and run["path"].split("@")[0] == caller["workflow_path"] and run["head_branch"] == "develop"
+              and run["path"].split("@")[0] == caller["workflow_path"] and run["head_branch"] == "main"
               and run["status"] == "in_progress", "original live manual attempt")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
     pin = c.digest(governance["gate_shas"][role], 40)
     refs = [x for x in run.get("referenced_workflows", []) if x["path"].startswith(path + "@")]
     c.require(len(refs) == 1 and refs[0]["path"] == path + "@" + pin and refs[0]["sha"] == pin, "immutable reusable")
-    comparison = api.read(f"repos/{c.REPOSITORY}/compare/{source}...develop")
+    comparison = api.read(f"repos/{c.REPOSITORY}/compare/{source}...main")
     c.require(comparison["status"] in {"ahead", "identical"}, "source ancestry")
     checks = api.read(f"repos/{c.REPOSITORY}/commits/{source}/check-runs?per_page=100")["check_runs"]
     c.require(bool(governance["required_checks"]) and all(any(x["name"] == name and x["head_sha"] == source
@@ -719,7 +719,7 @@ def fence_prepared_payload(api, aws, governance, request, run, reference, *, own
     actual = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}")
     path = "VINIClUS/infra-ansible/" + producer["workflow_path"]
     refs = [item for item in actual.get("referenced_workflows", []) if item["path"].startswith(path + "@")]
-    c.require(actual["head_branch"] == "develop" and len(refs) == 1
+    c.require(actual["head_branch"] == "main" and len(refs) == 1
               and refs[0]["path"] == path + "@" + pin and refs[0]["sha"] == pin, "fence exact deploy reusable pin")
     c.closed(reference, "artifact_id artifact_digest job_id")
     c.integer(reference["job_id"])
@@ -830,7 +830,7 @@ def authenticate_predecessor(api, governance):
     else:
         c.integer(reference["generation"])
         run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
-        c.require(run["status"] == "completed" and run["conclusion"] == "success" and run["head_branch"] == "develop",
+        c.require(run["status"] == "completed" and run["conclusion"] == "success" and run["head_branch"] == "main",
                   "previous lifecycle not successful; reviewed recovery required")
         pin = c.digest(governance["gate_shas"]["application"], 40)
         path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@"
@@ -1464,7 +1464,7 @@ def oidc_credentials(governance, role, restriction, run, *, duration=3600):
     c.require(claims["iss"] == "https://token.actions.githubusercontent.com" and claims["aud"] == "sts.amazonaws.com"
               and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{workflow}"
               and claims["job_workflow_ref"] == workflow and claims["repository"] == c.REPOSITORY
-              and claims["ref"] == "refs/heads/develop" and int(claims["run_id"]) == run["id"]
+              and claims["ref"] == "refs/heads/main" and int(claims["run_id"]) == run["id"]
               and int(claims["run_attempt"]) == run["run_attempt"], "OIDC original run/attempt/producer")
     c.require(claims["workflow_ref"] == caller["repository"] + "/" + caller["workflow_path"] + "@" + caller["ref"]
               and claims["workflow_sha"] == caller["source_sha"] and claims["sha"] == caller["source_sha"]

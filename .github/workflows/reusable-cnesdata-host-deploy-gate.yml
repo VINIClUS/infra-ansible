@@ -65,7 +65,7 @@ jobs:
             const crypto = require("crypto");
             const g = JSON.parse(process.env.CNESDATA_HOST_GOVERNANCE);
             if (context.repo.owner !== "VINIClUS" || context.repo.repo !== "CnesData" ||
-                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/develop") {
+                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main") {
               throw new Error("Manual source required");
             }
             const {data: run} = await github.rest.actions.getWorkflowRunAttempt({
@@ -120,7 +120,7 @@ jobs:
             const crypto = require("crypto");
             const g = JSON.parse(process.env.CNESDATA_HOST_GOVERNANCE);
             if (context.repo.owner !== "VINIClUS" || context.repo.repo !== "CnesData" ||
-                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/develop") {
+                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main") {
               throw new Error("Manual source required");
             }
             const {data: run} = await github.rest.actions.getWorkflowRunAttempt({

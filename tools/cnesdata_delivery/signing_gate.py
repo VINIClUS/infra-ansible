@@ -944,7 +944,7 @@ def _configuration() -> tuple[dict[str, Any], dict[str, Any], t.GitHubClient]:
     e.require(
         os.environ.get("GITHUB_REPOSITORY") == t.REPOSITORY
         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        and os.environ.get("GITHUB_REF") == "refs/heads/develop",
+        and os.environ.get("GITHUB_REF") == "refs/heads/main",
         "runtime_context",
     )
     source = os.environ.get("EXPECTED_SOURCE_SHA", "")

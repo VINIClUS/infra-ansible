@@ -1885,7 +1885,7 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
         exec(compile(source, "ratified-workflow-bootstrap", "exec"), {})
         assert (tmp_path / "tools/cnesdata_delivery/evidence.py").is_file()
         assert len(list(tmp_path.glob("tools/cnesdata_delivery/*"))) == 5
-    assert opened, (
+    assert opened or ref != "refs/heads/main", (
         "source bootstrap must refuse metadata redirects before code is trusted"
     )
     assert all("@main" not in url and "private-token" not in url for url in calls)

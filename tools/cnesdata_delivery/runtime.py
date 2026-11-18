@@ -307,7 +307,7 @@ def _published_receipt(api, governance, run_id, attempt):
     run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
     c.require(run["status"] == "completed" and run["conclusion"] == "success" and run["run_attempt"] == attempt
               and run["repository"]["full_name"] == c.REPOSITORY and run["event"] == "workflow_dispatch"
-              and run["head_branch"] == "develop", "previous run not terminal success")
+              and run["head_branch"] == "main", "previous run not terminal success")
     path = run["path"].split("@")[0]
     c.require(path in {".github/workflows/infra-plan.yml", ".github/workflows/infra-apply.yml"}, "previous caller")
     role = "plan" if path.endswith("infra-plan.yml") else "deploy"
@@ -359,7 +359,7 @@ def _session_reads(governance, descriptor, api, index, role, purpose, authority=
         scopes += phase_input_reads(governance, descriptor, authority)
     candidates = []
     for caller in ("infra-plan.yml", "infra-apply.yml"):
-        response = api.read(f"repos/{c.REPOSITORY}/actions/workflows/{caller}/runs?branch=develop&event=workflow_dispatch&status=success&per_page=1")
+        response = api.read(f"repos/{c.REPOSITORY}/actions/workflows/{caller}/runs?branch=main&event=workflow_dispatch&status=success&per_page=1")
         c.require(type(response["workflow_runs"]) is list and len(response["workflow_runs"]) <= 1, "bounded previous receipt lookup")
         for run in response["workflow_runs"]:
             c.integer(run["id"])
@@ -916,7 +916,7 @@ def credentials(role):
     c.require(claims["iss"] == "https://token.actions.githubusercontent.com" and claims["aud"] == "sts.amazonaws.com"
               and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{workflow}"
               and claims["job_workflow_ref"] == workflow and claims["repository"] == c.REPOSITORY
-              and claims["ref"] == "refs/heads/develop", "OIDC governed claims")
+              and claims["ref"] == "refs/heads/main", "OIDC governed claims")
     client = boto3.client("sts", region_name="us-east-2", config=Config(signature_version=UNSIGNED,
                           connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1}, ignore_configured_endpoint_urls=True))
     from tools.cnesdata_delivery.aws_boundary import bounded

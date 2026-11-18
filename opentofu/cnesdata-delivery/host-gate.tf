@@ -15,7 +15,7 @@ resource "aws_iam_role" "host_gate" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:VINIClUS/CnesData:ref:refs/heads/develop:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@${var.host_gate.workflow_sha}"
+          "token.actions.githubusercontent.com:sub" = "repo:VINIClUS/CnesData:ref:refs/heads/main:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@${var.host_gate.workflow_sha}"
         }
       }
     }]
