@@ -5454,8 +5454,10 @@ def _zip_bytes(members, total=None):
     out = io.BytesIO()
     comment = b"x" * (total - len(_zip_bytes(members))) if total else b""
     with zipfile.ZipFile(out, "w") as archive:
-        for name, raw in members:
-            archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0)), raw)
+        for name, raw, *mode in members:
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+            info.external_attr = (mode[0] << 16) if mode else 0
+            archive.writestr(info, raw)
         archive.comment = comment
     return out.getvalue()
 
@@ -5493,6 +5495,7 @@ class _HostWorld:
     def read(self, path, *, raw=False, maximum=192 * 1024**2):
         self.reads.append(path)
         self.log.append(("read", path))
+        assert raw is path.endswith("/zip"), "only the artifact zip is read raw"
         value = self.responses[path]
         assert not raw or len(value) <= maximum, "oversized archive must be refused by the read bound"
         return value
@@ -5538,6 +5541,14 @@ class _HostWorld:
     def _member_twice(self): self._replace([("host-handoff.json", self.raw), ("extra.json", b"{}")])
     def _member_empty(self): self._replace([("host-handoff.json", b"")])
     def _member_large(self): self._replace([("host-handoff.json", self.raw + b" " * 32768)])
+    def _member_regular_file(self):
+        import stat
+        self._replace([("host-handoff.json", self.raw, stat.S_IFREG | 0o644)])
+
+    def _member_symlink(self):
+        import stat
+        self._replace([("host-handoff.json", self.raw, stat.S_IFLNK | 0o777)])
+
     def _member_over_by_one(self): self._replace([("host-handoff.json", self.raw + b" " * (32769 - len(self.raw)))])
     def _member_at_limit(self): self._rewrite(pad="x" * (32768 - len(c.canonical(c.loads(self.raw, canonical=True) | {"pad": ""}))))
     def _archive_at_limit(self): self._replace([("host-handoff.json", self.raw)], total=65536)
@@ -5575,6 +5586,13 @@ def test_host_handoff_caller_authenticates_the_original_public_artifact():
     assert world.log == expected and len(world.reads) == 4
 
 
+def test_host_handoff_caller_accepts_a_regular_file_member_with_unix_mode():
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld("member-regular-file")
+    assert world.archive != _zip_bytes([("host-handoff.json", world.raw)])
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
+
+
 @pytest.mark.parametrize("mutation", ["jobs-at-limit", "artifacts-at-limit", "member-at-limit", "archive-at-limit"])
 def test_host_handoff_caller_accepts_each_inventory_and_size_exactly_at_its_limit(mutation):
     from tools.cnesdata_delivery import application_gate as ag
@@ -5599,7 +5617,7 @@ _HOST_HANDOFF_REFUSALS = {
     "job-attempt": "host handoff job identity", "job-source": "host handoff job identity",
     "jobs-over-limit": "host handoff job inventory", "artifacts-over-limit": "host handoff artifact inventory",
     "step-order-gate-handoff": "host handoff job steps", "step-order-handoff-final": "host handoff job steps",
-    "member-over-by-one": "host handoff member size", "archive-over-by-one": "oversized archive|host handoff digest",
+    "member-over-by-one": "host handoff member size", "member-symlink": "host handoff member", "archive-over-by-one": "oversized archive|host handoff digest",
     "job-status": "host handoff job identity", "job-conclusion": "host handoff job identity",
     "step-missing": "host handoff job steps", "step-order": "host handoff job steps", "step-gate": "host handoff job steps",
     "step-handoff": "host handoff job steps", "final-step": "host handoff job steps",
