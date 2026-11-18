@@ -690,6 +690,27 @@ def test_historical_phase_input_context_is_independently_governed(contract):
         historical_plan_governance(governance, "phase-a")
 
 
+@pytest.mark.parametrize("name", ["sub-staging", "sub-branch", "sub-customized", "reusable-pin", "reusable-role", "ref"])
+def test_oidc_refuses_claims_off_the_default_sub_and_the_pinned_reusable(monkeypatch, tmp_path, name):
+    """Amendment infra-ansible#55/6993274712: default `sub` plus a separate `job_workflow_ref` claim."""
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-"
+    reusable = path + "plan-gate.yml@" + chain.gov["gate_shas"]["plan"]
+    chain.oidc_claims = {
+        "sub-staging": {"sub": "repo:VINIClUS/CnesData:environment:staging"},
+        "sub-branch": {"sub": "repo:VINIClUS/CnesData:ref:refs/heads/main"},
+        "sub-customized": {"sub": "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:" + reusable},
+        "reusable-pin": {"job_workflow_ref": path + "plan-gate.yml@" + "f" * 40},
+        "reusable-role": {"job_workflow_ref": path + "deploy-gate.yml@" + chain.gov["gate_shas"]["plan"]},
+        "ref": {"ref": "refs/heads/develop"},
+    }[name]
+    with pytest.raises(ValueError, match="OIDC governed claims"):
+        runtime.credentials("plan")
+    assert getattr(chain, "sts_request", None) is None
+
+
 def test_oidc_request_limits_session_to_authenticated_current_run(monkeypatch, tmp_path):
     from fixtures.cnesdata_session_chain import OwnerChain as Chain
     from tools.cnesdata_delivery import runtime

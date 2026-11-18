@@ -282,8 +282,9 @@ class Chain:
         assert request.full_url.startswith("https://fixture.actions.githubusercontent.com/token?")
         ref = f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{self.role}-gate.yml@{self.gov['gate_shas'][self.role]}"
         claims = {"iss": "https://token.actions.githubusercontent.com", "aud": "sts.amazonaws.com",
-                  "sub": f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{ref}",
+                  "sub": f"repo:{c.REPOSITORY}:environment:production",
                   "job_workflow_ref": ref, "repository": c.REPOSITORY, "ref": "refs/heads/main"}
+        claims.update(getattr(self, "oidc_claims", {}))
         token = "header." + base64.urlsafe_b64encode(c.canonical(claims)).decode().rstrip("=") + ".signature"
         return io.BytesIO(c.canonical({"value": token}))
 

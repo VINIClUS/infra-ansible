@@ -866,7 +866,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
            "status": "in_progress", "conclusion": None,
            "steps": [{"name": "Authenticate original caller", "status": "in_progress"}]}
     claims = {"iss": "https://token.actions.githubusercontent.com", "aud": "sts.amazonaws.com",
-              "sub": f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{shared}",
+              "sub": f"repo:{c.REPOSITORY}:environment:production",
               "repository": c.REPOSITORY, "ref": "refs/heads/main", "environment": "production",
               "job_workflow_ref": shared, "workflow_ref": c.REPOSITORY + "/" + caller["workflow_path"] + "@refs/heads/main",
               "workflow_sha": "b" * 40, "sha": "b" * 40, "event_name": "workflow_dispatch", "run_id": "44", "run_attempt": "2"}
@@ -919,7 +919,8 @@ def test_application_caller_authenticates_original_source_job_and_purpose(monkey
         with pytest.raises(ValueError): authenticate()
 
 
-@pytest.mark.parametrize("mutation", [None, "workflow", "sha", "event", "environment", "attempt", "caller-missing"])
+@pytest.mark.parametrize("mutation", [None, "workflow", "sha", "event", "environment", "attempt", "caller-missing",
+                                      "sub-staging", "sub-branch", "sub-customized", "reusable-pin", "reusable-path", "ref"])
 def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mutation):
     import base64
     import io
@@ -939,6 +940,15 @@ def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mut
     if mutation == "environment": claims["environment"] = "staging"
     if mutation == "attempt": claims["run_attempt"] = "1"
     if mutation == "caller-missing": gov.pop("authenticated_application_caller")
+    # Amendment infra-ansible#55/6993274712: the default `sub` of a job with an environment, and the reusable pinned by the
+    # separate `job_workflow_ref` claim. The customized template (`...:job_workflow_ref:<ref>` inside `sub`) is never issued.
+    shared = claims["job_workflow_ref"]
+    if mutation == "sub-staging": claims["sub"] = f"repo:{c.REPOSITORY}:environment:staging"
+    if mutation == "sub-branch": claims["sub"] = f"repo:{c.REPOSITORY}:ref:refs/heads/main"
+    if mutation == "sub-customized": claims["sub"] = f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{shared}"
+    if mutation == "reusable-pin": claims["job_workflow_ref"] = shared.split("@")[0] + "@" + "f" * 40
+    if mutation == "reusable-path": claims["job_workflow_ref"] = shared.replace("application-gate", "infra-plan-gate")
+    if mutation == "ref": claims["ref"] = "refs/heads/develop"
     token = "header." + base64.urlsafe_b64encode(c.canonical(claims)).decode().rstrip("=") + ".signature"
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/id?request=1")
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "synthetic")
