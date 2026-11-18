@@ -220,11 +220,12 @@ def _terminal_reference(keeper):
             "sources": {name: "synthetic-" + name for name in proof["inputs"]}}
 
 
-def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False):
+def _journal_with(*, pending=(), unknown=(), inflight=None, failed=False, observations=()):
     from tools.cnesdata_delivery.application_gate import AdapterJournal
     journal = AdapterJournal.__new__(AdapterJournal)
     journal._pending, journal._unknown, journal._inflight, journal._failed = list(pending), list(unknown), inflight, failed
-    journal._observation_bytes = {}
+    journal._observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)} for kind, raw in observations]
+    journal._observation_bytes = {c.sha(raw): raw for _, raw in observations}
     return journal
 
 
@@ -4542,15 +4543,65 @@ def test_keeper_terminal_proof_only_through_closed_validator_registry(mutation):
 
 def test_keeper_terminal_validators_receive_registered_journal_observations():
     keeper, _ = _accepted_terminal_case()
-    journal = _journal_with()
-    journal._observation_bytes = {"a" * 64: b'{"observed":true}\n'}
+    raw = b'{"observed":true}\n'
+    journal = _journal_with(observations=[("routing", raw)])
     keeper.attach(journal)
     seen = []
     label, original = keeper._terminal_validators["routing"]
     keeper._terminal_validators["routing"] = (label, lambda source, **kw: seen.append(kw["observations"]) or original(source, **kw))
     files = keeper.finish(_terminal_reference(keeper))
-    assert seen == [{"a" * 64: b'{"observed":true}\n'}]
+    assert seen == [{c.sha(raw): raw}]
     assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
+
+
+def _routing_bytes(routes_match):
+    return c.canonical({"version": 1, "kind": "routing", "fence": "OPEN", "routes_match": routes_match})
+
+
+def _latest_routing_case(*journals):
+    """Real routing validator over keeper journals; the other kinds keep their SYNTHETIC validators."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    keeper, store = _accepted_terminal_case()
+    for journal in journals:
+        keeper.attach(journal)
+    keeper._terminal_validators["routing"] = ("real-routing", ag.routing_terminal_validator)
+    record = keeper.lease.check()
+    def proof(raw):
+        reference = _terminal_reference(keeper)
+        reference["sources"]["routing"] = {"routing": c.sha(raw)}
+        return keeper._terminal_proof(reference, lc.owner_binding(record), record["lifecycle"])
+    return keeper, proof
+
+
+def test_terminal_proof_reads_only_the_latest_observation_of_each_kind():
+    """Disposition (3d) of 6963008338: a stale, well-formed observation of the same kind is not a source."""
+    older, newer = _routing_bytes(True), _routing_bytes(False)
+    _, proof = _latest_routing_case(_journal_with(observations=[("routing", older), ("routing", newer)]))
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(older)
+    assert proof(newer)["assessment"]["routes_match"] is False
+
+
+def test_terminal_proof_orders_journals_by_attach_and_counts_a_broker_once():
+    from tools.cnesdata_delivery import application_gate as ag
+    older, newer = _routing_bytes(True), _routing_bytes(False)
+    first = _journal_with(observations=[("routing", older)])
+    second = _journal_with(observations=[("routing", newer)])
+    broker = ag.ClosedReadyBroker.__new__(ag.ClosedReadyBroker)
+    broker.journal, broker._uncertainty = first, []
+    _, proof = _latest_routing_case(first, second, broker)
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(older)
+    assert proof(newer)["assessment"]["routes_match"] is False
+
+
+def test_terminal_proof_ignores_bytes_without_a_registered_observation():
+    raw = _routing_bytes(True)
+    journal = _journal_with()
+    journal._observation_bytes = {c.sha(raw): raw}
+    _, proof = _latest_routing_case(journal)
+    with pytest.raises(ValueError, match="terminal source role=routing"):
+        proof(raw)
 
 
 def _keeper_loop_case(*, attach=None):
@@ -5031,6 +5082,7 @@ def _observation_terminal_case(vectors=None):
     keeper, store = _accepted_terminal_case()
     digests, raws = _journal_observations(vectors or _synthetic_terminal_vectors())
     journal = _journal_with()
+    journal._observations = [{"kind": name, "sha256": digest, "size": len(raws[digest])} for name, digest in digests.items()]
     journal._observation_bytes = raws
     keeper.attach(journal)
     reference = _terminal_reference(keeper)
