@@ -1994,8 +1994,11 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(b_approval["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
                   and b_approval["plan_sha256"] == b_checkpoint["plan_sha256"] and b_checkpoint["purpose"] == "phase-b"
                   and c.canonical(b_checkpoint["owner"]) == c.canonical(owner), "preparation -> B checkpoint ancestry")
-        current.lease.checkpoint(lc.api_window(current.lease.check()["lifecycle"],
-                                               checkpoint_sha256=c.sha(published["checkpoint.json"]), now=clock()))
+        admitted = clock()
+        window = current.lease.check()["lifecycle"]
+        c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
+        current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
+                                               now=admitted))
 
     return {"prepared": prepared, "phase-b": phase_b}
 
