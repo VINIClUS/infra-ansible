@@ -1434,7 +1434,7 @@ def credentials(role):
     export_credentials(value)
 
 
-def oidc_credentials(governance, role, restriction, run):
+def oidc_credentials(governance, role, restriction, run, *, duration=3600):
     import urllib.request
     from urllib.parse import urlparse
     import boto3
@@ -1442,6 +1442,7 @@ def oidc_credentials(governance, role, restriction, run):
     from botocore.config import Config
     from tools.cnesdata_delivery.aws_boundary import bounded
     from tools.cnesdata_delivery.session_policy import validate_response
+    c.require(type(duration) is int and duration in (900, 3600), "OIDC session duration")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
     workflow = path + "@" + governance["gate_shas"][role]
@@ -1473,7 +1474,7 @@ def oidc_credentials(governance, role, restriction, run):
     client = boto3.client("sts", region_name="us-east-2", config=Config(signature_version=UNSIGNED,
         connect_timeout=5, read_timeout=10, retries={"total_max_attempts": 1}, ignore_configured_endpoint_urls=True))
     result = bounded(lambda: client.assume_role_with_web_identity(RoleArn=governance["roles"][role],
-        RoleSessionName=f"cnesdata-{run['id']}-{run['run_attempt']}", WebIdentityToken=token, DurationSeconds=3600, **restriction))
+        RoleSessionName=f"cnesdata-{run['id']}-{run['run_attempt']}", WebIdentityToken=token, DurationSeconds=duration, **restriction))
     return validate_response(result)
 
 
