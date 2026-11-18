@@ -1,6 +1,7 @@
 """Offline legacy original checkpoint -> continuous lifecycle owner entry."""
 import copy
 import json
+import os
 import time
 import types
 
@@ -2351,6 +2352,9 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     kwargs["governance"]["application_coordination_policy"] = c.canonical(coordination).decode().strip()
     owner, pin = kwargs["owner"], kwargs["authority"].pin
     if mutation == "managed-no-assume": pin["document"] = {"Version": "2012-10-17", "Statement": []}
+    if mutation == "managed-expired":
+        pin["document"]["Statement"].append({"Effect": "Deny", "Action": "*", "Resource": "*",
+                                             "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": c.utc(1300)}}})
     if mutation == "owner": owner = owner | {"generation": owner["generation"] + 1}
     preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
     _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
@@ -2395,7 +2399,7 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
 
 
 _CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "identity-no-assume": _CLOSE_OPERATION_IAM,
-                              "managed-no-assume": _CLOSE_OPERATION_IAM, "preparation": "original preparation is the close stage",
+                              "managed-no-assume": _CLOSE_OPERATION_IAM, "managed-expired": _CLOSE_OPERATION_IAM, "preparation": "original preparation is the close stage",
                               "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
                               "admitted-later": "original preparation is the close stage", "owner": "prepared current owner",
                               "evaluation-scope": "capability scope recomputed from prepared policy",
@@ -3665,6 +3669,50 @@ def test_fence_session_judges_the_window_again_after_the_operation_exchange(monk
     with pytest.raises(ValueError, match="^fence original window after operation session$"):
         ag._assume_fence_session(**args)
     assert calls == native == [] and len(args["operation_session"].calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+@pytest.mark.parametrize("edge, accepted", [("deadline-1", True), ("deadline", False), ("limit", True), ("limit-1", False)])
+def test_fence_session_window_and_credential_limit_are_exact_after_the_operation_exchange(monkeypatch, operation, edge, accepted):
+    """The recheck keeps the strict 40 s margin to the deadline and the inclusive 900 s credential limit of the first check."""
+    ag, args, calls, native = (_fence_sdk_boundary_case if operation == "closed-ready" else _close_role_session_case)(monkeypatch)
+    stage = args["journal"]._request["stage"]
+    deadline = stage["preparation_deadline"] if operation == "close-drain" else stage["deadline"]
+    elapsed = {"deadline-1": deadline - 41 - 1300, "deadline": deadline - 40 - 1300}.get(edge, 10)
+    limit = {"limit": 1300 + elapsed + 900, "limit-1": 1300 + elapsed + 899}.get(edge, 3000)
+    now = [1300]
+    class Slow(_OperationFactory):
+        def __call__(self, *arguments):
+            now[0] += elapsed
+            return super().__call__(*arguments)
+    args.update(clock=lambda: now[0], credential_limit=limit,
+                operation_session=Slow(args["operation_session"].client, args["operation_session"].events))
+    if accepted:
+        ag._assume_fence_session(**args)
+        assert len(calls) == 1
+    else:
+        with pytest.raises(ValueError, match="^fence original window after operation session$"):
+            ag._assume_fence_session(**args)
+        assert calls == native == []
+    assert len(args["operation_session"].calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+@pytest.mark.parametrize("guard, message", [("journal-failed", "^adapter context failed; original recovery required$"),
+                                            ("window-guard", "^guard window$")])
+def test_fence_session_checks_the_journal_guards_before_the_operation_exchange(monkeypatch, operation, guard, message):
+    """The exchange is the first credential mint of the stage: a failed journal or an expired guard refuses before it."""
+    ag, args, calls, native = (_fence_sdk_boundary_case if operation == "closed-ready" else _close_role_session_case)(monkeypatch)
+    if guard == "journal-failed":
+        args["journal"]._failed = True
+    else:
+        class Expired:
+            def check(self, seconds=0):
+                c.require(seconds != 40, "guard window")
+        args["journal"]._guard = Expired()
+    with pytest.raises(ValueError, match=message):
+        ag._assume_fence_session(**args)
+    assert args["operation_session"].calls == [] and calls == native == []
 
 
 @pytest.mark.parametrize("case", ["ddb", "sfn", "absent", "foreign", "eventual", "timeout", "lost-receipt", "private-response", "terminal-absent"])
@@ -5168,7 +5216,9 @@ def _operation_factory_case(monkeypatch, *, expiry_delta=0, identity_change=None
 def test_operation_session_factory_mints_the_exact_delegation_in_process_and_never_exports(monkeypatch, operation):
     """R20 option C: a second web-identity exchange of the same job, 900 s, in memory, nominal to the fence role session."""
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
+    environment = dict(os.environ)
     assert factory(operation, {"session_name": "promotion-fence-r1"}, stage) is client
+    assert dict(os.environ) == environment
     governance = admitted[0]
     assert [item[0] for item in seen] == ["request", "oidc", "aws"]
     assert seen[0][1:] == ((governance, "b" * 40, 4242, 1, operation),
@@ -5178,7 +5228,7 @@ def test_operation_session_factory_mints_the_exact_delegation_in_process_and_nev
     assert seen[2][1:] == (governance, credentials)
 
 
-@pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", ""])
+@pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", "other", "promotion", ""])
 def test_operation_session_factory_serves_only_the_two_fence_operations(monkeypatch, operation):
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
     with pytest.raises(ValueError, match="^operation session operation$"):
