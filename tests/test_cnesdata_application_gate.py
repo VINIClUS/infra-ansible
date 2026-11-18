@@ -5559,6 +5559,16 @@ class _HostWorld:
         import stat
         self._replace([("host-handoff.json", self.raw, stat.S_IFLNK | 0o777)])
 
+    def _member_one_byte(self): self._replace([("host-handoff.json", b"x")])
+
+    def _member_encrypted(self):
+        packed = bytearray(self.archive)
+        packed[packed.index(b"PK\x01\x02") + 8] |= 1
+        self.archive = bytes(packed)
+        self.meta["digest"] = "sha256:" + c.sha(self.archive)
+
+    def _artifact_at_job_end(self): self.meta["created_at"] = self.job["completed_at"]
+
     def _member_over_by_one(self): self._replace([("host-handoff.json", self.raw + b" " * (32769 - len(self.raw)))])
     def _member_at_limit(self): self._rewrite(pad="x" * (32768 - len(c.canonical(c.loads(self.raw, canonical=True) | {"pad": ""}))))
     def _archive_at_limit(self): self._replace([("host-handoff.json", self.raw)], total=65536)
@@ -5603,12 +5613,21 @@ def test_host_handoff_caller_accepts_a_regular_file_member_with_unix_mode():
     assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
 
 
-@pytest.mark.parametrize("mutation", ["jobs-at-limit", "artifacts-at-limit", "member-at-limit", "archive-at-limit"])
+def test_host_handoff_caller_sends_a_one_byte_member_to_the_canonical_check_not_the_size_refusal():
+    from tools.cnesdata_delivery import application_gate as ag
+    with pytest.raises(Exception) as refusal:
+        ag.authenticate_host_handoff(_HostWorld("member-one-byte"), dict(HOST_OWNER), guard=_NoGuard())
+    assert "host handoff member size" not in str(refusal.value)
+
+
+@pytest.mark.parametrize("mutation", ["jobs-at-limit", "artifacts-at-limit", "member-at-limit", "archive-at-limit",
+                                      "artifact-at-job-end"])
 def test_host_handoff_caller_accepts_each_inventory_and_size_exactly_at_its_limit(mutation):
     from tools.cnesdata_delivery import application_gate as ag
     world = _HostWorld(mutation)
     assert {"jobs-at-limit": len(world.jobs) == 100, "artifacts-at-limit": len(world.artifacts) == 100,
-            "member-at-limit": len(world.raw) == 32768, "archive-at-limit": len(world.archive) == 65536}[mutation]
+            "member-at-limit": len(world.raw) == 32768, "archive-at-limit": len(world.archive) == 65536,
+            "artifact-at-job-end": world.meta["created_at"] == world.job["completed_at"]}[mutation]
     assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
 
 
@@ -5627,7 +5646,8 @@ _HOST_HANDOFF_REFUSALS = {
     "job-attempt": "host handoff job identity", "job-source": "host handoff job identity",
     "jobs-over-limit": "host handoff job inventory", "artifacts-over-limit": "host handoff artifact inventory",
     "step-order-gate-handoff": "host handoff job steps", "step-order-handoff-final": "host handoff job steps",
-    "member-over-by-one": "host handoff member size", "member-symlink": "host handoff member", "archive-over-by-one": "oversized archive|host handoff digest",
+    "member-over-by-one": "host handoff member size", "member-symlink": "host handoff member",
+    "member-encrypted": "host handoff member", "archive-over-by-one": "oversized archive|host handoff digest",
     "job-status": "host handoff job identity", "job-conclusion": "host handoff job identity",
     "step-missing": "host handoff job steps", "step-order": "host handoff job steps", "step-gate": "host handoff job steps",
     "step-handoff": "host handoff job steps", "final-step": "host handoff job steps",
