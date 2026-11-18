@@ -146,7 +146,7 @@ def test_native_host_role_has_exact_read_only_capability():
         assert trust["Condition"]["StringEquals"][
             "token.actions.githubusercontent.com:sub"
         ] == (
-            "repo:VINIClUS/CnesData:ref:refs/heads/develop:job_workflow_ref:"
+            "repo:VINIClUS/CnesData:ref:refs/heads/main:job_workflow_ref:"
             "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
             + "c"
             * 40

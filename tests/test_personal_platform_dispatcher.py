@@ -531,7 +531,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
         "head_sha": SHA,
         "path": ".github/workflows/deploy.yml",
         "event": "workflow_dispatch",
-        "head_branch": "develop",
+        "head_branch": "main",
         "status": "in_progress",
         "referenced_workflows": [
             {
@@ -563,7 +563,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
     responses = {
         "repos/VINIClUS/CnesData/actions/runs/11/attempts/1": caller,
         "repos/VINIClUS/CnesData/actions/runs/12/attempts/1": producer,
-        "repos/VINIClUS/CnesData/compare/" + SHA + "...develop": {
+        "repos/VINIClUS/CnesData/compare/" + SHA + "...main": {
             "status": "ahead",
             "merge_base_commit": {"sha": SHA},
         },
@@ -840,7 +840,7 @@ def closed_ready_fixture():
         "head_sha": SHA,
         "path": b["caller"]["workflow_path"],
         "event": "workflow_dispatch",
-        "head_branch": "develop",
+        "head_branch": "main",
         "status": "in_progress",
         "run_started_at": g.utc(640),
     }
@@ -868,7 +868,7 @@ def closed_ready_fixture():
             "repository_id": 100,
             "head_repository_id": 100,
             "head_sha": SHA,
-            "head_branch": "develop",
+            "head_branch": "main",
         },
     }
     responses = {

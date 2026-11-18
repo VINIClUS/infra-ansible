@@ -88,10 +88,11 @@ def provenance():
 
 
 @pytest.mark.parametrize("field,bad", [("repository", "foreign/CnesData"), ("ref", "refs/heads/evil"),
+    ("ref", "refs/heads/develop"),
     ("event", "pull_request"), ("workflow_path", ".github/workflows/other.yml"),
     ("source_sha", "f" * 40), ("role", "deploy")])
 def test_source_denied_before_credential_callback(provenance, field, bad):
-    expected = {"repository": "VINIClUS/CnesData", "ref": "refs/heads/develop", "event": "workflow_dispatch",
+    expected = {"repository": "VINIClUS/CnesData", "ref": "refs/heads/main", "event": "workflow_dispatch",
                 "workflow_path": ".github/workflows/infra-plan.yml", "source_sha": "a" * 40, "role": "plan"}
     calls = []
     with pytest.raises(ValueError):
@@ -1239,3 +1240,24 @@ def test_complete_artifact_inventory_rejects_shared_attempt_second(contract, pro
         artifact_id = references[target]["artifact_id"]
         assert not any(path.endswith(f"/artifacts/{artifact_id}/zip") for path in calls)
         assert (contract.REPOSITORY, artifact_id) not in api.expiries
+
+
+# Amendment infra-ansible#55/6993274712: the CnesData `production` environment admits only `main`, so every gate
+# asserts the caller ref and the run branch as `main`. Exact per-file counts make a dropped or retargeted assertion fail.
+REUSABLE_BRANCH_SITES = {
+    "reusable-cnesdata-application-gate.yml": (1, 1),
+    "reusable-cnesdata-infra-plan-gate.yml": (2, 0),
+    "reusable-cnesdata-infra-deploy-gate.yml": (2, 0),
+    "reusable-cnesdata-signing-gate.yml": (3, 3),
+    "reusable-cnesdata-host-deploy-gate.yml": (2, 0),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REUSABLE_BRANCH_SITES))
+def test_reusables_admit_only_the_main_trail(name):
+    import re
+    text = (ROOT / ".github/workflows" / name).read_text()
+    refs, branches = REUSABLE_BRANCH_SITES[name]
+    assert "develop" not in text
+    assert re.findall(r'"refs/heads/[A-Za-z0-9_./-]+"', text) == ['"refs/heads/main"'] * refs
+    assert re.findall(r'head_branch"\] == "[A-Za-z0-9_./-]+"', text) == ['head_branch"] == "main"'] * branches

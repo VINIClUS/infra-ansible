@@ -125,7 +125,7 @@ def test_application_owns_coordination_and_only_exact_product_delegation(native)
     assert "caller" not in fragment["value"] and "predecessor_reads" not in fragment["value"]
     assert fragment["value"]["caller_by_purpose"] == {
         purpose: {"repository": "VINIClUS/CnesData", "workflow_path": path,
-                  "ref": "refs/heads/develop", "environment": "production"}
+                  "ref": "refs/heads/main", "environment": "production"}
         for purpose, path in (("promotion", ".github/workflows/promote-production.yml"),
                               ("mode-readiness-drill", ".github/workflows/readiness-production.yml"))}
     from fixtures.cnesdata_iam_evaluation import allowed

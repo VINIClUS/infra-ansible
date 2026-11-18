@@ -474,7 +474,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
                   "gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "promotion / keeper"}
     run = {"id": 44, "run_attempt": 1, "head_sha": "b" * 40, "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
-           "status": "in_progress", "conclusion": None, "head_branch": "develop",
+           "status": "in_progress", "conclusion": None, "head_branch": "main",
            "referenced_workflows": [{"path": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@" + "a" * 40,
                                      "sha": "a" * 40, "ref": "refs/heads/main"}]}
     job = {"id": 9, "run_id": 44, "run_attempt": 1, "head_sha": "b" * 40, "name": "promotion / keeper",
@@ -857,7 +857,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
            "gate_shas": {"application": "a" * 40, role: role_pin}, "required_checks": ["CI"],
            "application_source_closure_sha256": "d" * 64, "application_product_source_manifest": manifest,
            "application_product_source_closure_sha256": c.sha(c.canonical(manifest))}
-    run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "develop",
+    run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "main",
            "repository": {"full_name": c.REPOSITORY}, "event": "workflow_dispatch", "path": caller["workflow_path"],
            "status": "in_progress", "referenced_workflows": [{"path": shared, "sha": role_pin}]}
     step = {"caller_job": "promote", "producer_job": "keeper", "job_name": "promote / keeper",
@@ -867,8 +867,8 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
            "steps": [{"name": "Authenticate original caller", "status": "in_progress"}]}
     claims = {"iss": "https://token.actions.githubusercontent.com", "aud": "sts.amazonaws.com",
               "sub": f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{shared}",
-              "repository": c.REPOSITORY, "ref": "refs/heads/develop", "environment": "production",
-              "job_workflow_ref": shared, "workflow_ref": c.REPOSITORY + "/" + caller["workflow_path"] + "@refs/heads/develop",
+              "repository": c.REPOSITORY, "ref": "refs/heads/main", "environment": "production",
+              "job_workflow_ref": shared, "workflow_ref": c.REPOSITORY + "/" + caller["workflow_path"] + "@refs/heads/main",
               "workflow_sha": "b" * 40, "sha": "b" * 40, "event_name": "workflow_dispatch", "run_id": "44", "run_attempt": "2"}
     class API:
         def read(self, path, **kwargs):
@@ -878,7 +878,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
             if "/jobs?" in path: return {"total_count": 1, "jobs": [job]}
             return run
     api = API(); api.raw = raw
-    for key, value in {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/develop",
+    for key, value in {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_JOB": "keeper",
                        "GITHUB_WORKFLOW_REF": claims["workflow_ref"], "GITHUB_WORKFLOW_SHA": "b" * 40}.items():
         monkeypatch.setenv(key, value)
@@ -933,7 +933,7 @@ def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mut
         "producer_source_closure_sha256": "d" * 64, "event": "workflow_dispatch", "fragment_version": 4}
     gov["authenticated_application_caller"] = lc.application_caller_binding(evidence, {"workflow_sha": "a" * 40, "source_closure_sha256": "d" * 64})
     gov["roles"] = {"application": "arn:aws:iam::111122223333:role/cnesdata-prod-application"}
-    if mutation == "workflow": claims["workflow_ref"] = c.REPOSITORY + "/.github/workflows/other.yml@refs/heads/develop"
+    if mutation == "workflow": claims["workflow_ref"] = c.REPOSITORY + "/.github/workflows/other.yml@refs/heads/main"
     if mutation == "sha": claims["sha"] = "c" * 40
     if mutation == "event": claims["event_name"] = "push"
     if mutation == "environment": claims["environment"] = "staging"
@@ -2771,7 +2771,7 @@ def test_fence_producer_accepts_only_completed_exact_deploy_before_private_reads
     governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": owner["context_kind"],
                   "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"],
-           "event": "workflow_dispatch", "repository": {"full_name": c.REPOSITORY}, "head_branch": "develop",
+           "event": "workflow_dispatch", "repository": {"full_name": c.REPOSITORY}, "head_branch": "main",
            "path": ".github/workflows/promote-production.yml", "referenced_workflows": [{
                "path": "VINIClUS/infra-ansible/" + producer["workflow_path"] + "@" + producer["workflow_sha"], "sha": producer["workflow_sha"]}]}
     names = ["Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
@@ -3145,7 +3145,7 @@ def test_admission_retains_artifact_digests_only_for_the_application_role(monkey
 
 
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "caller", "ref", "pin", "attempt", "source"])
+@pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "caller", "ref", "branch", "pin", "attempt", "source"])
 def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch, tmp_path, purpose, mutation):
     import base64
     import io
@@ -3162,7 +3162,7 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
     path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml"
     run = {"head_sha": product, "run_attempt": 2, "repository": {"full_name": c.REPOSITORY},
         "event": "workflow_dispatch", "path": lc.APPLICATION_CALLERS[purpose]["workflow_path"],
-        "head_branch": "develop", "status": "in_progress",
+        "head_branch": "main", "status": "in_progress",
         "referenced_workflows": [{"path": path + "@" + pin, "sha": pin}]}
     gov = {"activation_enabled": True, "lifecycle_enabled": True, "application_purpose": purpose,
         "context_kind": lc.APPLICATION_CONTEXTS[purpose], "application_configuration": {"fixture": True},
@@ -3173,8 +3173,9 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
     if mutation == "pin": run["referenced_workflows"][0]["path"] = path + "@main"
     if mutation == "attempt": run["run_attempt"] = 1
     if mutation == "source": run["head_sha"] = "c" * 40
+    if mutation == "branch": run["head_branch"] = "develop"
     env = {"DELIVERY_ROLE": "application", "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/main" if mutation == "ref" else "refs/heads/develop", "EXPECTED_SOURCE_SHA": product,
+        "GITHUB_REF": "refs/heads/develop" if mutation == "ref" else "refs/heads/main", "EXPECTED_SOURCE_SHA": product,
         "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_TOKEN": "synthetic-http-token",
         "CNESDATA_DELIVERY_GOVERNANCE": c.canonical(gov).decode()}
     for key, value in env.items(): monkeypatch.setenv(key, value)
@@ -3209,7 +3210,7 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
 @pytest.mark.parametrize("role", ["plan", "deploy"])
 @pytest.mark.parametrize("job", ["validate", "execute"])
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "crossed-context", "disabled", "old-fragment"])
+@pytest.mark.parametrize("mutation", [None, "crossed-context", "disabled", "old-fragment", "ref"])
 def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypatch, tmp_path, role, job, purpose, mutation):
     import base64
     import io
@@ -3234,7 +3235,8 @@ def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypat
     if mutation == "old-fragment": gov["application_fragment"]["fragment_version"] = 3
     if mutation == "crossed-context": gov["context_kind"] = "readiness" if purpose == "promotion" else "promotion"
     env = {"DELIVERY_ROLE": role, "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/develop", "EXPECTED_SOURCE_SHA": product, "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_REF": "refs/heads/develop" if mutation == "ref" else "refs/heads/main", "EXPECTED_SOURCE_SHA": product,
+        "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2",
         "GITHUB_TOKEN": "synthetic-http-token", "CNESDATA_DELIVERY_GOVERNANCE": c.canonical(gov).decode(), "PURPOSE": "application-prepare"}
     for key, value in env.items(): monkeypatch.setenv(key, value)
     downloads = []
@@ -3309,7 +3311,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
     gov = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": "promotion",
            "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"], "event": "workflow_dispatch",
-        "repository": {"full_name": c.REPOSITORY}, "head_branch": "develop", "path": ".github/workflows/promote-production.yml",
+        "repository": {"full_name": c.REPOSITORY}, "head_branch": "main", "path": ".github/workflows/promote-production.yml",
         "referenced_workflows": [{"path": "VINIClUS/infra-ansible/" + producer["workflow_path"] + "@" + producer["workflow_sha"],
             "sha": producer["workflow_sha"]}]}
     workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / producer["workflow_path"]).read_text())

@@ -12,7 +12,7 @@ def binding():
     run = {
         "repository": "VINIClUS/CnesData",
         "source_sha": SHA,
-        "ref": "refs/heads/develop",
+        "ref": "refs/heads/main",
         "workflow_path": ".github/workflows/deploy.yml",
         "workflow_sha": SHA,
         "run_id": 12,

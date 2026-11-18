@@ -1810,9 +1810,10 @@ def test_cli_without_authentic_protected_governance_fails_before_sdk(gate, tmp_p
     assert "Traceback" not in result.stderr and "private-invalid" not in result.stderr
 
 
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/develop"])
 @pytest.mark.parametrize("tampered", [False, True])
 def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
-    tmp_path, monkeypatch, tampered
+    tmp_path, monkeypatch, tampered, ref
 ):
     import urllib.request
     import urllib.parse
@@ -1833,7 +1834,7 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
         "CNESDATA_DELIVERY_GOVERNANCE": canonical({"ext2": gov}).decode(),
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/develop",
+        "GITHUB_REF": ref,
         "GITHUB_SHA": SOURCE,
         "EXPECTED_SOURCE_SHA": SOURCE,
         "GITHUB_RUN_ID": "123",
@@ -1874,10 +1875,12 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
     monkeypatch.chdir(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    if tampered:
+    if tampered or ref != "refs/heads/main":
         with pytest.raises((ValueError, AssertionError)):
             exec(compile(source, "ratified-workflow-bootstrap", "exec"), {})
         assert not (tmp_path / "tools/cnesdata_delivery/evidence.py").exists()
+        if ref != "refs/heads/main":
+            assert calls == [], "the retired develop ref must be refused before any API read"
     else:
         exec(compile(source, "ratified-workflow-bootstrap", "exec"), {})
         assert (tmp_path / "tools/cnesdata_delivery/evidence.py").is_file()
