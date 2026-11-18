@@ -448,9 +448,46 @@ class _Clock:
         return self.value
 
 
+class _Operation:
+    """A boundary AWS client with synthetic credentials in a boto3-like nested structure and evidence objects in a dict."""
+    def __init__(self, tag):
+        self.secrets = {f"AKIA-{tag}", f"SECRET-{tag}", f"TOKEN-{tag}"}
+        credentials = SimpleNamespace(access_key=f"AKIA-{tag}", secret_key=f"SECRET-{tag}", token=f"TOKEN-{tag}")
+        self.session, self.clients, self.objects = SimpleNamespace(credentials=credentials), {("sts", "us-east-2"): [credentials]}, {}
+
+    def get(self, bucket, key, *, maximum, absent=False):
+        return self.objects.get(key), "etag"
+
+    def put(self, bucket, key, raw):
+        self.objects[key] = raw
+
+
+def _holds(root, *, clients, secrets):
+    """What of clients and secrets is reachable from root through fields, containers, closure cells and bound-method owners."""
+    import gc
+    import types
+    seen, stack, found = set(), [root], []
+    while stack:
+        item = stack.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if any(item is client for client in clients) or isinstance(item, str) and item in secrets:
+            found.append(item)
+        if isinstance(item, (types.ModuleType, type)):
+            continue
+        if isinstance(item, types.FunctionType):
+            stack += [cell.cell_contents for cell in item.__closure__ or ()] + list(item.__defaults__ or ()) + list((item.__kwdefaults__ or {}).values())
+        elif isinstance(item, types.MethodType):
+            stack.append(item.__self__)
+        else:
+            stack += gc.get_referents(item)
+    return found
+
+
 def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
                  observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
-                 omit_earliest=False, noncanonical=(), github_mutation=None):
+                 omit_earliest=False, noncanonical=(), github_mutation=None, real_broker=False, child_error=None):
     """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes."""
     from test_cnesdata_application_gate import _prepare_stage_keeper
     from test_cnesdata_delivery_lifecycle import _envelope_case
@@ -510,12 +547,33 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
         clock.value += capability_seconds
         if capability is not None:
             raise ValueError(capability)
+        if not real_broker:
+            return SimpleNamespace(aws=None, evidence=[], session=SimpleNamespace(client=None, evidence=None))
+        from test_cnesdata_application_gate import CLOSE_SCOPE
+        journal = kwargs["journal"]
+        world.operation, world.fence = _Operation("operation"), _Operation("fence")
+        session = ag._FenceSession(world.fence, "9" * 64, CLOSE_SCOPE, journal._request["stage"]["deadline"],
+                                   c.sha(c.canonical(journal._request)), world.operation)
+        broker = ag.ClosedReadyBroker(world.operation, governance, journal, session, prepared_sha256="3" * 64, clock=clock)
+        kwargs["keeper"].attach(broker)
+        return broker
     monkeypatch.setattr(ag, "close_drain_capability", close_drain_capability)
 
     def invoke_adapter(**kwargs):
         world.events.append("invoke_adapter")
         world.invoke.append(kwargs)
         journal = kwargs["journal"]
+        if real_broker:
+            from test_cnesdata_application_gate import CLOSE_SCOPE
+            broker = journal._broker
+            native = c.canonical({"role": "fence_operator", "service": "stepfunctions", "operation": "describe_execution", "parameters": {
+                "executionArn": CLOSE_SCOPE["machine_arn"].replace(":stateMachine:", ":execution:") + ":0123456789abcdef",
+                "includedData": "METADATA_ONLY"}})
+            broker.evidence.append(ag.ClosedReadyEvidence(broker.aws, governance | {"role": "application", "account_id": CLOSE_SCOPE["account"]}, journal, native, prepared_sha256="3" * 64,
+                role_session_sha256=broker.session.commitment, scope=broker.session.scope))
+            world.during = _holds(world.keeper, clients=[world.operation, world.fence], secrets=world.operation.secrets | world.fence.secrets)
+            if child_error is not None:
+                raise ValueError(child_error)
         expirations = c.loads(journal._inputs["expirations"], canonical=True)
         if omit_earliest:
             expirations = [item for item in expirations if c.instant(item["expires_at"]) > 5000]
@@ -598,6 +656,27 @@ def test_prepared_handler_gives_the_capability_the_operation_session_factory_and
     world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
     (arguments,) = world.capability
     assert arguments["aws"] is world.aws and arguments["operation_session"] is world.operation_session
+
+
+@pytest.mark.parametrize("outcome, changes", [("settled", {}), ("child-failure", {"child_error": "child failed"}),
+                                              ("no-capacity", {"credential_limit": 1000})])
+def test_prepared_handler_drops_every_reference_to_the_operation_credentials_when_the_child_is_done(monkeypatch, outcome, changes):
+    """R20 change 1: the keeper retains the broker, so the handler releases the operation and fence clients, ledgers included.
+
+    The journal stays: the terminal proof reads its observations. The walk sees fields, containers, closure cells and
+    bound-method owners, by object identity and by the synthetic secret strings."""
+    world = _stage_world(monkeypatch, real_broker=True, **changes)
+    if outcome == "settled":
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    else:
+        with pytest.raises(ValueError, match="child failed|close-drain capacity"):
+            world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    clients, secrets = [world.operation, world.fence], world.operation.secrets | world.fence.secrets
+    assert (outcome == "no-capacity") or len(world.during) > 0, "the walk finds the clients while the child runs"
+    assert _holds(world.keeper, clients=clients, secrets=secrets) == []
+    journal = next(item for item in world.keeper._contexts if type(item).__name__ == "AdapterJournal")
+    assert journal._broker in world.keeper._contexts and len(journal._broker.evidence) == (outcome != "no-capacity")
+    assert (outcome != "settled") or [entry["kind"] for entry in journal._observations] == ["close-drain"]
 
 
 def test_prepared_handler_records_the_plan_download_beside_its_expiry_in_the_original_api(monkeypatch):
