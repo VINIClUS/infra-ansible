@@ -2000,11 +2000,17 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
                                        expirations=close_expirations(authority, api))
         current.attach(journal)
-        close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal, keeper=current,
-                               prepared=files, credential_limit=credential_limit, operation_session=operation_session, clock=clock)
-        seconds = _close_drain_seconds(window, credential_limit, clock())
-        invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
-                       manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        broker = close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal,
+            keeper=current, prepared=files, credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+        try:
+            seconds = _close_drain_seconds(window, credential_limit, clock())
+            invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                           manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        finally:
+            # The keeper retains the broker: drop the operation and fence clients, ledgers included, and keep the journal.
+            for ledger in broker.evidence:
+                ledger._aws = None
+            broker.aws = broker.session.evidence = broker.session.client = None
         observed = [entry for entry in journal._observations if entry["kind"] == "close-drain"]
         c.require(len(journal._observations) == len(observed) == 1 and not current.uncertainty(),
                   "close-drain single observation without uncertainty")
