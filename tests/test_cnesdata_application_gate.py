@@ -888,7 +888,9 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
     class API:
         def read(self, path, **kwargs):
             if "/contents/" in path: return {"encoding": "base64", "content": base64.b64encode(self.raw).decode()}
-            if "/compare/" in path: return {"status": "identical"}
+            if "/compare/" in path:
+                assert path == f"repos/{c.REPOSITORY}/compare/{'b' * 40}...main", path  # containment is in main (amendment 6993274712)
+                return {"status": "identical"}
             if "/check-runs" in path: return {"check_runs": [{"name": "CI", "head_sha": "b" * 40, "conclusion": "success"}]}
             if "/jobs?" in path: return {"total_count": 1, "jobs": [job]}
             return run
@@ -902,7 +904,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
 
 @pytest.mark.parametrize("role", ["application", "plan", "deploy"])
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "crossed-workflow", "source-bytes", "wrong-uses", "job-attempt", "job-step", "job-name", "job-step-config", "context", "manifest", "env-workflow"])
+@pytest.mark.parametrize("mutation", [None, "crossed-workflow", "source-bytes", "wrong-uses", "job-attempt", "job-step", "job-name", "job-step-config", "context", "manifest", "env-workflow", "ref-develop", "branch-develop"])
 def test_application_caller_authenticates_original_source_job_and_purpose(monkeypatch, purpose, mutation, role):
     from tools.cnesdata_delivery import lifecycle_runtime, provenance
     gov, api, run, step, job, _ = _application_caller_fixture(monkeypatch, purpose, role)
@@ -921,6 +923,8 @@ def test_application_caller_authenticates_original_source_job_and_purpose(monkey
     if mutation == "context": gov["context_kind"] = "readiness" if purpose == "promotion" else "promotion"
     if mutation == "manifest": gov["application_product_source_closure_sha256"] = "0" * 64
     if mutation == "env-workflow": monkeypatch.setenv("GITHUB_WORKFLOW_REF", "other")
+    if mutation == "ref-develop": monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+    if mutation == "branch-develop": run["head_branch"] = "develop"
     assert callable(getattr(provenance, "application_caller", None)), "source/run caller authenticator required"
     def authenticate():
         observed = lifecycle_runtime.source_admission(gov, api, role, "b" * 40, 44, 2)
