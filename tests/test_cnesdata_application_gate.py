@@ -5448,13 +5448,15 @@ SIX_VALIDATORS = {"routing", "static", "membership", "quiescence", "host", "deci
 HOST_OWNER = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
 
 
-def _zip_bytes(members):
+def _zip_bytes(members, total=None):
     import io
     import zipfile
     out = io.BytesIO()
+    comment = b"x" * (total - len(_zip_bytes(members))) if total else b""
     with zipfile.ZipFile(out, "w") as archive:
         for name, raw in members:
             archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0)), raw)
+        archive.comment = comment
     return out.getvalue()
 
 
@@ -5477,7 +5479,7 @@ class _HostWorld:
             {"path": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@" + HOST_REUSABLE_SHA,
              "sha": HOST_REUSABLE_SHA}]}
         self.jobs, self.total_jobs, self.artifacts, self.total_artifacts = [self.job], None, [self.meta], None
-        self.reads = []
+        self.reads, self.log = [], []
         self.root = root
         getattr(self, "_" + mutation.replace("-", "_"))() if mutation else None
         self.responses = {
@@ -5490,6 +5492,7 @@ class _HostWorld:
 
     def read(self, path, *, raw=False, maximum=192 * 1024**2):
         self.reads.append(path)
+        self.log.append(("read", path))
         value = self.responses[path]
         assert not raw or len(value) <= maximum, "oversized archive must be refused by the read bound"
         return value
@@ -5509,6 +5512,14 @@ class _HostWorld:
     def _job_conclusion(self): self.job["conclusion"] = "cancelled"
     def _step_missing(self): self.job["steps"].pop(0)
     def _step_order(self): self.job["steps"][0]["number"] = 9
+    def _step_order_gate_handoff(self): self.job["steps"][0]["number"] = self.job["steps"][1]["number"]
+    def _step_order_handoff_final(self): self.job["steps"][1]["number"] = self.job["steps"][2]["number"]
+    def _jobs_at_limit(self): self.jobs = [self.job | {"id": 1000 + n, "name": "other"} for n in range(99)] + [self.job]
+    def _jobs_over_limit(self): self.jobs = [self.job | {"id": 1000 + n, "name": "other"} for n in range(100)] + [self.job]
+    def _artifacts_at_limit(self):
+        self.artifacts = [self.meta | {"id": 2000 + n, "name": "other"} for n in range(99)] + [self.meta]
+    def _artifacts_over_limit(self):
+        self.artifacts = [self.meta | {"id": 2000 + n, "name": "other"} for n in range(100)] + [self.meta]
     def _step_gate(self): self.job["steps"][0]["conclusion"] = "failure"
     def _step_handoff(self): self.job["steps"][1]["conclusion"] = "skipped"
     def _final_step(self): self.job["steps"][2]["conclusion"] = "failure"
@@ -5527,6 +5538,10 @@ class _HostWorld:
     def _member_twice(self): self._replace([("host-handoff.json", self.raw), ("extra.json", b"{}")])
     def _member_empty(self): self._replace([("host-handoff.json", b"")])
     def _member_large(self): self._replace([("host-handoff.json", self.raw + b" " * 32768)])
+    def _member_over_by_one(self): self._replace([("host-handoff.json", self.raw + b" " * (32769 - len(self.raw)))])
+    def _member_at_limit(self): self._rewrite(pad="x" * (32768 - len(c.canonical(c.loads(self.raw, canonical=True) | {"pad": ""}))))
+    def _archive_at_limit(self): self._replace([("host-handoff.json", self.raw)], total=65536)
+    def _archive_over_by_one(self): self._replace([("host-handoff.json", self.raw)], total=65537)
     def _noncanonical(self): self._replace([("host-handoff.json", b'{ "kind": "host-handoff" }\n')])
     def _archive_large(self): self._replace([("host-handoff.json", self.raw), ("pad.bin", bytes(range(256)) * 300)])
     def _producer(self): self._rewrite(producer_sha="f" * 40)
@@ -5534,8 +5549,8 @@ class _HostWorld:
     def _caller_source(self): self._rewrite(caller=dict(HOST_OWNER, source_sha="a" * 40))
     def _caller_repository(self): self._rewrite(caller=dict(HOST_OWNER, repository="VINIClUS/other"))
 
-    def _replace(self, members):
-        self.archive = _zip_bytes(members)
+    def _replace(self, members, total=None):
+        self.archive = _zip_bytes(members, total)
         self.meta["digest"] = "sha256:" + c.sha(self.archive)
 
     def _rewrite(self, **changes):
@@ -5544,16 +5559,29 @@ class _HostWorld:
 
 
 class _NoGuard:
-    def __init__(self): self.checks = []
-    def check(self, seconds=0): self.checks.append(seconds)
+    def __init__(self, log=None): self.checks, self.log = [], log if log is not None else []
+    def check(self, seconds=0): self.checks.append(seconds), self.log.append(("check", seconds))
 
 
 def test_host_handoff_caller_authenticates_the_original_public_artifact():
     from tools.cnesdata_delivery import application_gate as ag
-    world, guard = _HostWorld(), _NoGuard()
+    world = _HostWorld()
+    guard = _NoGuard(world.log)
     assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=guard) == world.raw
     assert world.reads[0].endswith("/runs/44/attempts/1") and world.reads[-1].endswith("/artifacts/78/zip")
-    assert len(guard.checks) >= 2 * len(world.reads) - 2 and 20 in guard.checks
+    expected = []
+    for path in world.reads:
+        expected += [("check", 20), ("read", path), ("check", 0)]
+    assert world.log == expected and len(world.reads) == 4
+
+
+@pytest.mark.parametrize("mutation", ["jobs-at-limit", "artifacts-at-limit", "member-at-limit", "archive-at-limit"])
+def test_host_handoff_caller_accepts_each_inventory_and_size_exactly_at_its_limit(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld(mutation)
+    assert {"jobs-at-limit": len(world.jobs) == 100, "artifacts-at-limit": len(world.artifacts) == 100,
+            "member-at-limit": len(world.raw) == 32768, "archive-at-limit": len(world.archive) == 65536}[mutation]
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
 
 
 def test_host_handoff_caller_accepts_the_failed_job_of_a_recovery_handoff():
@@ -5569,6 +5597,9 @@ _HOST_HANDOFF_REFUSALS = {
     "job-missing": "host handoff job inventory", "job-twice": "host handoff job inventory",
     "job-incomplete": "host handoff job inventory", "job-run": "host handoff job identity",
     "job-attempt": "host handoff job identity", "job-source": "host handoff job identity",
+    "jobs-over-limit": "host handoff job inventory", "artifacts-over-limit": "host handoff artifact inventory",
+    "step-order-gate-handoff": "host handoff job steps", "step-order-handoff-final": "host handoff job steps",
+    "member-over-by-one": "host handoff member size", "archive-over-by-one": "oversized archive|host handoff digest",
     "job-status": "host handoff job identity", "job-conclusion": "host handoff job identity",
     "step-missing": "host handoff job steps", "step-order": "host handoff job steps", "step-gate": "host handoff job steps",
     "step-handoff": "host handoff job steps", "final-step": "host handoff job steps",
