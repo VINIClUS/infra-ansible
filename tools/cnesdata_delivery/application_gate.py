@@ -1723,12 +1723,141 @@ def publish_static_closed_ready(journal, keeper):
         raise
 
 
-# Closed production registries. They are code constants, never read from
-# governance, environment or request. Both are empty until the product adapter
-# (CnesData #473/#474) and an authorized keeper event producer exist, so execute
-# refuses before any AWS construction, lease write or STS call.
-TERMINAL_VALIDATORS = {}
+# CnesData 9cdd452f scripts/promotion/_api_static_handoff.py as labelled literals: the keeper-side caller of the
+# public host-handoff artifact. Unlike the product, producer_sha is the run's own reusable pin, never a literal.
+HOST_JOB = "host-gate / execute"
+HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH frames",
+                  "Publish only the closed public handoff projection",
+                  "Fail only after the original recovery handoff is available")
+HOST_REUSABLE = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
+HOST_MEMBER, HOST_MEMBER_LIMIT, HOST_ZIP_LIMIT = "host-handoff.json", 32768, 65536
+
+
+def _host_job(api, owner, guard):
+    run_id, attempt = owner["run_id"], owner["run_attempt"]
+    guard.check(20)
+    listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page=1")
+    guard.check()
+    found = [job for job in listing["jobs"] if job["name"] == HOST_JOB]
+    c.require(listing["total_count"] == len(listing["jobs"]) <= 100 and len(found) == 1, "host handoff job inventory")
+    job = found[0]
+    c.require((job["run_id"], job["run_attempt"], job["head_sha"]) == (run_id, attempt, owner["source_sha"])
+              and job["status"] == "completed" and job["conclusion"] in {"success", "failure"}, "host handoff job identity")
+    steps = {step["name"]: step for step in job["steps"]}
+    c.require(all(name in steps for name in HOST_JOB_STEPS), "host handoff job steps")
+    gate, handoff, final = (steps[name] for name in HOST_JOB_STEPS)
+    c.require(gate["number"] < handoff["number"] < final["number"]
+              and (gate["conclusion"], handoff["conclusion"]) == ("success", "success")
+              and final["conclusion"] == ("failure" if job["conclusion"] == "failure" else "skipped"), "host handoff job steps")
+    return job
+
+
+def _host_handoff_archive(api, owner, job, guard):
+    run_id = owner["run_id"]
+    guard.check(20)
+    listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100&page=1")
+    guard.check()
+    c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "host handoff artifact inventory")
+    found = [item for item in listing["artifacts"] if item["name"] == f"cnesdata-host-handoff-{run_id}-{owner['run_attempt']}"]
+    c.require(len(found) == 1, "host handoff artifact unique")
+    meta = found[0]
+    c.require(meta["expired"] is False and meta["workflow_run"]["id"] == run_id
+              and meta["workflow_run"]["head_sha"] == owner["source_sha"]
+              and c.instant(job["started_at"]) < c.instant(meta["created_at"]) <= c.instant(job["completed_at"]),
+              "host handoff artifact identity")
+    guard.check(20)
+    archive = api.read(f"repos/{c.REPOSITORY}/actions/artifacts/{meta['id']}/zip", raw=True, maximum=HOST_ZIP_LIMIT)
+    guard.check()
+    c.require(type(archive) is bytes and len(archive) <= HOST_ZIP_LIMIT and meta["digest"] == "sha256:" + c.sha(archive),
+              "host handoff digest")
+    return archive
+
+
+def _host_handoff_member(archive):
+    import io
+    import stat
+    import zipfile
+    try:
+        packed = zipfile.ZipFile(io.BytesIO(archive))
+    except zipfile.BadZipFile as error:
+        raise ValueError("host handoff member") from error
+    with packed:
+        members = packed.infolist()
+        c.require(len(members) == 1 and members[0].filename == HOST_MEMBER and not members[0].is_dir()
+                  and stat.S_IFMT(members[0].external_attr >> 16) in {0, stat.S_IFREG} and not members[0].flag_bits & 1,
+                  "host handoff member")
+        with packed.open(members[0]) as stream:
+            raw = stream.read(HOST_MEMBER_LIMIT + 1)
+    c.require(0 < len(raw) <= HOST_MEMBER_LIMIT, "host handoff member size")
+    return raw
+
+
+def authenticate_host_handoff(api, owner, *, guard):
+    """Authenticated host-handoff bytes of the owner run: job and steps, artifact, digest, member, canonical JSON.
+
+    Args: api GitHub reader, owner binding, keeper guard. Returns: the exact artifact member bytes.
+    Raises: ValueError on any missing or divergent proof.
+    """
+    run_id, attempt = owner["run_id"], owner["run_attempt"]
+    guard.check(20)
+    run = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}")
+    guard.check()
+    c.require((run["id"], run["run_attempt"], run["head_sha"]) == (run_id, attempt, owner["source_sha"]), "host handoff run")
+    refs = [item for item in run.get("referenced_workflows", []) if item["path"].startswith(HOST_REUSABLE)]
+    c.require(len(refs) == 1 and refs[0]["path"] == HOST_REUSABLE + c.digest(refs[0]["sha"], 40), "host handoff reusable")
+    job = _host_job(api, owner, guard)
+    raw = _host_handoff_member(_host_handoff_archive(api, owner, job, guard))
+    value = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)
+    caller = value.get("caller") if type(value) is dict else None
+    c.require(type(caller) is dict and value.get("producer_sha") == refs[0]["sha"]
+              and (caller.get("repository"), caller.get("source_sha"), caller.get("run_id"), caller.get("run_attempt"))
+              == (c.REPOSITORY, owner["source_sha"], run_id, attempt), "host handoff producer/caller")
+    return raw
+
+
+def _journal_validator(validator):
+    return lambda keeper: validator
+
+
+def _quiescence_validator(keeper):
+    return quiescence_terminal_validator(keeper.uncertainty)
+
+
+def _handoff_validator(role):
+    """Lazy artifact validator: the handoff is authenticated when the keeper invokes it, before the factory is built."""
+    def provider(keeper):
+        def validator(source, *, owner, window, observations):
+            raw = authenticate_host_handoff(keeper.api, owner, guard=KeeperGuard(keeper))
+            if role == "host-handoff":
+                return host_terminal_validator(raw)(source, owner=owner, window=window, observations=observations)
+            decision = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)["recovery_decision"]
+            c.require(decision is not None, "host handoff recovery decision")
+            return decision_terminal_validator(c.canonical(decision))(source, owner=owner, window=window,
+                                                                      observations=observations)
+        return validator
+    return provider
+
+
+# Closed production registries. They are code constants, never read from governance, environment or
+# request. Each kind maps to a SYNTHETIC label (R3: the product has no routing or terminal-readback
+# handler) and a provider that builds the validator for one keeper. Only six kinds exist; unit,
+# recovery, audit and restoration stay without a validator, so finish() refuses their terminals.
+TERMINAL_VALIDATORS = {
+    "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
+    "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
+    "membership": ("synthetic-membership", _journal_validator(membership_terminal_validator)),
+    "quiescence": ("synthetic-quiescence", _quiescence_validator),
+    "host": ("synthetic-host", _handoff_validator("host-handoff")),
+    "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+}
 KEEPER_EVENT_SOURCE = None
+
+
+def register_terminal_validators(keeper, registry):
+    c.require(type(keeper) is Keeper and type(registry) is dict and set(registry) <= set(TERMINAL_VALIDATOR_FACTS),
+              "terminal validator registry")
+    for kind, (label, provider) in sorted(registry.items()):
+        keeper.register_terminal_validator(kind, provider(keeper), label=label)
 KEEPER_EVENTS = ("closed-ready", "terminal")
 
 
