@@ -4866,7 +4866,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
-               "validate_static_call"}
+               "validate_static_call", "stage_handlers"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4902,6 +4902,13 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "validator", "KeeperGuard"),                                     # lazy host/decision validators
         (gate, "validator", "host_terminal_validator"),
         (gate, "validator", "decision_terminal_validator"),
+        (gate, "prepared", "KeeperGuard"),                                      # stage_handlers has no production caller
+        (gate, "prepared", "close_expirations"),
+        (gate, "prepared", "close_drain_capability"),
+        (gate, "prepared", "infra_expiration_bound"),
+        (gate, "prepared", "close_window"),
+        (gate, "phase_b", "KeeperGuard"),
+        (gate, "phase_b", "api_window"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call

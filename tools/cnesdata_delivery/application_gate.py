@@ -1858,7 +1858,6 @@ def register_terminal_validators(keeper, registry):
               "terminal validator registry")
     for kind, (label, provider) in sorted(registry.items()):
         keeper.register_terminal_validator(kind, provider(keeper), label=label)
-KEEPER_EVENTS = ("closed-ready", "terminal")
 
 
 class KeeperGuard:
@@ -1891,15 +1890,126 @@ def run_closed_ready(*, keeper, request_raw, owner, window, inputs, activation_s
                           journal=journal, timeout=timeout)
 
 
-def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over a closed event set; no finally-release.
+class _ArtifactTap:
+    """Keeps the artifact metadata that lifecycle_artifact already authenticated; every other read is delegated."""
+    def __init__(self, inner):
+        self._inner, self.metadata = inner, {}
 
-    next_event is the authenticated event producer; handlers holds only the
-    closed-ready dispatch. Stage advancement (close-drain, B, API) is not an
-    event here: close_drain_capability exists but is not a keeper event until the execute wiring.
-    Any exception leaves the lease held; finish() refuses under uncertainty.
+    def read(self, path, **kwargs):
+        value = self._inner.read(path, **kwargs)
+        head = f"repos/{c.REPOSITORY}/actions/artifacts/"
+        if path.startswith(head) and not path.endswith("/zip"):
+            self.metadata[int(path.removeprefix(head))] = value
+        return value
+
+
+def _close_drain_journal(*, guard, owner, window, activation, expirations):
+    """The close-drain ABI2 request, bound to the keeper window exactly as it is at the prepared event."""
+    inputs = {"activation": activation, "expirations": expirations}
+    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+               "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(activation),
+               "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    return AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
+                          activation_sha256=request["activation_sha256"], guard=guard)
+
+
+def _plan_activation(*, aws, api, governance, request, run, prepared, owner, window, guard, now):
+    """Ratification 6974253889 section 3: the activation bytes of the authenticated same-run plan carrier.
+
+    The plan download joins api.expiries/api.digests, so close_expirations binds it as one more artifact.
     """
-    c.require(type(handlers) is dict and set(handlers) == {"closed-ready"}, "closed keeper handlers")
+    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
+    current = c.loads(prepared["fence-origins.json"], canonical=True)["current_plan"]
+    name = current["step"]
+    step = governance["lifecycle_steps"].get(name)
+    c.require(type(step) is dict and step.get("role") == "plan" and step.get("purpose") == "application-prepare"
+              and step.get("mode") == "operational" and type(step.get("job_name")) is str, "activation plan step")
+    tap = _ArtifactTap(api)
+    job = _same_run_job(tap, run, kind="plan", job_name=step["job_name"], guard=guard)
+    reference, public = _same_run_publication(tap, run, owner, job, kind="plan", step=name, guard=guard, now=now)
+    key = (c.REPOSITORY, reference["artifact_id"])
+    api.expiries[key] = c.instant(tap.metadata[reference["artifact_id"]]["expires_at"])
+    api.digests[key] = c.digest(reference["artifact_digest"].removeprefix("sha256:"))
+    c.require(c.sha(public["index.json"]) == current["index_sha256"], "activation plan index")
+    inputs = private_payload(aws, governance, request, run, public, guard=guard, names={"inputs.json"})[1]["inputs.json"]
+    c.require(c.sha(inputs) == c.loads(prepared["approval.json"], canonical=True)["inputs_sha256"], "activation plan inputs")
+    decoded = lc.inputs_envelope(inputs, owner=owner, window=window)
+    c.require(decoded["activation_sha256"] == c.loads(prepared["fence-prepared.json"], canonical=True)["activation_sha256"],
+              "activation bytes")
+    return decoded["activation"]["payload"]
+
+
+def _close_drain_seconds(window, credential_limit, now):
+    """Largest whole-second timeout that phase_capacity still admits; sampled right before the child starts."""
+    seconds = int(min(window["deadline"] - now - 158, credential_limit - now - 121))
+    c.require(seconds >= 1, "close-drain capacity")
+    lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
+    return seconds
+
+
+def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, clock=time.time):
+    """Handlers of the two ratified stage triggers (amendment 6886977054 decision 3, ratification 6974253889).
+
+    prepared: authenticated fence package, activation from the plan carrier, close-drain, close window.
+    phase-b: B checkpoint ancestry from the prepared checkpoint, API window. The API stage ends this slice.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    state = {}
+
+    def prepared(current, reference):
+        guard = KeeperGuard(current)
+        record = current.lease.check()
+        window, owner = record["lifecycle"], lc.owner_binding(record)
+        files = lr.fence_prepared_payload(api, aws, governance, request, run, reference, owner=owner, now=clock(),
+            predecessor_raw=current.predecessor["raw"], predecessor_reference=current.predecessor_reference, guard=guard)
+        activation = _plan_activation(aws=aws, api=api, governance=governance, request=request, run=run, prepared=files,
+                                      owner=owner, window=window, guard=guard, now=clock())
+        journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
+                                       expirations=close_expirations(authority, api))
+        current.attach(journal)
+        close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal, keeper=current,
+                               prepared=files, credential_limit=credential_limit, clock=clock)
+        seconds = _close_drain_seconds(window, credential_limit, clock())
+        invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                       manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        observed = [entry for entry in journal._observations if entry["kind"] == "close-drain"]
+        c.require(len(journal._observations) == len(observed) == 1 and not current.uncertainty(),
+                  "close-drain single observation without uncertainty")
+        closed = lc.close_window(current.lease.check()["lifecycle"], journal._observation_bytes[observed[0]["sha256"]],
+                                 checkpoint_sha256=c.sha(files["checkpoint.json"]),
+                                 infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
+        current.lease.checkpoint(closed)
+        state["prepared"] = files
+
+    def phase_b(current, reference):
+        files = state.get("prepared")
+        c.require(files is not None, "phase-b follows the prepared stage handled by this keeper")
+        owner = lc.owner_binding(current.lease.check())
+        published = _phase_b_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock())
+        b_checkpoint = c.loads(published["checkpoint.json"], canonical=True)
+        b_approval = c.loads(published["approval.json"], canonical=True)
+        c.require(b_approval["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
+                  and b_approval["plan_sha256"] == b_checkpoint["plan_sha256"] and b_checkpoint["purpose"] == "phase-b"
+                  and c.canonical(b_checkpoint["owner"]) == c.canonical(owner), "preparation -> B checkpoint ancestry")
+        current.lease.checkpoint(lc.api_window(current.lease.check()["lifecycle"],
+                                               checkpoint_sha256=c.sha(published["checkpoint.json"]), now=clock()))
+
+    return {"prepared": prepared, "phase-b": phase_b}
+
+
+KEEPER_EVENTS = ("prepared", "phase-b")
+
+
+def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
+    """The single keeper polling loop over the two ratified stage triggers; it never returns.
+
+    next_event is the authenticated event producer and handlers holds exactly the two stage
+    handlers. After the API stage the producer refuses and the lease stays held (R18): there
+    is no finish, publish or dispatch here. Any exception leaves the lease held.
+    """
+    c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
     while True:
         keeper.tick()
@@ -1908,12 +2018,8 @@ def keeper_loop(keeper, *, next_event, handlers, publish, poll=5, sleep=time.sle
             sleep(poll)
             continue
         c.closed(event, "kind reference")
-        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event; stage advancement not connected")
-        if event["kind"] == "closed-ready":
-            handlers["closed-ready"](keeper, event["reference"])
-            continue
-        files = keeper.finish(event["reference"])
-        return publish(files)
+        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
+        handlers[event["kind"]](keeper, event["reference"])
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
