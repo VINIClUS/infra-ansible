@@ -958,6 +958,54 @@ def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mut
         assert calls == []
 
 
+def _oidc_exchange_case(monkeypatch):
+    """The original-run OIDC boundary: only the token endpoint and the STS client are fakes."""
+    import base64
+    import io
+    import sys
+    from types import SimpleNamespace
+    import urllib.request
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    gov, api, run, step, job, claims = _application_caller_fixture(monkeypatch)
+    evidence = {"application_purpose": "promotion", "context_kind": "promotion", **lc.APPLICATION_CALLERS["promotion"],
+        "source_sha": "b" * 40, "run_id": 44, "run_attempt": 2, "producer_workflow_sha": "a" * 40,
+        "producer_source_closure_sha256": "d" * 64, "event": "workflow_dispatch", "fragment_version": 4}
+    gov["authenticated_application_caller"] = lc.application_caller_binding(evidence, {"workflow_sha": "a" * 40, "source_closure_sha256": "d" * 64})
+    gov["roles"] = {"application": "arn:aws:iam::111122223333:role/cnesdata-prod-application"}
+    token = "header." + base64.urlsafe_b64encode(c.canonical(claims)).decode().rstrip("=") + ".signature"
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/id?request=1")
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "synthetic")
+    tokens, calls = [], []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: tokens.append(a) or io.BytesIO(c.canonical({"value": token})))
+    class STS:
+        def assume_role_with_web_identity(self, **kwargs):
+            calls.append(kwargs)
+            return {"PackedPolicySize": 1, "Credentials": {"fixture": "no-real-credentials"}}
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: STS()))
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace(UNSIGNED="synthetic"))
+    monkeypatch.setitem(sys.modules, "botocore.config", SimpleNamespace(Config=lambda **kwargs: kwargs))
+    return gov, run, tokens, calls
+
+
+@pytest.mark.parametrize("duration, expected", [("default", 3600), (3600, 3600), (900, 900)])
+def test_oidc_credentials_asks_the_ratified_session_duration(monkeypatch, duration, expected):
+    """R20 option C: the operation session is the 900 second exchange; keeper, plan and deploy keep 3600."""
+    from tools.cnesdata_delivery import lifecycle_runtime
+    gov, run, tokens, calls = _oidc_exchange_case(monkeypatch)
+    extra = {} if duration == "default" else {"duration": duration}
+    assert lifecycle_runtime.oidc_credentials(gov, "application", {}, run, **extra) == {"fixture": "no-real-credentials"}
+    assert len(tokens) == 1 and len(calls) == 1 and calls[0]["DurationSeconds"] == expected
+
+
+@pytest.mark.parametrize("duration", [0, 899, 901, 1800, 3601, 7200, -900, True, 900.0, "900", None])
+def test_oidc_credentials_refuses_every_duration_but_the_two_ratified_ones(monkeypatch, duration):
+    from tools.cnesdata_delivery import lifecycle_runtime
+    gov, run, tokens, calls = _oidc_exchange_case(monkeypatch)
+    with pytest.raises(ValueError, match="^OIDC session duration$"):
+        lifecycle_runtime.oidc_credentials(gov, "application", {}, run, duration=duration)
+    assert tokens == [] and calls == []
+
+
 
 @pytest.mark.parametrize("mutation", ["caller-missing", "caller-hash", "purpose", "run", "readiness-legacy"])
 def test_keeper_rejects_current_caller_mismatch_before_any_cas(monkeypatch, tmp_path, mutation):
