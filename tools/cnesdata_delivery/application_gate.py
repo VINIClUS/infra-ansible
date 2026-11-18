@@ -1314,6 +1314,16 @@ def close_expirations(authority, api):
                         for kind, digest, expiry in entries])
 
 
+RELEASE_FIELDS = "release_id source_sha candidate_sha256 canary_id binding_sha256 image_digest"
+
+
+def application_release_sha256(governance):
+    """Owner release_sha256 of 6974253889 section 1: the opaque hash of the closed governance release."""
+    release = governance.get("release")
+    c.require(type(release) is dict and set(release) == set(RELEASE_FIELDS.split()), "application governance release")
+    return c.sha(c.canonical(release))
+
+
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
                             guard, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).
@@ -1523,6 +1533,9 @@ class Keeper:
             c.require(reference["protocol"] == "lifecycle", "readiness requires original lifecycle predecessor")
         self.predecessor_reference = c.loads(c.canonical(reference), canonical=True)
         self._previous(previous)  # Complete protected binding before Lease.acquire/CAS.
+        original_release = lc.phase_a_originals(self.phase_a_originals)["envelope"]["plan"]["release"]
+        c.require(c.sha(c.canonical(original_release)) == c.digest(self.lease.binding["release_sha256"]),
+                  "application release binds the original Phase A plan release")
         self.lease.acquire()  # Revalidates the record read by the original CAS owner.
         c.require(self.predecessor is not None, "original predecessor missing")
         now = int(self.clock())
