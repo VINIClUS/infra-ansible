@@ -371,7 +371,7 @@ public admission, complete product source authentication and the original
 session-owner proof. It verifies native role/policy readbacks and exact
 GetCallerIdentity before exporting masked credentials. Its session explicitly
 denies every product AssumeRole; a later privately admitted operation session is
-still required. `execute` remains closed. The fixture subprocess exercises the
+still required (R20). `execute` was closed in the first slice. The fixture subprocess exercises the
 original sequence FENCE/SEM/FENCE/SEM/probe/FENCE/SEM through the real broker and
 validators with external SDK/S3 fakes. This is boundary evidence, not an integrated
 product adapter or completed application lifecycle.
@@ -712,6 +712,21 @@ with the production registry. R19: `CNESDATA_DELIVERY_GOVERNANCE` is one secret 
 plan and deploy gates. With `release` the legacy `bootstrap` and `acm-certificate` plans refuse
 (`contract.py:617-618`, `runtime.py:709`); without it the application and Phase A refuse. The conflict
 predates PR-F and the step that sets the secret after the merge must record the swap per purpose.
+
+R20 (ratification 6979020298): `execute` composes `lifecycle_runtime.AWS` from the credentials that
+`credentials` exports, a session requested without delegations whose policy denies `sts:AssumeRole`
+on `*` (`session_policy.py`, keeper sessions never carry product delegations). `close_drain_capability`
+reaches `_assume_fence_session`, which calls `sts:AssumeRole` on the `fence_operator` role with that same
+session, so in production STS denies it, the journal is poisoned and the lease stays held before the
+`phase-b` stage. The tests pass because the AWS client is a fake at the boundary. This slice adds no
+session source: a delegation in the keeper request breaks the keeper rule and the protected
+`promotion-fence-<canary_id>` session name, and a separate operation session needs another OIDC request
+and a change to the frozen 8/4 reusable interface. A dedicated amendment must name the operation session
+source before any real run; it can be the one that connects the stages after the API (R5). Until then no
+`execute` runs in production, including the Phase A proof list and items b.3 to b.6 of CnesData#522,
+because a real run would leave the lease held with the fence still open. Replacing the closure pin,
+`gate_shas.application` and the governance secret after the merge may proceed while no product run calls
+`execute` before that amendment.
 
 Closure sentinel (decision 1): `session_owner.application_configuration` and the tofu variable
 `application_promotion.source_closure_sha256` refuse the 64-zero placeholder; the value comes from
