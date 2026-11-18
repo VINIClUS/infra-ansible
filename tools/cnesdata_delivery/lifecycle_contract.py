@@ -198,11 +198,12 @@ ADAPTER_INPUTS = {
     "terminal-readback": "routing membership host-receipt static-receipt decision",
     "retire-static": "static-plan inventory publication routing",
 }
-# Amendment 6886977054 decision 5: retire-static only in the final stage, after the verified reopen.
+# Amendment 6886977054 decision 5 put retire-static in final; 6963763481 decision 1 (R16) admits it in no
+# stage in this slice, because the final budget does not fit it. The remedy belongs to the post-API amendment.
 ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
-    "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": {"final"},
+    "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": set(),
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
