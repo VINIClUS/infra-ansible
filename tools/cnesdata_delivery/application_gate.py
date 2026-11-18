@@ -1,7 +1,8 @@
 """Protected application admission, own-role bootstrap, keeper and finite IPC.
 
-Operational execution remains disabled until complete capability admission and
-the protected producer/keeper dispatch are connected. Defaults grant no access.
+Operational execution composes the original keeper and stops at the API stage
+with the lease held (R18); finish, publication and the closed-ready dispatch are
+not connected. Defaults grant no access.
 """
 import time
 
@@ -1850,7 +1851,7 @@ TERMINAL_VALIDATORS = {
     "host": ("synthetic-host", _handoff_validator("host-handoff")),
     "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
 }
-KEEPER_EVENT_SOURCE = None
+KEEPER_EVENT_SOURCE = stage_event_source
 
 
 def register_terminal_validators(keeper, registry):
@@ -2022,19 +2023,64 @@ def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
         handlers[event["kind"]](keeper, event["reference"])
 
 
+def _verify_session(client, governance, authority, run, expires):
+    """Exact own-role session readback shared by credentials and execute; returns the expiry/freeze guard."""
+    from tools.cnesdata_delivery import session_owner
+    class Guard:
+        def check(self, seconds=0):
+            c.require(time.time() + seconds < expires <= min(authority.expires_at,
+                      c.instant(authority.application_fragment["enabled_until"])), "original bootstrap credential/freeze window")
+    report = session_owner.verify_application(client, authority, expires, Guard(), clock=time.time, include_documents=True)
+    name = f"cnesdata-{run['id']}-{run['run_attempt']}"
+    expected = authority.application_fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + name
+    c.require(all(client.identity.get(key) == expected_value for key, expected_value in
+                     {"Account": governance["account_id"], "Arn": expected, "UserId": report["role_id"] + ":" + name}.items()),
+              "original bootstrap GetCallerIdentity")
+    return Guard()
+
+
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry, disabled by default before any effect."""
+    """Operational keeper entry: compose the original keeper and run the stage loop to the API stage.
+
+    The order is the contract: release, adapter closure, owner authority, credential window, AWS and
+    session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    """
+    import os
     from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner
     validators = TERMINAL_VALIDATORS if validators is None else validators
     event_source = KEEPER_EVENT_SOURCE if event_source is None else event_source
     c.require(type(validators) is dict and {"quiescence", "routing"} <= set(validators) <= set(TERMINAL_VALIDATOR_FACTS),
               "terminal validator unavailable; lifecycle disabled")
     c.require(callable(event_source), "keeper event producer not connected; lifecycle disabled")
     governance, request, step, api, run, _ = admitted
+    release_sha256 = application_release_sha256(governance)
     product = Path.cwd() / "product" if product is None else product
     authenticate_adapter_closure(product, request["source_sha"], governance["application_product_source_manifest"],
                                  governance["application_product_source_closure_sha256"])
-    raise ValueError("keeper construction from protected binding not connected; lifecycle disabled")
+    authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"],
+                                                     "application", "application-prepare", time.time())
+    c.require(type(os.environ.get("AWS_CREDENTIAL_EXPIRATION")) is str, "application credential expiration")
+    expires = c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"])
+    c.require(time.time() < expires, "application credential expiration")
+    credential_limit = min(expires, authority.expires_at, c.instant(authority.application_fragment["enabled_until"]))
+    aws = lr.AWS(governance)
+    _verify_session(aws, governance, authority, run, expires)
+    caller = governance["authenticated_application_caller"]
+    session = c.sha(c.canonical({"principal": aws.identity["Arn"], "run_id": run["id"], "run_attempt": run["run_attempt"],
+                                 "gate": "application"}))
+    binding = {"repository": c.REPOSITORY, "source_sha": request["source_sha"], "run_id": run["id"],
+               "run_attempt": run["run_attempt"], "session_sha256": session, "release_sha256": release_sha256,
+               "lifecycle_version": 1, "application_purpose": caller["application_purpose"],
+               "context_kind": caller["context_kind"], "caller_binding_sha256": c.sha(c.canonical(caller))}
+    keeper = Keeper(lr.S3LeaseStore(aws), binding, lambda previous: authenticated_previous(aws, api, governance, previous),
+                    api=api, governance=governance, evidence_aws=aws)
+    register_terminal_validators(keeper, validators)
+    owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
+    next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), clock=keeper.clock)
+    handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
+                              authority=authority, product=product, credential_limit=credential_limit, clock=keeper.clock)
+    keeper_loop(keeper, next_event=next_event, handlers=handlers)
 
 
 def credentials(admitted, *, product=None):
@@ -2056,19 +2102,10 @@ def credentials(admitted, *, product=None):
         request["step"], application_purpose=request["application_purpose"])
     value = lr.oidc_credentials(governance, "application", restriction, run)
     expires = value["Expiration"].timestamp()
-    class Guard:
-        def check(self, seconds=0):
-            c.require(time.time() + seconds < expires <= min(authority.expires_at,
-                      c.instant(authority.application_fragment["enabled_until"])), "original bootstrap credential/freeze window")
     client = lr.AWS(governance, credentials=value)
-    report = session_owner.verify_application(client, authority, expires, Guard(), clock=time.time, include_documents=True)
-    name = f"cnesdata-{run['id']}-{run['run_attempt']}"
-    expected = authority.application_fragment["application_role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + name
-    c.require(all(client.identity.get(key) == expected_value for key, expected_value in
-                     {"Account": governance["account_id"], "Arn": expected, "UserId": report["role_id"] + ":" + name}.items()),
-              "original bootstrap GetCallerIdentity")
+    guard = _verify_session(client, governance, authority, run, expires)
     authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
-    Guard().check()
+    guard.check()
     lr.export_credentials(value)
 
 
