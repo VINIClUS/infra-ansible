@@ -645,8 +645,10 @@ membership host-receipt static-receipt decision`, none of which has an original 
 close, and it reads `routing` back instead of producing it.
 
 Static stage (second slice PR-E, amendment 6886977054 decision 5 and queue items 3d, 3e, 3f and
-6, `Refs #55`). `retire-static` is an ABI operation: its inputs are `static-plan inventory publication
-routing`, it is admitted only in `final` (after the verified reopen), and its observation is `retirement`.
+6, refined by 6963763481 (R16, R17), `Refs #55`). `retire-static` is an ABI operation: its inputs are
+`static-plan inventory publication routing` and its observation is `retirement`. In this slice it is
+admitted in no stage, not even `final` (R16): `ADAPTER_STAGES["retire-static"]` is empty, so the request
+and the journal refuse it everywhere.
 `static_session` reproduces #498 `locals.static_sessions` byte for byte:
 `sp-<op>-sha256(jsonencode(binding + operation) + LF)[:40]`. The inventory name commits to no plan
 (`static_plan_sha256` null) and is written `i`. The fixture vector was evaluated by `tofu console` over
@@ -657,8 +659,42 @@ its delegations:
   in the static stage.
 - `retire-static`: normal `sp-retire-` only.
 
-A name is not an STS admission. This slice has no static broker, no static STS and no static call
-validator.
+A name is not an STS admission. This slice has no static broker and no static STS.
+
+R17, the S3 catalogue. The ABI table rows of 6764564072 were never ratified. The authority is
+CnesData#473 6869049996 item 3 plus #498, and the wire form is the product's at CnesData 9cdd452f
+(`publish_dashboard.py`). `STATIC_SDK_METHODS` is the closed map from wire name to the only boto3 method
+the native dispatch may call; any other name, including the snake_case one, refuses:
+
+| Wire call | boto3 method | Role | Operations | IAM action on the source |
+|---|---|---|---|---|
+| `s3 ListObjectVersions` | `list_object_versions` | observer | inventory, publish-static | `s3:ListBucketVersions` |
+| `s3 HeadObject` | `head_object` | observer | inventory, publish-static | `s3:GetObjectVersion` |
+| `s3 ListMultipartUploads` | `list_multipart_uploads` | observer | inventory, publish-static | `s3:ListBucketMultipartUploads` |
+| `s3 ListParts` | `list_parts` | observer | inventory, publish-static | `s3:ListMultipartUploadParts` |
+| `s3 PutObject` | `put_object` | normal | publish-static | `s3:PutObject` |
+| `s3 GetObject` | `get_object` | normal | publish-static | `s3:GetObject` |
+| `cloudfront CreateInvalidation` | `create_invalidation` | normal | publish-static | `cloudfront:CreateInvalidation` |
+| `s3 DeleteObject` | `delete_object` | normal | retire-static | `s3:DeleteObjectVersion` |
+
+`publish-static` has no `DeleteObject`. `validate_static_call` binds every value:
+- the bucket, which the caller authenticates;
+- the decoded plan, from `static_plan`. That function closes `cnesdata.static-plan/v1` under the #498
+  key, version, sort, rollback-pair and overlap rules.
+
+What each call may carry:
+- `ListObjectVersions`: only `Bucket`, or `Bucket` plus both markers.
+- `HeadObject`: a key in the #498 namespace, a `VersionId` and `ChecksumMode` `ENABLED`.
+- `ListMultipartUploads`: only `Bucket`.
+- `ListParts`: a namespace key and an `UploadId`.
+- `PutObject`: a candidate key, the 3d Body and checksum, and `IfNoneMatch` `*` exactly on non-entrypoints.
+- `GetObject`: a candidate key, with no version.
+- `CreateInvalidation`: the plan's distribution, the two entrypoint paths and a 32-hex `CallerReference`.
+- `DeleteObject`: exactly `{Bucket, Key, VersionId}`, with the pair in `retire_versions`. This vector is
+  SYNTHETIC: the product has no retire handler (R3).
+
+On the source, every validated call is allowed by its #498 role. `DeleteObject` carries a `VersionId`,
+so it needs `s3:DeleteObjectVersion`, which #498 grants per version to the normal role only.
 
 Item 6, `publish_static_closed_ready`:
 - It refuses first while `Keeper.uncertainty()` is not empty.
@@ -687,7 +723,7 @@ R4, evaluated on the source only:
 - No static session policy exists, so each identity document stands as its own session. Applied IAM
   is not evaluated.
 
-R16, the decision-5 budget does not fit (stop condition reported before merge):
+R16, the decision-5 budget does not fit (6963763481 decision 1: no admitted stage in this slice):
 - The largest plan #498 admits is 43 `retire_versions`. The normal policy is limited to 10240 bytes;
   the smallest per-reference plan measures 616 + 221·n bytes, and tofu renders 43 at 10119 bytes and
   44 at 10340.
@@ -697,7 +733,7 @@ R16, the decision-5 budget does not fit (stop condition reported before merge):
   `aws_boundary.bounded` timeout) completes 0 deletes, or 1 in memory under `KeeperGuard`.
 - The nominal fit needs less than 7.0 ms, 93.9 ms, 69.8 ms or 0.93 s per op (durable or in memory, under
   `LifecycleWatchdog` or `KeeperGuard`). Reopen and finish share the same 60 s and are counted as 0 s.
-- `retire-static`, the codecs and item 6 have no production call site.
+- `retire-static`, the codecs, the catalogue validators and item 6 have no production call site.
 
 Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
 handlers (execute wiring); the registration of the terminal validators; validators for `unit`,
@@ -705,11 +741,10 @@ handlers (execute wiring); the registration of the terminal validators; validato
 for `failed-prepare-quiescent` in `application-prepare`;
 `KEEPER_EVENT_SOURCE = stage_event_source` and the binding of `execute` to the operational Keeper.
 Static stage, remaining:
-- the call validators for `inventory`, `publish-static` and `retire-static`, which wait on the S3
-  catalogue decision (ABI table versus product wire names);
-- a static broker and STS for the static roles;
-- the retire input binding to `static-plan`;
-- the R16 choice (per-run cap, batched delete or a `static-maintenance` run), in its own amendment.
+- a static broker and STS for the static roles, with response sanitization for the catalogue calls;
+- the R16 remedy, chosen by the post-API amendment: a per-run cap, a batched `DeleteObjects` (a new ABI
+  operation) or a later `static-maintenance` run;
+- a stage for `retire-static`, in that same amendment.
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
