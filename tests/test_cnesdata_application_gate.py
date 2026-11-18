@@ -6042,3 +6042,50 @@ def test_static_plan_refuses_anything_outside_the_498_contract(mutation):
     raw = c.canonical(value) + (b" " if mutation == "noncanonical" else b"")
     with pytest.raises(ValueError):
         lc.static_plan(raw, bucket=_STATIC_BUCKET)
+
+
+# AWS Service Authorization Reference (Amazon S3, Amazon CloudFront): the IAM action each R17 wire call needs.
+_STATIC_IAM_ACTIONS = {
+    "ListObjectVersions": ("s3:ListBucketVersions", "bucket"), "HeadObject": ("s3:GetObjectVersion", "object"),
+    "ListMultipartUploads": ("s3:ListBucketMultipartUploads", "bucket"), "ListParts": ("s3:ListMultipartUploadParts", "object"),
+    "PutObject": ("s3:PutObject", "object"), "GetObject": ("s3:GetObject", "object"),
+    "CreateInvalidation": ("cloudfront:CreateInvalidation", "distribution"), "DeleteObject": ("s3:DeleteObjectVersion", "object"),
+}
+
+
+def test_every_validated_static_call_is_allowed_by_its_498_role_on_source_r17():
+    """6963763481 decision 2: DeleteObject with VersionId needs s3:DeleteObjectVersion, granted per version to normal.
+
+    HeadObject and DeleteObject always carry VersionId in the catalogue, so they need the *Version actions.
+    """
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_PROMOTION_VECTOR as vector
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    _, bucket_arn = _static_promotion_source()
+    bucket = bucket_arn.removeprefix("arn:aws:s3:::")
+    policies = {alias: json.loads(text) for alias, text in _static_policies(bucket_arn, vector).items()}
+    plan = lc.static_plan(c.canonical(_static_plan_value(bucket)), bucket=bucket)
+
+    def allowed(role, action, resource, version=None, now="2027-02-11T23:59:59Z"):
+        context = {"aws:CurrentTime": now} | ({"s3:VersionId": version} if version is not None else {})
+        return effective_iam(policies[role], [policies[role]], action, resource, context)
+    checked = set()
+    for operation, calls in _static_product_calls(bucket).items():
+        for role, service, name, parameters in calls:
+            _static_call(operation, (role, service, name, parameters), plan=None if operation == "inventory" else plan,
+                         bucket=bucket)
+            action, kind = _STATIC_IAM_ACTIONS[name]
+            resource = {"bucket": bucket_arn, "distribution": vector["distribution_arn"],
+                        "object": bucket_arn + "/" + parameters.get("Key", "")}[kind]
+            assert allowed(role, action, resource, parameters.get("VersionId")), (operation, name, parameters)
+            checked.add((role, service, name))
+    assert checked == set().union(*lc.STATIC_SDK_OPERATIONS.values())
+    old = bucket_arn + "/assets/old.js"
+    for ref in vector["retire_versions"]:
+        assert allowed("normal", "s3:DeleteObjectVersion", bucket_arn + "/" + ref["key"], ref["version_id"])
+        assert not allowed("normal", "s3:DeleteObject", bucket_arn + "/" + ref["key"], ref["version_id"])
+        assert not allowed("observer", "s3:DeleteObjectVersion", bucket_arn + "/" + ref["key"], ref["version_id"])
+        assert not allowed("normal", "s3:DeleteObjectVersion", bucket_arn + "/" + ref["key"], ref["version_id"],
+                           now=vector["enabled_until"])
+    for version in ("Prev.Index_1", "Prev+Theme=2", None):
+        assert not allowed("normal", "s3:DeleteObjectVersion", old, version)
