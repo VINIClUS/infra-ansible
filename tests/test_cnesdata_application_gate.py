@@ -4809,14 +4809,13 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
 
 
 @pytest.mark.parametrize("validators,events,message", [
-    (None, None, "keeper event producer not connected; lifecycle disabled"),
     ({"quiescence": object()}, None, "terminal validator unavailable; lifecycle disabled"),
     ({"quiescence": object(), "routing": object(), "foreign": object()}, None, "terminal validator unavailable"),
-    ({"quiescence": object(), "routing": object()}, None, "keeper event producer not connected; lifecycle disabled"),
+    (None, "not-callable", "keeper event producer not connected; lifecycle disabled"),
 ])
-def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch, validators, events, message):
+def test_execute_refuses_an_incomplete_registry_or_event_source_before_any_effect(monkeypatch, validators, events, message):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
     monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
@@ -4826,36 +4825,137 @@ def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch,
         ag.execute(({}, {"source_sha": "b" * 40}, {}, None, {}, {}), validators=validators, event_source=events)
 
 
-def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch):
+def test_application_main_execute_hands_the_admitted_tuple_to_execute(monkeypatch):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
-    admitted = ({}, {"source_sha": "b" * 40}, {}, None, {}, {})
+    admitted, handed = ({}, {"source_sha": "b" * 40}, {}, None, {}, {}), []
     monkeypatch.setattr(lr, "admission", lambda role: admitted)
     monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
     monkeypatch.setattr(ag, "verify_source_closure", lambda governance, api: None)
-    monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
-    with pytest.raises(ValueError, match="keeper event producer not connected; lifecycle disabled"):
-        ag.main(["execute"])
+    monkeypatch.setattr(ag, "execute", lambda *args, **kwargs: handed.append((args, kwargs)))
+    ag.main(["execute"])
+    assert handed == [((admitted,), {})]
 
 
-def test_execute_with_both_registries_supplied_still_refuses_before_any_effect(monkeypatch):
-    """Inactive by design: even with validators and an event producer, keeper construction is not connected."""
-    from tools.cnesdata_delivery import application_gate as ag, aws_boundary, lifecycle_runtime as lr
-    for module, name in ((lr, "AWS"), (aws_boundary, "AWS"), (lr, "S3LeaseStore"), (aws_boundary, "S3LeaseStore"),
-                         (lr, "oidc_credentials"), (ag, "Keeper"), (ag, "Lease"), (ag, "KeeperGuard"), (ag, "keeper_loop"),
-                         (ag, "run_closed_ready"), (ag, "closed_ready_capability"), (ag, "invoke_adapter")):
-        monkeypatch.setattr(module, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached while lifecycle is disabled"))
-    closures = []
-    monkeypatch.setattr(ag, "authenticate_adapter_closure", lambda *args: closures.append(args))
-    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64}
-    events = []
-    with pytest.raises(ValueError, match="keeper construction from protected binding not connected; lifecycle disabled"):
-        ag.execute((governance, {"source_sha": "b" * 40}, {}, None, {}, {}),
-                   validators={"quiescence": object(), "routing": object()}, event_source=events.append, product="product")
-    assert closures == [("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)] and events == []
+class _Stop(Exception):
+    pass
+
+
+def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None):
+    """The composition of execute over boundary fakes: every effect is a recorded call, the order is the contract."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
+    from tools.cnesdata_delivery.session_owner import Authority
+    now = int(time.time())
+    calls = []
+    caller = {"application_purpose": "promotion", "context_kind": "promotion", "repository": c.REPOSITORY, "source_sha": "b" * 40}
+    governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64,
+                  "authenticated_application_caller": caller, "account_id": "111122223333"}
+    if release: governance["release"] = dict(GOVERNANCE_RELEASE)
+    request, run, api = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}, SimpleNamespace(marker="api")
+    role = "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+    fragment = {"application_role_arn": role, "enabled_until": c.utc(now + enabled_ttl)}
+    authority = Authority({"role_arn": role, "frozen_until": c.utc(now + 9500)}, float(now + authority_ttl), None, fragment, "3" * 64)
+    if expiration == "auto": monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", c.utc(now + 7000))
+    elif expiration is None: monkeypatch.delenv("AWS_CREDENTIAL_EXPIRATION", raising=False)
+    else: monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", expiration)
+    def record(name, result=None):
+        def spy(*args, **kwargs):
+            calls.append((name, args, kwargs))
+            if isinstance(result, Exception): raise result
+            return result() if callable(result) else result
+        return spy
+    monkeypatch.setattr(ag, "authenticate_adapter_closure", record("closure"))
+    monkeypatch.setattr(session_owner, "authenticate_lifecycle", record("authority", authority))
+    arn = "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-1"
+    fake_aws = SimpleNamespace(identity={"Account": "111122223333", "Arn": arn, "UserId": "AROAFIXTURE:cnesdata-4242-1"} | (identity or {}))
+    monkeypatch.setattr(lr, "AWS", record("aws", fake_aws))
+    monkeypatch.setattr(session_owner, "verify_application", record("readback", {"role_id": "AROAFIXTURE"}))
+    monkeypatch.setattr(lr, "S3LeaseStore", record("store", "lease-store"))
+    class FakeKeeper:
+        def __init__(self, store, binding, previous, **kwargs):
+            calls.append(("keeper", (store, binding, previous), kwargs))
+            self.clock = lambda: 1000.4
+        def acquire(self, **kwargs):
+            calls.append(("acquire", (), kwargs))
+            return {"owner": "acquired"}
+    monkeypatch.setattr(ag, "Keeper", FakeKeeper)
+    monkeypatch.setattr(ag, "register_terminal_validators", record("register"))
+    monkeypatch.setattr(ag, "stage_handlers", record("handlers", {"prepared": "h1", "phase-b": "h2"}))
+    monkeypatch.setattr(ag, "keeper_loop", record("loop", _Stop("loop reached")))
+    return ag, (governance, request, {}, api, run, {}), calls, SimpleNamespace(authority=authority, aws=fake_aws, now=now, api=api,
+                                                                              run=run, request=request)
+
+
+def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    ag, admitted, calls, world = _execute_case(monkeypatch)
+    governance = admitted[0]
+    factory = []
+    def event_source(**kwargs):
+        calls.append(("events", (), kwargs))
+        return "next-event"
+    validators = {"quiescence": ("synthetic-quiescence", object()), "routing": ("synthetic-routing", object())}
+    with pytest.raises(_Stop, match="loop reached"):
+        ag.execute(admitted, validators=validators, event_source=event_source, product="product")
+    assert [name for name, _, _ in calls] == ["closure", "authority", "aws", "readback", "store", "keeper", "register", "acquire",
+                                              "events", "handlers", "loop"]
+    by_name = {name: (args, kwargs) for name, args, kwargs in calls}
+    assert by_name["closure"][0] == ("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)
+    assert by_name["authority"][0][:5] == (governance, world.api, "b" * 40, "application", "application-prepare")
+    assert abs(by_name["authority"][0][5] - time.time()) < 60
+    assert by_name["aws"][0] == (governance,) and by_name["store"][0] == (world.aws,)
+    caller = governance["authenticated_application_caller"]
+    session = c.sha(c.canonical({"principal": world.aws.identity["Arn"], "run_id": 4242, "run_attempt": 1, "gate": "application"}))
+    (store, binding, previous), keeper_kwargs = by_name["keeper"]
+    assert store == "lease-store" and callable(previous)
+    assert binding == {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 4242, "run_attempt": 1,
+                       "session_sha256": session, "release_sha256": c.sha(c.canonical(GOVERNANCE_RELEASE)), "lifecycle_version": 1,
+                       "application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": c.sha(c.canonical(caller))}
+    assert keeper_kwargs == {"api": world.api, "governance": governance, "evidence_aws": world.aws}
+    assert by_name["register"][0][1] is validators and by_name["acquire"][1] == {"preparation_deadline": 1000 + 900}
+    events_kwargs = by_name["events"][1]
+    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "clock"} and events_kwargs["owner"] == {"owner": "acquired"}
+    assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
+    handler_kwargs = by_name["handlers"][1]
+    assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit", "clock"}
+    assert handler_kwargs["authority"] is world.authority and handler_kwargs["product"] == "product"
+    assert handler_kwargs["credential_limit"] == world.now + 5000 and handler_kwargs["clock"]() == 1000.4
+    assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2"}}
+    assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
+
+
+@pytest.mark.parametrize("authority_ttl, enabled_ttl, expiration_ttl, expected", [(5000, 9000, 7000, 5000), (9000, 4000, 7000, 4000),
+                                                                                  (9000, 9500, 3000, 3000)])
+def test_execute_credential_limit_is_the_earliest_of_the_session_proof_and_fragment(monkeypatch, authority_ttl, enabled_ttl,
+                                                                                    expiration_ttl, expected):
+    from tools.cnesdata_delivery import application_gate as ag
+    ag_mod, admitted, calls, world = _execute_case(monkeypatch, authority_ttl=authority_ttl, enabled_ttl=enabled_ttl,
+                                                   expiration=c.utc(int(time.time()) + expiration_ttl))
+    with pytest.raises(_Stop):
+        ag.execute(admitted, event_source=lambda **kwargs: "next-event", product="product")
+    credential_limit = next(kwargs["credential_limit"] for name, _, kwargs in calls if name == "handlers")
+    assert abs(credential_limit - (world.now + expected)) <= 2
+
+
+@pytest.mark.parametrize("mutation, message", [("no-release", "application governance release"),
+                                               ("no-expiration", "application credential expiration"),
+                                               ("expired", "application credential expiration"),
+                                               ("identity", "original bootstrap GetCallerIdentity")])
+def test_execute_refuses_before_the_next_effect(monkeypatch, mutation, message):
+    from tools.cnesdata_delivery import application_gate as ag
+    options = {"no-release": {"release": False}, "no-expiration": {"expiration": None},
+               "expired": {"expiration": c.utc(int(time.time()) - 5)}, "identity": {"identity": {"UserId": "AROAother:cnesdata-4242-1"}}}
+    ag_mod, admitted, calls, world = _execute_case(monkeypatch, **options[mutation])
+    with pytest.raises(ValueError, match=message):
+        ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
+    names = [name for name, _, _ in calls]
+    expected = {"no-release": [], "no-expiration": ["closure", "authority"], "expired": ["closure", "authority"],
+                "identity": ["closure", "authority", "aws", "readback"]}[mutation]
+    assert names == expected
 
 
 def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
-    """Static proof: the only production path to the keeper is main -> execute(admitted), which refuses."""
+    """Static proof: the only production path to the keeper is main -> execute(admitted); every other site is internal."""
     import ast
     from pathlib import Path
     from tools.cnesdata_delivery import application_gate as ag
@@ -4902,7 +5002,11 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "validator", "KeeperGuard"),                                     # lazy host/decision validators
         (gate, "validator", "host_terminal_validator"),
         (gate, "validator", "decision_terminal_validator"),
-        (gate, "prepared", "KeeperGuard"),                                      # stage_handlers has no production caller
+        (gate, "execute", "Keeper"),                                            # the one production path: main -> execute
+        (gate, "execute", "KeeperGuard"),
+        (gate, "execute", "stage_handlers"),
+        (gate, "execute", "keeper_loop"),
+        (gate, "prepared", "KeeperGuard"),                                      # stage_handlers' own handlers
         (gate, "prepared", "close_expirations"),
         (gate, "prepared", "close_drain_capability"),
         (gate, "prepared", "infra_expiration_bound"),
@@ -4917,7 +5021,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
     assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
 
 
 TERMINAL_MEMBER_IDENTITY = ("dispatch_id", "request_sha256", "generation", "initial_state", "execution_ref", "resolution")
