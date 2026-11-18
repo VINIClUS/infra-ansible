@@ -1409,9 +1409,10 @@ def close_drain_capability(*, aws, api, governance, authority, journal, keeper, 
                            operation_session, clock=time.time):
     """Close-drain capability factory, sibling of closed_ready_capability (decision 4, queue item 3a).
 
-    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations and the
-    finite close session. The freeze reread is the last check before STS; any failure poisons the
-    journal, keeps the lease held and mints no credential. No production caller until PR-F.
+    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations, the local
+    operation-session effective_iam and the finite close session. The freeze reread is the last AWS call
+    before the operation exchange and the fence STS; any failure poisons the journal, keeps the lease
+    held and mints no fence credential. The prepared handler of stage_handlers is the production caller.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     from tools.cnesdata_delivery.session_owner import application_unfrozen
