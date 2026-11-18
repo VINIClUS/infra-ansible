@@ -5341,6 +5341,28 @@ def test_operation_session_request_of_closed_ready_is_the_application_session_th
         operation, application_purpose="promotion", delegations=("fence_operator",), sessions={"fence_operator": role["session_name"]})
 
 
+@pytest.mark.parametrize("expires, proof, enabled, seconds, accepted", [
+    (2000, 3000, 3000, 0, True), (2000, 2000, 2000, 0, True), (2000, 3000, 2000, 0, True), (2000, 3000, 1999, 0, False),
+    (2000, 1999, 3000, 0, False), (2000, 3000, 3000, 1000, False), (2000, 3000, 3000, 999, True)])
+def test_shared_session_guard_is_bounded_by_the_proof_and_by_the_fragment_enabled_until(monkeypatch, expires, proof, enabled, seconds, accepted):
+    """Nit 2 of 6981675627: the guard credentials and execute share is bounded by min(proof expiry, enabled_until)."""
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag, session_owner
+    from tools.cnesdata_delivery.session_owner import Authority
+    monkeypatch.setattr(ag.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(session_owner, "verify_application", lambda *a, **kw: {"role_id": "AROAFIXTURE"})
+    role = "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+    arn = "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-1"
+    client = SimpleNamespace(identity={"Account": "111122223333", "Arn": arn, "UserId": "AROAFIXTURE:cnesdata-4242-1"})
+    authority = Authority({}, float(proof), None, {"application_role_arn": role, "enabled_until": c.utc(enabled)}, "3" * 64)
+    guard = ag._verify_session(client, {"account_id": "111122223333"}, authority, {"id": 4242, "run_attempt": 1}, float(expires))
+    if accepted:
+        guard.check(seconds)
+        return
+    with pytest.raises(ValueError, match="^original bootstrap credential/freeze window$"):
+        guard.check(seconds)
+
+
 def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     """Static proof: the only production path to the keeper is main -> execute(admitted); every other site is internal."""
     import ast
