@@ -6089,3 +6089,60 @@ def test_every_validated_static_call_is_allowed_by_its_498_role_on_source_r17():
                            now=vector["enabled_until"])
     for version in ("Prev.Index_1", "Prev+Theme=2", None):
         assert not allowed("normal", "s3:DeleteObjectVersion", old, version)
+
+
+@pytest.mark.parametrize("case", ["key-1024", "version-1024", "marker-1024", "content-type-256"])
+def test_static_call_admits_the_upper_bounds(case):
+    calls = _static_product_calls()
+    operation, index, change = {
+        "key-1024": ("inventory", 2, {"Key": "assets/" + "a" * 1017}),
+        "version-1024": ("inventory", 2, {"VersionId": "v" * 1024}),
+        "marker-1024": ("inventory", 1, {"KeyMarker": "k" * 1024}),
+        "content-type-256": ("publish-static", 6, {"ContentType": "t" * 256})}[case]
+    role, service, name, parameters = copy.deepcopy(calls[operation][index])
+    assert _static_call(operation, (role, service, name, parameters | change))
+
+
+@pytest.mark.parametrize("case", ["key-1025", "key-space", "key-suffix", "version-1025", "marker-1025", "content-type-257",
+                                  "cache-control-257", "head-bucket", "role-list", "parameters-list", "inventory-bucket-empty",
+                                  "inventory-bucket-none"])
+def test_static_call_refuses_past_the_bounds_and_types(case):
+    calls = _static_product_calls()
+    operation, index, change = {
+        "key-1025": ("inventory", 2, {"Key": "assets/" + "a" * 1018}), "key-space": ("inventory", 2, {"Key": "assets/a b.js"}),
+        "key-suffix": ("inventory", 2, {"Key": "index.html.bak"}), "version-1025": ("inventory", 2, {"VersionId": "v" * 1025}),
+        "marker-1025": ("inventory", 1, {"KeyMarker": "k" * 1025}),
+        "content-type-257": ("publish-static", 6, {"ContentType": "t" * 257}),
+        "cache-control-257": ("publish-static", 6, {"CacheControl": "c" * 257}),
+        "head-bucket": ("inventory", 2, {"Bucket": "other-static-web"})}.get(case, ("inventory", 0, {}))
+    role, service, name, parameters = copy.deepcopy(calls[operation][index])
+    parameters |= change
+    bucket = {"inventory-bucket-empty": "", "inventory-bucket-none": None}.get(case, _STATIC_BUCKET)
+    if case.startswith("inventory-bucket"):
+        parameters["Bucket"] = bucket
+    if case == "role-list":
+        role = [role]
+    if case == "parameters-list":
+        parameters = [parameters]
+    with pytest.raises(ValueError):
+        _static_call(operation, (role, service, name, parameters), bucket=bucket)
+
+
+@pytest.mark.parametrize("case", ["distribution-unicode-digits", "oversized", "bucket-str-subclass", "key-space", "key-1025"])
+def test_static_plan_refuses_unicode_digits_oversize_and_non_str_buckets(case):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+
+    class Bucket(str):
+        pass
+    value = _static_plan_value()
+    if case == "distribution-unicode-digits":
+        value["distribution_arn"] = "arn:aws:cloudfront::" + "١" * 12 + ":distribution/E2SYNTHETIC0"
+    if case == "oversized":
+        value["candidate_keys"] = sorted("assets/k%06d.js" % index for index in range(70000))
+    if case == "key-space":
+        value["candidate_keys"] = ["assets/a b.js"]
+    if case == "key-1025":
+        value["candidate_keys"] = ["assets/" + "a" * 1018]
+    bucket = Bucket(_STATIC_BUCKET) if case == "bucket-str-subclass" else _STATIC_BUCKET
+    with pytest.raises(ValueError):
+        lc.static_plan(c.canonical(value, limit=8 * 1024**2) if case == "oversized" else c.canonical(value), bucket=bucket)
