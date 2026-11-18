@@ -4780,7 +4780,7 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
 
 
 @pytest.mark.parametrize("validators,events,message", [
-    (None, None, "terminal validator unavailable; lifecycle disabled"),
+    (None, None, "keeper event producer not connected; lifecycle disabled"),
     ({"quiescence": object()}, None, "terminal validator unavailable; lifecycle disabled"),
     ({"quiescence": object(), "routing": object(), "foreign": object()}, None, "terminal validator unavailable"),
     ({"quiescence": object(), "routing": object()}, None, "keeper event producer not connected; lifecycle disabled"),
@@ -4804,7 +4804,7 @@ def test_application_main_execute_reaches_only_the_disabled_execute(monkeypatch)
     monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
     monkeypatch.setattr(ag, "verify_source_closure", lambda governance, api: None)
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
-    with pytest.raises(ValueError, match="terminal validator unavailable; lifecycle disabled"):
+    with pytest.raises(ValueError, match="keeper event producer not connected; lifecycle disabled"):
         ag.main(["execute"])
 
 
