@@ -1147,3 +1147,30 @@ def test_activation_session_policy_size_is_measured_before_each_sts_call(monkeyp
     with pytest.raises(ValueError, match="exceeds 2048 characters"):
         factory({"receipt": "v" * (fits + 1)}, deadline)
     assert len(calls) == 1
+
+
+def _close_drain_at(noon, close_offset):
+    return {"version": 1, "kind": "close-drain", "common": {}, "fence": {"changed_at": c.utc(noon)},
+            "close_confirmed_at": c.utc(noon + close_offset), "drain_observed_at": c.utc(noon + close_offset + 5),
+            "frozen_membership_sha256": "7" * 64, "members": [], "proofs": [], "permit": None,
+            "input_expirations": [{"kind": "envelope", "object_sha256": "9" * 64, "expires_at": c.utc(noon + 1800)}],
+            "fixed_deadline": c.utc(noon + 1800), "decision": None}
+
+
+def test_r13_phase_b_is_admissible_only_when_the_product_confirms_the_close_in_the_fence_write_second():
+    """6955828414: CnesData 9cdd452f sets close_confirmed_at == fence.changed_at; one second later B has no capacity."""
+    lc = api()
+    noon = int(c.instant("2026-11-17T12:00:00Z"))
+    previous = {"sequence": 0, "preparation_deadline": noon + 600, "close": None, "fixed_deadline": None, "input_deadline": None,
+                "stage": "application-prepare", "admitted_at": noon - 300, "deadline": noon + 600, "decision": None,
+                "checkpoint_sha256": "a" * 64, "predecessor_sha256": "e" * 64, "application_purpose": "promotion",
+                "context_kind": "promotion", "caller_binding_sha256": "c" * 64}
+    def phase_b(close_offset):
+        return lc.close_window(dict(previous), c.canonical(_close_drain_at(noon, close_offset)), checkpoint_sha256="f" * 64,
+                               infra_bound=noon + 1800, now=noon + close_offset)
+    late, exact = phase_b(30), phase_b(0)
+    assert (late["fixed_deadline"], exact["fixed_deadline"]) == (noon + 1800, noon + 1800)
+    assert (late["stage"], exact["stage"]) == ("phase-b", "phase-b") and exact["admitted_at"] == noon
+    lc.phase_capacity(exact, now=noon, credential_deadline=noon + 9000, operation_seconds=20)
+    with pytest.raises(ValueError, match="phase remaining capacity"):
+        lc.phase_capacity(late, now=noon + 30, credential_deadline=noon + 9000, operation_seconds=20)

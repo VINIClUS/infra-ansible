@@ -487,14 +487,11 @@ constructor at the preparation deadline `min(observed_at + 180, frozen_until)` a
 digest to equal the evaluation's; the API session then differs from it only in `DateLessThan`
 (item 3).
 
-Keeper loop and execute are inactive by design. `keeper_loop` accepts only the closed events
-`closed-ready` and `terminal`; every guard check of a journal or broker is a keeper tick, so a
-quiet adapter child still renews the lease. `application_gate execute` refuses before any AWS
-client, lease store, STS call or Keeper construction while the code-constant registries
-`TERMINAL_VALIDATORS` and `KEEPER_EVENT_SOURCE` are empty; they are never read from
-governance, environment or request, and even with both supplied the construction of the
-operational Keeper from the protected binding is not connected. `keeper_loop`,
-`run_closed_ready` and `closed_ready_capability` have no production call site. Only
+Keeper loop and execute were inactive by design in the first slice; PR-F of the second slice connects
+them up to the API stage (section "Execute wiring to the API stage" below). Every guard check of a
+journal or broker is a keeper tick, so a quiet adapter child still renews the lease. The code-constant
+registries `TERMINAL_VALIDATORS` and `KEEPER_EVENT_SOURCE` are never read from governance, environment
+or request. `run_closed_ready` and `closed_ready_capability` still have no production call site. Only
 `Keeper.acquire` writes a lifecycle lease, so the operational plan and deploy (items 6 and 9)
 refuse on the owner check before any EXT2 read, STS or apply.
 
@@ -526,10 +523,9 @@ step, `owner_sha256` and `generation`; anything else refuses. It refuses
 `stage trigger not connected stage=<x>` for the API and every later or recovery stage, and
 `stage deadline elapsed stage=<x>` at the stage deadline (`terminal_deadline`), so a failed
 producer cannot keep the lease renewed past F. The closed-ready `_phase_b_publication` uses the
-same reader. None of this has a production call site: `keeper_loop` still accepts only
-`closed-ready` and `terminal`, so it refuses the `prepared` and `phase-b` kinds until the
-execute wiring. No dispatch and no reusable input or output was added; the transitions after
-the API need their own amendment naming each event source.
+same reader. `KEEPER_EVENT_SOURCE = stage_event_source` and `keeper_loop` accepts exactly the
+`prepared` and `phase-b` kinds (PR-F). No dispatch and no reusable input or output was added; the
+transitions after the API need their own amendment naming each event source.
 
 Close-drain capability, freeze and child loader (second slice PR-C, amendment 6886977054
 decision 4 and queue items 3a and 3c, corrections 6906038586 and 6906181994, `Refs #55`).
@@ -582,12 +578,12 @@ failure poisons the journal and mints no credential. Child loader (3c): the adap
 `cnes_domain` and `cnes_infra` to `packages/<name>/src/<name>`; a directory is a stub package
 whose `__init__` never runs, a `.py` file loads by path, and any other name under those roots
 fails closed without falling back to `sys.path`. The Git closure is still authenticated before
-and after. R13 (recorded risk): the real handler of CnesData #521 still does not load in the
-`-I` child, because `promote_api` imports `promote_close` at module top and pydantic is absent
-from the runtime venv; no operation loads until the product or an amendment fixes it.
-`close_drain_capability` and `close_expirations` have no production call site, and
-`keeper_loop` still accepts only `closed-ready` and `terminal`: close-drain is not a keeper event
-until the execute wiring.
+and after. R13 (resolved, 6955828414): CnesData `develop` 9cdd452f (PR #526) removes pydantic from the
+close-drain import chain, and the product confirms the close in the second of the fence write
+(`close_confirmed_at == fence.changed_at`), so F = close + 1800 and phase B is admissible.
+`close_confirmed_at` stays the close of `close_window`; `tests/test_cnesdata_delivery_lifecycle.py`
+pins that a close confirmed 30 s after the write leaves B without capacity. `close_drain_capability`
+and `close_expirations` are called by the `prepared` handler of PR-F, the only production call site.
 
 Terminal validators (second slice PR-D, amendment 6886977054 decision 6 without item 3b, and
 6861676353 item 8, `Refs #55`). They are pure in-process functions in `application_gate`, with no
@@ -620,9 +616,20 @@ journal. Every object must match its own closed field set and `version`/`kind` (
   equal the lease decision `choice_at` and `deadline` and the window F; it adds no fact.
 
 The `routing` and `terminal` shapes are SYNTHETIC: the product has neither handler (R3). The host,
-closed-ready and publication field sets are copied literals, not shared code. Nothing registers a
-validator: `TERMINAL_VALIDATORS` stays empty, no production code calls
-`register_terminal_validator` or any validator, and `execute` still refuses.
+closed-ready and publication field sets are copied literals, not shared code. `TERMINAL_VALIDATORS`
+(PR-F, R3) holds the six providers `routing`, `static`, `membership`, `quiescence`, `host` and `decision`,
+each with a `synthetic-<kind>` label, and `execute` registers them on the keeper before `acquire`. The
+`host` and `decision` providers are lazy: when the validator is invoked, `authenticate_host_handoff`
+authenticates the public `cnesdata-host-handoff-<run>-<attempt>` artifact and only then builds the
+factory. It mirrors CnesData 9cdd452f `_api_static_handoff.py` as labelled literals: the run and attempt
+of the owner, the unique job `host-gate / execute` with its three step names in order, a single
+`host-handoff.json` of at most 32 KiB inside a zip of at most 64 KiB, canonical JSON, created inside the
+job interval, with the artifact digest checked; `producer_sha` is the sha of the run's own
+`referenced_workflows` entry for `reusable-cnesdata-host-deploy-gate.yml`, never a literal. The
+`decision` bytes are `canonical(handoff["recovery_decision"])`. `_terminal_proof` reads only the latest
+registered observation of each kind (`Keeper._latest_observation_bytes`, in attach order, a broker
+counting once through its journal), so a source that points at an older observation of the same kind
+refuses. The registry covers no terminal kind (R15, below).
 
 Four types have no validator. Amendment 6886977054 decision 6 applies: with no validator for a
 required type, `finish()` keeps refusing; no rule or source is invented.
@@ -643,6 +650,73 @@ admitted in `application-prepare`, so that terminal does not close in this slice
 `terminal-readback` admitted there is no substitute: its closed input set requires `routing
 membership host-receipt static-receipt decision`, none of which has an original producer before
 close, and it reads `routing` back instead of producing it.
+
+Execute wiring to the API stage (second slice PR-F, amendment 6886977054 decisions 1, 3 and 7,
+ratification 6974253889, R15, R18, R19, `Refs #55`). `application_gate execute` is the one production
+path, `main -> execute(admitted)`. Its order is the contract: the registry and event-source checks,
+`application_release_sha256`, `authenticate_adapter_closure`, `session_owner.authenticate_lifecycle`,
+the credential window, `lifecycle_runtime.AWS` with `_verify_session` (the exact own-role readback of
+`credentials`), the binding, `S3LeaseStore`, `Keeper`, the validator registration, `acquire`, the
+event source, `stage_handlers` and `keeper_loop`. Nothing reaches an AWS client, the lease or STS
+before the release refusal.
+
+Sources of the three inputs (6974253889):
+- `release`: `governance["release"]` is closed to `release_id source_sha candidate_sha256 canary_id
+  binding_sha256 image_digest` and `release_sha256 = sha256(canonical(release))`; a missing or reshaped
+  release refuses `application governance release`. `Keeper.acquire` also requires the release of the
+  authenticated Phase A plan of the original fence (`phase_a_originals["envelope"]["plan"]["release"]`)
+  to hash to `binding["release_sha256"]` before the CAS, for both predecessor protocols (`legacy-infra`,
+  which the ratification calls `phase-a`, and `lifecycle`).
+- `preparation_deadline = int(keeper.clock()) + 900`, read right before `acquire` from the clock
+  injected into the Keeper. Accepted risk: a clock step back makes the prepared package refuse later
+  with the lease held.
+- `activation`: the plan step is `fence-origins.json` `current_plan["step"]`, which must be a
+  `plan`/`application-prepare`/`operational` entry of `lifecycle_steps` with a job name. The same-run
+  publication of that step must hash to `current_plan["index_sha256"]`; its private `inputs.json` must hash
+  to `approval.json["inputs_sha256"]`; `lc.inputs_envelope` (not `operational_inputs`, which revalidates
+  with the pinned openssl) decodes it against the full owner and the application-prepare window; and
+  the payload must hash to the manifest `activation_sha256`.
+
+`credential_limit` is the earliest of `AWS_CREDENTIAL_EXPIRATION` (present and in the future), the
+owner proof `expires_at` and the fragment `enabled_until`.
+
+Handlers (`stage_handlers`). `prepared`: `fence_prepared_payload` under a `KeeperGuard`, the activation
+above, `close_expirations` (built only after both reads), the close-drain ABI2 request bound to the
+keeper window as it is at the event (sequence 0 and the predecessor checkpoint: nothing compares the
+close-drain request with the prepared checkpoint, only the evidence key derivation reads them), the
+journal attached to the keeper, `close_drain_capability`, then `invoke_adapter` with the largest whole
+second `phase_capacity` admits, `min(deadline - now - 158, credential_limit - now - 121)`, sampled after
+the capability returns because STS and IAM time spend the margin. The result must be exactly one
+`close-drain` observation and no uncertainty. `close_window` then takes the observation bytes, the
+checkpoint `sha(prepared checkpoint.json)` and `infra_expiration_bound`, and the keeper writes the
+`phase-b` window. `phase-b`: the B publication is rederived, its approval must name the prepared
+checkpoint hash and the B plan, its checkpoint must be `phase-b` with the same owner, and
+`api_window` takes `sha(B checkpoint.json)`. The plan download is recorded in `api.expiries` and
+`api.digests` as one more `artifact` entry of `close_expirations`, from the metadata
+`lifecycle_artifact` already authenticated; the prepared-package download is authenticated by
+`fence_prepared_payload` but is not an entry. The emitted kinds stay `credential`, `platform` and
+`artifact`, inside the product `EXPIRATION_KINDS` (CnesData 9cdd452f `promote_close.py:32`; R6, pinned
+by a labelled literal in `tests/test_cnesdata_stage_events.py`). A short retention of the plan artifact
+lowers `input_deadline`, the minimum decision 2 asks for.
+
+Stop at the API stage (R18). `keeper_loop` has no `finish`, no publication and no closed-ready dispatch.
+After the `phase-b` handler the window is `api`, the next `next_event` refuses
+`stage trigger not connected stage=api`, the lease stays held and the fence stays closed in DynamoDB.
+A TTL is not a takeover (`coordination_lease.py:3` and `:45`), so every later run is blocked until a
+reviewed recovery. Every production stage that runs `execute` after the candidate cut must plan that
+recovery, including the Phase A proof list and items b.3 to b.6 of CnesData#522. R15: no registered
+validator set closes a terminal kind (`accepted-open` needs `unit`, `recovery` and `audit`; the two
+failure terminals need `restoration`), `failed-prepare-quiescent` is not closable and the API stop is
+the only reachable end; `tests/test_cnesdata_application_gate.py` pins that `finish` refuses all three
+with the production registry. R19: `CNESDATA_DELIVERY_GOVERNANCE` is one secret for the application,
+plan and deploy gates. With `release` the legacy `bootstrap` and `acm-certificate` plans refuse
+(`contract.py:617-618`, `runtime.py:709`); without it the application and Phase A refuse. The conflict
+predates PR-F and the step that sets the secret after the merge must record the swap per purpose.
+
+Closure sentinel (decision 1): `session_owner.application_configuration` and the tofu variable
+`application_promotion.source_closure_sha256` refuse the 64-zero placeholder; the value comes from
+`application_gate closure --pin <head>`, computed on the approved head, and a value computed before the
+last merge that touches the producer closure is invalid (R8).
 
 Static stage (second slice PR-E, amendment 6886977054 decision 5 and queue items 3d, 3e, 3f and
 6, refined by 6963763481 (R16, R17), `Refs #55`). `retire-static` is an ABI operation: its inputs are
@@ -735,11 +809,9 @@ R16, the decision-5 budget does not fit (6963763481 decision 1: no admitted stag
   `LifecycleWatchdog` or `KeeperGuard`). Reopen and finish share the same 60 s and are counted as 0 s.
 - `retire-static`, the codecs, the catalogue validators and item 6 have no production call site.
 
-Second slice, remaining: close-drain as a keeper event with the `prepared` and `phase-b` stage
-handlers (execute wiring); the registration of the terminal validators; validators for `unit`,
-`recovery`, `audit` and `restoration`, which need a source rule in their own amendment; a source
-for `failed-prepare-quiescent` in `application-prepare`;
-`KEEPER_EVENT_SOURCE = stage_event_source` and the binding of `execute` to the operational Keeper.
+Second slice, remaining: validators for `unit`, `recovery`, `audit` and `restoration`, which need a
+source rule in their own amendment; a source for `failed-prepare-quiescent` in `application-prepare`;
+the event sources and handlers for every transition after the API (R5), each in its own amendment.
 Static stage, remaining:
 - a static broker and STS for the static roles, with response sanitization for the catalogue calls;
 - the R16 remedy, chosen by the post-API amendment: a per-run cap, a batched `DeleteObjects` (a new ABI
@@ -752,14 +824,14 @@ and inline documents as a union); the global NotResource premise; quotas with re
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
 IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
 present on the plan and deploy runners (which may use another image than the EXT2 gate);
-keeper stage advancement (the `prepared` and `phase-b` handlers); the close-drain capability
+the `prepared` and `phase-b` handlers against real runs, S3 and the product `close-drain` handler; the close-drain capability
 against real IAM, STS and DynamoDB (per-item authorization of the close transaction, the freeze
-reread through the application identity, the product handler in the child, R13); the event
+reread through the application identity, the product handler in the child); the event
 producer against
 real GitHub runs, including its request budget (one jobs read per poll, about 720 per hour at
 the five-second poll, against the token's hourly limit); the terminal validators against real
-product bytes (the routing and terminal-readback shapes are synthetic, and no caller authenticates
-the host-handoff artifact or the recovery-decision input for them yet); the static calls against
+product bytes (the routing and terminal-readback shapes are synthetic, and the host-handoff caller has
+not met a real run); the static calls against
 real S3 and CloudFront, real static STS, `retire-static` inside the `final` budget (R16), and product
 assets above about 96 KiB through the journal. No
 operational readiness, applied IAM, production acceptance or integrated-code status is implied.

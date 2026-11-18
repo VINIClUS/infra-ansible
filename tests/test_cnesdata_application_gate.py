@@ -6630,3 +6630,32 @@ def test_static_plan_refuses_unicode_digits_oversize_and_non_str_buckets(case):
     bucket = Bucket(_STATIC_BUCKET) if case == "bucket-str-subclass" else _STATIC_BUCKET
     with pytest.raises(ValueError):
         lc.static_plan(c.canonical(value, limit=8 * 1024**2) if case == "oversized" else c.canonical(value), bucket=bucket)
+
+
+def _terminal_window_case(kind):
+    from tools.cnesdata_delivery import application_gate as ag
+    if kind == "failed-prepare-quiescent":
+        keeper, store = _prepare_stage_keeper()
+    else:
+        keeper, store = _accepted_terminal_case()
+        if kind == "failed-closed-quiescent":
+            value = store.get()[0]
+            value["lifecycle"] |= {"stage": "recovery", "decision": {"choice_at": 1100, "deadline": 1520, "checkpoint_sha256": "9" * 64}}
+            store.value = value
+    keeper._terminal_validators = {}
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    return ag, keeper, store
+
+
+@pytest.mark.parametrize("kind, missing", [("accepted-open", {"unit", "recovery", "audit"}), ("failed-closed-quiescent", {"restoration"}),
+                                          ("failed-prepare-quiescent", {"restoration"})])
+def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
+    """The registry has no unit/recovery/audit/restoration validator: finish refuses every terminal kind, so API is the only end."""
+    ag, keeper, store = _terminal_window_case(kind)
+    window = store.get()[0]["lifecycle"]
+    required = ag._terminal_required(kind, window)
+    assert required - set(ag.TERMINAL_VALIDATORS) == missing
+    before = store.get()
+    with pytest.raises(ValueError, match="^terminal validator unavailable; lifecycle disabled$"):
+        keeper.finish({"kind": kind, "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
+    assert store.get() == before and before[0]["status"] == "held"

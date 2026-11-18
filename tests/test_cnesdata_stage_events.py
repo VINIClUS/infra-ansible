@@ -712,3 +712,50 @@ def test_phase_b_handler_refuses_a_keeper_that_never_handled_the_prepared_stage(
     with pytest.raises(ValueError, match="phase-b follows the prepared stage handled by this keeper"):
         world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
     assert world.phase_b == [] and _lifecycle(world)["stage"] == "application-prepare"
+
+
+# CnesData 9cdd452f scripts/promotion/promote_close.py:32, as a labelled literal: the product close-drain contract.
+PRODUCT_EXPIRATION_KINDS = frozenset({"artifact", "platform", "cost", "credential", "activation", "plan"})
+
+
+def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_after_the_plan_read(monkeypatch):
+    """R6: the extra plan download adds an artifact entry; no kind outside the product EXPIRATION_KINDS is ever emitted."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    emitted = {item["kind"] for item in c.loads(world.capability[0]["expirations"], canonical=True)}
+    assert emitted == {"artifact", "credential", "platform"} and emitted <= PRODUCT_EXPIRATION_KINDS
+    assert lc.CLOSE_EXPIRATION_KINDS - {"envelope"} == PRODUCT_EXPIRATION_KINDS
+
+
+def test_keeper_stops_at_the_api_stage_with_the_lease_held_the_fence_closed_and_nothing_dispatched(monkeypatch):
+    """R18 and R15: the only reachable end of this slice, and its ancestry from the prepared checkpoint to the closed-ready stage."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    world = _stage_world(monkeypatch)
+    for name in ("closed_ready_capability", "run_closed_ready", "publish_terminal", "published_terminal", "publish_static_closed_ready"):
+        monkeypatch.setattr(ag, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached before the API stage ends the slice"))
+    world.keeper.finish = lambda reference: pytest.fail("finish reached before the API stage ends the slice")
+    statuses = []
+    put = world.store.put
+    world.store.put = lambda value, etag: statuses.append(value["status"]) or put(value, etag)
+    real = ag.stage_event_source(api=world.api, governance=world.governance, run=dict(RUN), owner=world.owner,
+                                 guard=_Guard(), clock=world.clock)
+    triggers = {"application-prepare": {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)},
+                "phase-b": {"kind": "phase-b", "reference": dict(B_REFERENCE)}}
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=api$"):
+        ag.keeper_loop(world.keeper, next_event=lambda window: triggers.get(window["stage"]) or real(window),
+                       handlers=world.handlers, sleep=lambda seconds: None)
+    record = world.store.get()[0]
+    assert record["status"] == "held" and set(statuses) == {"held"} and record["lifecycle"]["stage"] == "api"
+    assert len(world.invoke) == len(world.capability) == 1 and world.keeper.uncertainty() == []
+    window = record["lifecycle"]
+    assert window["checkpoint_sha256"] == c.sha(world.b_files["checkpoint.json"]) and window["close"] == 1050
+    assert window["sequence"] == 2 and window["admitted_at"] == 1115 and window["deadline"] == 1295
+    inputs = {name: c.canonical({"fixture_only": name}) for name in ("activation", "close-drain", "phase-b", "membership")}
+    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": world.owner["source_sha"],
+               "owner": {key: world.owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+               "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": "1" * 64,
+               "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
+               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    lc.validate_adapter_request(c.canonical(request), operation="closed-ready", owner=world.owner, window=window, inputs=inputs,
+                                activation_sha256="1" * 64)

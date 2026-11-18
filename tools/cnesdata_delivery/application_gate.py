@@ -93,7 +93,7 @@ def _terminal_required(kind, window):
 # Amendment 6886977054 decision 6: pure in-process terminal validators over keeper journal
 # observations or bytes a caller authenticated, never caller JSON. `source` is a closed role ->
 # sha256 map; a journal role selects observation bytes of its own kind, an artifact role only the
-# factory's authenticated bytes, and the result commits to the map. Nothing registers them yet.
+# factory's authenticated bytes, and the result commits to the map. TERMINAL_VALIDATORS registers them.
 TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
                          "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
