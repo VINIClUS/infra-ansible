@@ -1671,6 +1671,31 @@ class Keeper:
         return {"checkpoint.json": final_raw, "terminal.json": c.canonical(terminal), "lease.json": c.canonical(evidence)}
 
 
+def publish_static_closed_ready(journal, keeper):
+    """Queue item 6: the publish-static host-receipt binds the single closed-ready observation of the keeper.
+
+    CnesData 9cdd452f checks only the digest shape; any failure poisons the journal and keeps the lease held.
+    """
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper
+              and journal._request["operation"] == "publish-static", "publish-static original journal/keeper")
+    try:
+        c.require(not keeper.uncertainty(), "publish-static keeper uncertainty")
+        receipt = _versioned(c.loads(journal._inputs["host-receipt"], canonical=True, limit=1024**2), "host-handoff",
+                             HOST_HANDOFF_FIELDS)
+        journals = []
+        for item in keeper._contexts:
+            found = item.journal if type(item) is ClosedReadyBroker else item
+            journals += [] if any(known is found for known in journals) else [found]
+        ready = [entry["sha256"] for found in journals for entry in found._observations if entry["kind"] == "closed-ready"]
+        c.require(len(ready) == 1 and receipt["closed_ready_sha256"] == ready[0],
+                  "publish-static host-receipt closed-ready binding")
+        return ready[0]
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
+
+
 # Closed production registries. They are code constants, never read from
 # governance, environment or request. Both are empty until the product adapter
 # (CnesData #473/#474) and an authorized keeper event producer exist, so execute

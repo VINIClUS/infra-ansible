@@ -4,6 +4,7 @@ The legacy plan/apply envelopes and 1980-second initial admission remain separat
 No credentials, network, caller commands or lifecycle side effects in this module.
 """
 import base64
+import hashlib
 import time
 import re
 
@@ -195,16 +196,246 @@ ADAPTER_INPUTS = {
     "rollback-api-static": "static-plan inventory publication host-recovery-receipt recovery-decision",
     "reopen": "activation routing canaries membership",
     "terminal-readback": "routing membership host-receipt static-receipt decision",
+    "retire-static": "static-plan inventory publication routing",
 }
+# Amendment 6886977054 decision 5 put retire-static in final; 6963763481 decision 1 (R16) admits it in no
+# stage in this slice, because the final budget does not fit it. The remedy belongs to the post-API amendment.
 ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
-    "terminal-readback": {"application-prepare", "final", "recovery"},
+    "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": set(),
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
     "publish-static": "publication", "rollback-api-static": "rollback", "reopen": "routing", "terminal-readback": "terminal",
+    "retire-static": "retirement",
 }
+STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
+# #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
+# (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
+STATIC_SESSION_OPERATIONS = {
+    "inventory": {"observer": "inventory"},
+    "publish-static": {"normal": "publish", "observer": "inventory"},
+    "retire-static": {"normal": "retire"},
+}
+
+
+def static_session(binding, operation):
+    """#498 locals.static_sessions: sp-<op>-sha256(jsonencode(binding + operation) + LF)[:40].
+
+    The inventory name commits to no plan (static_plan_sha256 null), so it exists before the plan.
+    c.canonical equals jsonencode on this closed ASCII binding. A name is not an STS admission.
+    """
+    c.closed(binding, STATIC_BINDING_FIELDS)
+    c.require(operation in {"inventory", "publish", "retire"}, "closed static session operation")
+    c.require(type(binding["release_id"]) is str and re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?", binding["release_id"]),
+              "static session release id")
+    for key in ("run_id", "run_attempt", "generation"):
+        c.integer(binding[key])
+    for key in ("product_source_sha", "shared_source_sha"):
+        c.digest(binding[key], 40)
+    if operation != "inventory" or binding["static_plan_sha256"] is not None:
+        c.digest(binding["static_plan_sha256"])
+    value = binding | {"operation": operation} | ({"static_plan_sha256": None} if operation == "inventory" else {})
+    return "sp-" + ("i" if operation == "inventory" else operation) + "-" + c.sha(c.canonical(value))[:40]
+
+
+def static_sessions(binding, operation):
+    """Exact delegation -> session names for one static ABI operation; the caller authenticates the binding."""
+    c.require(operation in STATIC_SESSION_OPERATIONS, "closed static session operation")
+    return {alias: static_session(binding, name) for alias, name in STATIC_SESSION_OPERATIONS[operation].items()}
+
+
+def s3_body_bytes(body):
+    """Queue item 3d (CnesData 9cdd452f publish_dashboard.b64): {"base64": canonical padded standard base64}."""
+    c.closed(body, "base64")
+    text = body["base64"]
+    c.require(type(text) is str and text.isascii(), "S3 Body base64 text")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except ValueError as error:
+        raise ValueError("S3 Body base64 text") from error
+    c.require(base64.b64encode(raw).decode("ascii") == text, "S3 Body canonical base64")
+    return raw
+
+
+def s3_put_body(parameters):
+    """PutObject bytes for the native call; ChecksumSHA256 is base64(sha256(bytes)) as the product sends it.
+
+    The journal's canonical request limit bounds the text; this codec adds no size of its own.
+    """
+    c.require(type(parameters) is dict and "Body" in parameters and type(parameters.get("ChecksumSHA256")) is str,
+              "S3 Body PutObject parameters")
+    raw = s3_body_bytes(parameters["Body"])
+    c.require(parameters["ChecksumSHA256"] == base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii"),
+              "S3 Body ChecksumSHA256")
+    return raw
+
+
+def s3_body_value(stream, *, maximum):
+    """GetObject Body -> {"base64": ...}; reads at most maximum + 1 bytes and refuses past maximum."""
+    c.integer(maximum, 0)
+    chunks, size = [], 0
+    while size <= maximum:
+        chunk = stream.read(maximum + 1 - size)
+        c.require(type(chunk) is bytes, "S3 Body stream bytes")
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    c.require(size <= maximum, "S3 Body bound")
+    return {"base64": base64.b64encode(b"".join(chunks)).decode("ascii")}
+
+
+STATIC_PLAN_SCHEMA = "cnesdata.static-plan/v1"
+STATIC_PLAN_FIELDS = "schema bucket distribution_arn inventory_sha256 candidate_keys rollback_versions retire_versions multipart_keys"
+STATIC_ENTRYPOINTS = ("index.html", "theme-init.js")
+STATIC_INVALIDATION_PATHS = {"Quantity": 2, "Items": ["/index.html", "/theme-init.js"]}
+# R17 (6963763481 decision 2): CnesData 9cdd452f wire names and the only boto3 methods they dispatch to.
+STATIC_SDK_METHODS = {
+    ("s3", "ListObjectVersions"): "list_object_versions", ("s3", "HeadObject"): "head_object",
+    ("s3", "ListMultipartUploads"): "list_multipart_uploads", ("s3", "ListParts"): "list_parts",
+    ("s3", "PutObject"): "put_object", ("s3", "GetObject"): "get_object",
+    ("cloudfront", "CreateInvalidation"): "create_invalidation", ("s3", "DeleteObject"): "delete_object",
+}
+_STATIC_OBSERVER_CALLS = frozenset(("observer", "s3", name) for name in
+                                   ("ListObjectVersions", "HeadObject", "ListMultipartUploads", "ListParts"))
+STATIC_SDK_OPERATIONS = {
+    "inventory": _STATIC_OBSERVER_CALLS,
+    "publish-static": _STATIC_OBSERVER_CALLS | {("normal", "s3", "PutObject"), ("normal", "s3", "GetObject"),
+                                                ("normal", "cloudfront", "CreateInvalidation")},
+    "retire-static": frozenset({("normal", "s3", "DeleteObject")}),
+}
+
+
+def _static_key(key):
+    c.require(type(key) is str and len(key) <= 1024
+              and re.fullmatch(r"assets/[A-Za-z0-9._/-]+|index\.html|theme-init\.js", key) is not None
+              and all(part not in {"", ".", ".."} for part in key.split("/")), "static key")
+    return key
+
+
+def _static_version(version):
+    c.require(type(version) is str and len(version) <= 1024 and version != "null"
+              and re.fullmatch(r"[A-Za-z0-9._~+/=-]+", version) is not None, "static version id")
+    return version
+
+
+def _static_keys(keys, minimum):
+    c.require(type(keys) is list and len(keys) >= minimum and all(_static_key(key) for key in keys)
+              and keys == sorted(set(keys)), "static keys sorted distinct")
+    return keys
+
+
+def _static_refs(refs):
+    c.require(type(refs) is list, "static version refs")
+    for ref in refs:
+        c.closed(ref, "key version_id")
+        _static_key(ref["key"])
+        _static_version(ref["version_id"])
+    c.require(len({(ref["key"], ref["version_id"]) for ref in refs}) == len(refs), "static version refs distinct")
+    return {(ref["key"], ref["version_id"]) for ref in refs}
+
+
+def static_plan(raw, *, bucket):
+    """CnesData 9cdd452f cnesdata.static-plan/v1 under the #498 static_promotion rules; bucket is authenticated."""
+    plan = c.loads(raw, canonical=True, limit=1024**2)
+    c.closed(plan, STATIC_PLAN_FIELDS)
+    c.require(plan["schema"] == STATIC_PLAN_SCHEMA and type(bucket) is str and plan["bucket"] == bucket, "static plan bucket")
+    c.require(type(plan["distribution_arn"]) is str
+              and re.fullmatch(r"arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+", plan["distribution_arn"]) is not None,
+              "static plan distribution")
+    c.digest(plan["inventory_sha256"])
+    _static_keys(plan["candidate_keys"], 1)
+    _static_keys(plan["multipart_keys"], 0)
+    rollback, retire = _static_refs(plan["rollback_versions"]), _static_refs(plan["retire_versions"])
+    c.require([ref["key"] for ref in plan["rollback_versions"]] in ([], list(STATIC_ENTRYPOINTS)), "static plan rollback pair")
+    c.require(not rollback & retire, "static plan retire/rollback overlap")
+    return plan
+
+
+def _static_text(value):
+    return type(value) is str and 1 <= len(value) <= 1024
+
+
+def _static_list_versions(parameters, bucket, plan):
+    markers = set(parameters) - {"Bucket"}
+    c.require(parameters.get("Bucket") == bucket and markers in (set(), {"KeyMarker", "VersionIdMarker"})
+              and all(_static_text(parameters[name]) for name in markers), "static call parameters")
+
+
+def _static_head(parameters, bucket, plan):
+    c.closed(parameters, "Bucket Key VersionId ChecksumMode")
+    c.require(parameters["Bucket"] == bucket and parameters["ChecksumMode"] == "ENABLED", "static call parameters")
+    _static_key(parameters["Key"])
+    _static_version(parameters["VersionId"])
+
+
+def _static_uploads(parameters, bucket, plan):
+    c.require(parameters == {"Bucket": bucket}, "static call parameters")
+
+
+def _static_parts(parameters, bucket, plan):
+    c.closed(parameters, "Bucket Key UploadId")
+    c.require(parameters["Bucket"] == bucket and _static_text(parameters["UploadId"]), "static call parameters")
+    _static_key(parameters["Key"])
+
+
+def _static_put(parameters, bucket, plan):
+    asset = parameters.get("Key") not in STATIC_ENTRYPOINTS
+    c.closed(parameters, "Bucket Key Body ContentType CacheControl ChecksumSHA256" + (" IfNoneMatch" if asset else ""))
+    c.require(parameters["Bucket"] == bucket and parameters["Key"] in plan["candidate_keys"]
+              and (not asset or parameters["IfNoneMatch"] == "*")
+              and all(type(parameters[name]) is str and 1 <= len(parameters[name]) <= 256
+                      for name in ("ContentType", "CacheControl")), "static call parameters")
+    s3_put_body(parameters)
+
+
+def _static_get(parameters, bucket, plan):
+    c.closed(parameters, "Bucket Key")
+    c.require(parameters["Bucket"] == bucket and parameters["Key"] in plan["candidate_keys"], "static call parameters")
+
+
+def _static_invalidation(parameters, bucket, plan):
+    c.closed(parameters, "DistributionId InvalidationBatch")
+    batch = c.closed(parameters["InvalidationBatch"], "Paths CallerReference")
+    c.require(parameters["DistributionId"] == plan["distribution_arn"].rsplit("/", 1)[1]
+              and c.canonical(batch["Paths"]) == c.canonical(STATIC_INVALIDATION_PATHS)
+              and type(batch["CallerReference"]) is str and re.fullmatch(r"[0-9a-f]{32}", batch["CallerReference"]) is not None,
+              "static call parameters")
+
+
+def _static_delete(parameters, bucket, plan):
+    c.closed(parameters, "Bucket Key VersionId")
+    c.require(parameters["Bucket"] == bucket
+              and {"key": parameters["Key"], "version_id": parameters["VersionId"]} in plan["retire_versions"],
+              "static call parameters")
+
+
+_STATIC_CALLS = {
+    "ListObjectVersions": _static_list_versions, "HeadObject": _static_head, "ListMultipartUploads": _static_uploads,
+    "ListParts": _static_parts, "PutObject": _static_put, "GetObject": _static_get,
+    "CreateInvalidation": _static_invalidation, "DeleteObject": _static_delete,
+}
+
+
+def validate_static_call(*, request, role, service, operation, parameters, bucket, plan):
+    """R17 closed catalogue: one product wire call -> its boto3 method, every value bound to bucket and plan.
+
+    Scope, not domain acceptance. inventory has no plan; retire-static's DeleteObject shape is SYNTHETIC (R3).
+    """
+    kind = request.get("operation") if type(request) is dict else None
+    c.require(all(type(name) is str for name in (role, service, operation)) and kind in STATIC_SDK_OPERATIONS
+              and (role, service, operation) in STATIC_SDK_OPERATIONS[kind] and type(parameters) is dict,
+              "closed static SDK operation")
+    if kind == "inventory":
+        c.require(plan is None and type(bucket) is str and bucket != "", "static inventory call scope")
+    else:
+        c.require(type(plan) is dict and static_plan(c.canonical(plan), bucket=bucket) == plan, "static call plan")
+    _STATIC_CALLS[operation](parameters, bucket, plan)
+    return STATIC_SDK_METHODS[service, operation]
+
+
 ADAPTER_STAGE_FIELDS = "close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence checkpoint_sha256"
 FENCE_PREPARE_PRODUCER = {
     "workflow_path": ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml", "job": "execute", "step_id": "gate",
