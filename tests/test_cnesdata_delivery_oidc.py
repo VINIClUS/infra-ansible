@@ -599,7 +599,8 @@ def test_native_schema_confirms_readonly_computed_delta_fields(native):
         assert observed == expected, name
 
 
-@pytest.mark.parametrize("mutation", [None, "extra", "extra-history", "string-run", "bool-run", "float-run", "old-six", "foreign-role"])
+@pytest.mark.parametrize("mutation", [None, "extra", "extra-history", "string-run", "bool-run", "float-run", "old-six", "foreign-role",
+                                      "zero-closure"])
 def test_private_application_raw_configuration_is_closed_before_terraform_coercion(mutation):
     from tools.cnesdata_delivery import session_owner
     assert callable(getattr(session_owner, "application_configuration", None)), "raw application configuration validator required"
@@ -613,10 +614,27 @@ def test_private_application_raw_configuration_is_closed_before_terraform_coerci
     if mutation == "float-run": value["predecessor_read"]["run_id"] = 42.0
     if mutation == "old-six": value["delegations"] = {k: v for k, v in value["delegations"].items() if not k.startswith("mode_")}
     if mutation == "foreign-role": value["delegations"]["mode_seed"] += "-foreign"
+    if mutation == "zero-closure": value["source_closure_sha256"] = "0" * 64
     if mutation is None:
         assert session_owner.application_configuration(value, "111122223333") == value
+    elif mutation == "zero-closure":
+        with pytest.raises(ValueError, match="application producer closure sentinel"):
+            session_owner.application_configuration(value, "111122223333")
     else:
         with pytest.raises(ValueError): session_owner.application_configuration(value, "111122223333")
+
+
+@pytest.mark.parametrize("closure", ["0" * 64, "0" * 63 + "1"])
+def test_native_application_refuses_only_the_64_zero_closure_sentinel(native, closure):
+    """Decision 1 of 6886977054: variables.tf refuses the sentinel; outputs.tf is unchanged."""
+    data = application_values()
+    data["application_promotion"]["source_closure_sha256"] = closure
+    code, plans, errors = native.plan(data, "closure-" + closure[-1])
+    if closure == "0" * 64:
+        assert code != 0 and any("64-zero" in json.dumps(item) for item in errors), errors
+    else:
+        assert code == 0, json.dumps(errors, indent=2)
+        assert plans[0]["planned_values"]["outputs"]["application_promotion"]["value"]["producer"]["source_closure_sha256"] == closure
 
 
 @pytest.mark.parametrize("mutation", ["extra", "extra-history", "string-run", "bool-run"])
