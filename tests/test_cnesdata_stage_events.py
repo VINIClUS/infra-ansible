@@ -529,8 +529,15 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
 
     def phase_b_publication(*args):
         world.phase_b.append(args)
+        remaining = world.b_publication_seconds
+        while remaining > 0:
+            step = min(remaining, 60)
+            clock.value += step
+            remaining -= step
+            args[6].check()
         return world.b_files
     monkeypatch.setattr(ag, "_phase_b_publication", phase_b_publication)
+    world.b_publication_seconds = 0
     world.b_checkpoint = {"owner": owner, "purpose": "phase-b", "plan_sha256": "9" * 64}
     world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64}
     world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
@@ -708,6 +715,21 @@ def test_phase_b_handler_admits_the_api_window_from_the_authenticated_b_checkpoi
     assert _lifecycle(world) == before | {"sequence": 2, "stage": "api", "admitted_at": 1130, "deadline": 1310,
                                           "checkpoint_sha256": c.sha(world.b_files["checkpoint.json"])}
     assert world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("seconds_left, admitted", [(1, True), (0, False), (-30, False)])
+def test_phase_b_handler_rechecks_the_stage_deadline_after_authenticating_the_publication(monkeypatch, seconds_left, admitted):
+    world = _prepared_world(monkeypatch)
+    before = _lifecycle(world)
+    assert before["stage"] == "phase-b" and world.clock.value == 1130
+    world.b_publication_seconds = before["deadline"] - 1130 - seconds_left
+    if admitted:
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+        assert _lifecycle(world)["stage"] == "api"
+        return
+    with pytest.raises(ValueError, match="phase-b stage deadline elapsed"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert _lifecycle(world) == before and world.store.get()[0]["status"] == "held"
 
 
 _PHASE_B_REFUSALS = {
