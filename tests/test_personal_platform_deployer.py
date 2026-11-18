@@ -146,6 +146,7 @@ def test_binding_closed_and_tampering_refused_before_authority(tmp_path):
     for mutation in [
         lambda v: v.update(extra=True),
         lambda v: v["caller"].update(run_attempt=True),
+        lambda v: v["caller"].update(ref="refs/heads/develop"),
         lambda v: v["expires"].pop(),
         lambda v: v.update(requested_action="shell"),
         lambda v: v["approval"]["pins"].append(v["approval"]["pins"][0]),

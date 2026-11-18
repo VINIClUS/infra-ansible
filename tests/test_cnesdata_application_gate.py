@@ -521,8 +521,22 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
     return aws, api, governance, store, run, job, objects, receipt
 
 
+@pytest.mark.parametrize("branch", ["main", "develop"])
+def test_published_terminal_admits_only_a_predecessor_run_on_main(monkeypatch, tmp_path, branch):
+    """Amendment infra-ansible#55/6993274712. `authenticate_predecessor` refuses a develop run first; this guard is the second."""
+    from tools.cnesdata_delivery.application_gate import published_terminal
+    aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
+    previous = store.get()[0]
+    run["head_branch"] = branch
+    if branch == "main":
+        assert published_terminal(api, governance, previous)[0]["head_branch"] == "main"
+    else:
+        with pytest.raises(ValueError, match="previous lifecycle run not terminal success"):
+            published_terminal(api, governance, previous)
+
+
 @pytest.mark.parametrize("application_purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release"])
+@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release", "branch"])
 def test_published_original_lifecycle_terminal_allows_successor_without_state_access(monkeypatch, tmp_path, mutation, application_purpose):
     aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
     previous = store.get()[0]
@@ -552,6 +566,7 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
         if mutation == "missing": governance.pop("lifecycle_predecessor")
         if mutation == "incomplete": reference.pop("objects")
         if mutation == "tampered": reference["objects"][0]["sha256"] = "0" * 64
+        if mutation == "branch": run["head_branch"] = "develop"  # the trail moved to main (amendment 6993274712)
         before = store.get()
         writes = store.writes
         monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("invalid history reached Lease.acquire"))

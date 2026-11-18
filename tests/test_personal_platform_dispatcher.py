@@ -275,6 +275,30 @@ def test_live_attempt_checks_do_not_accept_latest_or_ambiguous_boundaries():
         g.verify_run(run, ref)
 
 
+@pytest.mark.parametrize("branch", ["main", "develop", "release"])
+def test_host_current_caller_run_must_be_on_the_main_branch(branch):
+    """Amendment infra-ansible#55/6993274712: the manual caller of the host gate runs on main only."""
+    from test_personal_platform_deployer import binding
+
+    g = runtime()
+    ref = binding()["caller"]
+    run = {
+        "id": 12,
+        "run_attempt": 1,
+        "repository": {"full_name": "VINIClUS/CnesData"},
+        "head_sha": SHA,
+        "path": ref["workflow_path"],
+        "event": "workflow_dispatch",
+        "head_branch": branch,
+        "status": "in_progress",
+    }
+    if branch == "main":
+        g.verify_run(run, ref, caller=True)
+    else:
+        with pytest.raises(ValueError, match="manual current caller"):
+            g.verify_run(run, ref, caller=True)
+
+
 def test_host_response_rejects_nonce_mix_late_arrival_and_digest_tamper(tmp_path):
     from test_personal_platform_deployer import operation
 

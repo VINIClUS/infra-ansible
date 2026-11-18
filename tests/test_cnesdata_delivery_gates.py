@@ -1282,3 +1282,15 @@ def test_reusables_admit_only_the_main_trail(name):
     assert "develop" not in text
     assert re.findall(r'"refs/heads/[A-Za-z0-9_./-]+"', text) == ['"refs/heads/main"'] * refs
     assert re.findall(r'head_branch"\] == "[A-Za-z0-9_./-]+"', text) == ['head_branch"] == "main"'] * branches
+
+
+def test_delivery_tools_carry_no_develop_branch_literal_but_the_cross_repo_check_name():
+    """Every branch assertion of the trail is `main`. The only `develop` left is `source-develop-checks`, a check name
+    emitted by CnesData evidence that renames only together with its emitter (CnesData R3)."""
+    import ast
+    found = {}
+    for path in sorted((ROOT / "tools/cnesdata_delivery").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "develop" in node.value:
+                found.setdefault(path.name, []).append(node.value)
+    assert found == {"provenance.py": ["source-develop-checks"]}

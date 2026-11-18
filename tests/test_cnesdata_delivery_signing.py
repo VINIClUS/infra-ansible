@@ -1269,6 +1269,32 @@ def test_verify_ext2_reference_aceita_head_sem_bucket_key(
     assert result.signature_der == produced.signature.body
 
 
+@pytest.mark.parametrize("branch", ["main", "develop"])
+def test_retained_activation_requires_the_original_run_on_main(
+    gate, crypto, tmp_path, monkeypatch, branch
+):
+    """Amendment infra-ansible#55/6993274712: the original caller run of the EXT2 reference ran on main."""
+    monkeypatch.chdir(tmp_path)
+    case, reference, _ = published_case(gate, crypto)
+    gov, api, _, s3, _, payload = case
+    api.responses[f"repos/{REPOSITORY}/actions/runs/123/attempts/1"]["head_branch"] = branch
+
+    def read():
+        return gate.read_retained_activation(
+            reference,
+            github=api,
+            s3=s3,
+            governance=gov,
+            now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+
+    if branch == "main":
+        assert read().payload_bytes == payload
+    else:
+        with pytest.raises(ValueError, match="run_identity"):
+            read()
+
+
 def test_retained_activation_reads_original_versions_without_resign_or_refresh(
     gate, crypto, tmp_path, monkeypatch
 ):
