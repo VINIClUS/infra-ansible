@@ -4787,7 +4787,7 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
 ])
 def test_execute_is_disabled_by_default_before_any_aws_lease_or_sts(monkeypatch, validators, events, message):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
-    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is None
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
     monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
@@ -4868,6 +4868,11 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
         (gate, "close_drain_capability", "_assume_fence_session"),
         (gate, "close_drain_capability", "ClosedReadyBroker"),
+        (gate, "register_terminal_validators", "register_terminal_validator"),  # no production caller of the registration
+        (gate, "_quiescence_validator", "quiescence_terminal_validator"),      # registry providers, built per keeper
+        (gate, "validator", "KeeperGuard"),                                     # lazy host/decision validators
+        (gate, "validator", "host_terminal_validator"),
+        (gate, "validator", "decision_terminal_validator"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call
@@ -4876,7 +4881,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
     assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
-    assert ag.TERMINAL_VALIDATORS == {} and ag.KEEPER_EVENT_SOURCE is None
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is None
 
 
 TERMINAL_MEMBER_IDENTITY = ("dispatch_id", "request_sha256", "generation", "initial_state", "execution_ref", "resolution")
@@ -5293,6 +5298,258 @@ def test_keeper_finish_accepts_with_authenticated_host_handoff_validator():
     files = keeper.finish(reference)
     assert c.loads(files["terminal.json"], canonical=True)["promotion_status"] == "accepted"
     assert c.loads(files["checkpoint.json"], canonical=True)["inputs"]["host"] == c.sha(c.canonical(reference["sources"]["host"]))
+
+
+HOST_REUSABLE_SHA = "e" * 40  # SYNTHETIC: the production caller reads producer_sha from the run, never from a literal
+HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH frames",
+                  "Publish only the closed public handoff projection",
+                  "Fail only after the original recovery handoff is available")
+SIX_VALIDATORS = {"routing", "static", "membership", "quiescence", "host", "decision"}
+HOST_OWNER = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
+
+
+def _zip_bytes(members):
+    import io
+    import zipfile
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for name, raw in members:
+            archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0)), raw)
+    return out.getvalue()
+
+
+class _HostWorld:
+    """SYNTHETIC GitHub run 44/1: host-gate job and cnesdata-host-handoff artifact (consumer shape of CnesData 9cdd452f)."""
+    def __init__(self, mutation=None, handoff=None):
+        vectors = _synthetic_terminal_vectors()
+        value = c.loads(_synthetic_terminal_artifacts(vectors)["host-handoff"], canonical=True) | {"producer_sha": HOST_REUSABLE_SHA}
+        value.update(handoff or {})
+        self.raw = c.canonical(value)
+        self.archive = _zip_bytes([("host-handoff.json", self.raw)])
+        root, run_id = f"repos/{c.REPOSITORY}/actions", 44
+        steps = [{"name": name, "number": number, "status": "completed", "conclusion": conclusion}
+                 for number, (name, conclusion) in enumerate(zip(HOST_JOB_STEPS, ("success", "success", "skipped")), 2)]
+        self.job = {"id": 77, "run_id": run_id, "run_attempt": 1, "head_sha": "b" * 40, "name": "host-gate / execute", "status": "completed",
+                    "conclusion": "success", "started_at": c.utc(1100), "completed_at": c.utc(1250), "steps": steps}
+        self.meta = {"id": 78, "name": "cnesdata-host-handoff-44-1", "digest": "sha256:" + c.sha(self.archive), "expired": False,
+                     "workflow_run": {"id": run_id, "head_sha": "b" * 40}, "created_at": c.utc(1200)}
+        self.run = {"id": run_id, "run_attempt": 1, "head_sha": "b" * 40, "referenced_workflows": [
+            {"path": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@" + HOST_REUSABLE_SHA,
+             "sha": HOST_REUSABLE_SHA}]}
+        self.jobs, self.total_jobs, self.artifacts, self.total_artifacts = [self.job], None, [self.meta], None
+        self.reads = []
+        self.root = root
+        getattr(self, "_" + mutation.replace("-", "_"))() if mutation else None
+        self.responses = {
+            root + "/runs/44/attempts/1": self.run,
+            root + "/runs/44/attempts/1/jobs?per_page=100&page=1": {
+                "jobs": self.jobs, "total_count": len(self.jobs) if self.total_jobs is None else self.total_jobs},
+            root + "/runs/44/artifacts?per_page=100&page=1": {
+                "artifacts": self.artifacts, "total_count": len(self.artifacts) if self.total_artifacts is None else self.total_artifacts},
+            root + "/artifacts/78/zip": self.archive}
+
+    def read(self, path, *, raw=False, maximum=192 * 1024**2):
+        self.reads.append(path)
+        value = self.responses[path]
+        assert not raw or len(value) <= maximum, "oversized archive must be refused by the read bound"
+        return value
+
+    def _run_attempt(self): self.run["run_attempt"] = 2
+    def _run_source(self): self.run["head_sha"] = "a" * 40
+    def _reusable_missing(self): self.run["referenced_workflows"] = []
+    def _reusable_twice(self): self.run["referenced_workflows"] = self.run["referenced_workflows"] * 2
+    def _reusable_path(self): self.run["referenced_workflows"][0]["path"] = self.run["referenced_workflows"][0]["path"][:-1] + "f"
+    def _job_missing(self): self.jobs = []
+    def _job_twice(self): self.jobs = [self.job, self.job | {"id": 80}]
+    def _job_incomplete(self): self.total_jobs = 2
+    def _job_run(self): self.job["run_id"] = 45
+    def _job_attempt(self): self.job["run_attempt"] = 2
+    def _job_source(self): self.job["head_sha"] = "a" * 40
+    def _job_status(self): self.job["status"] = "in_progress"
+    def _job_conclusion(self): self.job["conclusion"] = "cancelled"
+    def _step_missing(self): self.job["steps"].pop(0)
+    def _step_order(self): self.job["steps"][0]["number"] = 9
+    def _step_gate(self): self.job["steps"][0]["conclusion"] = "failure"
+    def _step_handoff(self): self.job["steps"][1]["conclusion"] = "skipped"
+    def _final_step(self): self.job["steps"][2]["conclusion"] = "failure"
+    def _final_step_failed_job(self): self.job["conclusion"] = "failure"
+    def _artifact_missing(self): self.artifacts = []
+    def _artifact_twice(self): self.artifacts = [self.meta, self.meta | {"id": 79}]
+    def _artifact_incomplete(self): self.total_artifacts = 2
+    def _artifact_name(self): self.meta["name"] = "cnesdata-host-handoff-44-2"
+    def _artifact_expired(self): self.meta["expired"] = True
+    def _artifact_run(self): self.meta["workflow_run"]["id"] = 45
+    def _artifact_source(self): self.meta["workflow_run"]["head_sha"] = "a" * 40
+    def _artifact_at_job_start(self): self.meta["created_at"] = c.utc(1100)
+    def _artifact_after_job(self): self.meta["created_at"] = c.utc(1251)
+    def _digest(self): self.meta["digest"] = "sha256:" + "0" * 64
+    def _member_name(self): self._replace([("other.json", self.raw)])
+    def _member_twice(self): self._replace([("host-handoff.json", self.raw), ("extra.json", b"{}")])
+    def _member_empty(self): self._replace([("host-handoff.json", b"")])
+    def _member_large(self): self._replace([("host-handoff.json", self.raw + b" " * 32768)])
+    def _noncanonical(self): self._replace([("host-handoff.json", b'{ "kind": "host-handoff" }\n')])
+    def _archive_large(self): self._replace([("host-handoff.json", self.raw), ("pad.bin", bytes(range(256)) * 300)])
+    def _producer(self): self._rewrite(producer_sha="f" * 40)
+    def _caller_run(self): self._rewrite(caller=dict(HOST_OWNER, run_id=45))
+    def _caller_source(self): self._rewrite(caller=dict(HOST_OWNER, source_sha="a" * 40))
+    def _caller_repository(self): self._rewrite(caller=dict(HOST_OWNER, repository="VINIClUS/other"))
+
+    def _replace(self, members):
+        self.archive = _zip_bytes(members)
+        self.meta["digest"] = "sha256:" + c.sha(self.archive)
+
+    def _rewrite(self, **changes):
+        self.raw = c.canonical(c.loads(self.raw, canonical=True) | changes)
+        self._replace([("host-handoff.json", self.raw)])
+
+
+class _NoGuard:
+    def __init__(self): self.checks = []
+    def check(self, seconds=0): self.checks.append(seconds)
+
+
+def test_host_handoff_caller_authenticates_the_original_public_artifact():
+    from tools.cnesdata_delivery import application_gate as ag
+    world, guard = _HostWorld(), _NoGuard()
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=guard) == world.raw
+    assert world.reads[0].endswith("/runs/44/attempts/1") and world.reads[-1].endswith("/artifacts/78/zip")
+    assert len(guard.checks) >= 2 * len(world.reads) - 2 and 20 in guard.checks
+
+
+def test_host_handoff_caller_accepts_the_failed_job_of_a_recovery_handoff():
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _HostWorld("final-step-failed-job", handoff={"status": "recovery_required"})
+    world.job["steps"][2]["conclusion"] = "failure"
+    assert ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard()) == world.raw
+
+
+_HOST_HANDOFF_REFUSALS = {
+    "run-attempt": "host handoff run", "run-source": "host handoff run", "reusable-missing": "host handoff reusable",
+    "reusable-twice": "host handoff reusable", "reusable-path": "host handoff reusable",
+    "job-missing": "host handoff job inventory", "job-twice": "host handoff job inventory",
+    "job-incomplete": "host handoff job inventory", "job-run": "host handoff job identity",
+    "job-attempt": "host handoff job identity", "job-source": "host handoff job identity",
+    "job-status": "host handoff job identity", "job-conclusion": "host handoff job identity",
+    "step-missing": "host handoff job steps", "step-order": "host handoff job steps", "step-gate": "host handoff job steps",
+    "step-handoff": "host handoff job steps", "final-step": "host handoff job steps",
+    "final-step-failed-job": "host handoff job steps", "artifact-missing": "host handoff artifact unique",
+    "artifact-twice": "host handoff artifact unique", "artifact-incomplete": "host handoff artifact inventory",
+    "artifact-name": "host handoff artifact unique", "artifact-expired": "host handoff artifact identity",
+    "artifact-run": "host handoff artifact identity", "artifact-source": "host handoff artifact identity",
+    "artifact-at-job-start": "host handoff artifact identity", "artifact-after-job": "host handoff artifact identity",
+    "digest": "host handoff digest", "member-name": "host handoff member", "member-twice": "host handoff member",
+    "member-empty": "host handoff member", "member-large": "host handoff member", "noncanonical": "noncanonical JSON bytes",
+    "archive-large": "oversized archive|host handoff digest", "producer": "host handoff producer/caller",
+    "caller-run": "host handoff producer/caller", "caller-source": "host handoff producer/caller",
+    "caller-repository": "host handoff producer/caller"}
+
+
+@pytest.mark.parametrize("mutation", sorted(_HOST_HANDOFF_REFUSALS))
+def test_host_handoff_caller_refuses_anything_but_the_original_public_artifact(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    handoff = {"recovery_decision": None} if mutation != "final-step-failed-job" else {}
+    world = _HostWorld(mutation, handoff=handoff)
+    with pytest.raises((ValueError, AssertionError), match=_HOST_HANDOFF_REFUSALS[mutation]):
+        ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard())
+
+
+def test_production_terminal_validator_registry_is_the_six_synthetic_kinds():
+    from tools.cnesdata_delivery import application_gate as ag
+    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS
+    assert all(type(label) is str and label.startswith("synthetic-") and callable(provider)
+               for label, provider in ag.TERMINAL_VALIDATORS.values())
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    assert set(keeper._terminal_validators) == SIX_VALIDATORS
+    assert {kind: label for kind, (label, _) in keeper._terminal_validators.items()} == {
+        kind: label for kind, (label, _) in ag.TERMINAL_VALIDATORS.items()}
+    with pytest.raises(ValueError, match="closed terminal validator registry"):
+        ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+
+
+def test_registered_quiescence_validator_reads_the_keeper_uncertainty_at_invocation():
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    vectors = _synthetic_terminal_vectors()
+    digests, observations = _journal_observations(vectors)
+    journal = _journal_with(observations=[("terminal", c.canonical(vectors["terminal"]))])
+    keeper.attach(journal)
+    validator = keeper._terminal_validators["quiescence"][1]
+    source = {"terminal": digests["terminal"]}
+    assert validator(source, owner={}, window={}, observations=observations)["facts"]["unknown"] == []
+    journal._unknown.append({"kind": "late"})
+    assert validator(source, owner={}, window={}, observations=observations)["facts"]["unknown"] == [{"kind": "late"}]
+
+
+def _lazy_case(monkeypatch, *, mutation=None, handoff=None):
+    from tools.cnesdata_delivery import application_gate as ag
+    vectors = _synthetic_terminal_vectors()
+    world = _HostWorld(mutation, handoff=handoff)
+    keeper, _ = _accepted_terminal_case()
+    keeper.api = world
+    keeper._terminal_validators.clear()
+    ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
+    order = []
+    for name in ("host_terminal_validator", "decision_terminal_validator"):
+        original = getattr(ag, name)
+        monkeypatch.setattr(ag, name, lambda raw, _original=original, _name=name: order.append((_name, raw)) or _original(raw))
+    return ag, vectors, world, keeper, order
+
+
+def test_registered_host_validator_authenticates_the_handoff_before_building_the_factory(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    assert world.reads == [] and order == []  # Registration never reads the host run.
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": c.sha(world.raw), "closed-ready": digests["closed-ready"]}
+    original = world.read
+    world.read = lambda path, **kw: order.append(("read", path)) or original(path, **kw)
+    result = keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+    assert result["facts"] == {"accepted": True}
+    kinds = [item[0] for item in order]
+    assert kinds[-1] == "host_terminal_validator" and set(kinds[:-1]) == {"read"} and len(kinds) == len(world.reads) + 1
+    assert order[-1][1] == world.raw
+
+
+def test_registered_host_validator_never_builds_the_factory_for_an_unauthenticated_handoff(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch, mutation="digest")
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": c.sha(world.raw), "closed-ready": digests["closed-ready"]}
+    with pytest.raises(ValueError, match="host handoff digest"):
+        keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+    assert order == []
+
+
+def test_registered_host_validator_refuses_a_source_that_is_not_the_authenticated_bytes(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    digests, observations = _journal_observations(vectors)
+    source = {"host-handoff": "f" * 64, "closed-ready": digests["closed-ready"]}
+    with pytest.raises(ValueError, match="terminal source role=host-handoff"):
+        keeper._terminal_validators["host"][1](source, owner=dict(HOST_OWNER), window={"stage": "final"}, observations=observations)
+
+
+def test_registered_decision_validator_binds_the_canonical_recovery_decision_of_the_handoff(monkeypatch):
+    vectors = _synthetic_terminal_vectors()
+    decision = c.loads(_synthetic_terminal_artifacts(vectors)["recovery-decision"], canonical=True)
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch, handoff={"status": "recovery_required", "recovery_decision": decision})
+    window = copy.deepcopy(RECOVERY_WINDOW)
+    source = {"recovery-decision": c.sha(c.canonical(decision))}
+    result = keeper._terminal_validators["decision"][1](source, owner=dict(HOST_OWNER), window=window, observations={})
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {}}
+    assert order == [("decision_terminal_validator", c.canonical(decision))]
+    source = {"recovery-decision": "f" * 64}
+    with pytest.raises(ValueError, match="terminal source role=recovery-decision"):
+        keeper._terminal_validators["decision"][1](source, owner=dict(HOST_OWNER), window=window, observations={})
+
+
+def test_registered_decision_validator_refuses_a_handoff_without_a_recovery_decision(monkeypatch):
+    ag, vectors, world, keeper, order = _lazy_case(monkeypatch)
+    with pytest.raises(ValueError, match="host handoff recovery decision"):
+        keeper._terminal_validators["decision"][1]({"recovery-decision": "f" * 64}, owner=dict(HOST_OWNER),
+                                                   window=copy.deepcopy(RECOVERY_WINDOW), observations={})
+    assert order == []
 
 
 def _recovery_terminal_case(vectors, artifacts):
