@@ -914,7 +914,7 @@ def credentials(role):
     claims = c.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
     workflow = f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml@{governance['gate_shas'][role]}"
     c.require(claims["iss"] == "https://token.actions.githubusercontent.com" and claims["aud"] == "sts.amazonaws.com"
-              and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{workflow}"
+              and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production"
               and claims["job_workflow_ref"] == workflow and claims["repository"] == c.REPOSITORY
               and claims["ref"] == "refs/heads/main", "OIDC governed claims")
     client = boto3.client("sts", region_name="us-east-2", config=Config(signature_version=UNSIGNED,

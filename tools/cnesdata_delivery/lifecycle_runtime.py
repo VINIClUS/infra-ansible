@@ -1462,7 +1462,7 @@ def oidc_credentials(governance, role, restriction, run, *, duration=3600):
     c.require(len(parts) == 3, "OIDC token")
     claims = c.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
     c.require(claims["iss"] == "https://token.actions.githubusercontent.com" and claims["aud"] == "sts.amazonaws.com"
-              and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{workflow}"
+              and claims["sub"] == f"repo:{c.REPOSITORY}:environment:production"
               and claims["job_workflow_ref"] == workflow and claims["repository"] == c.REPOSITORY
               and claims["ref"] == "refs/heads/main" and int(claims["run_id"]) == run["id"]
               and int(claims["run_attempt"]) == run["run_attempt"], "OIDC original run/attempt/producer")

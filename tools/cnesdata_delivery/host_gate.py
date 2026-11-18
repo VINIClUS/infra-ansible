@@ -5006,12 +5006,13 @@ def runner_clients(governance):
     claim = oidc.split(".")[1]
     claims = host_json(base64.urlsafe_b64decode(claim + "=" * (-len(claim) % 4)), 16384)
     pin = governance["binding"]["approval"]["reusable_sha"]
-    subject = (
-        "repo:VINIClUS/CnesData:ref:refs/heads/main:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
+    reusable = (
+        "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
         + pin
     )
     require(
-        claims["sub"] == subject
+        claims["sub"] == "repo:VINIClUS/CnesData:ref:refs/heads/main"
+        and claims.get("job_workflow_ref") == reusable
         and claims["aud"] == "sts.amazonaws.com"
         and claims["iss"] == "https://token.actions.githubusercontent.com",
         "exact host OIDC claims",

@@ -10,8 +10,9 @@ resource "aws_iam_role" "ext2_gate" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-signing-gate.yml@${var.ext2.workflow_sha}"
+          "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub"              = "repo:VINIClUS/CnesData:environment:production"
+          "token.actions.githubusercontent.com:job_workflow_ref" = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-signing-gate.yml@${var.ext2.workflow_sha}"
         }
       }
     }]

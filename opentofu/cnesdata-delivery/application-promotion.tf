@@ -53,8 +53,9 @@ resource "aws_iam_role" "application" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@${var.application_promotion.workflow_sha}"
+          "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
+          "token.actions.githubusercontent.com:sub"              = "repo:VINIClUS/CnesData:environment:production"
+          "token.actions.githubusercontent.com:job_workflow_ref" = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@${var.application_promotion.workflow_sha}"
         }
         DateLessThan = { "aws:CurrentTime" = var.application_promotion.enabled_until }
       }
