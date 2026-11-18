@@ -4750,7 +4750,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
                "close_expirations", "close_drain_capability", "register_terminal_validator", "routing_terminal_validator",
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
-               "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value"}
+               "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
+               "validate_static_call"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -4783,6 +4784,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "close_drain_capability", "ClosedReadyBroker"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),  # no production caller
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
@@ -5840,3 +5843,202 @@ def test_s3_body_value_refuses_non_bytes_chunks_and_unbounded_reads(case):
     maximum = {"maximum-negative": -1, "maximum-bool": True, "maximum-float": 10.0}.get(case, 10)
     with pytest.raises(ValueError):
         lc.s3_body_value(stream, maximum=maximum)
+
+
+_STATIC_BUCKET = "example-static-web"
+
+
+def _static_plan_value(bucket=_STATIC_BUCKET, **changes):
+    """SYNTHETIC cnesdata.static-plan/v1 (CnesData 9cdd452f _api_static_records.static_plan) over STATIC_PROMOTION_VECTOR."""
+    from fixtures.cnesdata_delivery_lifecycle import STATIC_PROMOTION_VECTOR as vector
+    value = {"schema": "cnesdata.static-plan/v1", "bucket": bucket, "distribution_arn": vector["distribution_arn"],
+             "inventory_sha256": "d" * 64, "candidate_keys": list(vector["candidate_keys"]),
+             "rollback_versions": copy.deepcopy(vector["rollback_versions"]),
+             "retire_versions": copy.deepcopy(vector["retire_versions"]), "multipart_keys": []}
+    return value | changes
+
+
+def _static_product_calls(bucket=_STATIC_BUCKET):
+    """SYNTHETIC calls in the CnesData 9cdd452f publish_dashboard.py wire form: ListObjectVersions :342-348, HeadObject
+    :354-357, ListMultipartUploads and ListParts :363-371, PutObject :378-389, GetObject :400-402, CreateInvalidation
+    :428-440. DeleteObject has no product handler (R3): its shape is 6963763481 decision 2."""
+    import hashlib
+    body = b"console.log(1)\n"
+    observer = [("observer", "s3", "ListObjectVersions", {"Bucket": bucket}),
+                ("observer", "s3", "ListObjectVersions", {"Bucket": bucket, "KeyMarker": "assets/app.js",
+                                                          "VersionIdMarker": "Prev.Index_1"}),
+                ("observer", "s3", "HeadObject", {"Bucket": bucket, "Key": "index.html", "VersionId": "Prev.Index_1",
+                                                  "ChecksumMode": "ENABLED"}),
+                ("observer", "s3", "ListMultipartUploads", {"Bucket": bucket}),
+                ("observer", "s3", "ListParts", {"Bucket": bucket, "Key": "assets/big.js", "UploadId": "upload-1"})]
+
+    def put(key, **extra):
+        return ("normal", "s3", "PutObject", {"Bucket": bucket, "Key": key, "Body": {"base64": _b64(body)},
+                "ContentType": "text/javascript", "CacheControl": "public, max-age=31536000, immutable",
+                "ChecksumSHA256": _b64(hashlib.sha256(body).digest())} | extra)
+    normal = [put("assets/app.js", IfNoneMatch="*"), put("index.html"), put("theme-init.js"),
+              ("normal", "s3", "GetObject", {"Bucket": bucket, "Key": "assets/app.js"}),
+              ("normal", "cloudfront", "CreateInvalidation", {"DistributionId": "E2SYNTHETIC0", "InvalidationBatch": {
+                  "Paths": {"Quantity": 2, "Items": ["/index.html", "/theme-init.js"]}, "CallerReference": "0f" * 16}})]
+    retire = [("normal", "s3", "DeleteObject", {"Bucket": bucket, "Key": ref["key"], "VersionId": ref["version_id"]})
+              for ref in _static_plan_value()["retire_versions"]]
+    return {"inventory": observer, "publish-static": observer + normal, "retire-static": retire}
+
+
+def _static_call(operation, call, plan="vector", bucket=_STATIC_BUCKET):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    role, service, name, parameters = call
+    if plan == "vector":
+        plan = None if operation == "inventory" else lc.static_plan(c.canonical(_static_plan_value(bucket)), bucket=bucket)
+    return lc.validate_static_call(request={"operation": operation}, role=role, service=service, operation=name,
+                                   parameters=parameters, bucket=bucket, plan=plan)
+
+
+def test_static_sdk_catalogue_is_the_closed_product_wire_form_r17():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert lc.STATIC_SDK_METHODS == {
+        ("s3", "ListObjectVersions"): "list_object_versions", ("s3", "HeadObject"): "head_object",
+        ("s3", "ListMultipartUploads"): "list_multipart_uploads", ("s3", "ListParts"): "list_parts",
+        ("s3", "PutObject"): "put_object", ("s3", "GetObject"): "get_object",
+        ("cloudfront", "CreateInvalidation"): "create_invalidation", ("s3", "DeleteObject"): "delete_object"}
+    observer = {("observer", "s3", name) for name in ("ListObjectVersions", "HeadObject", "ListMultipartUploads", "ListParts")}
+    assert lc.STATIC_SDK_OPERATIONS == {
+        "inventory": observer,
+        "publish-static": observer | {("normal", "s3", "PutObject"), ("normal", "s3", "GetObject"),
+                                      ("normal", "cloudfront", "CreateInvalidation")},
+        "retire-static": {("normal", "s3", "DeleteObject")}}
+    assert all(role in lc.STATIC_SESSION_OPERATIONS[operation] for operation, calls in lc.STATIC_SDK_OPERATIONS.items()
+               for role, _, _ in calls)
+
+
+@pytest.mark.parametrize("operation", ["inventory", "publish-static", "retire-static"])
+def test_static_call_admits_every_product_call_and_returns_the_boto3_method(operation):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    for call in _static_product_calls()[operation]:
+        assert _static_call(operation, call) == lc.STATIC_SDK_METHODS[call[1], call[2]], call
+
+
+@pytest.mark.parametrize("operation,call", [
+    ("publish-static", ("normal", "s3", "put_object")), ("publish-static", ("normal", "s3", "PutObjectAcl")),
+    ("publish-static", ("normal", "s3", "DeleteObject")), ("publish-static", ("normal", "s3", "DeleteObjects")),
+    ("publish-static", ("normal", "s3", "CopyObject")), ("publish-static", ("normal", "cloudfront", "GetInvalidation")),
+    ("publish-static", ("observer", "s3", "PutObject")), ("publish-static", ("normal", "s3", "CreateInvalidation")),
+    ("publish-static", ("recovery", "s3", "GetObject")), ("inventory", ("normal", "s3", "ListObjectVersions")),
+    ("inventory", ("observer", "s3", "GetObject")), ("inventory", ("normal", "s3", "PutObject")),
+    ("retire-static", ("normal", "s3", "DeleteObjects")), ("retire-static", ("normal", "s3", "delete_object")),
+    ("retire-static", ("observer", "s3", "HeadObject")), ("retire-static", ("normal", "s3", "PutObject")),
+    ("rollback-api-static", ("recovery", "s3", "CopyObject")), ("closed-ready", ("observer", "s3", "HeadObject"))])
+def test_static_call_refuses_names_outside_the_closed_map_r17(operation, call):
+    parameters = {"Bucket": _STATIC_BUCKET, "Key": "index.html"}
+    with pytest.raises(ValueError, match="closed static SDK operation"):
+        _static_call(operation, (*call, parameters))
+
+
+def _static_mutations():
+    def at(operation, index, change):
+        return operation, index, change
+    def pop(key):
+        return lambda p: p.pop(key)
+    def put(**values):
+        return lambda p: p.update(values)
+    def batch(**values):
+        return lambda p: p["InvalidationBatch"].update(values)
+    return {
+        "lov-bucket": at("inventory", 0, put(Bucket="other-static-web")), "lov-prefix": at("inventory", 0, put(Prefix="assets/")),
+        "lov-marker-half": at("inventory", 1, pop("VersionIdMarker")), "lov-marker-int": at("inventory", 1, put(KeyMarker=7)),
+        "lov-marker-empty": at("inventory", 1, put(KeyMarker="")),
+        "head-checksum-mode": at("inventory", 2, put(ChecksumMode="DISABLED")), "head-no-checksum": at("inventory", 2, pop("ChecksumMode")),
+        "head-no-version": at("inventory", 2, pop("VersionId")), "head-version-null": at("inventory", 2, put(VersionId="null")),
+        "head-version-charset": at("inventory", 2, put(VersionId="v 1")), "head-key-outside": at("inventory", 2, put(Key="robots.txt")),
+        "head-key-dotdot": at("inventory", 2, put(Key="assets/../index.html")), "head-key-empty-segment": at("inventory", 2, put(Key="assets//a.js")),
+        "head-extra": at("inventory", 2, put(Range="bytes=0-1")), "lmu-extra": at("inventory", 3, put(Prefix="assets/")),
+        "parts-no-upload": at("inventory", 4, pop("UploadId")), "parts-upload-empty": at("inventory", 4, put(UploadId="")),
+        "parts-key-outside": at("inventory", 4, put(Key="logs/a")), "parts-extra": at("inventory", 4, put(MaxParts=1000)),
+        "put-key-not-candidate": at("publish-static", 5, put(Key="assets/old.js")), "put-bucket": at("publish-static", 5, put(Bucket="other")),
+        "put-asset-without-if-none-match": at("publish-static", 5, pop("IfNoneMatch")),
+        "put-if-none-match-value": at("publish-static", 5, put(IfNoneMatch="etag")),
+        "put-entrypoint-if-none-match": at("publish-static", 6, put(IfNoneMatch="*")),
+        "put-checksum": at("publish-static", 6, put(ChecksumSHA256=_b64(b"\x00" * 32))),
+        "put-body": at("publish-static", 6, put(Body={"base64": "QR=="})), "put-no-content-type": at("publish-static", 6, pop("ContentType")),
+        "put-content-type-empty": at("publish-static", 6, put(ContentType="")), "put-cache-control-int": at("publish-static", 6, put(CacheControl=3600)),
+        "put-extra-acl": at("publish-static", 6, put(ACL="public-read")),
+        "get-key-not-candidate": at("publish-static", 8, put(Key="assets/old.js")), "get-version": at("publish-static", 8, put(VersionId="Older-4")),
+        "get-bucket": at("publish-static", 8, put(Bucket="other")),
+        "inv-distribution": at("publish-static", 9, put(DistributionId="E2OTHER")),
+        "inv-quantity": at("publish-static", 9, lambda p: p["InvalidationBatch"]["Paths"].update(Quantity=1)),
+        "inv-paths": at("publish-static", 9, lambda p: p["InvalidationBatch"]["Paths"].update(Items=["/*"])),
+        "inv-paths-order": at("publish-static", 9, lambda p: p["InvalidationBatch"]["Paths"].update(Items=["/theme-init.js", "/index.html"])),
+        "inv-reference-short": at("publish-static", 9, batch(CallerReference="0f" * 15)),
+        "inv-reference-upper": at("publish-static", 9, batch(CallerReference="0F" * 16)),
+        "inv-batch-extra": at("publish-static", 9, batch(Comment="x")), "inv-extra": at("publish-static", 9, put(Bucket=_STATIC_BUCKET)),
+        "delete-rollback-ref": at("retire-static", 0, put(Key="index.html", VersionId="Prev.Index_1")),
+        "delete-swapped-version": at("retire-static", 0, put(VersionId="Prev+Theme=2")),
+        "delete-other-key": at("retire-static", 0, put(Key="assets/app.js")), "delete-no-version": at("retire-static", 0, pop("VersionId")),
+        "delete-bucket": at("retire-static", 0, put(Bucket="other")), "delete-extra": at("retire-static", 0, put(MFA="x 1")),
+    }
+
+
+@pytest.mark.parametrize("mutation", list(_static_mutations()))
+def test_static_call_binds_every_parameter_to_the_bucket_and_plan(mutation):
+    operation, index, change = _static_mutations()[mutation]
+    call = copy.deepcopy(_static_product_calls()[operation][index])
+    change(call[3])
+    with pytest.raises(ValueError):
+        _static_call(operation, call)
+
+
+@pytest.mark.parametrize("operation,plan", [("inventory", "plan"), ("publish-static", None), ("retire-static", None),
+                                            ("publish-static", "raw"), ("retire-static", "other-bucket")])
+def test_static_call_takes_a_decoded_plan_of_the_same_bucket_except_for_inventory(operation, plan):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    value = {"plan": lc.static_plan(c.canonical(_static_plan_value()), bucket=_STATIC_BUCKET), None: None,
+             "raw": c.canonical(_static_plan_value()), "other-bucket": _static_plan_value("other-static-web")}[plan]
+    with pytest.raises(ValueError):
+        _static_call(operation, _static_product_calls()[operation][-1], plan=value)
+
+
+def test_static_plan_admits_the_product_plan_and_the_498_bounds():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    assert lc.static_plan(c.canonical(_static_plan_value()), bucket=_STATIC_BUCKET) == _static_plan_value()
+    product = _static_plan_value(rollback_versions=[], retire_versions=[], multipart_keys=["assets/big.js"])
+    assert lc.static_plan(c.canonical(product), bucket=_STATIC_BUCKET) == product
+
+
+@pytest.mark.parametrize("mutation", [
+    "schema", "bucket", "extra", "missing", "noncanonical", "distribution-lower", "distribution-account", "inventory-short",
+    "candidates-empty", "candidates-unsorted", "candidates-duplicate", "candidate-outside", "candidate-dotdot",
+    "candidate-dot", "candidate-empty-segment", "candidate-int", "multipart-unsorted", "multipart-outside",
+    "rollback-one", "rollback-order", "rollback-other-key", "ref-extra", "ref-version-null", "ref-version-charset",
+    "ref-version-empty", "retire-duplicate", "retire-in-rollback", "retire-key-outside", "retire-not-list"])
+def test_static_plan_refuses_anything_outside_the_498_contract(mutation):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    value = _static_plan_value()
+    index = {"key": "index.html", "version_id": "Prev.Index_1"}
+    changes = {
+        "schema": {"schema": "cnesdata.static-plan/v2"}, "bucket": {"bucket": "other-static-web"}, "extra": {"retire": []},
+        "distribution-lower": {"distribution_arn": "arn:aws:cloudfront::111122223333:distribution/e2synthetic0"},
+        "distribution-account": {"distribution_arn": "arn:aws:cloudfront::11112222333:distribution/E2SYNTHETIC0"},
+        "inventory-short": {"inventory_sha256": "d" * 63}, "candidates-empty": {"candidate_keys": []},
+        "candidates-unsorted": {"candidate_keys": ["index.html", "assets/app.js"]},
+        "candidates-duplicate": {"candidate_keys": ["index.html", "index.html"]}, "candidate-outside": {"candidate_keys": ["robots.txt"]},
+        "candidate-dotdot": {"candidate_keys": ["assets/../x"]}, "candidate-dot": {"candidate_keys": ["assets/./x"]},
+        "candidate-empty-segment": {"candidate_keys": ["assets//x"]}, "candidate-int": {"candidate_keys": [7]},
+        "multipart-unsorted": {"multipart_keys": ["assets/b", "assets/a"]}, "multipart-outside": {"multipart_keys": ["tmp/a"]},
+        "rollback-one": {"rollback_versions": [index]},
+        "rollback-order": {"rollback_versions": list(reversed(value["rollback_versions"]))},
+        "rollback-other-key": {"rollback_versions": [index, {"key": "assets/app.js", "version_id": "Prev+Theme=2"}]},
+        "ref-extra": {"retire_versions": [value["retire_versions"][0] | {"sha256": None}]},
+        "ref-version-null": {"retire_versions": [{"key": "assets/old.js", "version_id": "null"}]},
+        "ref-version-charset": {"retire_versions": [{"key": "assets/old.js", "version_id": "v 1"}]},
+        "ref-version-empty": {"retire_versions": [{"key": "assets/old.js", "version_id": ""}]},
+        "retire-duplicate": {"retire_versions": value["retire_versions"][:1] * 2},
+        "retire-in-rollback": {"retire_versions": [index]},
+        "retire-key-outside": {"retire_versions": [{"key": "old.js", "version_id": "Older-4"}]},
+        "retire-not-list": {"retire_versions": {"assets/old.js": "Older-4"}}}
+    if mutation == "missing":
+        value.pop("multipart_keys")
+    elif mutation != "noncanonical":
+        value |= changes[mutation]
+    raw = c.canonical(value) + (b" " if mutation == "noncanonical" else b"")
+    with pytest.raises(ValueError):
+        lc.static_plan(raw, bucket=_STATIC_BUCKET)
