@@ -592,6 +592,17 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
         with pytest.raises(ValueError, match="original bootstrap credential/freeze window"):
             guard.check(1)
         edge.check()
+    closures = []
+    def closing(*args, **kwargs):
+        ag_closure(*args, **kwargs)
+        closures.append(1)
+        if len(closures) == 2: late.setattr(ag.time, "time", lambda: window + 1)
+    ag_closure = ag.authenticate_adapter_closure
+    with monkeypatch.context() as late:
+        late.setattr(ag, "authenticate_adapter_closure", closing)
+        with pytest.raises(ValueError, match="original bootstrap credential/freeze window"):
+            ag.credentials(admitted, product=product)
+    assert len(closures) == 2 and exported.read_bytes() == original_export
     for field, value in (("UserId", "AROAother:cnesdata-44-1"), ("Account", "999900001111"), ("Arn", "arn:aws:sts::111122223333:assumed-role/foreign/cnesdata-44-1")):
         identity_change.clear()
         identity_change[field] = value

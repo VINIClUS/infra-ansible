@@ -450,7 +450,7 @@ class _Clock:
 
 def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
                  observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
-                 omit_earliest=False, noncanonical=()):
+                 omit_earliest=False, noncanonical=(), github_mutation=None):
     """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes."""
     from test_cnesdata_application_gate import _prepare_stage_keeper
     from test_cnesdata_delivery_lifecycle import _envelope_case
@@ -467,7 +467,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     index = {"version": 1, "source_sha": owner["source_sha"], "run_id": 4242, "run_attempt": 1, "step": "application-prepare-plan",
              "owner_sha256": owner["owner_sha256"], "generation": owner["generation"], **lc.application_identity(owner),
              "files": [{"name": "inputs.json", "size": len(raw_carrier), "sha256": c.sha(raw_carrier)}]}
-    github = _GitHub(PLAN_STEP["job_name"], "application-prepare-plan", index=index)
+    github = _GitHub(PLAN_STEP["job_name"], "application-prepare-plan", mutation=github_mutation, index=index)
     github.expiries = {PRIOR_ARTIFACT: 6000.0}
     from tools.cnesdata_delivery.lifecycle_runtime import ArtifactDigests
     api = ArtifactDigests(github)
@@ -612,6 +612,13 @@ _PREPARED_REFUSALS = {
     "index": ({"origins": {"index_sha256": "5" * 64}}, "activation plan index"),
     "inputs": ({"approval": {"inputs_sha256": "5" * 64}}, "activation plan inputs"),
     "activation": ({"manifest": {"activation_sha256": "5" * 64}}, "activation bytes"),
+    "plan-job-absent": ({"github_mutation": "absent"}, "completed plan producer"),
+    "plan-job-queued": ({"github_mutation": "queued"}, "completed plan producer"),
+    "plan-job-twice": ({"github_mutation": "two-jobs"}, "unique plan producer job"),
+    "plan-jobs-incomplete": ({"github_mutation": "incomplete-jobs"}, "complete plan publication inventory"),
+    "plan-artifacts-incomplete": ({"github_mutation": "incomplete-artifacts"}, "complete plan publication inventory"),
+    "plan-artifact-absent": ({"github_mutation": "no-artifact"}, "unique plan publication in job interval"),
+    "plan-artifact-twice": ({"github_mutation": "two-artifacts"}, "unique plan publication in job interval"),
     "origins-noncanonical": ({"noncanonical": {"fence-origins.json"}}, "noncanonical JSON bytes"),
     "approval-noncanonical": ({"noncanonical": {"approval.json"}}, "noncanonical JSON bytes"),
     "manifest-noncanonical": ({"noncanonical": {"fence-prepared.json"}}, "noncanonical JSON bytes"),
