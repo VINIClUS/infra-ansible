@@ -1561,6 +1561,23 @@ class Keeper:
                   and type(label) is str and 0 < len(label) <= 128, "closed terminal validator registry")
         self._terminal_validators[kind] = (label, validator)
 
+    def _latest_observation_bytes(self):
+        """Disposition 3d of 6963008338: bytes only of the latest registered observation of each kind.
+
+        Journals follow attach order, a broker counts once through its journal, and the
+        entries of one journal follow its own `_observations` order.
+        """
+        journals = []
+        for context in self._contexts:
+            found = context.journal if type(context) is ClosedReadyBroker else context
+            journals += [] if any(known is found for known in journals) else [found]
+        latest = {}
+        for journal in journals:
+            for entry in journal._observations:
+                latest[entry["kind"]] = (journal, entry["sha256"])
+        return {digest: journal._observation_bytes[digest] for journal, digest in latest.values()
+                if digest in journal._observation_bytes}
+
     def _terminal_proof(self, reference, owner, window):
         """Assemble the assessment from registered validator results, never from caller JSON."""
         c.closed(reference, "kind checkpoint_raw sources")
@@ -1568,10 +1585,7 @@ class Keeper:
         required = _terminal_required(reference["kind"], window)
         c.require(set(reference["sources"]) == required and required <= set(self._terminal_validators),
                   "terminal validator unavailable; lifecycle disabled")
-        observations = {}
-        for context in self._contexts:
-            journal = context.journal if type(context) is ClosedReadyBroker else context
-            observations.update(journal.observation_bytes)
+        observations = self._latest_observation_bytes()
         inputs, facts = {}, {}
         for kind in sorted(required):
             label, validator = self._terminal_validators[kind]
