@@ -541,8 +541,10 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     world.b_checkpoint = {"owner": owner, "purpose": "phase-b", "plan_sha256": "9" * 64}
     world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64}
     world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
+    world.operation_session = lambda operation, role, stage: pytest.fail("the capability fake never mints the operation session")
     world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
-                                       authority=world.authority, product="product", credential_limit=credential_limit, clock=clock)
+                                       authority=world.authority, product="product", credential_limit=credential_limit,
+                                       operation_session=world.operation_session, clock=clock)
     return world
 
 
@@ -579,7 +581,8 @@ def test_prepared_handler_closes_the_window_from_the_authenticated_plan_activati
     assert kinds.count(("artifact", c.utc(9000))) == 1 and kinds.count(("artifact", c.utc(6000))) == 1 and len(kinds) == 5
     assert {key: value for key, value in capability.items() if key not in {"journal", "reads", "expirations"}} == {
         "aws": world.aws, "api": world.api, "governance": world.governance, "authority": world.authority,
-        "keeper": world.keeper, "prepared": world.prepared, "credential_limit": 6000, "clock": world.clock}
+        "keeper": world.keeper, "prepared": world.prepared, "credential_limit": 6000,
+        "operation_session": world.operation_session, "clock": world.clock}
     (invoked,) = world.invoke
     assert invoked == {"product": "product", "source": world.owner["source_sha"], "manifest": {"fixture": "manifest"},
                        "manifest_sha256": "0" * 64, "journal": journal, "timeout": 1900 - 1105 - 158}
@@ -587,6 +590,14 @@ def test_prepared_handler_closes_the_window_from_the_authenticated_plan_activati
                                           "stage": "phase-b", "admitted_at": 1050, "deadline": 1410,
                                           "checkpoint_sha256": c.sha(PREPARED_CHECKPOINT)}
     assert world.store.get()[0]["status"] == "held" and world.keeper.uncertainty() == []
+
+
+def test_prepared_handler_gives_the_capability_the_operation_session_factory_and_never_a_client(monkeypatch):
+    """R20: the capability gets the keeper client for the lease and the freeze, and the factory for everything after the freeze."""
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    (arguments,) = world.capability
+    assert arguments["aws"] is world.aws and arguments["operation_session"] is world.operation_session
 
 
 def test_prepared_handler_records_the_plan_download_beside_its_expiry_in_the_original_api(monkeypatch):

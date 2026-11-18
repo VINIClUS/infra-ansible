@@ -2074,7 +2074,7 @@ def _close_drain_broker_case(monkeypatch, *, item=CLOSE_SEMAPHORE):
                                 activation_sha256=request["activation_sha256"], guard=Guard())
     governance = {"role": "application", "account_id": CLOSE_ACCOUNT, "evidence_bucket": "synthetic-evidence",
                   "evidence_prefix": "cnesdata/prod/evidence/"}
-    session = ag._FenceSession(None, "9" * 64, CLOSE_SCOPE, 1900, c.sha(c.canonical(journal._request)))
+    session = ag._FenceSession(None, "9" * 64, CLOSE_SCOPE, 1900, c.sha(c.canonical(journal._request)), None)
     objects, native, errors = {}, [], {}
     class Evidence:
         def get(self, bucket, key, *, maximum, absent=False):
@@ -2304,7 +2304,7 @@ def test_finite_close_session_is_the_preparation_window_per_item_policy(monkeypa
     if mutation in _CLOSE_SESSION_REFUSALS:
         with pytest.raises(ValueError, match=_CLOSE_SESSION_REFUSALS[mutation]):
             ag._assume_fence_session(**args)
-        assert calls == native == []
+        assert calls == native == [] and args["operation_session"].calls == []
         return
     if mutation:
         with pytest.raises(ValueError):
@@ -2356,23 +2356,23 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
         def check(self, seconds=0): pass
     journal = ag.AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
                                 activation_sha256=request["activation_sha256"], guard=Guard())
-    governance = dict(sts_args["governance"])
+    governance = {**kwargs["governance"], **sts_args["governance"]}
     if mutation == "delegation":
         governance["application_delegations"] = dict(governance["application_delegations"], fence_operator=governance["application_delegations"]["normal"])
-    events = []
+    events = sts_args["operation_session"].events
+    if mutation == "operation-exchange": sts_args["operation_session"].error = ValueError("operation session exchange refused")
     attached = {"freeze": [_FREEZE], "attached": [{"PolicyArn": f"arn:aws:iam::{_FREEZE_ACCOUNT}:policy/other"}]}.get(mutation, [])
     class Application:
         def call(self, service, operation, **parameters):
             events.append((service, operation))
-            if service == "iam":
-                assert operation == "list_attached_role_policies"
-                assert parameters == {"RoleName": fragment["application_role_name"], "MaxItems": 100}
-                return {"IsTruncated": False, "AttachedPolicies": attached}
-            return sts_args["aws"].call(service, operation, **parameters)
+            assert service == "iam", "the keeper client never reaches STS or the fence evidence"
+            assert operation == "list_attached_role_policies"
+            assert parameters == {"RoleName": fragment["application_role_name"], "MaxItems": 100}
+            return {"IsTruncated": False, "AttachedPolicies": attached}
     keeper = ag.Keeper.__new__(ag.Keeper)
     keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: events.append(("lease", "check")) or {"held": True})
     args = dict(aws=Application(), api=api, governance=governance, authority=authority, journal=journal, keeper=keeper,
-                prepared=prepared, credential_limit=3000, clock=lambda: 1300)
+                prepared=prepared, credential_limit=3000, operation_session=sts_args["operation_session"], clock=lambda: 1300)
     return ag, args, sts_calls, keeper, journal, events
 
 
@@ -2382,7 +2382,8 @@ _CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "preparation": 
                               "evaluation-scope": "capability scope recomputed from prepared policy",
                               "expirations": "close-drain authenticated expirations",
                               "late-artifact": "close-drain authenticated expirations",
-                              "freeze": "freeze=attached", "attached": "application has no attached policies"}
+                              "freeze": "freeze=attached", "attached": "application has no attached policies",
+                              "operation-exchange": "^operation session exchange refused$"}
 
 
 @pytest.mark.parametrize("mutation", [None, *sorted(_CLOSE_CAPABILITY_REFUSALS)])
@@ -2394,12 +2395,17 @@ def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_be
         with pytest.raises(ValueError, match=_CLOSE_CAPABILITY_REFUSALS[mutation]):
             ag.close_drain_capability(**args)
         assert sts_calls == [] and journal._failed is True and keeper.uncertainty() == [{"kind": "context-failed"}]
-        assert ("sts", "assume_role") not in events
-        assert (("iam", "list_attached_role_policies") in events) is (mutation in {"freeze", "attached"})
+        assert not [event for event in events if event[0] == "sts"], "every refusal precedes the operation exchange and the fence STS"
+        assert (("iam", "list_attached_role_policies") in events) is (mutation in {"freeze", "attached", "operation-exchange"})
+        assert len(args["operation_session"].calls) == (mutation == "operation-exchange")
         return
     broker = ag.close_drain_capability(**args)
     assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker] and keeper.uncertainty() == []
-    assert events == [("lease", "check"), ("iam", "list_attached_role_policies"), ("sts", "assume_role")]
+    assert events == [("lease", "check"), ("iam", "list_attached_role_policies"), ("sts", "assume_role_with_web_identity"),
+                      ("sts", "get_caller_identity"), ("sts", "assume_role")]
+    operation_client = args["operation_session"].client
+    assert broker.aws is operation_client and broker.session.evidence is operation_client and broker.aws is not args["aws"]
+    assert args["operation_session"].calls == [("close-drain", "promotion-fence-r1", journal._request["stage"])]
     scope = broker.session.scope
     assert set(scope) == {"account", "control_table_arn", "machine_arn"} and broker.session.deadline == 1900
     expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
@@ -3463,6 +3469,19 @@ def test_keeper_transport_reads_only_same_run_private_wrapper_with_original_cust
     assert store.reads == [("synthetic-evidence", f"cnesdata/prod/evidence/lifecycle/{owner['source_sha']}/41/1/keeper/checkpoint.json", 262144)]
 
 
+class _OperationFactory:
+    """Boundary fake of the in-process operation exchange (R20 option C): records its order and hands out the operation client."""
+    def __init__(self, client, events=None, error=None):
+        self.client, self.events, self.error, self.calls = client, [] if events is None else events, error, []
+
+    def __call__(self, operation, role, stage):
+        self.calls.append((operation, role["session_name"], dict(stage)))
+        if self.error is not None:
+            raise self.error
+        self.events.extend([("sts", "assume_role_with_web_identity"), ("sts", "get_caller_identity")])
+        return self.client
+
+
 def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
     """Synthetic protected admission; fakes only STS/GetCallerIdentity boundaries."""
     from datetime import datetime, timezone
@@ -3486,7 +3505,7 @@ def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
         def check(self, seconds=0): pass
     journal = ag.AdapterJournal(c.canonical(request), operation="closed-ready", owner=owner, window=window, inputs=inputs,
                                activation_sha256=request["activation_sha256"], guard=Guard())
-    calls, native_calls = [], []
+    calls, native_calls, events = [], [], []
     assumed = role["role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + role["session_name"]
     identity = {"Account": "111122223333", "Arn": assumed, "UserId": role["role_id"] + ":" + role["session_name"]}
     if mutation == "arn": identity["Arn"] += "-foreign"
@@ -3495,6 +3514,7 @@ def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
     class Application:
         def call(self, service, operation, **parameters):
             calls.append((service, operation, parameters))
+            events.append((service, operation))
             assert (service, operation) == ("sts", "assume_role")
             return {"PackedPolicySize": 101 if mutation == "packed" else 10, "AssumedRoleUser": {
                 "Arn": assumed, "AssumedRoleId": role["role_id"] + ":" + role["session_name"]}, "Credentials": {
@@ -3514,8 +3534,8 @@ def _fence_sdk_boundary_case(monkeypatch, *, mutation=None):
     if mutation == "no-probe-grant": role["policy"]["Statement"].pop()
     governance = {"role": "application", "account_id": "111122223333", "roles": {"application": package["fragment"]["application_role_arn"]},
         "application_delegations": package["fragment"]["delegations"], "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/"}
-    args = dict(aws=Application(), governance=governance, role=role, scope=scope, journal=journal,
-                prepared_sha256="3" * 64, credential_limit=3000, clock=lambda: 1300)
+    args = dict(operation_session=_OperationFactory(Application(), events), governance=governance, role=role, scope=scope,
+                journal=journal, prepared_sha256="3" * 64, credential_limit=3000, clock=lambda: 1300)
     return ag, args, calls, native_calls
 
 
@@ -3526,18 +3546,58 @@ def test_finite_fence_session_requires_exact_sts_and_native_identity(monkeypatch
         with pytest.raises(ValueError): ag._assume_fence_session(**args)
     else:
         session = ag._assume_fence_session(**args)
-        assert session.scope == args["scope"] and session.deadline == 1480
+        assert session.scope == args["scope"] and session.deadline == 1480 and session.evidence is args["operation_session"].client
         c.digest(session.commitment)
     if mutation in {"expired-window", "no-probe-grant"}:
-        assert calls == native == []
+        assert calls == native == [] and args["operation_session"].calls == []
     else:
-        assert len(calls) == 1
+        assert len(calls) == 1 and len(args["operation_session"].calls) == 1
         params = calls[0][2]
         assert set(params) == {"RoleArn", "RoleSessionName", "DurationSeconds", "Policy"}
         assert params["RoleArn"] == args["role"]["role_arn"] and params["RoleSessionName"] == "promotion-fence-r1"
         assert params["DurationSeconds"] == 900 and len(params["Policy"]) <= 2048
         assert not {"AccessKeyId", "SecretAccessKey", "SessionToken"} & set(params)
         assert len(native) == (0 if mutation in {"packed", "expiration"} else 1)
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+def test_fence_session_exchanges_the_operation_session_right_before_the_fence_sts(monkeypatch, operation):
+    """R20 option C: the operation client is the only STS caller and the evidence client; the keeper client is no parameter."""
+    import inspect
+    ag, args, calls, native = (_fence_sdk_boundary_case if operation == "closed-ready" else _close_role_session_case)(monkeypatch)
+    factory = args["operation_session"]
+    assert "aws" not in inspect.signature(ag._assume_fence_session).parameters
+    session = ag._assume_fence_session(**args)
+    assert factory.calls == [(operation, "promotion-fence-r1", args["journal"]._request["stage"])]
+    assert factory.events == [("sts", "assume_role_with_web_identity"), ("sts", "get_caller_identity"), ("sts", "assume_role")]
+    assert session.evidence is factory.client and len(calls) == 1
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+def test_fence_session_mints_no_fence_credential_when_the_operation_exchange_fails(monkeypatch, operation):
+    """R21: a refused second web-identity exchange closes before the fence STS; the capability poisons the journal."""
+    ag, args, calls, native = (_fence_sdk_boundary_case if operation == "closed-ready" else _close_role_session_case)(monkeypatch)
+    args["operation_session"].error = ValueError("operation session exchange refused")
+    with pytest.raises(ValueError, match="^operation session exchange refused$"):
+        ag._assume_fence_session(**args)
+    assert calls == native == [] and len(args["operation_session"].calls) == 1
+
+
+@pytest.mark.parametrize("operation, elapsed, credential_limit", [("closed-ready", 141, 3000), ("close-drain", 571, 3000),
+                                                                  ("close-drain", 401, 2300)])
+def test_fence_session_judges_the_window_again_after_the_operation_exchange(monkeypatch, operation, elapsed, credential_limit):
+    """The exchange spends tens of seconds (token, STS, GetCallerIdentity): the window and the credential are rechecked after it."""
+    ag, args, calls, native = (_fence_sdk_boundary_case if operation == "closed-ready" else _close_role_session_case)(monkeypatch)
+    now = [1300]
+    class Slow(_OperationFactory):
+        def __call__(self, *arguments):
+            now[0] += elapsed
+            return super().__call__(*arguments)
+    args.update(clock=lambda: now[0], credential_limit=credential_limit,
+                operation_session=Slow(args["operation_session"].client, args["operation_session"].events))
+    with pytest.raises(ValueError, match="^fence original window after operation session$"):
+        ag._assume_fence_session(**args)
+    assert calls == native == [] and len(args["operation_session"].calls) == 1
 
 
 @pytest.mark.parametrize("case", ["ddb", "sfn", "absent", "foreign", "eventual", "timeout", "lost-receipt", "private-response", "terminal-absent"])
@@ -4521,11 +4581,12 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     objects = {lr.namespace(governance | {"evidence_prefix": "cnesdata/prod/evidence/"}, req, run, "phase-b-advance") + name: raw for name, raw in b_files.items()}
     class Store:
         def get(self, bucket, key, **kw): return objects[key], None
-        def call(self, *args, **kw): return sts_args["aws"].call(*args, **kw)
+        def call(self, *args, **kw): raise AssertionError("the keeper client never reaches STS or the fence evidence")
     keeper = ag.Keeper.__new__(ag.Keeper)
     keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {"held": True})
     args = dict(aws=Store(), api=API(), governance=governance, request=req, run=run, journal=journal, keeper=keeper,
-                prepared=prepared, credential_limit=3000, guard=Guard(), clock=lambda: 1300)
+                prepared=prepared, credential_limit=3000, guard=Guard(), operation_session=sts_args["operation_session"],
+                clock=lambda: 1300)
     return ag, args, sts_calls, keeper, journal
 
 
@@ -4542,12 +4603,14 @@ def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutat
         expected = _CAPABILITY_REFUSALS.get(mutation)
         with pytest.raises(ValueError, match=expected):
             ag.closed_ready_capability(**args)
-        assert sts_calls == [] and journal._failed is True
+        assert sts_calls == [] and journal._failed is True and args["operation_session"].calls == []
         assert keeper.uncertainty() == [{"kind": "context-failed"}]
         return
     broker = ag.closed_ready_capability(**args)
     assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker]
     assert len(sts_calls) == 1 and sts_calls[0][2]["RoleSessionName"] == "promotion-fence-r1"
+    assert args["operation_session"].calls == [("closed-ready", "promotion-fence-r1", journal._request["stage"])]
+    assert broker.aws is args["operation_session"].client is broker.session.evidence and broker.aws is not args["aws"]
     assert keeper.uncertainty() == []
 
 
@@ -4605,7 +4668,7 @@ def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, oper
     keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {})
     with pytest.raises(ValueError, match="closed-ready only"):
         ag.closed_ready_capability(aws=None, api=None, governance={}, request={}, run={}, journal=journal, keeper=keeper,
-                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard())
+                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard(), operation_session=None)
 
 
 @pytest.mark.parametrize("mutation", ["empty", "missing-one", "unknown-type", "duplicate", "unlabelled", "extra-fact",
@@ -4965,7 +5028,9 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "clock"} and events_kwargs["owner"] == {"owner": "acquired"}
     assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
     handler_kwargs = by_name["handlers"][1]
-    assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit", "clock"}
+    assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit",
+                                   "operation_session", "clock"}
+    assert callable(handler_kwargs["operation_session"]) and handler_kwargs["operation_session"] is not world.aws
     assert handler_kwargs["authority"] is world.authority and handler_kwargs["product"] == "product"
     assert handler_kwargs["credential_limit"] == world.now + 5000 and handler_kwargs["clock"]() == 1000.4
     assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2"}}
@@ -5010,6 +5075,203 @@ def test_execute_refuses_a_credential_expiring_exactly_now(monkeypatch):
         with pytest.raises(ValueError, match="application credential expiration"):
             ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
     assert [name for name, _, _ in calls] == ["closure", "authority"]
+
+
+def _operation_factory_case(monkeypatch, *, expiry_delta=0, identity_change=None):
+    """The factory execute hands to the stage handlers, over fakes of the token endpoint, STS and AWS construction only."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_policy
+    ag, admitted, calls, world = _execute_case(monkeypatch)
+    with pytest.raises(_Stop):
+        ag.execute(admitted, event_source=lambda **kwargs: "next-event", product="product")
+    factory = next(kwargs["operation_session"] for name, _, kwargs in calls if name == "handlers")
+    stage, seen = {"deadline": 1900}, []
+    client = SimpleNamespace(identity=dict(world.aws.identity) | (identity_change or {}))
+    credentials = {"AccessKeyId": "synthetic-operation-key", "Expiration": datetime.fromtimestamp(1900 + expiry_delta, timezone.utc)}
+    monkeypatch.setattr(session_policy, "application_request",
+                        lambda *a, **kw: seen.append(("request", a, kw)) or {"Policy": "inline-policy", "PolicyArns": []})
+    monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: seen.append(("oidc", a, kw)) or credentials)
+    monkeypatch.setattr(lr, "AWS", lambda governance, *, credentials: seen.append(("aws", governance, credentials)) or client)
+    monkeypatch.setattr(lr, "export_credentials", lambda value: pytest.fail("operation credentials are never exported"))
+    return factory, admitted, world, stage, seen, client, credentials
+
+
+@pytest.mark.parametrize("operation", ["close-drain", "closed-ready"])
+def test_operation_session_factory_mints_the_exact_delegation_in_process_and_never_exports(monkeypatch, operation):
+    """R20 option C: a second web-identity exchange of the same job, 900 s, in memory, nominal to the fence role session."""
+    factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
+    assert factory(operation, {"session_name": "promotion-fence-r1"}, stage) is client
+    governance = admitted[0]
+    assert [item[0] for item in seen] == ["request", "oidc", "aws"]
+    assert seen[0][1:] == ((governance, "b" * 40, 4242, 1, operation),
+                           {"application_purpose": "promotion", "delegations": ("fence_operator",),
+                            "sessions": {"fence_operator": "promotion-fence-r1"}})
+    assert seen[1][1:] == ((governance, "application", {"Policy": "inline-policy", "PolicyArns": []}, world.run), {"duration": 900})
+    assert seen[2][1:] == (governance, credentials)
+
+
+@pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", ""])
+def test_operation_session_factory_serves_only_the_two_fence_operations(monkeypatch, operation):
+    factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
+    with pytest.raises(ValueError, match="^operation session operation$"):
+        factory(operation, {"session_name": "promotion-fence-r1"}, stage)
+    assert seen == []
+
+
+@pytest.mark.parametrize("change", [{"Account": "999900001111"}, {"UserId": "AROAother:cnesdata-4242-1"},
+                                    {"Arn": "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-2"}])
+def test_operation_session_factory_requires_the_keeper_identity(monkeypatch, change):
+    """Same account, role, role id and session name as the keeper: the second exchange can only be the same job."""
+    factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch, identity_change=change)
+    with pytest.raises(ValueError, match="^operation session identity$"):
+        factory("close-drain", {"session_name": "promotion-fence-r1"}, stage)
+    assert [item[0] for item in seen] == ["request", "oidc", "aws"]
+
+
+@pytest.mark.parametrize("delta, accepted", [(0, True), (1, True), (-0.5, False), (-1, False), (-600, False)])
+def test_operation_session_factory_requires_the_credential_to_outlive_the_stage_deadline(monkeypatch, delta, accepted):
+    """No tolerance: the event at acquire + 0 gets Expiration == deadline and is admitted; one instant less refuses."""
+    factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch, expiry_delta=delta)
+    if accepted:
+        assert factory("close-drain", {"session_name": "promotion-fence-r1"}, stage) is client
+        return
+    with pytest.raises(ValueError, match="^operation session expiration$"):
+        factory("close-drain", {"session_name": "promotion-fence-r1"}, stage)
+
+
+class _PolicyEnforcedAWS:
+    """Boundary fake that authorises STS AssumeRole and S3 writes with effective_iam over the documents it was minted with."""
+    def __init__(self, name, identity, documents, objects, writes, backend):
+        self.name, self.identity, self.documents = name, identity, documents
+        self.objects, self.writes, self.backend, self.attempts = objects, writes, backend, []
+
+    def _authorise(self, action, resource, context=None):
+        from tools.cnesdata_delivery.iam_boundary import effective_iam
+        self.attempts.append((action, resource))
+        identity_document, *sessions = self.documents
+        if not effective_iam(identity_document, sessions, action, resource, {"aws:CurrentTime": c.utc(1300)} | (context or {})):
+            raise PermissionError(f"AccessDenied name={self.name} action={action}")
+
+    def call(self, service, operation, **parameters):
+        if (service, operation) == ("sts", "assume_role"):
+            self._authorise("sts:AssumeRole", parameters["RoleArn"], {"sts:RoleSessionName": parameters["RoleSessionName"]})
+        return self.backend(service, operation, **parameters)
+
+    def get(self, bucket, key, *, maximum, absent=False):
+        return self.objects.get(key), "etag"
+
+    def put(self, bucket, key, raw):
+        self._authorise("s3:PutObject", f"arn:aws:s3:::{bucket}/{key}")
+        assert key not in self.objects
+        self.objects[key] = raw
+        self.writes.append((self.name, key))
+
+
+def _policy_world(monkeypatch, *, real_factory=True):
+    """close_drain_capability over the real operation factory and the real session policies; effective_iam is the only authority."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    governance, authority = args["governance"], args["authority"]
+    owner = journal._request["owner"] | journal._identity
+    identity = {"Account": "111122223333", "Arn": "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-1",
+                "UserId": "AROAFIXTURE:cnesdata-4242-1"}
+    base = [session_owner.application_identity_document(governance, authority.application_fragment), authority.pin["document"]]
+    objects, writes, minted = {}, [], {}
+    keeper_request = session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+                                                        "keeper", application_purpose="promotion")
+    keeper_client = _PolicyEnforcedAWS("keeper", identity, base + [c.loads(keeper_request["Policy"].encode())], objects, writes,
+                                       args["aws"].call)
+    world = SimpleNamespace(ag=ag, args=args, sts_calls=sts_calls, keeper=keeper, journal=journal, events=events, owner=owner,
+                            keeper_client=keeper_client, objects=objects, writes=writes, minted=minted, identity=identity,
+                            operation_clients=[], governance=governance)
+    args["aws"] = keeper_client
+    backend = args["operation_session"].client.call
+    if not real_factory:
+        return world
+    with monkeypatch.context() as inner:
+        ag_, admitted, calls, execute_world = _execute_case(inner)
+        with pytest.raises(_Stop):
+            ag.execute(admitted, event_source=lambda **kwargs: "next-event", product="product")
+        factory = next(kwargs["operation_session"] for name, _, kwargs in calls if name == "handlers")
+        admitted[0].update(governance)
+        admitted[1]["source_sha"] = owner["source_sha"]
+        execute_world.run.update(id=owner["run_id"], run_attempt=owner["run_attempt"])
+        execute_world.aws.identity.update(identity)
+    def oidc(governance_, role, restriction, run, *, duration):
+        assert (role, duration) == ("application", 900)
+        key = f"synthetic-operation-key-{len(minted)}"
+        minted[key] = restriction
+        return {"AccessKeyId": key, "Expiration": datetime.fromtimestamp(1300 + 900, timezone.utc)}
+    def build(governance_, *, credentials):
+        client = _PolicyEnforcedAWS("operation", identity, base + [c.loads(minted[credentials["AccessKeyId"]]["Policy"].encode())],
+                                    objects, writes, backend)
+        world.operation_clients.append(client)
+        return client
+    monkeypatch.setattr(lr, "oidc_credentials", oidc)
+    monkeypatch.setattr(lr, "AWS", build)
+    monkeypatch.setattr(lr, "export_credentials", lambda value: pytest.fail("operation credentials are never exported"))
+    args["operation_session"] = factory
+    return world
+
+
+def test_the_keeper_session_cannot_assume_the_fence_nor_write_the_close_drain_evidence(monkeypatch):
+    """R20 and R20-b at b911e2a2: the documents the keeper session carries deny both effects the capability needs."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    world = _policy_world(monkeypatch, real_factory=False)
+    role = c.loads(world.args["prepared"]["fence-role.json"], canonical=True)
+    keys = lr.closed_ready_evidence_keys(world.governance, owner=world.journal._request["owner"], caller=world.journal._identity,
+        checkpoint_sha256=world.journal._request["checkpoint_sha256"], sequence=0, operation="close-drain")
+    with pytest.raises(PermissionError, match="action=sts:AssumeRole"):
+        world.keeper_client.call("sts", "assume_role", RoleArn=role["role_arn"], RoleSessionName=role["session_name"],
+                                 DurationSeconds=900, Policy="{}")
+    with pytest.raises(PermissionError, match="action=s3:PutObject"):
+        world.keeper_client.put("synthetic-evidence", keys["intent"], b"{}")
+    assert world.writes == [] and world.sts_calls == []
+
+
+def test_close_drain_evidence_and_fence_sts_run_under_the_real_session_policies(monkeypatch):
+    """R20 and R20-b closed: the real factory request lets the operation client assume the fence and write under close-drain/;
+    every S3 write there goes through that client and the keeper client is never asked."""
+    from types import SimpleNamespace
+    from email.utils import formatdate
+    world = _policy_world(monkeypatch)
+    ag, journal = world.ag, world.journal
+    broker = ag.close_drain_capability(**world.args)
+    (operation,) = world.operation_clients
+    role = c.loads(world.args["prepared"]["fence-role.json"], canonical=True)
+    assert [call[2]["RoleSessionName"] for call in world.sts_calls] == [role["session_name"]] and broker.aws is operation
+    class NativeError(Exception):
+        response = {"Error": {"Code": "ExecutionDoesNotExist", "Message": "never retained"}, "ResponseMetadata": {
+            "RequestId": "native-error", "HTTPStatusCode": 400, "HTTPHeaders": {"date": formatdate(1300, usegmt=True)}}}
+    def sdk(service, operation_name, **parameters):
+        raise NativeError()
+    broker.session.client = SimpleNamespace(call=sdk)
+    frame = _close_drain_calls(journal._request["owner"]["owner_sha256"])["describe_execution"]
+    frame["parameters"]["executionArn"] = broker.session.scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":0123456789abcdef"
+    reply, result = ag._adapter_message(c.canonical({"kind": "call", **frame}), journal)
+    assert reply == {"kind": "sdk-error", "code": "ExecutionDoesNotExist"} and result is None
+    assert [who for who, _ in world.writes] == ["operation"] * 3 and len(world.objects) == 3
+    assert all("/close-drain/sdk-" in key for _, key in world.writes)
+    assert world.keeper_client.attempts == [] and world.keeper.uncertainty() == []
+
+
+@pytest.mark.parametrize("operation", ["closed-ready", "close-drain"])
+def test_operation_session_request_of_closed_ready_is_the_application_session_the_prepared_package_evaluated(monkeypatch, operation):
+    """Q2: the inline policy the factory sends is byte for byte the evaluated application_session document."""
+    from tools.cnesdata_delivery import session_policy
+    world = _policy_world(monkeypatch)
+    role = c.loads(world.args["prepared"]["fence-role.json"], canonical=True)
+    evaluation = c.loads(world.args["prepared"]["fence-evaluation.json"], canonical=True)
+    world.args["operation_session"](operation, role, {"deadline": 1900})
+    (restriction,) = world.minted.values()
+    inline = c.loads(restriction["Policy"].encode())
+    assert (c.sha(c.canonical(inline)) == evaluation["documents"]["application_session"]) is (operation == "closed-ready")
+    owner = world.owner
+    assert restriction == session_policy.application_request(world.governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+        operation, application_purpose="promotion", delegations=("fence_operator",), sessions={"fence_operator": role["session_name"]})
 
 
 def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
