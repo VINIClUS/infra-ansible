@@ -1,5 +1,6 @@
 """Window and stage triggers of the application lifecycle (#55 2nd slice amendment 6886977054, decisions 2 and 3)."""
 import io
+import json
 import zipfile
 from types import SimpleNamespace
 
@@ -449,7 +450,7 @@ class _Clock:
 
 def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
                  observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
-                 omit_earliest=False):
+                 omit_earliest=False, noncanonical=()):
     """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes."""
     from test_cnesdata_application_gate import _prepare_stage_keeper
     from test_cnesdata_delivery_lifecycle import _envelope_case
@@ -473,10 +474,12 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     api.digests[PRIOR_ARTIFACT] = "9" * 64
     current_plan = {"step": "application-prepare-plan", "index_sha256": c.sha(c.canonical(index)),
                     "inputs_sha256": c.sha(raw_carrier)} | (origins or {})
+    def dump(name, value):
+        return json.dumps(value, indent=1).encode() if name in noncanonical else c.canonical(value)
     prepared = lr.PreparedFence({
-        "fence-prepared.json": c.canonical({"activation_sha256": c.sha(activation)} | (manifest or {})),
-        "fence-origins.json": c.canonical({"current_plan": current_plan}),
-        "approval.json": c.canonical({"inputs_sha256": c.sha(raw_carrier)} | (approval or {})),
+        "fence-prepared.json": dump("fence-prepared.json", {"activation_sha256": c.sha(activation)} | (manifest or {})),
+        "fence-origins.json": dump("fence-origins.json", {"current_plan": current_plan}),
+        "approval.json": dump("approval.json", {"inputs_sha256": c.sha(raw_carrier)} | (approval or {})),
         "checkpoint.json": PREPARED_CHECKPOINT})
     governance = GOVERNANCE | {"lifecycle_steps": GOVERNANCE["lifecycle_steps"] | ({"application-prepare-plan": plan_step} if plan_step else {}),
         "evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "context_kind": "promotion",
@@ -609,6 +612,9 @@ _PREPARED_REFUSALS = {
     "index": ({"origins": {"index_sha256": "5" * 64}}, "activation plan index"),
     "inputs": ({"approval": {"inputs_sha256": "5" * 64}}, "activation plan inputs"),
     "activation": ({"manifest": {"activation_sha256": "5" * 64}}, "activation bytes"),
+    "origins-noncanonical": ({"noncanonical": {"fence-origins.json"}}, "noncanonical JSON bytes"),
+    "approval-noncanonical": ({"noncanonical": {"approval.json"}}, "noncanonical JSON bytes"),
+    "manifest-noncanonical": ({"noncanonical": {"fence-prepared.json"}}, "noncanonical JSON bytes"),
     "carrier-owner": ({"carrier": _foreign_owner_carrier}, "envelope original owner"),
     "carrier-window": ({"carrier": _foreign_window_carrier}, "envelope original preparation window"),
 }

@@ -5642,6 +5642,28 @@ def test_host_handoff_caller_refuses_anything_but_the_original_public_artifact(m
         ag.authenticate_host_handoff(world, dict(HOST_OWNER), guard=_NoGuard())
 
 
+def test_register_terminal_validators_accepts_the_whole_closed_kind_set():
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    registry = {kind: ("label-" + kind, lambda current: (lambda source, **kw: None)) for kind in ag.TERMINAL_VALIDATOR_FACTS}
+    ag.register_terminal_validators(keeper, registry)
+    assert set(keeper._terminal_validators) == set(ag.TERMINAL_VALIDATOR_FACTS)
+
+
+@pytest.mark.parametrize("mutation", ["keeper-type", "registry-type", "unknown-kind"])
+def test_register_terminal_validators_refuses_a_foreign_keeper_registry_or_kind(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    keeper, _ = _accepted_terminal_case()
+    keeper._terminal_validators.clear()
+    registry = {"routing": ("synthetic-routing", ag.TERMINAL_VALIDATORS["routing"][1])}
+    if mutation == "keeper-type": keeper = object()
+    if mutation == "registry-type": registry = list(registry)
+    if mutation == "unknown-kind": registry["foreign"] = registry["routing"]
+    with pytest.raises(ValueError, match="terminal validator registry"):
+        ag.register_terminal_validators(keeper, registry)
+
+
 def test_production_terminal_validator_registry_is_the_six_synthetic_kinds():
     from tools.cnesdata_delivery import application_gate as ag
     assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS
