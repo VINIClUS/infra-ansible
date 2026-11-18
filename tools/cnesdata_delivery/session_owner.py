@@ -88,7 +88,7 @@ def application_configuration(value, account):
     c.require(type(value["role_name"]) is str and re.fullmatch(r"cnesdata-[a-z0-9-]+-application", value["role_name"]),
               "application role name")
     c.digest(value["workflow_sha"], 40)
-    c.digest(value["source_closure_sha256"])
+    c.require(c.digest(value["source_closure_sha256"]) != "0" * 64, "application producer closure sentinel")
     c.instant(value["enabled_until"])
     expected = {name: "arn:aws:iam::" + account + ":role/cnesdata-prod-" + suffix
                 for name, suffix in lc.APPLICATION_DELEGATIONS.items()}
