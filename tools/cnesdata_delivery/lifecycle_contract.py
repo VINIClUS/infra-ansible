@@ -284,6 +284,8 @@ def s3_body_value(stream, *, maximum):
         size += len(chunk)
     c.require(size <= maximum, "S3 Body bound")
     return {"base64": base64.b64encode(b"".join(chunks)).decode("ascii")}
+
+
 ADAPTER_STAGE_FIELDS = "close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence checkpoint_sha256"
 FENCE_PREPARE_PRODUCER = {
     "workflow_path": ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml", "job": "execute", "step_id": "gate",
