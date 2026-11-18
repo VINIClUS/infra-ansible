@@ -63,6 +63,12 @@ def _current_caller(governance, binding, purpose="promotion"):
             "caller_binding_sha256": c.sha(c.canonical(caller))}
 
 
+def _phase_a_release_sha256():
+    """sha256 of the original Phase A plan release in the SYNTHETIC `_phase_a_carrier_case`."""
+    envelope = c.loads(_phase_a_carrier_case()[1]["envelope.json"], canonical=True)
+    return c.sha(c.canonical(envelope["plan"]["release"]))
+
+
 def test_original_legacy_checkpoint_enters_new_keeper_without_relabeling(monkeypatch, tmp_path):
     from tools.cnesdata_delivery.application_gate import authenticated_previous
     chain, aws, api, store, previous, reference = _legacy_history_fixture(monkeypatch, tmp_path)
@@ -72,7 +78,7 @@ def test_original_legacy_checkpoint_enters_new_keeper_without_relabeling(monkeyp
         reads.append(copy.deepcopy(value))
         return authenticated_previous(aws, api, chain.gov, value)
     binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+               "release_sha256": _phase_a_release_sha256(), "session_sha256": "d" * 64, "lifecycle_version": 1}
     binding |= _current_caller(chain.gov, binding)
     keeper = Keeper(store, binding, authenticate, api=api, governance=chain.gov)
     state_reader = aws.get_state
@@ -489,7 +495,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
 
 
 @pytest.mark.parametrize("application_purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered"])
+@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release"])
 def test_published_original_lifecycle_terminal_allows_successor_without_state_access(monkeypatch, tmp_path, mutation, application_purpose):
     aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
     previous = store.get()[0]
@@ -509,7 +515,8 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
     governance.update(lifecycle_predecessor=reference, predecessor_read={"protocol": "lifecycle",
         "source_sha": previous["source_sha"], "run_id": 44, "run_attempt": 1, "status": "terminal", "purpose": "application"})
     binding = {"repository": c.REPOSITORY, "source_sha": "c" * 40, "run_id": 45, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "f" * 64, "lifecycle_version": 1}
+               "release_sha256": "c" * 64 if mutation == "release" else _phase_a_release_sha256(),
+               "session_sha256": "f" * 64, "lifecycle_version": 1}
     binding |= _current_caller(governance, binding, application_purpose)
     keeper = Keeper(store, binding,
                     lambda value: authenticated_previous(aws, api, governance, value),
@@ -521,7 +528,7 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
         before = store.get()
         writes = store.writes
         monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("invalid history reached Lease.acquire"))
-        with pytest.raises((ValueError, KeyError)):
+        with pytest.raises((ValueError, KeyError), match="application release" if mutation == "release" else None):
             keeper.acquire(preparation_deadline=2000)
         assert store.writes == writes and store.get() == before
         assert objects == original_bytes
@@ -676,7 +683,7 @@ def _legacy_history_fixture(monkeypatch, tmp_path, *, job_failed=False):
     return chain, aws, api, store, previous, reference
 
 
-@pytest.mark.parametrize("mutation", [None, "generation", "job", "checkpoint-bytes", "current-run", "entry-replay"])
+@pytest.mark.parametrize("mutation", [None, "generation", "job", "checkpoint-bytes", "release", "current-run", "entry-replay"])
 def test_original_receipt_governs_keeper_and_exact_first_plan_checkpoint(monkeypatch, tmp_path, mutation):
     from tools.cnesdata_delivery.application_gate import authenticated_previous
     from tools.cnesdata_delivery.lifecycle_runtime import authenticate_predecessor, historical_checkpoint
@@ -687,12 +694,15 @@ def test_original_receipt_governs_keeper_and_exact_first_plan_checkpoint(monkeyp
         raw, version = chain.objects[key]
         chain.objects[key] = (raw + b"changed", version)
     binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
-               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+               "release_sha256": "c" * 64 if mutation == "release" else _phase_a_release_sha256(),
+               "session_sha256": "d" * 64, "lifecycle_version": 1}
     binding |= _current_caller(chain.gov, binding)
     keeper = Keeper(store, binding, lambda value: authenticated_previous(aws, api, chain.gov, value), api=api, governance=chain.gov)
     before = store.get()
-    if mutation in {"generation", "job", "checkpoint-bytes"}:
-        with pytest.raises(ValueError): keeper.acquire(preparation_deadline=int(time.time()) + 900)
+    if mutation in {"generation", "job", "checkpoint-bytes", "release"}:
+        monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("release mismatch reached Lease.acquire"))
+        with pytest.raises(ValueError, match="application release" if mutation == "release" else None):
+            keeper.acquire(preparation_deadline=int(time.time()) + 900)
         assert store.get() == before
         return
     original_state_reader = aws.get_state
@@ -4602,6 +4612,31 @@ def test_terminal_proof_ignores_bytes_without_a_registered_observation():
     _, proof = _latest_routing_case(journal)
     with pytest.raises(ValueError, match="terminal source role=routing"):
         proof(raw)
+
+
+GOVERNANCE_RELEASE = {"release_id": "synthetic-release", "source_sha": "b" * 40, "candidate_sha256": "1" * 64,
+                      "canary_id": "0123456789abcdef0123456789abcdef", "binding_sha256": "2" * 64,
+                      "image_digest": "sha256:" + "3" * 64}
+
+
+def test_application_release_sha256_hashes_the_closed_governance_release():
+    """6974253889 section 1: the opaque owner release_sha256 is sha256(canonical(closed six-field release))."""
+    from tools.cnesdata_delivery import application_gate as ag
+    assert ag.application_release_sha256({"release": GOVERNANCE_RELEASE}) == c.sha(c.canonical(GOVERNANCE_RELEASE))
+    assert ag.application_release_sha256({"release": dict(reversed(GOVERNANCE_RELEASE.items()))}) == c.sha(c.canonical(GOVERNANCE_RELEASE))
+
+
+@pytest.mark.parametrize("mutation", ["absent", "none", "list", "missing-field", "extra-field"])
+def test_application_release_sha256_refuses_a_governance_without_the_closed_release(mutation):
+    from tools.cnesdata_delivery import application_gate as ag
+    governance = {"release": dict(GOVERNANCE_RELEASE)}
+    if mutation == "absent": governance.pop("release")
+    if mutation == "none": governance["release"] = None
+    if mutation == "list": governance["release"] = list(GOVERNANCE_RELEASE.values())
+    if mutation == "missing-field": governance["release"].pop("image_digest")
+    if mutation == "extra-field": governance["release"]["note"] = "x"
+    with pytest.raises(ValueError, match="^application governance release$"):
+        ag.application_release_sha256(governance)
 
 
 def _keeper_loop_case(*, attach=None):
