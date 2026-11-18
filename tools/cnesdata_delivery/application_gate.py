@@ -1439,6 +1439,27 @@ def close_drain_capability(*, aws, api, governance, authority, journal, keeper, 
         c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
                   "capability scope recomputed from prepared policy")
         scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine}
+        # Change 4: the package evaluation only attests the closed-ready session, so this effective_iam is local, over
+        # documents recomputed here: the application identity, the pinned managed policy and the inline the factory sends.
+        from tools.cnesdata_delivery import session_owner, session_policy
+        from tools.cnesdata_delivery.coordination_lease import KEY
+        from tools.cnesdata_delivery.iam_boundary import effective_iam
+        inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+            "close-drain", application_purpose="promotion", delegations=("fence_operator",),
+            sessions={"fence_operator": role["session_name"]})["Policy"].encode())
+        evidence = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + lr.closed_ready_evidence_keys(governance,
+            owner=journal._request["owner"], caller=journal._identity, checkpoint_sha256=journal._request["checkpoint_sha256"],
+            sequence=0, operation="close-drain")["intent"]
+        named = {"sts:RoleSessionName": role["session_name"]}
+        decisions = ((role["role_arn"], "sts:AssumeRole", named, True),
+                     (role["role_arn"], "sts:AssumeRole", {"sts:RoleSessionName": role["session_name"] + "-foreign"}, False),
+                     (governance["application_delegations"]["normal"], "sts:AssumeRole", named, False),
+                     ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
+                     (evidence.replace("/close-drain/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
+        identity = session_owner.application_identity_document(governance, authority.application_fragment)
+        c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
+                                    {"aws:CurrentTime": c.utc(clock())} | context) is expected
+                      for resource, action, context, expected in decisions), "close-drain operation session effective IAM")
         journal.guard()
         attached = aws.call("iam", "list_attached_role_policies", RoleName=authority.application_fragment["application_role_name"],
                             MaxItems=100)
