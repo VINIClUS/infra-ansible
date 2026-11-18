@@ -269,6 +269,32 @@ def _accepted_terminal_case():
     return keeper, store
 
 
+class _MemoryStore:
+    def __init__(self):
+        self.value, self.etag, self.writes = None, None, 0
+
+    def get(self):
+        return copy.deepcopy(self.value), self.etag
+
+    def put(self, value, etag):
+        assert etag == self.etag
+        self.writes += 1
+        self.value, self.etag = copy.deepcopy(value), str(self.writes)
+        return self.etag
+
+
+def _prepare_stage_keeper(run_id=4242):
+    """Real Keeper/Lease at the original application-prepare window (sequence 0); every later write is a real CAS."""
+    historical = {"state_after": {"lineage": "original-lineage", "serial": 1, "state_sha256": "a" * 64}, "state_object": {"VersionId": "prior"}}
+    store = _MemoryStore()
+    store.put({"status": "released", "checkpoint_sha256": c.sha(c.canonical(historical)), "run_id": 1}, None)
+    binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": run_id, "run_attempt": 1,
+               "release_sha256": "c" * 64, "session_sha256": "d" * 64, "lifecycle_version": 1}
+    binding |= _current_caller({}, binding)
+    keeper, _ = _admitted_terminal_keeper(store, binding, historical, {})
+    return keeper, store
+
+
 @pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed", "foreign", "again"])
 def test_keeper_retem_o_lease_enquanto_um_contexto_sdk_for_incerto(context):
     keeper, store = _accepted_terminal_case()
@@ -2331,6 +2357,20 @@ def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_be
     expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
         execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
     assert len(sts_calls) == 1 and sts_calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+
+
+@pytest.mark.parametrize("window_change", [{}, {"sequence": 0, "checkpoint_sha256": "a" * 64}])
+def test_close_drain_journal_builds_the_request_the_real_capability_admits(monkeypatch, window_change):
+    """The request is bound to the keeper window as it is at the prepared event; nothing compares it with the prepared checkpoint."""
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    owner, window = journal._request["owner"] | journal._identity, journal._request["stage"] | journal._identity | window_change
+    rebuilt = ag._close_drain_journal(guard=journal._guard, owner=owner, window=window, activation=journal._inputs["activation"],
+                                      expirations=journal._inputs["expirations"])
+    if not window_change:
+        assert c.canonical(rebuilt._request) == c.canonical(journal._request)
+    assert rebuilt._request["stage"]["sequence"] == window["sequence"] and rebuilt._request["checkpoint_sha256"] == window["checkpoint_sha256"]
+    broker = ag.close_drain_capability(**args | {"journal": rebuilt})
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker] and len(sts_calls) == 1
 
 
 @pytest.mark.parametrize("capability", ["close_drain_capability", "closed_ready_capability"])
@@ -4639,95 +4679,84 @@ def test_application_release_sha256_refuses_a_governance_without_the_closed_rele
         ag.application_release_sha256(governance)
 
 
-def _keeper_loop_case(*, attach=None):
-    """Connected keeper loop over the real Keeper/Lease/finish chain.
-
-    The API window is reached only through keeper.lease.checkpoint validated by
-    checkpoint_transition (inside _accepted_terminal_case); the event producer,
-    publication and closed-ready handler are external fakes. Terminal validators
-    are the SYNTHETIC labelled ones (item 8).
-    """
-    from tools.cnesdata_delivery import application_gate as ag
-    keeper, store = _accepted_terminal_case()
-    reference = _terminal_reference(keeper)
-    events = [{"kind": "closed-ready", "reference": {"fixture": "closed-ready"}}, None, {"kind": "terminal", "reference": reference}]
-    seen, handled, published, slept = [], [], [], []
+def _keeper_loop_case():
+    """Real Keeper/Lease/transition chain at application-prepare; the event producer and handlers are external fakes."""
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    keeper, store = _prepare_stage_keeper()
+    keeper.finish = lambda reference: pytest.fail("the stage loop never finishes the keeper")
+    handled, seen, slept = [], [], []
+    def advance(current, **changes):
+        record = current.lease.check()["lifecycle"]
+        current.lease.checkpoint(record | {"sequence": record["sequence"] + 1} | changes)
+    def prepared(current, reference):
+        handled.append(("prepared", reference))
+        advance(current, close=1000, fixed_deadline=2800, input_deadline=4000, stage="phase-b", admitted_at=1000,
+                deadline=1360, checkpoint_sha256="e" * 64)
+    def phase_b(current, reference):
+        handled.append(("phase-b", reference))
+        advance(current, stage="api", admitted_at=1000, deadline=1180, checkpoint_sha256="f" * 64)
+    events = {"application-prepare": [None, {"kind": "prepared", "reference": {"fixture": "prepared"}}],
+              "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}]}
     def next_event(window):
         seen.append(window["stage"])
-        return events.pop(0)
-    def handler(current, event_reference):
-        assert current is keeper and event_reference == {"fixture": "closed-ready"}
-        handled.append(event_reference)
-        if attach is not None:
-            current.attach(attach)
-    run = lambda: ag.keeper_loop(keeper, next_event=next_event, handlers={"closed-ready": handler},
-                                 publish=lambda files: published.append(files) or "receipt", sleep=slept.append)
-    return ag, keeper, store, run, seen, handled, published, slept
+        if window["stage"] not in lc.STAGE_TRIGGERS:
+            raise ValueError(f"stage trigger not connected stage={window['stage']}")
+        return events[window["stage"]].pop(0)
+    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b},
+                                                      "sleep": slept.append} | changes))
+    return ag, keeper, store, run, seen, handled, slept
 
 
-def test_keeper_loop_dispatches_closed_ready_then_publishes_original_terminal():
-    ag, keeper, store, run, seen, handled, published, slept = _keeper_loop_case(attach=_journal_with())
-    assert run() == "receipt"
-    assert handled == [{"fixture": "closed-ready"}] and slept == [5] and seen[0] == "final"
-    assert store.get()[0]["status"] == "released" and len(published) == 1
-    assert set(published[0]) == {"checkpoint.json", "terminal.json", "lease.json"}
-    assert c.loads(published[0]["terminal.json"], canonical=True)["promotion_status"] == "accepted"
-
-
-@pytest.mark.parametrize("context", ["pending", "unknown", "inflight", "failed"])
-def test_keeper_loop_keeps_lease_held_while_dispatch_is_uncertain(context):
-    journal = _journal_with(**{"pending": {"pending": [{"kind": "intent"}]}, "unknown": {"unknown": [{"kind": "lost"}]},
-                               "inflight": {"inflight": {"kind": "call"}}, "failed": {"failed": True}}[context])
-    ag, keeper, store, run, _, handled, published, _ = _keeper_loop_case(attach=journal)
-    with pytest.raises(ValueError, match="unresolved SDK uncertainty; lease remains held"):
+def test_keeper_loop_dispatches_each_stage_trigger_and_stops_at_the_api_stage():
+    ag, keeper, store, run, seen, handled, slept = _keeper_loop_case()
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=api$"):
         run()
-    assert handled and published == [] and store.get()[0]["status"] == "held"
+    assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"})] and slept == [5]
+    assert seen == ["application-prepare", "application-prepare", "phase-b", "api"]
+    record = store.get()[0]
+    assert record["status"] == "held" and record["lifecycle"]["stage"] == "api" and keeper.uncertainty() == []
 
 
-def test_keeper_loop_capability_failure_holds_lease_and_never_publishes():
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
+def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
+    import inspect
+    from tools.cnesdata_delivery import application_gate as ag
+    assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
+    assert ag.KEEPER_EVENTS == ("prepared", "phase-b")
+
+
+@pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b", "closed-ready"),
+                                   ("prepared", "phase-b", "terminal")])
+def test_keeper_loop_connects_only_the_two_stage_triggers(names):
+    ag, keeper, store, run, _, _, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match="closed keeper handlers"):
+        run(handlers={name: None for name in names}, next_event=lambda window: pytest.fail("no event before handler check"))
+    assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
+
+
+@pytest.mark.parametrize("event, message", [({"kind": "closed-ready", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "terminal", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "advance", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "prepared"}, "closed object fields"),
+                                            ({"kind": "prepared", "reference": {}, "extra": 1}, "closed object fields")])
+def test_keeper_loop_refuses_events_outside_the_stage_triggers(event, message):
+    ag, keeper, store, run, _, handled, _ = _keeper_loop_case()
+    with pytest.raises(ValueError, match=message):
+        run(next_event=lambda window: event, handlers={"prepared": lambda *a: pytest.fail("no dispatch"),
+                                                       "phase-b": lambda *a: pytest.fail("no dispatch")})
+    assert store.get()[0]["status"] == "held" and handled == []
+
+
+def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty():
+    ag, keeper, store, run, _, _, _ = _keeper_loop_case()
     def failing(current, reference):
         journal = _journal_with()
         current.attach(journal)
         journal._failed = True
-        raise ValueError("closed-ready capability refused before STS")
-    events = [{"kind": "closed-ready", "reference": {}}, {"kind": "terminal", "reference": {}}]
+        raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        ag.keeper_loop(keeper, next_event=lambda window: events.pop(0), handlers={"closed-ready": failing},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == [] and keeper.uncertainty() == [{"kind": "context-failed"}]
-    with pytest.raises(ValueError, match="unresolved SDK uncertainty"):
-        keeper.finish(_terminal_reference(keeper))
-
-
-@pytest.mark.parametrize("event", [{"kind": "advance", "reference": {}}, {"kind": "close-drain", "reference": {}},
-                                   {"kind": "terminal"}, {"kind": "terminal", "reference": {}, "extra": 1}])
-def test_keeper_loop_refuses_stage_advancement_and_open_events(event):
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
-    with pytest.raises(ValueError):
-        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == []
-
-
-@pytest.mark.parametrize("kind", ["advance", "close-drain"])
-def test_keeper_loop_refuses_unknown_event_whose_terminal_reference_would_finish(kind):
-    """Synthetic validators are registered and the reference finishes as `terminal`; only KEEPER_EVENTS refuses."""
-    ag, keeper, store, _, _, _, published, _ = _keeper_loop_case()
-    event = {"kind": kind, "reference": _terminal_reference(keeper)}
-    with pytest.raises(ValueError, match="closed keeper event; stage advancement not connected"):
-        ag.keeper_loop(keeper, next_event=lambda window: event, handlers={"closed-ready": lambda *a: pytest.fail("no dispatch")},
-                       publish=published.append, sleep=lambda s: None)
-    assert store.get()[0]["status"] == "held" and published == []
-    assert c.loads(keeper.finish(event["reference"])["terminal.json"], canonical=True)["promotion_status"] == "accepted"
-
-
-@pytest.mark.parametrize("handlers", [{}, {"closed-ready": None, "close-drain": None}, {"close-drain": None}])
-def test_keeper_loop_connects_only_closed_ready(handlers):
-    ag, keeper, store, _, _, _, _, _ = _keeper_loop_case()
-    with pytest.raises(ValueError, match="closed keeper handlers"):
-        ag.keeper_loop(keeper, next_event=lambda window: pytest.fail("no event before handler check"), handlers=handlers,
-                       publish=None, sleep=None)
+        run(handlers={"prepared": failing, "phase-b": failing})
+    assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
+    assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
 
 def test_keeper_guard_renews_lease_during_quiet_adapter_run():

@@ -429,3 +429,286 @@ def test_phase_b_publication_reads_only_the_b_checkpoint_and_approval():
                                      dict(RUN), dict(OWNER), _Guard(), 1300)
     assert result == {name: files[name] for name in ("checkpoint.json", "approval.json")}
     assert reads == [prefix + "approval.json", prefix + "checkpoint.json"]
+
+
+PLAN_STEP = {"role": "plan", "purpose": "application-prepare", "mode": "operational", "direction": "advance",
+             "job_name": "application-prepare-plan / execute"}
+PREPARED_REFERENCE = {"job_id": 71, "artifact_id": 72, "artifact_digest": "sha256:" + "8" * 64}
+PREPARED_CHECKPOINT = b'{"prepared":"checkpoint"}'
+B_REFERENCE = {"job_id": 91, "artifact_id": 92, "artifact_digest": "sha256:" + "6" * 64}
+PRIOR_ARTIFACT = (c.REPOSITORY, 31)
+
+
+class _Clock:
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+
+def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
+                 observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
+                 omit_earliest=False):
+    """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes."""
+    from test_cnesdata_application_gate import _prepare_stage_keeper
+    from test_cnesdata_delivery_lifecycle import _envelope_case
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
+    from tools.cnesdata_delivery.session_owner import Authority
+    keeper, store = _prepare_stage_keeper()
+    clock = _Clock(1100)
+    keeper.clock = keeper.lease.clock = keeper.monotonic = keeper.lease.monotonic = clock
+    record = keeper.lease.check()
+    owner, window = lc.owner_binding(record), record["lifecycle"]
+    _, envelope, _, _, _ = _envelope_case(owner=owner, window=window)
+    raw_carrier = c.canonical(envelope) if carrier is None else carrier(owner, window)
+    activation = b"p" * 40
+    index = {"version": 1, "source_sha": owner["source_sha"], "run_id": 4242, "run_attempt": 1, "step": "application-prepare-plan",
+             "owner_sha256": owner["owner_sha256"], "generation": owner["generation"], **lc.application_identity(owner),
+             "files": [{"name": "inputs.json", "size": len(raw_carrier), "sha256": c.sha(raw_carrier)}]}
+    github = _GitHub(PLAN_STEP["job_name"], "application-prepare-plan", index=index)
+    github.expiries = {PRIOR_ARTIFACT: 6000.0}
+    from tools.cnesdata_delivery.lifecycle_runtime import ArtifactDigests
+    api = ArtifactDigests(github)
+    api.digests[PRIOR_ARTIFACT] = "9" * 64
+    current_plan = {"step": "application-prepare-plan", "index_sha256": c.sha(c.canonical(index)),
+                    "inputs_sha256": c.sha(raw_carrier)} | (origins or {})
+    prepared = lr.PreparedFence({
+        "fence-prepared.json": c.canonical({"activation_sha256": c.sha(activation)} | (manifest or {})),
+        "fence-origins.json": c.canonical({"current_plan": current_plan}),
+        "approval.json": c.canonical({"inputs_sha256": c.sha(raw_carrier)} | (approval or {})),
+        "checkpoint.json": PREPARED_CHECKPOINT})
+    governance = GOVERNANCE | {"lifecycle_steps": GOVERNANCE["lifecycle_steps"] | ({"application-prepare-plan": plan_step} if plan_step else {}),
+        "evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "context_kind": "promotion",
+        "application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64}
+    request = {"source_sha": owner["source_sha"], "step": "application", "application_purpose": "promotion",
+               "caller_binding_sha256": owner["caller_binding_sha256"]}
+    prefix = lr.namespace(governance, request, dict(RUN), "application-prepare-plan")
+    world = SimpleNamespace(keeper=keeper, store=store, clock=clock, owner=owner, window=window, github=github, api=api,
+                            governance=governance, request=request, prepared=prepared, activation=activation, events=[],
+                            payload=[], capability=[], invoke=[], reads=[], phase_b=[], raw_carrier=raw_carrier,
+                            authority=Authority({"frozen_until": c.utc(5500)}, 5000.0, None, {"enabled_until": c.utc(5200)}, "3" * 64))
+    class AWS:
+        def get(self, bucket, key, maximum=None):
+            world.reads.append((bucket, key))
+            assert (bucket, key) == ("evidence", prefix + "inputs.json")
+            return raw_carrier, None
+    world.aws = AWS()
+
+    def fence_prepared_payload(*args, **kwargs):
+        world.events.append("fence_prepared_payload")
+        world.payload.append((args, kwargs))
+        return prepared
+    monkeypatch.setattr(lr, "fence_prepared_payload", fence_prepared_payload)
+
+    def close_drain_capability(**kwargs):
+        world.events.append("close_drain_capability")
+        world.capability.append(kwargs | {"reads": list(github.reads), "expirations": kwargs["journal"]._inputs["expirations"]})
+        clock.value += capability_seconds
+        if capability is not None:
+            raise ValueError(capability)
+    monkeypatch.setattr(ag, "close_drain_capability", close_drain_capability)
+
+    def invoke_adapter(**kwargs):
+        world.events.append("invoke_adapter")
+        world.invoke.append(kwargs)
+        journal = kwargs["journal"]
+        expirations = c.loads(journal._inputs["expirations"], canonical=True)
+        if omit_earliest:
+            expirations = [item for item in expirations if c.instant(item["expires_at"]) > 5000]
+        raw = c.canonical(_close_drain(input_expirations=expirations, close_confirmed_at=c.utc(1050), fixed_deadline=c.utc(2850)))
+        for _ in range(observations):
+            journal._observations.append({"kind": "close-drain", "sha256": c.sha(raw), "size": len(raw)})
+        journal._observation_bytes[c.sha(raw)] = raw
+        journal._pending = [{"kind": "sdk-call", "reference_sha256": "f" * 64}] if pending else []
+        clock.value += 10
+    monkeypatch.setattr(ag, "invoke_adapter", invoke_adapter)
+
+    def phase_b_publication(*args):
+        world.phase_b.append(args)
+        return world.b_files
+    monkeypatch.setattr(ag, "_phase_b_publication", phase_b_publication)
+    world.b_checkpoint = {"owner": owner, "purpose": "phase-b", "plan_sha256": "9" * 64}
+    world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64}
+    world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
+    world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
+                                       authority=world.authority, product="product", credential_limit=credential_limit, clock=clock)
+    return world
+
+
+def _lifecycle(world):
+    return world.store.get()[0]["lifecycle"]
+
+
+def test_stage_handlers_are_exactly_the_two_ratified_triggers(monkeypatch):
+    world = _stage_world(monkeypatch)
+    assert set(world.handlers) == {"prepared", "phase-b"} and all(callable(item) for item in world.handlers.values())
+
+
+def test_prepared_handler_closes_the_window_from_the_authenticated_plan_activation(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    world = _stage_world(monkeypatch)
+    before = _lifecycle(world)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.events == ["fence_prepared_payload", "close_drain_capability", "invoke_adapter"]
+    (args, kwargs), = world.payload
+    assert args == (world.api, world.aws, world.governance, world.request, RUN, PREPARED_REFERENCE)
+    assert kwargs.keys() == {"owner", "now", "predecessor_raw", "predecessor_reference", "guard"}
+    assert kwargs["owner"] == world.owner and kwargs["now"] == 1100 and type(kwargs["guard"]) is ag.KeeperGuard
+    assert kwargs["predecessor_raw"] == world.keeper.predecessor["raw"]
+    assert kwargs["predecessor_reference"] == world.keeper.predecessor_reference
+    (capability,) = world.capability
+    assert capability["reads"][:2] == [JOBS, ARTIFACTS] and world.reads
+    journal = capability["journal"]
+    assert type(journal) is ag.AdapterJournal and journal._request["operation"] == "close-drain"
+    assert journal._request["stage"] == {key: before[key] for key in lc.ADAPTER_STAGE_FIELDS.split()}
+    assert journal._request["checkpoint_sha256"] == before["checkpoint_sha256"] and journal._inputs["activation"] == world.activation
+    assert type(journal._guard) is ag.KeeperGuard and any(item is journal for item in world.keeper._contexts)
+    assert capability["expirations"] == ag.close_expirations(world.authority, world.api)
+    kinds = [(item["kind"], item["expires_at"]) for item in c.loads(capability["expirations"], canonical=True)]
+    assert kinds.count(("artifact", c.utc(9000))) == 1 and kinds.count(("artifact", c.utc(6000))) == 1 and len(kinds) == 5
+    assert {key: value for key, value in capability.items() if key not in {"journal", "reads", "expirations"}} == {
+        "aws": world.aws, "api": world.api, "governance": world.governance, "authority": world.authority,
+        "keeper": world.keeper, "prepared": world.prepared, "credential_limit": 6000, "clock": world.clock}
+    (invoked,) = world.invoke
+    assert invoked == {"product": "product", "source": world.owner["source_sha"], "manifest": {"fixture": "manifest"},
+                       "manifest_sha256": "0" * 64, "journal": journal, "timeout": 1900 - 1105 - 158}
+    assert _lifecycle(world) == before | {"sequence": 1, "close": 1050, "fixed_deadline": 2850, "input_deadline": 5000,
+                                          "stage": "phase-b", "admitted_at": 1050, "deadline": 1410,
+                                          "checkpoint_sha256": c.sha(PREPARED_CHECKPOINT)}
+    assert world.store.get()[0]["status"] == "held" and world.keeper.uncertainty() == []
+
+
+def test_prepared_handler_records_the_plan_download_beside_its_expiry_in_the_original_api(monkeypatch):
+    world = _stage_world(monkeypatch)
+    inner = world.github
+    before = (dict(inner.expiries), dict(world.api.digests))
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    key = (c.REPOSITORY, 78)
+    assert inner.expiries == before[0] | {key: float(c.instant(c.utc(9000)))}
+    assert world.api.digests == before[1] | {key: world.github.reference["artifact_digest"].removeprefix("sha256:")}
+    assert set(world.api.digests) == set(world.api.expiries) and len(inner.expiries) == 2
+
+
+def _foreign_owner_carrier(owner, window):
+    from test_cnesdata_delivery_lifecycle import _envelope_case
+    return c.canonical(_envelope_case(owner=owner | {"generation": owner["generation"] + 1}, window=window)[1])
+
+
+def _foreign_window_carrier(owner, window):
+    from test_cnesdata_delivery_lifecycle import _envelope_case
+    return c.canonical(_envelope_case(owner=owner, window=window | {"admitted_at": window["admitted_at"] + 1})[1])
+
+
+_PREPARED_REFUSALS = {
+    "step-absent": ({"plan_step": None}, "activation plan step"),
+    "step-role": ({"plan_step": PLAN_STEP | {"role": "deploy"}}, "activation plan step"),
+    "step-purpose": ({"plan_step": PLAN_STEP | {"purpose": "phase-b"}}, "activation plan step"),
+    "step-mode": ({"plan_step": PLAN_STEP | {"mode": "mode-canary"}}, "activation plan step"),
+    "step-name": ({"origins": {"step": "foreign-plan"}}, "activation plan step"),
+    "index": ({"origins": {"index_sha256": "5" * 64}}, "activation plan index"),
+    "inputs": ({"approval": {"inputs_sha256": "5" * 64}}, "activation plan inputs"),
+    "activation": ({"manifest": {"activation_sha256": "5" * 64}}, "activation bytes"),
+    "carrier-owner": ({"carrier": _foreign_owner_carrier}, "envelope original owner"),
+    "carrier-window": ({"carrier": _foreign_window_carrier}, "envelope original preparation window"),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(_PREPARED_REFUSALS))
+def test_prepared_handler_refuses_a_plan_activation_the_prepared_package_does_not_commit_to(monkeypatch, mutation):
+    changes, message = _PREPARED_REFUSALS[mutation]
+    world = _stage_world(monkeypatch, **changes)
+    before = world.store.get()
+    with pytest.raises(ValueError, match=message):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.events == ["fence_prepared_payload"] and world.capability == [] and world.invoke == []
+    assert _lifecycle(world) == before[0]["lifecycle"] and world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("capability_seconds, credential_limit, expected", [
+    (5, 6000, 1900 - 1105 - 158), (5, 1105 + 121 + 300, 300), (5, 1105 + 121 + 1, 1)])
+def test_prepared_handler_bounds_the_close_drain_timeout_by_the_deadline_and_the_credential(
+        monkeypatch, capability_seconds, credential_limit, expected):
+    world = _stage_world(monkeypatch, capability_seconds=capability_seconds, credential_limit=credential_limit)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.invoke[0]["timeout"] == expected
+
+
+@pytest.mark.parametrize("capability_seconds, credential_limit", [(5, 1105 + 121), (5, 1000), (1900 - 1100 - 158, 6000), (800, 6000)])
+def test_prepared_handler_refuses_without_capacity_after_the_capability_and_never_runs_the_child(
+        monkeypatch, capability_seconds, credential_limit):
+    world = _stage_world(monkeypatch, capability_seconds=capability_seconds, credential_limit=credential_limit)
+    with pytest.raises(ValueError, match="close-drain capacity"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.events == ["fence_prepared_payload", "close_drain_capability"] and world.invoke == []
+    assert _lifecycle(world)["stage"] == "application-prepare" and world.store.get()[0]["status"] == "held"
+
+
+def test_prepared_handler_never_runs_the_child_when_the_capability_refuses(monkeypatch):
+    world = _stage_world(monkeypatch, capability="capability refused before STS")
+    with pytest.raises(ValueError, match="capability refused before STS"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.invoke == [] and _lifecycle(world)["stage"] == "application-prepare" and world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("flags", [{"observations": 0}, {"observations": 2}, {"pending": True}])
+def test_prepared_handler_needs_one_close_drain_observation_and_no_uncertainty(monkeypatch, flags):
+    world = _stage_world(monkeypatch, **flags)
+    with pytest.raises(ValueError, match="close-drain single observation without uncertainty"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert _lifecycle(world)["stage"] == "application-prepare" and world.store.get()[0]["status"] == "held"
+
+
+def test_prepared_handler_refuses_an_observation_that_omits_the_earliest_known_expiration(monkeypatch):
+    world = _stage_world(monkeypatch, omit_earliest=True)
+    with pytest.raises(ValueError, match="infra-known authenticated expiration precedes input deadline"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert _lifecycle(world)["stage"] == "application-prepare" and world.store.get()[0]["status"] == "held"
+
+
+def _prepared_world(monkeypatch, **flags):
+    world = _stage_world(monkeypatch, **flags)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    world.clock.value = 1130
+    world.keeper.tick()
+    return world
+
+
+def test_phase_b_handler_admits_the_api_window_from_the_authenticated_b_checkpoint(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _prepared_world(monkeypatch)
+    before = _lifecycle(world)
+    world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    (args,) = world.phase_b
+    assert args[:5] == (world.api, world.aws, world.governance, world.request, RUN) and args[5] == world.owner
+    assert type(args[6]) is ag.KeeperGuard and args[7] == 1130
+    assert _lifecycle(world) == before | {"sequence": 2, "stage": "api", "admitted_at": 1130, "deadline": 1310,
+                                          "checkpoint_sha256": c.sha(world.b_files["checkpoint.json"])}
+    assert world.store.get()[0]["status"] == "held"
+
+
+_PHASE_B_REFUSALS = {
+    "approval-checkpoint": (lambda w: w.b_approval | {"checkpoint_sha256": "5" * 64}, None),
+    "approval-plan": (lambda w: w.b_approval | {"plan_sha256": "5" * 64}, None),
+    "purpose": (None, lambda w: w.b_checkpoint | {"purpose": "application-prepare"}),
+    "owner": (None, lambda w: w.b_checkpoint | {"owner": w.owner | {"generation": w.owner["generation"] + 1}}),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(_PHASE_B_REFUSALS))
+def test_phase_b_handler_refuses_a_checkpoint_that_is_not_the_child_of_the_prepared_one(monkeypatch, mutation):
+    world = _prepared_world(monkeypatch)
+    approval, checkpoint = _PHASE_B_REFUSALS[mutation]
+    if approval: world.b_files["approval.json"] = c.canonical(approval(world))
+    if checkpoint: world.b_files["checkpoint.json"] = c.canonical(checkpoint(world))
+    before = _lifecycle(world)
+    with pytest.raises(ValueError, match="preparation -> B checkpoint ancestry"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert _lifecycle(world) == before and world.store.get()[0]["status"] == "held"
+
+
+def test_phase_b_handler_refuses_a_keeper_that_never_handled_the_prepared_stage(monkeypatch):
+    world = _stage_world(monkeypatch)
+    with pytest.raises(ValueError, match="phase-b follows the prepared stage handled by this keeper"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert world.phase_b == [] and _lifecycle(world)["stage"] == "application-prepare"
