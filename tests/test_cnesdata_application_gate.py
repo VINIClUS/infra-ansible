@@ -2318,6 +2318,9 @@ def test_finite_close_session_is_the_preparation_window_per_item_policy(monkeypa
     assert calls[0][2]["Policy"] == c.canonical(expected).decode().strip() and calls[0][2]["DurationSeconds"] == 900
 
 
+_CLOSE_OPERATION_IAM = "^close-drain operation session effective IAM$"
+
+
 def _close_drain_capability_case(monkeypatch, mutation=None):
     """Connected close-drain composition: real prepared producer/codec, real broker; S3/STS/IAM are external fakes."""
     from types import SimpleNamespace
@@ -2332,7 +2335,22 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
         next(case for case in evaluation["cases"] if case["case_id"] == "get-fence")["resource"] += "-other"
         files["fence-evaluation.json"] = c.canonical(evaluation)
     prepared = lr.PreparedFence(files)
+    # The prepared evaluation is already sealed. The application identity of the capability grants the lease write, as the
+    # real role does for the keeper: only the operation inline keeps it away from the operation session.
+    from tools.cnesdata_delivery.coordination_lease import KEY
+    from tools.cnesdata_delivery.session_owner import _terraform_document_digest
+    coordination = c.loads(kwargs["governance"]["application_coordination_policy"].encode())
+    lease = f"arn:aws:s3:::{kwargs['governance']['state_bucket']}/{KEY}"
+    coordination["Statement"] += [{"Effect": "Allow", "Action": ["s3:PutObject", "s3:DeleteObject"], "Resource": lease},
+                                  {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": sorted(fragment["delegations"].values())}]
+    kwargs["authority"].pin["document"]["Statement"] += [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": lease},
+                                                         {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
+    if mutation == "identity-no-assume":
+        coordination["Statement"] = [item for item in coordination["Statement"] if item["Action"] != "sts:AssumeRole"]
+    fragment["policy_sha256"] = _terraform_document_digest(coordination)
+    kwargs["governance"]["application_coordination_policy"] = c.canonical(coordination).decode().strip()
     owner, pin = kwargs["owner"], kwargs["authority"].pin
+    if mutation == "managed-no-assume": pin["document"] = {"Version": "2012-10-17", "Statement": []}
     if mutation == "owner": owner = owner | {"generation": owner["generation"] + 1}
     preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
     _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
@@ -2376,7 +2394,8 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     return ag, args, sts_calls, keeper, journal, events
 
 
-_CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "preparation": "original preparation is the close stage",
+_CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "identity-no-assume": _CLOSE_OPERATION_IAM,
+                              "managed-no-assume": _CLOSE_OPERATION_IAM, "preparation": "original preparation is the close stage",
                               "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
                               "admitted-later": "original preparation is the close stage", "owner": "prepared current owner",
                               "evaluation-scope": "capability scope recomputed from prepared policy",
@@ -2411,6 +2430,54 @@ def test_close_drain_capability_checks_everything_and_rereads_the_freeze_last_be
     expected = session_policy.fence_close_session_policy(control_table_arn=scope["control_table_arn"],
         execution_prefix=scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":", deadline=1900)
     assert len(sts_calls) == 1 and sts_calls[0][2]["Policy"] == c.canonical(expected).decode().strip()
+
+
+def _drift_operation_inline(request, drift):
+    from tools.cnesdata_delivery.coordination_lease import KEY
+    policy = c.loads(request["Policy"].encode())
+    statements = policy["Statement"]
+    if drift == "no-lease-deny":
+        statements[:] = [item for item in statements if not (item["Effect"] == "Deny" and item.get("Resource", "").endswith(KEY))]
+    if drift == "no-name-condition":
+        statements[:] = [item for item in statements if "StringNotEquals" not in item.get("Condition", {})]
+    if drift == "no-delegation-deny":
+        statements[:] = [item for item in statements if "NotResource" not in item]
+    if drift == "keeper-prefix":
+        for item in statements:
+            if item["Effect"] == "Allow" and item["Action"] == "s3:PutObject":
+                item["Resource"] = [resource.replace("/close-drain/", "/keeper/") for resource in item["Resource"]]
+    if drift == "no-close-drain-put":
+        statements[:] = [item for item in statements if item["Action"] != "s3:PutObject" or item["Effect"] == "Deny"]
+    return request | {"Policy": c.canonical(policy).decode().strip()}
+
+
+@pytest.mark.parametrize("drift", ["no-lease-deny", "no-name-condition", "no-delegation-deny", "keeper-prefix", "no-close-drain-put"])
+def test_close_drain_capability_refuses_an_operation_inline_the_documents_do_not_bound(monkeypatch, drift):
+    """Change 4: effective_iam is a local check over the recomputed documents, before the freeze reread and before any exchange.
+
+    The application identity grants the lease write (the keeper needs it); only the operation inline keeps it away."""
+    from tools.cnesdata_delivery import session_policy
+    ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
+    original = session_policy.application_request
+    monkeypatch.setattr(session_policy, "application_request", lambda *a, **kw: _drift_operation_inline(original(*a, **kw), drift))
+    with pytest.raises(ValueError, match=_CLOSE_OPERATION_IAM):
+        ag.close_drain_capability(**args)
+    assert events == [("lease", "check")] and sts_calls == [] and args["operation_session"].calls == []
+    assert journal._failed is True and keeper.uncertainty() == [{"kind": "context-failed"}]
+
+
+def test_close_drain_capability_evaluates_the_inline_the_factory_sends(monkeypatch):
+    """The local effective_iam is not a twin: the inline it evaluates is the Policy the exchange carries, byte for byte."""
+    from tools.cnesdata_delivery import iam_boundary
+    world = _policy_world(monkeypatch)
+    seen, original = [], iam_boundary.effective_iam
+    monkeypatch.setattr(iam_boundary, "effective_iam",
+                        lambda identity, sessions, *rest: seen.append((len(world.minted), sessions)) or original(identity, sessions, *rest))
+    world.ag.close_drain_capability(**world.args)
+    (restriction,) = world.minted.values()
+    inline = c.canonical(c.loads(restriction["Policy"].encode()))
+    before_exchange = [sessions for minted, sessions in seen if minted == 0 and len(sessions) == 2]
+    assert len(before_exchange) == 6 and all(c.canonical(sessions[1]) == inline for sessions in before_exchange)
 
 
 @pytest.mark.parametrize("window_change", [{}, {"sequence": 0, "checkpoint_sha256": "a" * 64}])
