@@ -692,14 +692,17 @@ def _sdk_private_fields(value):
 
 
 class _FenceSession:
-    """Shared-only result of the finite STS boundary; never exposed over IPC."""
-    def __init__(self, client, commitment, scope, deadline, request_binding):
+    """Shared-only result of the finite STS boundary; never exposed over IPC.
+
+    evidence is the operation client that assumed the fence role; it is the client of the SDK evidence.
+    """
+    def __init__(self, client, commitment, scope, deadline, request_binding, evidence):
         self.client, self.commitment = client, c.digest(commitment)
         self.scope = c.loads(c.canonical(scope), canonical=True)
-        self.deadline, self.request_binding = deadline, request_binding
+        self.deadline, self.request_binding, self.evidence = deadline, request_binding, evidence
 
 
-def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha256, credential_limit, clock=time.time):
+def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, credential_limit, operation_session, clock=time.time):
     """Exact native delegation after the caller authenticates prepared authority.
 
     This internal boundary is not package admission. The shared dispatcher must
@@ -755,8 +758,10 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
               "fence original effective metadata-probe grant")
     journal._guard.check(40)
     journal.guard()
-    response = aws.call("sts", "assume_role", RoleArn=role["role_arn"], RoleSessionName=role["session_name"],
-                        DurationSeconds=900, Policy=encoded)
+    operation = operation_session(request["operation"], role, stage)
+    c.require(clock() + 40 < deadline and clock() + 900 <= credential_limit, "fence original window after operation session")
+    response = operation.call("sts", "assume_role", RoleArn=role["role_arn"], RoleSessionName=role["session_name"],
+                              DurationSeconds=900, Policy=encoded)
     credentials = validate_response(response)
     expiry = credentials["Expiration"]
     c.require(getattr(expiry, "tzinfo", None) is not None and clock() + 140 < expiry.timestamp()
@@ -779,7 +784,7 @@ def _assume_fence_session(*, aws, governance, role, scope, journal, prepared_sha
         "role_arn": role["role_arn"], "role_id": role["role_id"], "session_name": role["session_name"],
         "policy_sha256": c.sha(c.canonical(policy)), "expires_at": c.utc(expiry.timestamp()),
         "account": scope["account"], "arn": expected_arn, "user_id": expected_id}))
-    return _FenceSession(client, commitment, scope, deadline, binding)
+    return _FenceSession(client, commitment, scope, deadline, binding, operation)
 
 
 class AdapterJournal:
@@ -1326,7 +1331,7 @@ def application_release_sha256(governance):
 
 
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
-                            guard, clock=time.time):
+                            guard, operation_session, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).
 
     Composes the authenticated PreparedFence, fence role, effective scope (item 2),
@@ -1388,9 +1393,10 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
                 operation="describe_execution", parameters={"executionArn": prefix + member["dispatch_id"],
                 "includedData": "METADATA_ONLY"}, **scope)
         prepared_sha256 = c.sha(prepared["fence-prepared.json"])
-        session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
-                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
-        broker = ClosedReadyBroker(aws, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        session = _assume_fence_session(governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit,
+                                        operation_session=operation_session, clock=clock)
+        broker = ClosedReadyBroker(session.evidence, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
         keeper.attach(broker)
         return broker
     except BaseException:
@@ -1399,12 +1405,14 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         raise
 
 
-def close_drain_capability(*, aws, api, governance, authority, journal, keeper, prepared, credential_limit, clock=time.time):
+def close_drain_capability(*, aws, api, governance, authority, journal, keeper, prepared, credential_limit,
+                           operation_session, clock=time.time):
     """Close-drain capability factory, sibling of closed_ready_capability (decision 4, queue item 3a).
 
-    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations and the
-    finite close session. The freeze reread is the last check before STS; any failure poisons the
-    journal, keeps the lease held and mints no credential. No production caller until PR-F.
+    Composes the authenticated PreparedFence, fence role, recomputed scope and expirations, the local
+    operation-session effective_iam and the finite close session. The freeze reread is the last AWS call
+    before the operation exchange and the fence STS; any failure poisons the journal, keeps the lease
+    held and mints no fence credential. The prepared handler of stage_handlers is the production caller.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     from tools.cnesdata_delivery.session_owner import application_unfrozen
@@ -1432,14 +1440,36 @@ def close_drain_capability(*, aws, api, governance, authority, journal, keeper, 
         c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
                   "capability scope recomputed from prepared policy")
         scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine}
+        # Change 4: the package evaluation only attests the closed-ready session, so this effective_iam is local, over
+        # documents recomputed here: the application identity, the pinned managed policy and the inline the factory sends.
+        from tools.cnesdata_delivery import session_owner, session_policy
+        from tools.cnesdata_delivery.coordination_lease import KEY
+        from tools.cnesdata_delivery.iam_boundary import effective_iam
+        inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+            "close-drain", application_purpose="promotion", delegations=("fence_operator",),
+            sessions={"fence_operator": role["session_name"]})["Policy"].encode())
+        evidence = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + lr.closed_ready_evidence_keys(governance,
+            owner=journal._request["owner"], caller=journal._identity, checkpoint_sha256=journal._request["checkpoint_sha256"],
+            sequence=0, operation="close-drain")["intent"]
+        named = {"sts:RoleSessionName": role["session_name"]}
+        decisions = ((role["role_arn"], "sts:AssumeRole", named, True),
+                     (role["role_arn"], "sts:AssumeRole", {"sts:RoleSessionName": role["session_name"] + "-foreign"}, False),
+                     (governance["application_delegations"]["normal"], "sts:AssumeRole", named, False),
+                     ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
+                     (evidence.replace("/close-drain/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
+        identity = session_owner.application_identity_document(governance, authority.application_fragment)
+        c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
+                                    {"aws:CurrentTime": c.utc(clock())} | context) is expected
+                      for resource, action, context, expected in decisions), "close-drain operation session effective IAM")
         journal.guard()
         attached = aws.call("iam", "list_attached_role_policies", RoleName=authority.application_fragment["application_role_name"],
                             MaxItems=100)
         application_unfrozen(attached, governance["account_id"])
         prepared_sha256 = c.sha(prepared["fence-prepared.json"])
-        session = _assume_fence_session(aws=aws, governance=governance, role=role, scope=scope, journal=journal,
-                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit, clock=clock)
-        broker = ClosedReadyBroker(aws, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        session = _assume_fence_session(governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit,
+                                        operation_session=operation_session, clock=clock)
+        broker = ClosedReadyBroker(session.evidence, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
         keeper.attach(broker)
         return broker
     except BaseException:
@@ -1950,7 +1980,8 @@ def _close_drain_seconds(window, credential_limit, now):
     return seconds
 
 
-def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, clock=time.time):
+def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
+                   clock=time.time):
     """Handlers of the two ratified stage triggers (amendment 6886977054 decision 3, ratification 6974253889).
 
     prepared: authenticated fence package, activation from the plan carrier, close-drain, close window.
@@ -1970,11 +2001,17 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
                                        expirations=close_expirations(authority, api))
         current.attach(journal)
-        close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal, keeper=current,
-                               prepared=files, credential_limit=credential_limit, clock=clock)
-        seconds = _close_drain_seconds(window, credential_limit, clock())
-        invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
-                       manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        broker = close_drain_capability(aws=aws, api=api, governance=governance, authority=authority, journal=journal,
+            keeper=current, prepared=files, credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+        try:
+            seconds = _close_drain_seconds(window, credential_limit, clock())
+            invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                           manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
+        finally:
+            # The keeper retains the broker: drop the operation and fence clients, ledgers included, and keep the journal.
+            for ledger in broker.evidence:
+                ledger._aws = None
+            broker.aws = broker.session.evidence = broker.session.client = None
         observed = [entry for entry in journal._observations if entry["kind"] == "close-drain"]
         c.require(len(journal._observations) == len(observed) == 1 and not current.uncertainty(),
                   "close-drain single observation without uncertainty")
@@ -2050,7 +2087,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     """
     import os
     from pathlib import Path
-    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
     validators = TERMINAL_VALIDATORS if validators is None else validators
     event_source = KEEPER_EVENT_SOURCE if event_source is None else event_source
     c.require(type(validators) is dict and {"quiescence", "routing"} <= set(validators) <= set(TERMINAL_VALIDATOR_FACTS),
@@ -2081,8 +2118,19 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     register_terminal_validators(keeper, validators)
     owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), clock=keeper.clock)
+    def operation_session(operation, role, stage):
+        c.require(operation in ("close-drain", "closed-ready"), "operation session operation")
+        restriction = session_policy.application_request(governance, request["source_sha"], run["id"], run["run_attempt"], operation,
+            application_purpose="promotion", delegations=("fence_operator",), sessions={"fence_operator": role["session_name"]})
+        value = lr.oidc_credentials(governance, "application", restriction, run, duration=900)
+        client = lr.AWS(governance, credentials=value)
+        c.require(all(client.identity[key] == aws.identity[key] for key in ("Account", "Arn", "UserId")), "operation session identity")
+        c.require(value["Expiration"].timestamp() >= stage["deadline"], "operation session expiration")
+        return client
+
     handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
-                              authority=authority, product=product, credential_limit=credential_limit, clock=keeper.clock)
+                              authority=authority, product=product, credential_limit=credential_limit,
+                              operation_session=operation_session, clock=keeper.clock)
     keeper_loop(keeper, next_event=next_event, handlers=handlers)
 
 

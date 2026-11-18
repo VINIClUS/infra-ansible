@@ -136,6 +136,7 @@ algorithms match the ratified canonical vectors. Readiness operation sessions
 exclude static/fence roles, promotion codes and manual audit launch. Session
 names are protected dispatcher outputs after context/preparation validation;
 this policy builder and its offline IAM evaluations are not preparation receipts.
+The `close-drain` and `closed-ready` operation sessions are minted in process by the keeper (R20, PR-G).
 
 The application consumer parses the exact private v4 fragment from protected
 governance. Its original owner `policy-evaluation` measurement must commit
@@ -370,8 +371,8 @@ The application CLI now connects `credentials` to an own-role bootstrap after
 public admission, complete product source authentication and the original
 session-owner proof. It verifies native role/policy readbacks and exact
 GetCallerIdentity before exporting masked credentials. Its session explicitly
-denies every product AssumeRole; a later privately admitted operation session is
-still required (R20). `execute` was closed in the first slice. The fixture subprocess exercises the
+denies every product AssumeRole; the operation session is a separate in-process exchange (R20, PR-G).
+`execute` was closed in the first slice. The fixture subprocess exercises the
 original sequence FENCE/SEM/FENCE/SEM/probe/FENCE/SEM through the real broker and
 validators with external SDK/S3 fakes. This is boundary evidence, not an integrated
 product adapter or completed application lifecycle.
@@ -657,8 +658,8 @@ path, `main -> execute(admitted)`. Its order is the contract: the registry and e
 `application_release_sha256`, `authenticate_adapter_closure`, `session_owner.authenticate_lifecycle`,
 the credential window, `lifecycle_runtime.AWS` with `_verify_session` (the exact own-role readback of
 `credentials`), the binding, `S3LeaseStore`, `Keeper`, the validator registration, `acquire`, the
-event source, `stage_handlers` and `keeper_loop`. Nothing reaches an AWS client, the lease or STS
-before the release refusal.
+event source, the `operation_session` factory (R20, below), `stage_handlers` and `keeper_loop`. Nothing
+reaches an AWS client, the lease or STS before the release refusal.
 
 Sources of the three inputs (6974253889):
 - `release`: `governance["release"]` is closed to `release_id source_sha candidate_sha256 canary_id
@@ -686,12 +687,14 @@ keeper window as it is at the event (sequence 0 and the predecessor checkpoint: 
 close-drain request with the prepared checkpoint, only the evidence key derivation reads them), the
 journal attached to the keeper, `close_drain_capability`, then `invoke_adapter` with the largest whole
 second `phase_capacity` admits, `min(deadline - now - 158, credential_limit - now - 121)`, sampled after
-the capability returns because STS and IAM time spend the margin. The result must be exactly one
+the capability returns because STS, IAM and the operation exchange spend the margin. Whatever the outcome
+of the capacity check and the child, the handler then drops the operation and fence clients (R20). The result must be exactly one
 `close-drain` observation and no uncertainty. `close_window` then takes the observation bytes, the
 checkpoint `sha(prepared checkpoint.json)` and `infra_expiration_bound`, and the keeper writes the
 `phase-b` window. `phase-b`: the B publication is rederived, its approval must name the prepared
-checkpoint hash and the B plan, its checkpoint must be `phase-b` with the same owner, and
-`api_window` takes `sha(B checkpoint.json)`. The plan download is recorded in `api.expiries` and
+checkpoint hash and the B plan, its checkpoint must be `phase-b` with the same owner, the clock is read
+again after that authentication and must still be before `terminal_deadline` of the window
+(`phase-b stage deadline elapsed`, with no write), and only then `api_window` takes `sha(B checkpoint.json)`. The plan download is recorded in `api.expiries` and
 `api.digests` as one more `artifact` entry of `close_expirations`, from the metadata
 `lifecycle_artifact` already authenticated; the prepared-package download is authenticated by
 `fence_prepared_payload` but is not an entry. The emitted kinds stay `credential`, `platform` and
@@ -713,20 +716,66 @@ plan and deploy gates. With `release` the legacy `bootstrap` and `acm-certificat
 (`contract.py:617-618`, `runtime.py:709`); without it the application and Phase A refuse. The conflict
 predates PR-F and the step that sets the secret after the merge must record the swap per purpose.
 
-R20 (ratification 6979020298): `execute` composes `lifecycle_runtime.AWS` from the credentials that
-`credentials` exports, a session requested without delegations whose policy denies `sts:AssumeRole`
-on `*` (`session_policy.py`, keeper sessions never carry product delegations). `close_drain_capability`
-reaches `_assume_fence_session`, which calls `sts:AssumeRole` on the `fence_operator` role with that same
-session, so in production STS denies it, the journal is poisoned and the lease stays held before the
-`phase-b` stage. The tests pass because the AWS client is a fake at the boundary. This slice adds no
-session source: a delegation in the keeper request breaks the keeper rule and the protected
-`promotion-fence-<canary_id>` session name, and a separate operation session needs another OIDC request
-and a change to the frozen 8/4 reusable interface. A dedicated amendment must name the operation session
-source before any real run; it can be the one that connects the stages after the API (R5). Until then no
-`execute` runs in production, including the Phase A proof list and items b.3 to b.6 of CnesData#522,
-because a real run would leave the lease held with the fence still open. Replacing the closure pin,
-`gate_shas.application` and the governance secret after the merge may proceed while no product run calls
-`execute` before that amendment.
+R20 and R20-b, the operation session (amendment 6984143043, option C, `Refs #55`; it reopens only the
+"extra OIDC in the job" of 6979020298). Before this change `execute` composed `lifecycle_runtime.AWS`
+from the credentials `credentials` exports: a keeper session requested without delegations, whose policy
+denies `sts:AssumeRole` on `*` (`session_policy.py`). `close_drain_capability` reached
+`_assume_fence_session`, so STS denied the fence assumption (R20). The same session also could not write the
+SDK evidence (R20-b): its own write prefix is `keeper/*` and `terminal/*`, the managed session policy grants
+S3 only on the lease, and `ClosedReadyEvidence` writes under `<run>/close-drain/`. The STS denial hid
+the second failure. One mechanism closes both, with no change to the workflow, the 8/4 interface, IAM,
+trust or tofu:
+- `execute` composes the factory `operation_session(operation, role, stage)`, a closure over the admitted
+  governance, request and run and the keeper client, and hands it to `stage_handlers`, then to
+  `close_drain_capability` and, through the same explicit keyword, to `closed_ready_capability`, which still has no
+  caller. `_assume_fence_session` has no `aws` parameter any more. The keeper client keeps the lease and the
+  freeze reread; it is never an STS or evidence client of the fence.
+- The factory accepts only `close-drain` and `closed-ready`. It builds `application_request` with
+  `step` equal to the operation, `application_purpose="promotion"`, `delegations=("fence_operator",)` and
+  the exact session name of the authenticated `fence-role.json`, and makes a second
+  `AssumeRoleWithWebIdentity` of the same job through `oidc_credentials(..., duration=900)`. That function
+  keeps its claim checks and accepts only 900 or 3600 s, with 3600 for keeper, plan and deploy. The session
+  has the same `Account`, `Arn` (so the same role and the same `cnesdata-<run>-<attempt>` name) and `UserId`
+  as the keeper. It is never exported, never written to the journal, IPC or the child environment, and
+  there is no new session name or principal.
+- Order. Every check comes before the exchange: `lease.check`, the pure checks, the effective-IAM checks,
+  the keeper `guard()` and the freeze reread. After the exchange the window and the credential limit are judged
+  again, because the token request and two STS calls can take tens of seconds, and then the fence
+  `sts:AssumeRole` runs through the operation client. That client is also the client of the broker and of every
+  ledger, so every S3 write under `close-drain/` goes through it and a test fails if one goes through the keeper
+  client. Any failure of the exchange (R21 included) closes before the fence STS, poisons the journal and keeps
+  the lease held.
+- Premise: the operation credential `Expiration` must be at least `stage["deadline"]`, with no tolerance, or the
+  factory refuses before the fence STS. The deadline is `preparation_deadline <= admitted_at + 900` and the exchange
+  happens after `admitted_at`, so a 900 s session covers it; an event at `acquire + 0` gets `Expiration ==
+  deadline` and is admitted.
+- The close-drain `effective_iam` is a local check over recomputed documents: the application identity
+  (`application_identity_document`), the pinned managed policy and the inline the factory sends. It requires
+  `sts:AssumeRole` of the fence with the exact session name, and denies the `-foreign` name, another delegation,
+  `s3:PutObject` on the lease and on `keeper/`, and allows `s3:PutObject` under `close-drain/`.
+  `fence-evaluation.json` (`lifecycle_runtime.py` `fence_evaluation_documents`) only attests the closed-ready
+  session and its schema does not change. For `closed-ready` a test proves the inline the factory sends equals
+  `evaluation["documents"]["application_session"]` by digest.
+- The keeper retains the broker, which retains its client. After the child (and on any refusal after the
+  capability) the `prepared` handler sets `broker.aws`, `session.evidence`, `session.client` and the `_aws` of
+  each ledger to `None`. It keeps the broker, the ledgers (their state is the uncertainty) and the journal, which
+  `_terminal_proof` reads. A test walks everything reachable from the keeper and finds neither the clients nor the
+  credential strings.
+
+R20 stops blocking at the merge and the swap of the pins below, but R18 stays: no production `execute` runs
+without a reviewed recovery plan for the closed fence and the held lease at the API stage. That includes the Phase
+A proof list and items b.3 to b.6 of CnesData#522. After this change the producer closure and the sha256 of this
+document change, so the closure is computed again on the approved head and `source_closure_sha256` and
+`workflow_sha` of the producer (which changes the trust of the application role, so it is not a variable-only
+apply), `gate_shas.application` and the governance secret are replaced in the same pin (R8).
+
+R21, a second token in the same job. GitHub does not document how long `ACTIONS_ID_TOKEN_REQUEST_TOKEN` lives
+nor whether a job can request a second ID token. The exchange of the operation session happens after the
+`prepared` event, which can be 20 minutes or more after the first token of the job. Before the first real
+`execute`, a disposable workflow in a repository outside production, with `id-token: write`, must request two
+tokens in the same job at least 20 minutes apart, with no AWS and no production role. Until then R21 stays open;
+if it fails in production the exchange refuses before the fence STS, the journal is poisoned and the lease
+stays held, which is the state R20 had.
 
 Closure sentinel (decision 1): `session_owner.application_configuration` and the tofu variable
 `application_promotion.source_closure_sha256` refuse the 64-zero placeholder; the value comes from
@@ -835,7 +884,9 @@ Static stage, remaining:
 
 Not yet proven: the product adapter; real STS with Deny-only inline session policies
 (real STS may require an Allow in every session policy, and `effective_iam` models managed
-and inline documents as a union); the global NotResource premise; quotas with real
+and inline documents as a union; the fence assumption of the operation session relies on this
+premise); the second web-identity exchange of the same job against real GitHub OIDC and STS (R21)
+and its 900 s credential against the preparation deadline; the global NotResource premise; quotas with real
 VersionIds; Phase A with expired artifacts; the operational closed-ready producer; applied
 IAM; static binding #498; the EXT2 profile's pinned `openssl_path`/`openssl_sha256` being
 present on the plan and deploy runners (which may use another image than the EXT2 gate);
