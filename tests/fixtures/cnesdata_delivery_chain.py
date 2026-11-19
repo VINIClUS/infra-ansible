@@ -9,6 +9,7 @@ import types
 import zipfile
 from email.utils import formatdate
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 from tools.cnesdata_delivery import contract as c, runtime
 from tools.cnesdata_delivery.provenance import BASE_CHECKS, GitHub
@@ -202,12 +203,14 @@ class Chain:
         if "/contents/" in path:
             return {"content": base64.b64encode(b"immutable authority fixture").decode()}
         if "/compare/" in path:
+            assert path == f"repos/{c.REPOSITORY}/compare/{'a' * 40}...main", path
             return {"status": "identical"}
         if "/check-runs" in path:
             return {"check_runs": [{"name": "source-ci", "head_sha": "a" * 40, "conclusion": "success"}]}
         parts = path.split("/")
         repository = "/".join(parts[1:3])
         if "/actions/workflows/" in path and "/runs?" in path:
+            assert parse_qs(urlsplit(path).query)["branch"] == ["main"], path
             filename = parts[5]
             matches = [run for (repo, _), run in self.runs.items() if repo == repository
                        and run["path"] == ".github/workflows/" + filename and run["conclusion"] == "success"]
