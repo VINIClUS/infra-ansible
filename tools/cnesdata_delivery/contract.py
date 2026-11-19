@@ -21,8 +21,25 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def scheduler_preflight(plan, state):
-    """Compare resolved saved-plan inputs to the *previous* applied revisions."""
+SCHEDULER_FIXED_IAM = {("aws_iam_role", "scheduler"), ("aws_iam_role_policy", "run")}
+SCHEDULER_FIXED_MODES = {"recovery", "audit"}
+
+
+def _scheduler_instances(state):
+    """Managed instances under module.schedulers beyond the unconditional bootstrap IAM."""
+    found = 0
+    for resource in state.get("resources", []) if state is not None else []:
+        module = resource.get("module", "")
+        in_schedulers = re.fullmatch(r"module\.schedulers(?:[.\[].*)?", module)
+        if resource.get("mode") != "managed" or not in_schedulers:
+            continue
+        fixed = module == "module.schedulers" and (resource["type"], resource["name"]) in SCHEDULER_FIXED_IAM
+        found += sum(not (fixed and instance.get("index_key") in SCHEDULER_FIXED_MODES)
+                     for instance in resource.get("instances", []))
+    return found
+
+
+def _scheduler_inputs(plan):
     variables = plan.get("variables")
     require(type(variables) is dict, "scheduler resolved variables absent")
     inputs = {}
@@ -30,6 +47,23 @@ def scheduler_preflight(plan, state):
         value = variables.get(f"scheduler_{mode}_task_definition_arn")
         require(type(value) is dict and set(value) == {"value"}, "scheduler unresolved input")
         inputs[mode] = value["value"]
+    return inputs
+
+
+def _initial_scheduler_stage(inputs, state):
+    # Initial bootstrap (including the first Phase A after bootstrap) has
+    # neither applied revisions nor Schedulers. Missing output alone is no proof.
+    resources = state.get("resources", []) if state is not None else []
+    require(not any(resource.get("mode") == "managed"
+                    and resource.get("type") in {"aws_ecs_task_definition", "aws_scheduler_schedule"}
+                    and resource.get("instances") for resource in resources)
+            and all(value is None for value in inputs.values()),
+            "scheduler output absent outside initial bootstrap")
+
+
+def scheduler_preflight(plan, state):
+    """Compare resolved saved-plan inputs to the *previous* applied revisions."""
+    inputs = _scheduler_inputs(plan)
     outputs = state.get("outputs", {}) if state is not None else {}
     require(type(outputs) is dict, "scheduler prior outputs malformed")
     output = outputs.get("processor_task_definition_arns")
@@ -37,21 +71,17 @@ def scheduler_preflight(plan, state):
             "scheduler prior output malformed")
     revisions = output["value"] if output is not None else None
     if revisions is None or revisions == {}:
-        # Initial bootstrap (including the first Phase A after bootstrap) has
-        # neither applied revisions nor Schedulers. Missing output alone is no proof.
-        resources = state.get("resources", []) if state is not None else []
-        require(not any(resource.get("mode") == "managed"
-                        and resource.get("type") in {"aws_ecs_task_definition", "aws_scheduler_schedule"}
-                        and resource.get("instances") for resource in resources)
-                and all(value is None for value in inputs.values()),
-                "scheduler output absent outside initial bootstrap")
-        return
+        return _initial_scheduler_stage(inputs, state)
     require(type(revisions) is dict and set(revisions) == {"unit", "recovery", "audit"},
             "scheduler complete prior revision map required")
     for value in revisions.values():
         require(type(value) is str and re.fullmatch(
             r"arn:aws:ecs:us-east-2:[0-9]{12}:task-definition/[A-Za-z0-9_-]+:[1-9][0-9]*", value),
             "scheduler invalid prior revision")
+    if all(value is None for value in inputs.values()) and not _scheduler_instances(state):
+        # A3 sections 5 and 6: a later Phase A leaves Schedulers untouched; with none
+        # applied, null inputs create none, so no applied route can go stale.
+        return
     require(all(inputs[mode] == revisions[mode] for mode in inputs),
             "scheduler input differs from prior applied revision")
 
@@ -424,7 +454,9 @@ def validate_delta(plan, purpose):
                  "module.runtime_iam.", "module.schedulers.", "module.static_web.", "aws_cloudwatch_log_group.processor")
     phase = ("module.processing.aws_ecs_task_definition.processor[", "module.processing.aws_iam_role_policy.step_functions_ecs[",
              "module.processing.aws_iam_role_policy.canary_verifier_run_task[", "module.processing.aws_dynamodb_table.canary[",
-             "module.processing.aws_s3_bucket", "module.runtime_iam.aws_iam_role.canary_", "module.runtime_iam.aws_iam_role_policy.canary_")
+             "module.processing.aws_s3_bucket", "module.runtime_iam.aws_iam_role.canary_", "module.runtime_iam.aws_iam_role_policy.canary_",
+             "module.runtime_iam.aws_iam_role.promotion_fence_operator[0]",
+             "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]")
     changed = []
     for resource in plan.get("resource_changes", []):
         actions = resource["change"]["actions"]
@@ -441,7 +473,7 @@ def validate_delta(plan, purpose):
             require(address == "aws_acm_certificate.static_web" or address.startswith(bootstrap), "bootstrap scope")
         else:
             require(address.startswith(phase), "Phase A invariant address")
-            require(re.fullmatch(r'module\.processing\.(aws_ecs_task_definition\.processor\["(?:unit|recovery|audit)"\]|aws_iam_role_policy\.(?:step_functions_ecs|canary_verifier_run_task)\[0\]|aws_dynamodb_table\.canary\[0\]|aws_s3_bucket(?:_public_access_block|_ownership_controls|_versioning|_server_side_encryption_configuration|_object_lock_configuration|_lifecycle_configuration|_policy)?\.canary\[0\])|module\.runtime_iam\.aws_iam_role(?:_policy)?\.canary_(?:task|execution|seeder|verifier)\[0\]', address), "exact Phase A address")
+            require(re.fullmatch(r'module\.processing\.(aws_ecs_task_definition\.processor\["(?:unit|recovery|audit)"\]|aws_iam_role_policy\.(?:step_functions_ecs|canary_verifier_run_task)\[0\]|aws_dynamodb_table\.canary\[0\]|aws_s3_bucket(?:_public_access_block|_ownership_controls|_versioning|_server_side_encryption_configuration|_object_lock_configuration|_lifecycle_configuration|_policy)?\.canary\[0\])|module\.runtime_iam\.aws_iam_role(?:_policy)?\.(?:canary_(?:task|execution|seeder|verifier)|promotion_fence_operator)\[0\]', address), "exact Phase A address")
             if "aws_ecs_task_definition" in address:
                 after = resource["change"].get("after", {})
                 require(after.get("skip_destroy") is True and after.get("track_latest") is False, "retained task revisions")

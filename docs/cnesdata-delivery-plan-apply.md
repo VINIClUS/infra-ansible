@@ -407,6 +407,15 @@ inicial demonstrado sem revisões ECS/Schedulers prévios e ambos inputs null, i
 a primeira Phase A depois do bootstrap. Phase A conserva as rotas anteriores; este
 controle não implementa nem autoriza futuros propósitos B/C.
 
+Phase A posterior, sem Schedulers (A3 §5, `:200-206`, e §6, `:233-246`: em promoção
+a Phase A não muda Schedulers). Com mapa anterior completo e válido, ambos inputs
+null e nenhuma instância gerenciada em `module.schedulers` além das quatro de IAM
+incondicionais do bootstrap (`aws_iam_role.scheduler` e `aws_iam_role_policy.run`,
+chaves recovery/audit), o preflight admite: input null não cria schedule, group, regra
+de evento nem alarme, logo nenhuma rota aplicada pode ficar velha. Qualquer outra
+instância no módulo, input não nulo diferente da revisão anterior, saída ausente com
+task definitions no state e mapa parcial ou malformado continuam fechando antes do child.
+
 A leitura específica da única key de state produto conserva, no mesmo GetObject,
 bytes e metadata real: o campo privado `state_object_before` do `attempt.json` e
 `state_object` do `checkpoint.json` têm exatamente `status`, `version_id` e
