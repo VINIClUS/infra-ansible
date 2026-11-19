@@ -1,5 +1,6 @@
 """Acceptance replay: a second, production-shaped Phase A through the real plan and deploy gates."""
 import shutil
+import time
 
 import pytest
 
@@ -145,3 +146,50 @@ def test_replay_recusa_matriz_de_drift_incompleta(monkeypatch, tmp_path, stage):
     admit(chain)
     with pytest.raises(ValueError, match="incomplete governed drift coverage"):
         runtime.execute("deploy")
+
+
+def applied_release_sha256(chain):
+    prefix = runtime._prefix(chain.gov, "a" * 40, 2, 1, "applied")
+    envelope = c.loads(chain.objects[chain.gov["evidence_bucket"], prefix + "envelope.json"][0], canonical=True)
+    return c.sha(c.canonical(envelope["plan"]["release"]))
+
+
+def test_carrier_preserva_os_bytes_originais_publicados_pelo_deploy(monkeypatch, tmp_path):
+    from tools.cnesdata_delivery.application_gate import authenticated_previous
+    chain = admitted_chain(monkeypatch, tmp_path)
+    runtime.execute("deploy")
+    aws, api, previous, _ = published_predecessor(chain)
+    prefix = runtime._prefix(chain.gov, "a" * 40, 2, 1, "applied")
+    result = authenticated_previous(aws, api, chain.gov, previous)
+    import base64
+    carried = {entry["name"]: base64.b64decode(entry["bytes_base64"]) for entry in result["phase_a_originals"]["files"]}
+    assert sorted(carried) == ["checkpoint.json", "drift.json", "envelope.json"]
+    for name, raw in carried.items():
+        assert raw == chain.objects[chain.gov["evidence_bucket"], prefix + name][0]
+    outputs = c.loads(carried["checkpoint.json"], canonical=True)["outputs"]
+    assert outputs["processor_task_definition_arns"] == chain.replay.output(chain.replay.after)
+
+
+def test_preflight_publico_e_keeper_admitem_o_predecessor_real(monkeypatch, tmp_path):
+    from test_cnesdata_application_gate import _current_caller
+    from tools.cnesdata_delivery import lifecycle_runtime
+    from tools.cnesdata_delivery.application_gate import Keeper, authenticated_previous
+    from tools.cnesdata_delivery.aws_boundary import S3LeaseStore
+    from tools.cnesdata_delivery.lifecycle_runtime import first_checkpoint
+    chain = admitted_chain(monkeypatch, tmp_path)
+    runtime.execute("deploy")
+    aws, api, previous, reference = published_predecessor(chain)
+    store = S3LeaseStore(aws)
+    binding = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1,
+               "release_sha256": applied_release_sha256(chain), "session_sha256": "d" * 64, "lifecycle_version": 1}
+    binding |= _current_caller(chain.gov, binding)
+    chain.gov["application_purpose"] = "promotion"
+    assert lifecycle_runtime.authenticate_application_predecessor(api, chain.gov, {"id": 44, "run_attempt": 1}) == reference
+    keeper = Keeper(store, binding, lambda value: authenticated_previous(aws, api, chain.gov, value),
+                    api=api, governance=chain.gov)
+    owner = keeper.acquire(preparation_deadline=int(time.time()) + 900)
+    current, _ = store.get()
+    state, state_object = aws.get_state(absent=True)
+    assert first_checkpoint(keeper.predecessor, current, owner, state, state_object) == keeper.predecessor["checkpoint"]
+    assert keeper.predecessor["lease"] == previous
+    assert current["lifecycle"]["predecessor_sha256"] == c.sha(c.canonical(reference))

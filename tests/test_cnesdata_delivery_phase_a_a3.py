@@ -42,3 +42,15 @@ def test_fase_a_nao_alarga_alem_do_fence_exato(address):
 def test_fence_continua_fora_do_proposito_acm_certificate():
     with pytest.raises(ValueError, match="ACM initial create-only scope"):
         c.validate_delta({"resource_changes": [change(FENCE[0], ["update"])]}, "acm-certificate")
+
+
+@pytest.mark.parametrize("address", [
+    'module.schedulers.aws_scheduler_schedule.mode["audit"]',
+    'module.schedulers.aws_scheduler_schedule_group.mode["recovery"]',
+    'module.schedulers.aws_cloudwatch_event_rule.task_outcome["audit_failed"]',
+    'module.schedulers.aws_cloudwatch_metric_alarm.repeated_failure["audit"]',
+    'module.schedulers.aws_iam_role.scheduler["audit"]'])
+@pytest.mark.parametrize("actions", [["create"], ["update"]])
+def test_fase_a_recusa_qualquer_mudanca_em_schedulers(address, actions):
+    with pytest.raises(ValueError, match="Phase A invariant address"):
+        c.validate_delta({"resource_changes": [change(address, actions)]}, "phase-a")
