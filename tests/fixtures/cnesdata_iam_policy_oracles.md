@@ -2,7 +2,8 @@
 
 `cnesdata_iam_policy_oracles.json` records complete documents reviewed against the
 34 unchanged HCL blobs in `cnesdata_delivery_sources/source-manifest.json`, pinned
-to CnesData `28597b30ef8e22d5fcdccba85503b2f2fc85d1bc`. These are test fixtures only.
+to CnesData `28597b30ef8e22d5fcdccba85503b2f2fc85d1bc`, except `static-promotion.tf`, pinned to
+CnesData main `258e55c58ea9109c4c4a35fc519ab9292027a4b0`. These are test fixtures only.
 They are never loaded by delivery authorization or transported as a new contract.
 
 The review covers all nine bootstrap instances and seven Phase A policies, with

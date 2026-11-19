@@ -320,7 +320,8 @@ deduplicação antes do limite; concat/for/splat continuam 64. A extensão boots
 admite somente os formatos/funções ratificados. try está restrito ao parser observado
 da API role e captura apenas erros dinâmicos de null/index. Descrição heredoc estática
 é metadata lexical ignorada, sem admitir heredoc como expressão. Os 34 arquivos HCL
-de fixture mantêm os hashes de CnesData 28597b30ef8e22d5fcdccba85503b2f2fc85d1bc;
+de fixture mantêm os hashes de CnesData 28597b30ef8e22d5fcdccba85503b2f2fc85d1bc, exceto
+`static-promotion.tf`, refixado em CnesData main 258e55c58ea9109c4c4a35fc519ab9292027a4b0;
 oracles fixos verificam os 16 documentos integrais e suas mutações.
 
 A prova histórica de plan usa o inventário independente de seus seis baselines e,
