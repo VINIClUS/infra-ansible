@@ -387,7 +387,7 @@ def published_terminal(api, governance, previous):
     prefix = f"repos/{c.REPOSITORY}"
     run = api.read(f"{prefix}/actions/runs/{run_id}/attempts/{attempt}")
     c.require(run["status"] == "completed" and run["conclusion"] == "success"
-              and run["head_branch"] == "develop", "previous lifecycle run not terminal success; reviewed recovery required")
+              and run["head_branch"] == "main", "previous lifecycle run not terminal success; reviewed recovery required")
     pin = c.digest(governance["gate_shas"]["application"], 40)
     reusable = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@"
     refs = [x for x in run.get("referenced_workflows", []) if x["path"].startswith(reusable)]

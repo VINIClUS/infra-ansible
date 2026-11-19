@@ -143,14 +143,14 @@ def test_native_host_role_has_exact_read_only_capability():
         resources, _ = render(native, data, "host-exact")
         role = resources["aws_iam_role.host_gate[0]"]
         trust = json.loads(role["assume_role_policy"])["Statement"][0]
-        assert trust["Condition"]["StringEquals"][
-            "token.actions.githubusercontent.com:sub"
-        ] == (
-            "repo:VINIClUS/CnesData:ref:refs/heads/develop:job_workflow_ref:"
-            "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
-            + "c"
-            * 40
-        )
+        assert trust["Condition"]["StringEquals"] == {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:ref:refs/heads/main",
+            "token.actions.githubusercontent.com:job_workflow_ref": (
+                "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
+                + "c" * 40
+            ),
+        }
         statements = json.loads(
             resources["aws_iam_role_policy.host_gate[0]"]["policy"]
         )["Statement"]

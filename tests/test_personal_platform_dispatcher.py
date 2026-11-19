@@ -275,6 +275,30 @@ def test_live_attempt_checks_do_not_accept_latest_or_ambiguous_boundaries():
         g.verify_run(run, ref)
 
 
+@pytest.mark.parametrize("branch", ["main", "develop", "release"])
+def test_host_current_caller_run_must_be_on_the_main_branch(branch):
+    """Amendment infra-ansible#55/6993274712: the manual caller of the host gate runs on main only."""
+    from test_personal_platform_deployer import binding
+
+    g = runtime()
+    ref = binding()["caller"]
+    run = {
+        "id": 12,
+        "run_attempt": 1,
+        "repository": {"full_name": "VINIClUS/CnesData"},
+        "head_sha": SHA,
+        "path": ref["workflow_path"],
+        "event": "workflow_dispatch",
+        "head_branch": branch,
+        "status": "in_progress",
+    }
+    if branch == "main":
+        g.verify_run(run, ref, caller=True)
+    else:
+        with pytest.raises(ValueError, match="manual current caller"):
+            g.verify_run(run, ref, caller=True)
+
+
 def test_host_response_rejects_nonce_mix_late_arrival_and_digest_tamper(tmp_path):
     from test_personal_platform_deployer import operation
 
@@ -531,7 +555,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
         "head_sha": SHA,
         "path": ".github/workflows/deploy.yml",
         "event": "workflow_dispatch",
-        "head_branch": "develop",
+        "head_branch": "main",
         "status": "in_progress",
         "referenced_workflows": [
             {
@@ -563,7 +587,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
     responses = {
         "repos/VINIClUS/CnesData/actions/runs/11/attempts/1": caller,
         "repos/VINIClUS/CnesData/actions/runs/12/attempts/1": producer,
-        "repos/VINIClUS/CnesData/compare/" + SHA + "...develop": {
+        "repos/VINIClUS/CnesData/compare/" + SHA + "...main": {
             "status": "ahead",
             "merge_base_commit": {"sha": SHA},
         },
@@ -840,7 +864,7 @@ def closed_ready_fixture():
         "head_sha": SHA,
         "path": b["caller"]["workflow_path"],
         "event": "workflow_dispatch",
-        "head_branch": "develop",
+        "head_branch": "main",
         "status": "in_progress",
         "run_started_at": g.utc(640),
     }
@@ -868,7 +892,7 @@ def closed_ready_fixture():
             "repository_id": 100,
             "head_repository_id": 100,
             "head_sha": SHA,
-            "head_branch": "develop",
+            "head_branch": "main",
         },
     }
     responses = {
@@ -1022,3 +1046,109 @@ def test_closed_ready_counterexamples_refuse_before_effect(mutation):
         responses[prefix + "actions/artifacts/66/zip"] += b"tamper"
     with pytest.raises(ValueError):
         g.admit_physical_action(gov["binding"], gov, api, clock)
+
+
+HOST_REUSABLE = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "sub-develop",
+        "sub-environment",
+        "sub-customized",
+        "reusable-pin",
+        "reusable-path",
+        "reusable-missing",
+    ],
+)
+def test_host_oidc_requires_the_default_branch_sub_and_the_pinned_reusable(
+    monkeypatch, mutation
+):
+    """Amendment infra-ansible#55/6993274712: the host has no environment, so the default `sub` is the main ref and the
+    reusable sha moves to its own `job_workflow_ref` claim, which the runner must now check itself."""
+    import base64
+    import json
+    import urllib.request
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    g = runtime()
+    claims = {
+        "iss": "https://token.actions.githubusercontent.com",
+        "aud": "sts.amazonaws.com",
+        "sub": "repo:VINIClUS/CnesData:ref:refs/heads/main",
+        "job_workflow_ref": HOST_REUSABLE + "@" + SHA,
+    }
+    if mutation == "sub-develop":
+        claims["sub"] = "repo:VINIClUS/CnesData:ref:refs/heads/develop"
+    if mutation == "sub-environment":
+        claims["sub"] = "repo:VINIClUS/CnesData:environment:production"
+    if mutation == "sub-customized":
+        claims["sub"] = (
+            "repo:VINIClUS/CnesData:ref:refs/heads/main:job_workflow_ref:"
+            + HOST_REUSABLE
+            + "@"
+            + SHA
+        )
+    if mutation == "reusable-pin":
+        claims["job_workflow_ref"] = HOST_REUSABLE + "@" + "c" * 40
+    if mutation == "reusable-path":
+        claims["job_workflow_ref"] = (
+            HOST_REUSABLE.replace("host-deploy-gate", "signing-gate") + "@" + SHA
+        )
+    if mutation == "reusable-missing":
+        del claims["job_workflow_ref"]
+    payload = base64.urlsafe_b64encode(
+        json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    token = "header." + payload + ".signature"
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://example.actions.githubusercontent.com/id?request=1",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "synthetic")
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: io.BytesIO(json.dumps({"value": token}).encode()),
+    )
+    calls = []
+    expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    class Client:
+        def __init__(self, service):
+            self.service = service
+
+        def assume_role_with_web_identity(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "Credentials": {
+                    "AccessKeyId": "synthetic",
+                    "SecretAccessKey": "synthetic",
+                    "SessionToken": "synthetic",
+                    "Expiration": expiry,
+                }
+            }
+
+    monkeypatch.setitem(
+        sys.modules, "boto3", SimpleNamespace(client=lambda service, **k: Client(service))
+    )
+    monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules, "botocore.config", SimpleNamespace(Config=lambda **kwargs: kwargs)
+    )
+    governance = {
+        "binding": {"approval": {"reusable_sha": SHA}},
+        "region": "us-east-2",
+        "runner": {"role_arn": "arn:aws:iam::111122223333:role/synthetic-host"},
+    }
+    if mutation is None:
+        s3, ssm = g.runner_clients(governance)
+        assert (s3.service, ssm.service) == ("s3", "ssm")
+        assert [call["RoleArn"] for call in calls] == [governance["runner"]["role_arn"]]
+    else:
+        with pytest.raises((ValueError, KeyError)):
+            g.runner_clients(governance)
+        assert calls == []

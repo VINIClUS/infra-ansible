@@ -75,7 +75,7 @@ jobs:
           repo = "VINIClUS/CnesData"
           assert os.environ["GITHUB_REPOSITORY"] == repo
           assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          assert os.environ["GITHUB_REF"] == "refs/heads/main"
           assert re.fullmatch("[0-9a-f]{40}", os.environ["EXPECTED_SOURCE_SHA"])
           def get(path):
               request = urllib.request.Request("https://api.github.com/repos/" + path,
@@ -150,7 +150,7 @@ jobs:
           repo = "VINIClUS/CnesData"
           assert os.environ["GITHUB_REPOSITORY"] == repo
           assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-          assert os.environ["GITHUB_REF"] == "refs/heads/develop"
+          assert os.environ["GITHUB_REF"] == "refs/heads/main"
           assert re.fullmatch("[0-9a-f]{40}", os.environ["EXPECTED_SOURCE_SHA"])
           def get(path):
               request = urllib.request.Request("https://api.github.com/repos/" + path,

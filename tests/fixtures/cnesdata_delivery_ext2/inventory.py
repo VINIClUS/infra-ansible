@@ -104,7 +104,8 @@ def trust(v):
                 "Condition": {
                     "StringEquals": {
                         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                        "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-signing-gate.yml@"
+                        "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:environment:production",
+                        "token.actions.githubusercontent.com:job_workflow_ref": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-signing-gate.yml@"
                         + v["ext2"]["workflow_sha"],
                     }
                 },

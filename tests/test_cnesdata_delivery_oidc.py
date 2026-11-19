@@ -115,7 +115,8 @@ def test_application_owns_coordination_and_only_exact_product_delegation(native)
     assert trust[0]["Principal"] == {"Federated": variables()["github_delivery"]["provider_arn"]}
     assert trust[0]["Condition"]["StringEquals"] == {
         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-        "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@" + "c" * 40}
+        "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:environment:production",
+        "token.actions.githubusercontent.com:job_workflow_ref": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@" + "c" * 40}
     fragment = outputs["application_promotion"]
     assert fragment["sensitive"] is True
     assert fragment["value"]["application_role_arn"] == "arn:aws:iam::111122223333:role/cnesdata-prod-application"
@@ -125,7 +126,7 @@ def test_application_owns_coordination_and_only_exact_product_delegation(native)
     assert "caller" not in fragment["value"] and "predecessor_reads" not in fragment["value"]
     assert fragment["value"]["caller_by_purpose"] == {
         purpose: {"repository": "VINIClUS/CnesData", "workflow_path": path,
-                  "ref": "refs/heads/develop", "environment": "production"}
+                  "ref": "refs/heads/main", "environment": "production"}
         for purpose, path in (("promotion", ".github/workflows/promote-production.yml"),
                               ("mode-readiness-drill", ".github/workflows/readiness-production.yml"))}
     from fixtures.cnesdata_iam_evaluation import allowed
@@ -200,8 +201,10 @@ def test_rendered_oidc_roles_are_separate_and_exact(native):
         assert statement["Action"] == "sts:AssumeRoleWithWebIdentity"
         assert statement["Principal"] == {"Federated": variables()["github_delivery"]["provider_arn"]}
         exact = statement["Condition"]["StringEquals"]
-        assert exact == {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com", "token.actions.githubusercontent.com:sub":
-            f"repo:VINIClUS/CnesData:environment:production:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml@{char * 40}"}
+        assert exact == {"token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": "repo:VINIClUS/CnesData:environment:production",
+            "token.actions.githubusercontent.com:job_workflow_ref":
+            f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml@{char * 40}"}
         assert statement["Condition"]["DateLessThan"] == {"aws:CurrentTime": "2030-01-01T00:00:00Z"}
         policy = json.loads(resources[f'aws_iam_role_policy.delivery["{role}"]']["policy"])
         assert any(s["Effect"] == "Deny" and "sts:AssumeRole" in s["Action"] for s in policy["Statement"])

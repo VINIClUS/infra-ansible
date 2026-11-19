@@ -32,7 +32,7 @@ output "application_promotion" {
       for purpose, workflow in { promotion = "promote-production.yml", mode-readiness-drill = "readiness-production.yml" } : purpose => {
         repository                         = "VINIClUS/CnesData"
         workflow_path                      = ".github/workflows/${workflow}"
-        ref                                = "refs/heads/develop"
+        ref                                = "refs/heads/main"
         environment                        = "production"
       }
     }

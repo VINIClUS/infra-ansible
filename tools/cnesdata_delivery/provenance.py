@@ -62,7 +62,7 @@ def application_caller(api, governance, run, role, step, *, include_job=False):
     caller = lc.APPLICATION_CALLERS[purpose]
     source = c.digest(governance["source_sha"], 40)
     c.require(run["repository"]["full_name"] == caller["repository"] and run["path"].split("@")[0] == caller["workflow_path"]
-              and run["head_sha"] == source and run["head_branch"] == "develop"
+              and run["head_sha"] == source and run["head_branch"] == "main"
               and run["event"] == "workflow_dispatch" and run["status"] == "in_progress", "original purpose caller run")
     c.require(os.environ.get("GITHUB_WORKFLOW_REF") == caller["repository"] + "/" + caller["workflow_path"] + "@" + caller["ref"]
               and os.environ.get("GITHUB_WORKFLOW_SHA") == source and os.environ.get("GITHUB_JOB") == step["producer_job"],
@@ -140,7 +140,7 @@ def historical_plan_governance(governance, purpose):
 
 def admit_source(actual, expected, credential_callback):
     require(actual == expected and actual["repository"] == REPOSITORY
-            and actual["event"] == "workflow_dispatch" and actual["ref"] == "refs/heads/develop", "source admission")
+            and actual["event"] == "workflow_dispatch" and actual["ref"] == "refs/heads/main", "source admission")
     return credential_callback()
 
 
@@ -271,7 +271,7 @@ def validate_proof(proof, files, governance, api, now, source_sha, purpose, role
     closed(proof, "proof_version source producer artifacts reports checks candidate_sha256 promotion_evidence_sha256 plan_binding_sha256 observed_at expires_at")
     require(proof["proof_version"] == 1 and type(proof["proof_version"]) is int, "proof version")
     closed(proof["source"], "repository ref source_sha")
-    require(proof["source"] == {"repository": REPOSITORY, "ref": "refs/heads/develop", "source_sha": source_sha}, "proof source")
+    require(proof["source"] == {"repository": REPOSITORY, "ref": "refs/heads/main", "source_sha": source_sha}, "proof source")
     require(instant(proof["observed_at"]) <= now < instant(proof["expires_at"]), "proof expiry")
     producer = closed(proof["producer"], "repository workflow_path workflow_sha run_id run_attempt")
     require({k: producer[k] for k in ("repository", "workflow_path", "workflow_sha")} in governance["proof_producers"], "unapproved producer code")
@@ -319,7 +319,7 @@ def preflight(descriptor, governance, api, role, now):
         require(item["reference"] == governance["artifact_references"][item["purpose"]], "baseline independent producer reference")
     require(descriptor["producer_pins"] == governance["dependencies"], "dependency pins")
     current = api.read(f"repos/{REPOSITORY}/actions/runs/{os.environ['GITHUB_RUN_ID']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}")
-    expected = {"repository": REPOSITORY, "ref": "refs/heads/develop", "event": "workflow_dispatch",
+    expected = {"repository": REPOSITORY, "ref": "refs/heads/main", "event": "workflow_dispatch",
                 "source_sha": source, "role": role,
                 "workflow_path": f".github/workflows/infra-{'plan' if role == 'plan' else 'apply'}.yml"}
     actual = expected | {"repository": current["repository"]["full_name"], "source_sha": current["head_sha"],
@@ -329,8 +329,8 @@ def preflight(descriptor, governance, api, role, now):
               "workflow_ref": f"{REPOSITORY}/{actual['workflow_path']}@{current['head_sha']}"}
     require(caller in governance["caller_allowlist"], "reviewed caller/source catalog allowlist")
     require(producer_sha(current, role) == governance["gate_shas"][role], "reviewed reusable pin")
-    compare = api.read(f"repos/{REPOSITORY}/compare/{source}...develop")
-    require(compare["status"] in {"ahead", "identical"}, "source not contained in develop")
+    compare = api.read(f"repos/{REPOSITORY}/compare/{source}...main")
+    require(compare["status"] in {"ahead", "identical"}, "source not contained in main")
     checks = api.read(f"repos/{REPOSITORY}/commits/{source}/check-runs?per_page=100")["check_runs"]
     require(all(any(c["name"] == name and c["conclusion"] == "success" and c["head_sha"] == source for c in checks)
                 for name in governance["required_checks"]), "required source checks")

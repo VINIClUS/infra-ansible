@@ -154,7 +154,7 @@ def transport_case():
                 "repository": repo,
                 "head_repository": repo,
                 "head_sha": SOURCE,
-                "head_branch": "develop",
+                "head_branch": "main",
                 "event": "workflow_dispatch",
                 "path": CALLER,
                 "status": "in_progress",
@@ -210,7 +210,7 @@ def transport_case():
                 },
             },
             artifact_path + "/zip": archive,
-            f"repos/{REPOSITORY}/compare/{SOURCE}...develop": {"status": "identical"},
+            f"repos/{REPOSITORY}/compare/{SOURCE}...main": {"status": "identical"},
             f"repos/{REPOSITORY}/commits/{SOURCE}/check-runs?per_page=100": {
                 "total_count": 1,
                 "check_runs": [

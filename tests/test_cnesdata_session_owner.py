@@ -154,7 +154,7 @@ def original_owner(role="plan", purpose="bootstrap"):
         "proof_version": 1,
         "source": {
             "repository": c.REPOSITORY,
-            "ref": "refs/heads/develop",
+            "ref": "refs/heads/main",
             "source_sha": source,
         },
         "producer": producer,

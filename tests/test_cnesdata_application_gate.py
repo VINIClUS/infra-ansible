@@ -474,7 +474,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
                   "gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "promotion / keeper"}
     run = {"id": 44, "run_attempt": 1, "head_sha": "b" * 40, "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
-           "status": "in_progress", "conclusion": None, "head_branch": "develop",
+           "status": "in_progress", "conclusion": None, "head_branch": "main",
            "referenced_workflows": [{"path": "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml@" + "a" * 40,
                                      "sha": "a" * 40, "ref": "refs/heads/main"}]}
     job = {"id": 9, "run_id": 44, "run_attempt": 1, "head_sha": "b" * 40, "name": "promotion / keeper",
@@ -521,8 +521,22 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
     return aws, api, governance, store, run, job, objects, receipt
 
 
+@pytest.mark.parametrize("branch", ["main", "develop"])
+def test_published_terminal_admits_only_a_predecessor_run_on_main(monkeypatch, tmp_path, branch):
+    """Amendment infra-ansible#55/6993274712. `authenticate_predecessor` refuses a develop run first; this guard is the second."""
+    from tools.cnesdata_delivery.application_gate import published_terminal
+    aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
+    previous = store.get()[0]
+    run["head_branch"] = branch
+    if branch == "main":
+        assert published_terminal(api, governance, previous)[0]["head_branch"] == "main"
+    else:
+        with pytest.raises(ValueError, match="previous lifecycle run not terminal success"):
+            published_terminal(api, governance, previous)
+
+
 @pytest.mark.parametrize("application_purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release"])
+@pytest.mark.parametrize("mutation", [None, "missing", "incomplete", "tampered", "release", "branch"])
 def test_published_original_lifecycle_terminal_allows_successor_without_state_access(monkeypatch, tmp_path, mutation, application_purpose):
     aws, api, governance, store, run, job, objects, receipt = _publish_terminal_fixture(monkeypatch, tmp_path)
     previous = store.get()[0]
@@ -552,6 +566,7 @@ def test_published_original_lifecycle_terminal_allows_successor_without_state_ac
         if mutation == "missing": governance.pop("lifecycle_predecessor")
         if mutation == "incomplete": reference.pop("objects")
         if mutation == "tampered": reference["objects"][0]["sha256"] = "0" * 64
+        if mutation == "branch": run["head_branch"] = "develop"  # the trail moved to main (amendment 6993274712)
         before = store.get()
         writes = store.writes
         monkeypatch.setattr(keeper.lease, "acquire", lambda: pytest.fail("invalid history reached Lease.acquire"))
@@ -857,7 +872,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
            "gate_shas": {"application": "a" * 40, role: role_pin}, "required_checks": ["CI"],
            "application_source_closure_sha256": "d" * 64, "application_product_source_manifest": manifest,
            "application_product_source_closure_sha256": c.sha(c.canonical(manifest))}
-    run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "develop",
+    run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "main",
            "repository": {"full_name": c.REPOSITORY}, "event": "workflow_dispatch", "path": caller["workflow_path"],
            "status": "in_progress", "referenced_workflows": [{"path": shared, "sha": role_pin}]}
     step = {"caller_job": "promote", "producer_job": "keeper", "job_name": "promote / keeper",
@@ -866,19 +881,21 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
            "status": "in_progress", "conclusion": None,
            "steps": [{"name": "Authenticate original caller", "status": "in_progress"}]}
     claims = {"iss": "https://token.actions.githubusercontent.com", "aud": "sts.amazonaws.com",
-              "sub": f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{shared}",
-              "repository": c.REPOSITORY, "ref": "refs/heads/develop", "environment": "production",
-              "job_workflow_ref": shared, "workflow_ref": c.REPOSITORY + "/" + caller["workflow_path"] + "@refs/heads/develop",
+              "sub": f"repo:{c.REPOSITORY}:environment:production",
+              "repository": c.REPOSITORY, "ref": "refs/heads/main", "environment": "production",
+              "job_workflow_ref": shared, "workflow_ref": c.REPOSITORY + "/" + caller["workflow_path"] + "@refs/heads/main",
               "workflow_sha": "b" * 40, "sha": "b" * 40, "event_name": "workflow_dispatch", "run_id": "44", "run_attempt": "2"}
     class API:
         def read(self, path, **kwargs):
             if "/contents/" in path: return {"encoding": "base64", "content": base64.b64encode(self.raw).decode()}
-            if "/compare/" in path: return {"status": "identical"}
+            if "/compare/" in path:
+                assert path == f"repos/{c.REPOSITORY}/compare/{'b' * 40}...main", path  # containment is in main (amendment 6993274712)
+                return {"status": "identical"}
             if "/check-runs" in path: return {"check_runs": [{"name": "CI", "head_sha": "b" * 40, "conclusion": "success"}]}
             if "/jobs?" in path: return {"total_count": 1, "jobs": [job]}
             return run
     api = API(); api.raw = raw
-    for key, value in {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/develop",
+    for key, value in {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
                        "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_JOB": "keeper",
                        "GITHUB_WORKFLOW_REF": claims["workflow_ref"], "GITHUB_WORKFLOW_SHA": "b" * 40}.items():
         monkeypatch.setenv(key, value)
@@ -887,7 +904,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
 
 @pytest.mark.parametrize("role", ["application", "plan", "deploy"])
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "crossed-workflow", "source-bytes", "wrong-uses", "job-attempt", "job-step", "job-name", "job-step-config", "context", "manifest", "env-workflow"])
+@pytest.mark.parametrize("mutation", [None, "crossed-workflow", "source-bytes", "wrong-uses", "job-attempt", "job-step", "job-name", "job-step-config", "context", "manifest", "env-workflow", "ref-develop", "branch-develop"])
 def test_application_caller_authenticates_original_source_job_and_purpose(monkeypatch, purpose, mutation, role):
     from tools.cnesdata_delivery import lifecycle_runtime, provenance
     gov, api, run, step, job, _ = _application_caller_fixture(monkeypatch, purpose, role)
@@ -906,6 +923,8 @@ def test_application_caller_authenticates_original_source_job_and_purpose(monkey
     if mutation == "context": gov["context_kind"] = "readiness" if purpose == "promotion" else "promotion"
     if mutation == "manifest": gov["application_product_source_closure_sha256"] = "0" * 64
     if mutation == "env-workflow": monkeypatch.setenv("GITHUB_WORKFLOW_REF", "other")
+    if mutation == "ref-develop": monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+    if mutation == "branch-develop": run["head_branch"] = "develop"
     assert callable(getattr(provenance, "application_caller", None)), "source/run caller authenticator required"
     def authenticate():
         observed = lifecycle_runtime.source_admission(gov, api, role, "b" * 40, 44, 2)
@@ -919,7 +938,8 @@ def test_application_caller_authenticates_original_source_job_and_purpose(monkey
         with pytest.raises(ValueError): authenticate()
 
 
-@pytest.mark.parametrize("mutation", [None, "workflow", "sha", "event", "environment", "attempt", "caller-missing"])
+@pytest.mark.parametrize("mutation", [None, "workflow", "sha", "event", "environment", "attempt", "caller-missing",
+                                      "sub-staging", "sub-branch", "sub-customized", "reusable-pin", "reusable-path", "ref"])
 def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mutation):
     import base64
     import io
@@ -933,12 +953,21 @@ def test_oidc_application_claim_mismatch_is_rejected_before_sts(monkeypatch, mut
         "producer_source_closure_sha256": "d" * 64, "event": "workflow_dispatch", "fragment_version": 4}
     gov["authenticated_application_caller"] = lc.application_caller_binding(evidence, {"workflow_sha": "a" * 40, "source_closure_sha256": "d" * 64})
     gov["roles"] = {"application": "arn:aws:iam::111122223333:role/cnesdata-prod-application"}
-    if mutation == "workflow": claims["workflow_ref"] = c.REPOSITORY + "/.github/workflows/other.yml@refs/heads/develop"
+    if mutation == "workflow": claims["workflow_ref"] = c.REPOSITORY + "/.github/workflows/other.yml@refs/heads/main"
     if mutation == "sha": claims["sha"] = "c" * 40
     if mutation == "event": claims["event_name"] = "push"
     if mutation == "environment": claims["environment"] = "staging"
     if mutation == "attempt": claims["run_attempt"] = "1"
     if mutation == "caller-missing": gov.pop("authenticated_application_caller")
+    # Amendment infra-ansible#55/6993274712: the default `sub` of a job with an environment, and the reusable pinned by the
+    # separate `job_workflow_ref` claim. The customized template (`...:job_workflow_ref:<ref>` inside `sub`) is never issued.
+    shared = claims["job_workflow_ref"]
+    if mutation == "sub-staging": claims["sub"] = f"repo:{c.REPOSITORY}:environment:staging"
+    if mutation == "sub-branch": claims["sub"] = f"repo:{c.REPOSITORY}:ref:refs/heads/main"
+    if mutation == "sub-customized": claims["sub"] = f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{shared}"
+    if mutation == "reusable-pin": claims["job_workflow_ref"] = shared.split("@")[0] + "@" + "f" * 40
+    if mutation == "reusable-path": claims["job_workflow_ref"] = shared.replace("application-gate", "infra-plan-gate")
+    if mutation == "ref": claims["ref"] = "refs/heads/develop"
     token = "header." + base64.urlsafe_b64encode(c.canonical(claims)).decode().rstrip("=") + ".signature"
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/id?request=1")
     monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "synthetic")
@@ -2771,7 +2800,7 @@ def test_fence_producer_accepts_only_completed_exact_deploy_before_private_reads
     governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": owner["context_kind"],
                   "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"],
-           "event": "workflow_dispatch", "repository": {"full_name": c.REPOSITORY}, "head_branch": "develop",
+           "event": "workflow_dispatch", "repository": {"full_name": c.REPOSITORY}, "head_branch": "main",
            "path": ".github/workflows/promote-production.yml", "referenced_workflows": [{
                "path": "VINIClUS/infra-ansible/" + producer["workflow_path"] + "@" + producer["workflow_sha"], "sha": producer["workflow_sha"]}]}
     names = ["Load actual immutable producer from authenticated run", "Verify complete public source and admission proof",
@@ -3145,7 +3174,7 @@ def test_admission_retains_artifact_digests_only_for_the_application_role(monkey
 
 
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "caller", "ref", "pin", "attempt", "source"])
+@pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "caller", "ref", "branch", "pin", "attempt", "source"])
 def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch, tmp_path, purpose, mutation):
     import base64
     import io
@@ -3162,7 +3191,7 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
     path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml"
     run = {"head_sha": product, "run_attempt": 2, "repository": {"full_name": c.REPOSITORY},
         "event": "workflow_dispatch", "path": lc.APPLICATION_CALLERS[purpose]["workflow_path"],
-        "head_branch": "develop", "status": "in_progress",
+        "head_branch": "main", "status": "in_progress",
         "referenced_workflows": [{"path": path + "@" + pin, "sha": pin}]}
     gov = {"activation_enabled": True, "lifecycle_enabled": True, "application_purpose": purpose,
         "context_kind": lc.APPLICATION_CONTEXTS[purpose], "application_configuration": {"fixture": True},
@@ -3173,8 +3202,9 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
     if mutation == "pin": run["referenced_workflows"][0]["path"] = path + "@main"
     if mutation == "attempt": run["run_attempt"] = 1
     if mutation == "source": run["head_sha"] = "c" * 40
+    if mutation == "branch": run["head_branch"] = "develop"
     env = {"DELIVERY_ROLE": "application", "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/main" if mutation == "ref" else "refs/heads/develop", "EXPECTED_SOURCE_SHA": product,
+        "GITHUB_REF": "refs/heads/develop" if mutation == "ref" else "refs/heads/main", "EXPECTED_SOURCE_SHA": product,
         "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2", "GITHUB_TOKEN": "synthetic-http-token",
         "CNESDATA_DELIVERY_GOVERNANCE": c.canonical(gov).decode()}
     for key, value in env.items(): monkeypatch.setenv(key, value)
@@ -3209,7 +3239,7 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
 @pytest.mark.parametrize("role", ["plan", "deploy"])
 @pytest.mark.parametrize("job", ["validate", "execute"])
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
-@pytest.mark.parametrize("mutation", [None, "crossed-context", "disabled", "old-fragment"])
+@pytest.mark.parametrize("mutation", [None, "crossed-context", "disabled", "old-fragment", "ref"])
 def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypatch, tmp_path, role, job, purpose, mutation):
     import base64
     import io
@@ -3234,7 +3264,8 @@ def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypat
     if mutation == "old-fragment": gov["application_fragment"]["fragment_version"] = 3
     if mutation == "crossed-context": gov["context_kind"] = "readiness" if purpose == "promotion" else "promotion"
     env = {"DELIVERY_ROLE": role, "GITHUB_REPOSITORY": c.REPOSITORY, "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/develop", "EXPECTED_SOURCE_SHA": product, "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2",
+        "GITHUB_REF": "refs/heads/develop" if mutation == "ref" else "refs/heads/main", "EXPECTED_SOURCE_SHA": product,
+        "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2",
         "GITHUB_TOKEN": "synthetic-http-token", "CNESDATA_DELIVERY_GOVERNANCE": c.canonical(gov).decode(), "PURPOSE": "application-prepare"}
     for key, value in env.items(): monkeypatch.setenv(key, value)
     downloads = []
@@ -3309,7 +3340,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
     gov = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": "promotion",
            "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"], "event": "workflow_dispatch",
-        "repository": {"full_name": c.REPOSITORY}, "head_branch": "develop", "path": ".github/workflows/promote-production.yml",
+        "repository": {"full_name": c.REPOSITORY}, "head_branch": "main", "path": ".github/workflows/promote-production.yml",
         "referenced_workflows": [{"path": "VINIClUS/infra-ansible/" + producer["workflow_path"] + "@" + producer["workflow_sha"],
             "sha": producer["workflow_sha"]}]}
     workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / producer["workflow_path"]).read_text())

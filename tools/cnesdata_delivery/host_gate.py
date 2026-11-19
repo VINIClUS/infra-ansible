@@ -840,7 +840,7 @@ def validate_binding(b):
     run_ref(b["caller"])
     require(
         b["caller"]["repository"] == REPOSITORY
-        and b["caller"]["ref"] == "refs/heads/develop",
+        and b["caller"]["ref"] == "refs/heads/main",
         "caller source",
     )
     art = closed(
@@ -2058,7 +2058,7 @@ def verify_run(run, reference, *, caller=False):
     if caller:
         require(
             run["event"] == "workflow_dispatch"
-            and run["head_branch"] == "develop"
+            and run["head_branch"] == "main"
             and run["status"] == "in_progress",
             "manual current caller",
         )
@@ -2185,11 +2185,11 @@ def authenticate_request(request, governance, api, now):
         and "ref" not in refs[0],
         "actual immutable reusable",
     )
-    compare = api.read(f"repos/{REPOSITORY}/compare/{caller['source_sha']}...develop")
+    compare = api.read(f"repos/{REPOSITORY}/compare/{caller['source_sha']}...main")
     require(
         compare["status"] in {"identical", "ahead"}
         and compare["merge_base_commit"]["sha"] == caller["source_sha"],
-        "develop containment",
+        "main containment",
     )
     checks = api.read(
         f"repos/{REPOSITORY}/commits/{caller['source_sha']}/check-runs?per_page=100"
@@ -2600,7 +2600,7 @@ def public_handoff(response, request, binding, now):
     run_ref(caller)
     require(
         caller["repository"] == REPOSITORY
-        and caller["ref"] == "refs/heads/develop"
+        and caller["ref"] == "refs/heads/main"
         and caller["workflow_path"] == ".github/workflows/promote-production.yml"
         and caller == request.admission.ready["common"]["caller"],
         "public caller whitelist",
@@ -4465,7 +4465,7 @@ def runner_request(governance, token):
     require(
         os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        and os.environ.get("GITHUB_REF") == "refs/heads/develop"
+        and os.environ.get("GITHUB_REF") == "refs/heads/main"
         and os.environ.get("GITHUB_SHA") == caller["source_sha"]
         and os.environ.get("GITHUB_RUN_ID") == str(caller["run_id"])
         and os.environ.get("GITHUB_RUN_ATTEMPT") == str(caller["run_attempt"]),
@@ -4929,7 +4929,7 @@ def admit_physical_action(binding, governance=None, api=None, clock=None):
         == run["repository"]["id"]
         == run["head_repository"]["id"]
         and original["head_sha"] == caller["source_sha"]
-        and original["head_branch"] == "develop"
+        and original["head_branch"] == "main"
         and instant(run["run_started_at"])
         <= instant(job["started_at"])
         < instant(meta["created_at"])
@@ -5006,12 +5006,13 @@ def runner_clients(governance):
     claim = oidc.split(".")[1]
     claims = host_json(base64.urlsafe_b64decode(claim + "=" * (-len(claim) % 4)), 16384)
     pin = governance["binding"]["approval"]["reusable_sha"]
-    subject = (
-        "repo:VINIClUS/CnesData:ref:refs/heads/develop:job_workflow_ref:VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
+    reusable = (
+        "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host-deploy-gate.yml@"
         + pin
     )
     require(
-        claims["sub"] == subject
+        claims["sub"] == "repo:VINIClUS/CnesData:ref:refs/heads/main"
+        and claims.get("job_workflow_ref") == reusable
         and claims["aud"] == "sts.amazonaws.com"
         and claims["iss"] == "https://token.actions.githubusercontent.com",
         "exact host OIDC claims",

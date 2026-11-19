@@ -39,7 +39,7 @@ closed lifecycle purposes `application-prepare`, `phase-b`,
 `phase-c-recovery`, `phase-c-audit` and `static-maintenance`. Those purposes
 require the original authenticated immutable reusable and an explicit current
 `application_purpose`. Promotion uses manual `promote-production.yml`; readiness
-uses manual `readiness-production.yml`, both on develop/production. Readiness
+uses manual `readiness-production.yml`, both on main/production. Readiness
 infra admission permits only application-prepare/mode-canary. Initial purposes
 retain their initial manual callers and eight-input/four-output interface.
 
@@ -88,6 +88,23 @@ account/region, application identity, immutable producer/closure, the exact
 ARNs, trust/policy commitments and expiration. Versions 1/2/3 and singular
 `caller` are rejected; historical evidence retains its own original bytes and
 protocol. This fragment remains separate from shared_outputs/v2.
+
+Delivery trail (amendment infra-ansible#55/6993274712). The CnesData `production` environment admits only
+`main`, so every caller binding in `caller_by_purpose` carries `ref` `refs/heads/main`, and every gate, the
+source admission and the containment checks assert `main` (run `head_branch`, `GITHUB_REF`, the OIDC `ref`
+claim, `compare/<source>...main`, `runs?branch=main`). The CnesData static-promotion validation of
+`caller_by_purpose` and `producer.workflow_sha == binding.shared_source_sha` must agree with this fragment,
+so both change in one hand-off (CnesData R3). The pinned `static-promotion.tf` below is a snapshot of
+CnesData `28597b30`; it still validates `develop` and is re-pinned from the real CnesData commit at that
+hand-off, never edited here. The `source-develop-checks` name in `provenance.BASE_CHECKS` is a check
+name emitted by CnesData evidence and is renamed only together with the CnesData emitter.
+
+OIDC subject. CnesData uses GitHub's default `sub` template. Each delivery trust therefore matches the
+default `sub` (`repo:VINIClUS/CnesData:environment:production` for the jobs with an environment,
+`repo:VINIClUS/CnesData:ref:refs/heads/main` for the host gate, which declares none) and a separate
+`token.actions.githubusercontent.com:job_workflow_ref` `StringEquals` condition with the reusable at its
+sha. The runners compare the same two claims before asking STS; the host gate gained the `job_workflow_ref`
+comparison because the sha used to live only inside its `sub`.
 
 The raw enabled Terraform input has exactly five required fields
 `role_name/workflow_sha/source_closure_sha256/enabled_until/delegations` and only

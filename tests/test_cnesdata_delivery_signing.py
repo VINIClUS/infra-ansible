@@ -1269,6 +1269,32 @@ def test_verify_ext2_reference_aceita_head_sem_bucket_key(
     assert result.signature_der == produced.signature.body
 
 
+@pytest.mark.parametrize("branch", ["main", "develop"])
+def test_retained_activation_requires_the_original_run_on_main(
+    gate, crypto, tmp_path, monkeypatch, branch
+):
+    """Amendment infra-ansible#55/6993274712: the original caller run of the EXT2 reference ran on main."""
+    monkeypatch.chdir(tmp_path)
+    case, reference, _ = published_case(gate, crypto)
+    gov, api, _, s3, _, payload = case
+    api.responses[f"repos/{REPOSITORY}/actions/runs/123/attempts/1"]["head_branch"] = branch
+
+    def read():
+        return gate.read_retained_activation(
+            reference,
+            github=api,
+            s3=s3,
+            governance=gov,
+            now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        )
+
+    if branch == "main":
+        assert read().payload_bytes == payload
+    else:
+        with pytest.raises(ValueError, match="run_identity"):
+            read()
+
+
 def test_retained_activation_reads_original_versions_without_resign_or_refresh(
     gate, crypto, tmp_path, monkeypatch
 ):
@@ -1646,7 +1672,7 @@ def test_publisher_record_uses_real_uploader_outputs_and_api_job_identity(gate):
     assert "arn:" not in record and "synthetic-ext2-evidence" not in record
 
 
-def test_workflow_pins_custom_sub_and_publisher_closure():
+def test_workflow_pins_production_environment_and_publisher_closure():
     import yaml
 
     path = (
@@ -1810,9 +1836,10 @@ def test_cli_without_authentic_protected_governance_fails_before_sdk(gate, tmp_p
     assert "Traceback" not in result.stderr and "private-invalid" not in result.stderr
 
 
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/develop"])
 @pytest.mark.parametrize("tampered", [False, True])
 def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
-    tmp_path, monkeypatch, tampered
+    tmp_path, monkeypatch, tampered, ref
 ):
     import urllib.request
     import urllib.parse
@@ -1833,7 +1860,7 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
         "CNESDATA_DELIVERY_GOVERNANCE": canonical({"ext2": gov}).decode(),
         "GITHUB_REPOSITORY": REPOSITORY,
         "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_REF": "refs/heads/develop",
+        "GITHUB_REF": ref,
         "GITHUB_SHA": SOURCE,
         "EXPECTED_SOURCE_SHA": SOURCE,
         "GITHUB_RUN_ID": "123",
@@ -1874,15 +1901,17 @@ def test_actual_workflow_bootstrap_fetches_only_api_pinned_helper_bytes(
     monkeypatch.chdir(tmp_path)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    if tampered:
+    if tampered or ref != "refs/heads/main":
         with pytest.raises((ValueError, AssertionError)):
             exec(compile(source, "ratified-workflow-bootstrap", "exec"), {})
         assert not (tmp_path / "tools/cnesdata_delivery/evidence.py").exists()
+        if ref != "refs/heads/main":
+            assert calls == [], "the retired develop ref must be refused before any API read"
     else:
         exec(compile(source, "ratified-workflow-bootstrap", "exec"), {})
         assert (tmp_path / "tools/cnesdata_delivery/evidence.py").is_file()
         assert len(list(tmp_path.glob("tools/cnesdata_delivery/*"))) == 5
-    assert opened, (
+    assert opened or ref != "refs/heads/main", (
         "source bootstrap must refuse metadata redirects before code is trusted"
     )
     assert all("@main" not in url and "private-token" not in url for url in calls)

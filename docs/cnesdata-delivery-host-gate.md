@@ -27,7 +27,7 @@ ainda são dependências de Ready. validate não altera a aplicação.
 ## Interface pública e admissão
 
 O reusable é exclusivamente workflow_call. O caller original deve ser manual,
-VINIClUS/CnesData, refs/heads/develop, com run, attempt e source SHA exatos.
+VINIClUS/CnesData, refs/heads/main, com run, attempt e source SHA exatos.
 Os cinco inputs obrigatórios são strings:
 
 | Input | Autoridade conferida |
@@ -67,7 +67,7 @@ paths, scripts, URLs de objetos, pins ou overrides.
 
 O bootstrap lê a API do attempt atual, identifica o reusable efetivo em
 referenced_workflows e baixa o runtime daquele commit. Não usa github.sha como
-SHA do reusable. Antes de OIDC, o Python repete a autenticação, develop containment,
+SHA do reusable. Antes de OIDC, o Python repete a autenticação, main containment,
 checks obrigatórios, arquivos de origem e attempt CI. A data de criação do
 artifact precisa estar estritamente dentro do intervalo do attempt original.
 O SHA do ZIP, os bytes do archive e todos os compromissos do envelope concordam.
@@ -416,7 +416,8 @@ container precisa permitir o arquivo temporário de validação.
 
 host_gate=null preserva o seed e os dois outputs EXT1 existentes. Habilitado,
 adiciona o leaf github.host_deploy_role_arn; o fragmento não é shared_outputs v2
-completo. Trust usa customized sub de ref develop e job_workflow_ref por SHA.
+completo. Trust usa o sub padrão de ref main (o host não declara environment) e uma condição
+job_workflow_ref própria por SHA; o runner compara os dois claims antes do STS.
 Não copia o contexto environment:production exclusivo dos gates infra.
 
 Permissões Allow são somente GetObjectVersion por objeto/version exatos,

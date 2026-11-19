@@ -88,10 +88,11 @@ def provenance():
 
 
 @pytest.mark.parametrize("field,bad", [("repository", "foreign/CnesData"), ("ref", "refs/heads/evil"),
+    ("ref", "refs/heads/develop"),
     ("event", "pull_request"), ("workflow_path", ".github/workflows/other.yml"),
     ("source_sha", "f" * 40), ("role", "deploy")])
 def test_source_denied_before_credential_callback(provenance, field, bad):
-    expected = {"repository": "VINIClUS/CnesData", "ref": "refs/heads/develop", "event": "workflow_dispatch",
+    expected = {"repository": "VINIClUS/CnesData", "ref": "refs/heads/main", "event": "workflow_dispatch",
                 "workflow_path": ".github/workflows/infra-plan.yml", "source_sha": "a" * 40, "role": "plan"}
     calls = []
     with pytest.raises(ValueError):
@@ -689,6 +690,27 @@ def test_historical_phase_input_context_is_independently_governed(contract):
         historical_plan_governance(governance, "phase-a")
 
 
+@pytest.mark.parametrize("name", ["sub-staging", "sub-branch", "sub-customized", "reusable-pin", "reusable-role", "ref"])
+def test_oidc_refuses_claims_off_the_default_sub_and_the_pinned_reusable(monkeypatch, tmp_path, name):
+    """Amendment infra-ansible#55/6993274712: default `sub` plus a separate `job_workflow_ref` claim."""
+    from fixtures.cnesdata_session_chain import OwnerChain as Chain
+    from tools.cnesdata_delivery import runtime
+    chain = Chain(monkeypatch, tmp_path)
+    path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-"
+    reusable = path + "plan-gate.yml@" + chain.gov["gate_shas"]["plan"]
+    chain.oidc_claims = {
+        "sub-staging": {"sub": "repo:VINIClUS/CnesData:environment:staging"},
+        "sub-branch": {"sub": "repo:VINIClUS/CnesData:ref:refs/heads/main"},
+        "sub-customized": {"sub": "repo:VINIClUS/CnesData:environment:production:job_workflow_ref:" + reusable},
+        "reusable-pin": {"job_workflow_ref": path + "plan-gate.yml@" + "f" * 40},
+        "reusable-role": {"job_workflow_ref": path + "deploy-gate.yml@" + chain.gov["gate_shas"]["plan"]},
+        "ref": {"ref": "refs/heads/develop"},
+    }[name]
+    with pytest.raises(ValueError, match="OIDC governed claims"):
+        runtime.credentials("plan")
+    assert getattr(chain, "sts_request", None) is None
+
+
 def test_oidc_request_limits_session_to_authenticated_current_run(monkeypatch, tmp_path):
     from fixtures.cnesdata_session_chain import OwnerChain as Chain
     from tools.cnesdata_delivery import runtime
@@ -1239,3 +1261,36 @@ def test_complete_artifact_inventory_rejects_shared_attempt_second(contract, pro
         artifact_id = references[target]["artifact_id"]
         assert not any(path.endswith(f"/artifacts/{artifact_id}/zip") for path in calls)
         assert (contract.REPOSITORY, artifact_id) not in api.expiries
+
+
+# Amendment infra-ansible#55/6993274712: the CnesData `production` environment admits only `main`, so every gate
+# asserts the caller ref and the run branch as `main`. Exact per-file counts make a dropped or retargeted assertion fail.
+REUSABLE_BRANCH_SITES = {
+    "reusable-cnesdata-application-gate.yml": (1, 1),
+    "reusable-cnesdata-infra-plan-gate.yml": (2, 0),
+    "reusable-cnesdata-infra-deploy-gate.yml": (2, 0),
+    "reusable-cnesdata-signing-gate.yml": (3, 3),
+    "reusable-cnesdata-host-deploy-gate.yml": (2, 0),
+}
+
+
+@pytest.mark.parametrize("name", sorted(REUSABLE_BRANCH_SITES))
+def test_reusables_admit_only_the_main_trail(name):
+    import re
+    text = (ROOT / ".github/workflows" / name).read_text()
+    refs, branches = REUSABLE_BRANCH_SITES[name]
+    assert "develop" not in text
+    assert re.findall(r'"refs/heads/[A-Za-z0-9_./-]+"', text) == ['"refs/heads/main"'] * refs
+    assert re.findall(r'head_branch"\] == "[A-Za-z0-9_./-]+"', text) == ['head_branch"] == "main"'] * branches
+
+
+def test_delivery_tools_carry_no_develop_branch_literal_but_the_cross_repo_check_name():
+    """Every branch assertion of the trail is `main`. The only `develop` left is `source-develop-checks`, a check name
+    emitted by CnesData evidence that renames only together with its emitter (CnesData R3)."""
+    import ast
+    found = {}
+    for path in sorted((ROOT / "tools/cnesdata_delivery").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "develop" in node.value:
+                found.setdefault(path.name, []).append(node.value)
+    assert found == {"provenance.py": ["source-develop-checks"]}

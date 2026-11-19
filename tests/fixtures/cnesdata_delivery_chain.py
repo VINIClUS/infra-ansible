@@ -53,7 +53,7 @@ class Chain:
         self.gov["readbacks"] = [{"service": "dynamodb", "operation": "describe_table", "parameters": {"TableName": "fixture"},
                                   "expected_sha256": c.sha(c.canonical({"Table": {"Status": "ACTIVE"}}))}]
         self.gov["proof_producers"] = [{"repository": "VINIClUS/infra-ansible", "workflow_path": ".github/workflows/proof.yml", "workflow_sha": "e" * 40}]
-        self.gov["caller_allowlist"] = [{"repository": c.REPOSITORY, "ref": "refs/heads/develop", "source_ref": "a" * 40,
+        self.gov["caller_allowlist"] = [{"repository": c.REPOSITORY, "ref": "refs/heads/main", "source_ref": "a" * 40,
                                         "workflow_ref": f"{c.REPOSITORY}/.github/workflows/infra-{role}.yml@" + "a" * 40}
                                        for role in ("plan", "apply")]
         self.gov["artifact_purposes"] = sorted({"backend", "policy", "cost", "drift", "shared-outputs", "toolchain"})
@@ -86,7 +86,7 @@ class Chain:
         monkeypatch.setenv("PATH", str(binary) + ":" + os.environ["PATH"])
         monkeypatch.setenv("HOME", str(root))
         monkeypatch.setenv("GITHUB_TOKEN", "offline-http-boundary")
-        monkeypatch.setenv("GITHUB_REF", "refs/heads/develop")
+        monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
         monkeypatch.setenv("GITHUB_REPOSITORY", c.REPOSITORY)
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
         monkeypatch.setenv("GITHUB_OUTPUT", str(root / "gate.outputs"))
@@ -126,7 +126,7 @@ class Chain:
         value = {"id": run_id, "run_attempt": 1, "repository": {"full_name": repository}, "head_sha": source, "path": path,
                  "status": "completed" if terminal else "in_progress", "conclusion": "success" if terminal else None,
                  # self.now is one second behind the clock; artifacts are strictly interior.
-                 "event": "workflow_dispatch", "head_branch": "develop", "created_at": c.utc(self.now - 1),
+                 "event": "workflow_dispatch", "head_branch": "main", "created_at": c.utc(self.now - 1),
                  "run_started_at": c.utc(self.now - 1), "updated_at": c.utc(self.now + 1)}
         if role:
             pin = self.gov["gate_shas"][role]
@@ -173,7 +173,7 @@ class Chain:
             artifacts.append({"purpose": purpose, "reference": reference, "content_sha256": c.sha(c.canonical(inventory)), "expires_at": self.expires})
         producer_id = 100 if role == "plan" else 101
         producer = self.gov["proof_producers"][0] | {"run_id": producer_id, "run_attempt": 1}
-        value = {"proof_version": 1, "source": {"repository": c.REPOSITORY, "ref": "refs/heads/develop", "source_sha": "a" * 40},
+        value = {"proof_version": 1, "source": {"repository": c.REPOSITORY, "ref": "refs/heads/main", "source_sha": "a" * 40},
                  "producer": producer, "artifacts": artifacts, "reports": reports, "checks": checks,
                  "candidate_sha256": self.gov.get("release", {}).get("candidate_sha256"),
                  "promotion_evidence_sha256": self.gov.get("promotion_sha256"), "plan_binding_sha256": binding,
@@ -282,8 +282,9 @@ class Chain:
         assert request.full_url.startswith("https://fixture.actions.githubusercontent.com/token?")
         ref = f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{self.role}-gate.yml@{self.gov['gate_shas'][self.role]}"
         claims = {"iss": "https://token.actions.githubusercontent.com", "aud": "sts.amazonaws.com",
-                  "sub": f"repo:{c.REPOSITORY}:environment:production:job_workflow_ref:{ref}",
-                  "job_workflow_ref": ref, "repository": c.REPOSITORY, "ref": "refs/heads/develop"}
+                  "sub": f"repo:{c.REPOSITORY}:environment:production",
+                  "job_workflow_ref": ref, "repository": c.REPOSITORY, "ref": "refs/heads/main"}
+        claims.update(getattr(self, "oidc_claims", {}))
         token = "header." + base64.urlsafe_b64encode(c.canonical(claims)).decode().rstrip("=") + ".signature"
         return io.BytesIO(c.canonical({"value": token}))
 
