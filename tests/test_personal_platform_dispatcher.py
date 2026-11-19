@@ -978,6 +978,7 @@ def test_original_closed_ready_admits_host_without_future_open(tmp_path):
         "duplicate-artifact",
         "artifact-interval",
         "artifact-expired",
+        "artifact-branch",
         "tampered-zip",
         "missing-source",
         "membership-omitted",
@@ -1017,6 +1018,10 @@ def test_closed_ready_counterexamples_refuse_before_effect(mutation):
         responses[prefix + "actions/artifacts/66"]["created_at"] = g.utc(650)
     elif mutation == "artifact-expired":
         responses[prefix + "actions/artifacts/66"]["expired"] = True
+    elif mutation == "artifact-branch":
+        responses[prefix + "actions/artifacts/66"]["workflow_run"][
+            "head_branch"
+        ] = "develop"
     elif mutation == "missing-source":
         gov["source_files"].pop()
     elif mutation == "membership-omitted":
@@ -1044,7 +1049,10 @@ def test_closed_ready_counterexamples_refuse_before_effect(mutation):
     pack()
     if mutation == "tampered-zip":
         responses[prefix + "actions/artifacts/66/zip"] += b"tamper"
-    with pytest.raises(ValueError):
+    match = (
+        "original artifact attempt/interval" if mutation == "artifact-branch" else None
+    )
+    with pytest.raises(ValueError, match=match):
         g.admit_physical_action(gov["binding"], gov, api, clock)
 
 
@@ -1149,6 +1157,6 @@ def test_host_oidc_requires_the_default_branch_sub_and_the_pinned_reusable(
         assert (s3.service, ssm.service) == ("s3", "ssm")
         assert [call["RoleArn"] for call in calls] == [governance["runner"]["role_arn"]]
     else:
-        with pytest.raises((ValueError, KeyError)):
+        with pytest.raises(ValueError, match="exact host OIDC claims"):
             g.runner_clients(governance)
         assert calls == []
