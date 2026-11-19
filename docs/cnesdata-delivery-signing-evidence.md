@@ -132,7 +132,8 @@ role, managed policy, OIDC provider ou recurso/configuração/policy do bucket e
 O handoff do owner fixa SHA do reusable, prazo absoluto de escrita e retain_until,
 administradores existentes da key, bucket/cipher CMK full ARN e listas finitas de
 objetos current/history. A role `cnesdata-delivery-ext2-gate` confia somente no provider
-GitHub compartilhado existente, aud sts e custom sub do reusable exato. A key própria
+GitHub compartilhado existente, aud sts, sub padrão do environment `production` e o
+claim job_workflow_ref do reusable exato. A key própria
 é SIGN_VERIFY/ECC_NIST_P256/AWS_KMS, Enabled, single-region, com alias
 `alias/cnesdata-delivery-ext2-signing`. Administração pertence aos principals do
 owner, não à sessão runtime.
