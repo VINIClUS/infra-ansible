@@ -763,7 +763,7 @@ CLOSE_DRAIN_CALL_VECTOR = {'calls': [{'operation': 'describe_execution',
 # #498 static session names, evaluated by `tofu console` (OpenTofu 1.13.9, no provider) over the `locals`
 # block of cnesdata_delivery_sources/infra/opentofu/modules/runtime-iam/static-promotion.tf (sha256 below)
 # with this SYNTHETIC binding. A re-pin of that file must re-evaluate these literals.
-STATIC_PROMOTION_SOURCE_SHA256 = "1509866973b7fe516c41d1a9a88950002b73ee3d4546238cd7831ba186031e1e"
+STATIC_PROMOTION_SOURCE_SHA256 = "4cfc61fa334dc5cba07be29b6a7f5404cb5ae401c3f6445e80b3d7e5517866f5"
 STATIC_SESSION_VECTOR = {'binding': {'generation': 2,
              'product_source_sha': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
              'release_id': 'r0123456789abcdef0123456789abcde',

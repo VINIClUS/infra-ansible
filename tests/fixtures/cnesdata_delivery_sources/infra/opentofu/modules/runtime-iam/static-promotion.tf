@@ -35,12 +35,12 @@ variable "static_promotion" {
           promotion = {
             repository    = "VINIClUS/CnesData",
             workflow_path = ".github/workflows/promote-production.yml",
-            ref           = "refs/heads/develop", environment = "production"
+            ref           = "refs/heads/main", environment = "production"
           }
           mode-readiness-drill = {
             repository    = "VINIClUS/CnesData",
             workflow_path = ".github/workflows/readiness-production.yml",
-            ref           = "refs/heads/develop", environment = "production"
+            ref           = "refs/heads/main", environment = "production"
           }
         }),
         jsonencode(var.static_promotion.application_promotion.delegations) == jsonencode({

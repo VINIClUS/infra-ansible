@@ -95,8 +95,8 @@ source admission and the containment checks assert `main` (run `head_branch`, `G
 claim, `compare/<source>...main`, `runs?branch=main`). The CnesData static-promotion validation of
 `caller_by_purpose` and `producer.workflow_sha == binding.shared_source_sha` must agree with this fragment,
 so both change in one hand-off (CnesData R3). The pinned `static-promotion.tf` below is a snapshot of
-CnesData `28597b30`; it still validates `develop` and is re-pinned from the real CnesData commit at that
-hand-off, never edited here. The `source-develop-checks` name in `provenance.BASE_CHECKS` is a check
+CnesData `main` `258e55c58ea9109c4c4a35fc519ab9292027a4b0` (release-by-tree CnesData#532, tree equal to
+develop `6a235cef091089c5b237c9625c9fad08fc795473`); it validates `main` and is never edited here. The `source-develop-checks` name in `provenance.BASE_CHECKS` is a check
 name emitted by CnesData evidence and is renamed only together with the CnesData emitter.
 
 OIDC subject. CnesData uses GitHub's default `sub` template. Each delivery trust therefore matches the
