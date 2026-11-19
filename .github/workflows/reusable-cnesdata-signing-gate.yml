@@ -15,6 +15,10 @@ name: CnesData EXT2 signing and versioned evidence
       mode:
         required: true
         type: string
+    secrets:
+      CNESDATA_DELIVERY_GOVERNANCE:
+        description: Owner-approved private governance handoff, passed by name from the caller environment
+        required: true
     outputs:
       ext2_post_upload_receipt_v1:
         description: Authenticated locator only; private bytes remain in S3

@@ -28,6 +28,10 @@ name: CnesData application gate
       purpose:
         required: true
         type: string
+    secrets:
+      CNESDATA_DELIVERY_GOVERNANCE:
+        description: Owner-approved private governance handoff, passed by name from the caller environment
+        required: true
     outputs:
       evidence_run_id:
         value: ${{ jobs.execute.outputs.evidence_run_id }}
