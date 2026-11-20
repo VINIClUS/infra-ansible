@@ -194,7 +194,7 @@ CATALOG = {
         "cpu": ("taskDefinition.cpu", "identity"),
         "enable_fault_injection": ("taskDefinition.enableFaultInjection", "identity"),
         "execution_role_arn": ("taskDefinition.executionRoleArn", "identity"),
-        "family": ("taskDefinition.family", "identity"), "id": ("taskDefinition.family", "identity"),
+        "family": ("taskDefinition.family", "identity"), "id": ("taskDefinition.taskDefinitionArn", "identity"),
         "ipc_mode": ("taskDefinition.ipcMode", "identity"), "memory": ("taskDefinition.memory", "identity"),
         "network_mode": ("taskDefinition.networkMode", "identity"), "pid_mode": ("taskDefinition.pidMode", "identity"),
         "requires_compatibilities": ("taskDefinition.requiresCompatibilities", "json-set"),
@@ -238,6 +238,12 @@ NOT_OBSERVABLE = {
         "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
         "region": "state-only", "rule": "other-encoding", "token": "state-only"},
 }
+OMITTED = {
+    "aws_iam_role": {"description": ("", None), "permissions_boundary": ("", None)},
+    "aws_dynamodb_table": {
+        "billing_mode": ("PROVISIONED",), "table_class": ("STANDARD",), "stream_enabled": (False, None),
+        "stream_view_type": ("", None), "stream_arn": ("", None), "stream_label": ("", None)},
+}
 NO_CHANGE = (["no-op"], ["read"])
 
 
@@ -275,6 +281,10 @@ class Envelope:
                   "not observable drift row")
 
     @staticmethod
+    def omitted(row):
+        return OMITTED.get(resource_type(row["address"]), {}).get(row["attribute"])
+
+    @staticmethod
     def bind(spec, row):
         service, operation, path, encoding = CATALOG[resource_type(row["address"])][row["attribute"]]
         c.require((spec["service"], spec["operation"]) == (service, operation) and row["path"] == list(path)
@@ -287,6 +297,7 @@ class Envelope:
         for row in rows:
             c.closed(row, "address readback")
             c.require(type(row["readback"]) is int, "drift readback reference")
+        c.require(stage == "after" or not rows, "absent drift row before")
         if stage != "after":
             return
         required = {address for address, change in _changes(plan).items() if change["actions"] == ["delete"]}
@@ -321,7 +332,9 @@ def catalog_document():
             "envelopes": {name: {"covered": sorted(envelope.covered), "supported": sorted(envelope.supported)}
                           for name, envelope in ENVELOPES.items()},
             "identity": {tipo: [list(pair) for pair in pairs] for tipo, pairs in IDENTITY.items()},
-            "not_observable": NOT_OBSERVABLE}
+            "not_observable": NOT_OBSERVABLE,
+            "omitted": {tipo: {name: list(values) for name, values in entries.items()} for tipo, entries in OMITTED.items()},
+            "container_defaults": c.CONTAINER_DEFAULTS}
 
 
 CATALOG_SHA256 = c.sha(c.canonical(catalog_document()))

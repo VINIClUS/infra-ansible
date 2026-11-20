@@ -298,7 +298,7 @@ def validate_proof(proof, files, governance, api, now, source_sha, purpose, role
                 and report["name"] in files and len(files[report["name"]]) == report["size"]
                 and sha(files[report["name"]]) == digest(report["sha256"]), "report bytes")
         measured = loads(files[report["name"]], canonical=True, limit=262144)
-        public_safe(measured)
+        public_safe(measured, governance)
         refuse_account_derived(files[report["name"]], governance)
         closed(measured, "check_id source_sha measurement")
         # Exact trusted evaluator pins own the report-specific facts, not caller input.

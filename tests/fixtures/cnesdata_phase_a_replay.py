@@ -14,7 +14,7 @@ from pathlib import Path
 from fixtures.cnesdata_iam_inventory import identities, inventory
 from fixtures.cnesdata_iam_sources import ACCOUNT as SOURCE_ACCOUNT
 from fixtures.cnesdata_session_chain import OwnerChain
-from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import contract as c, drift_catalog
 from tools.cnesdata_delivery.iam_source import POLICIES
 
 ACCOUNT = "111122223333"
@@ -215,35 +215,38 @@ class ReplayChain(OwnerChain):
         self.responses = {"before": {}, "after": {}}
         readbacks, matrix = {}, {}
         for stage, resources in (("before", replay.before), ("after", replay.after)):
+            required = drift_catalog.PHASE_A_ENVELOPE.required(replay.plan, resources)
             specs, rows = [], []
-            for address in sorted(resources):
-                service, operation, parameters, document, paths = self.projection(address, resources[address], stage)
+            for address in sorted({address for address, _ in required}):
+                tipo = drift_catalog.resource_type(address)
+                names = sorted(name for owner, name in required if owner == address)
+                service, operation = drift_catalog.CATALOG[tipo][names[0]][:2]
+                parameters = drift_catalog.parameters(tipo, resources[address])
+                document = {}
+                for name in names:
+                    _, _, path, encoding = drift_catalog.CATALOG[tipo][name]
+                    rows.append({"address": address, "attribute": name, "readback": len(specs), "path": list(path),
+                                 "encoding": encoding})
+                    self.place(document, tipo, name, path, encoding, resources[address][name])
                 self.responses[stage][operation, json.dumps(parameters, sort_keys=True)] = document
-                rows += [{"address": address, "attribute": name, "readback": len(specs), "path": paths[name],
-                          "encoding": "json" if name == "policy" else "identity"} for name in resources[address]]
                 specs.append({"service": service, "operation": operation, "address": address})
             readbacks[stage], matrix[stage] = specs, rows
         self.gov["readbacks"] = readbacks
         self.gov["drift_matrix"] = self.gov["drift_matrix"] | matrix
         self.gov["baseline"]["phase_a_graph"] = self.graph()
 
-    def projection(self, address, attributes, stage):
-        kind = address.split(".")[-2]
-        if kind == "aws_iam_role_policy":
-            document = {"RoleName": attributes["role"], "PolicyName": attributes["name"],
-                        "PolicyDocument": json.loads(attributes["policy"])}
-            paths = {"name": ["PolicyName"], "role": ["RoleName"], "policy": ["PolicyDocument"]}
-            parameters = {"RoleName": attributes["role"], "PolicyName": attributes["name"]}
-            return "iam", "get_role_policy", parameters, document, paths
-        service, operation, parameters = {
-            "aws_iam_role": ("iam", "get_role", {"RoleName": attributes.get("name")}),
-            "aws_ecs_task_definition": ("ecs", "describe_task_definition", {"taskDefinition": attributes.get("family")}),
-            "aws_ecs_cluster": ("ecs", "describe_clusters", {"clusters": [attributes.get("name")]}),
-            "aws_dynamodb_table": ("dynamodb", "describe_table", {"TableName": attributes.get("name")}),
-            "aws_s3_bucket": ("s3", "get_bucket_versioning", {"Bucket": attributes.get("bucket")}),
-        }[kind]
-        return (service, operation, parameters, {"D": copy.deepcopy(attributes)},
-                {name: ["D", name] for name in attributes})
+    @staticmethod
+    def place(document, tipo, name, path, encoding, value):
+        declared = drift_catalog.OMITTED.get(tipo, {}).get(name)
+        if declared is not None and value in declared:
+            return
+        if encoding == "tags-kv":
+            value = [{"Key": key, "Value": text} for key, text in sorted(value.items())]
+        elif encoding in {"json", "ecs-container-definitions"} and type(value) is str:
+            value = json.loads(value)
+        for component in path[:-1]:
+            document = document.setdefault(component, {})
+        document[path[-1]] = copy.deepcopy(value)
 
     def graph(self):
         plan = self.replay.plan
