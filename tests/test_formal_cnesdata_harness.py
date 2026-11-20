@@ -111,7 +111,7 @@ def test_mutante_tla_que_passa_reprova_a_execucao(tmp_path):
 ])
 def test_mutante_tla_com_violacao_aprova_a_execucao(tmp_path, cfg, observed):
     files = tla("CounterMutantCut", cfg)
-    files["CounterMutantCut.tla"] = files["CounterMutantCut.tla"].replace("====", "Never == [](x < 3)\n====")
+    files["CounterMutantCut.tla"] = files["CounterMutantCut.tla"].replace("====", "Never == <>(x > 3)\n====")
     models = write(tmp_path / "m", files)
     result = run_check(models)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -174,6 +174,14 @@ def test_check_alloy_sem_contraexemplo_aprova_e_run_sat_satisfativel_aprova(tmp_
     assert lines(result)["toy.als:sat_edge"][0] == "PASS"
 
 
+def test_comandos_alloy_sem_escopo_explicito_sao_verificados(tmp_path):
+    models = write(tmp_path / "m", alloy("check cycle_free\nrun sat_edge { some succ }"))
+    result = run_check(models)
+    assert result.returncode == 1
+    assert lines(result)["toy.als:cycle_free"][0] == "FAIL"
+    assert lines(result)["toy.als:sat_edge"][0] == "PASS"
+
+
 def test_check_mutant_sem_contraexemplo_reprova_a_execucao(tmp_path):
     models = write(tmp_path / "m", alloy("check mutant_linked { all n: Node | n not in n.^succ or some n.succ } for 3"))
     result = run_check(models)
@@ -221,7 +229,7 @@ def test_alloy_sem_comando_reprova_a_execucao(tmp_path):
 
 
 def test_alloy_com_erro_de_tipo_reprova_a_execucao(tmp_path):
-    models = write(tmp_path / "m", alloy("check mutant_typo { no n: Node | n in n.^next } for 3"))
+    models = write(tmp_path / "m", alloy("check mutant_typo { no n: Node | n in n.^nosuch } for 3"))
     result = run_check(models)
     assert result.returncode == 1
     assert lines(result)["toy.als"][0] == "FAIL"
