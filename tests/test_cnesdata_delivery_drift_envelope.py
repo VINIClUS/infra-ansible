@@ -1,4 +1,4 @@
-"""G5: catalogo, NOT_OBSERVABLE, envelope, completude e ligacao linha-spec (P06)."""
+"""G5: catalogo, NOT_OBSERVABLE, envelope, completude, ligacao linha-spec e codificacoes (P06)."""
 import ast
 import json
 import sys
@@ -372,3 +372,94 @@ def test_runtime_passa_specs_em_toda_chamada_de_drift_coverage():
              and isinstance(node.func, ast.Attribute) and node.func.attr == "drift_coverage"]
     assert len(calls) == 5
     assert all(any(keyword.arg == "specs" for keyword in node.keywords) for node in calls)
+
+
+TASK = 'module.processing.aws_ecs_task_definition.processor["unit"]'
+CONTAINERS = [{"name": "app", "image": "img:1", "essential": True, "mountPoints": [],
+               "environment": [{"name": "B", "value": "2"}, {"name": "A", "value": "1"}]},
+              {"name": "sidecar", "image": "side:1", "secrets": []}]
+
+
+def task(containers=None, compatibilities=("FARGATE", "EC2")):
+    return {"family": "processor", "requires_compatibilities": list(compatibilities),
+            "container_definitions": json.dumps(CONTAINERS if containers is None else containers)}
+
+
+def task_case(observed_containers, observed_compatibilities=("EC2", "FARGATE")):
+    plan_ = plan(change(TASK, task(), task()))
+    rows = [{"address": TASK, "attribute": name, "readback": 0, "path": ["taskDefinition", key], "encoding": encoding}
+            for name, key, encoding in (("family", "family", "identity"),
+                                        ("requires_compatibilities", "requiresCompatibilities", "json-set"),
+                                        ("container_definitions", "containerDefinitions", "ecs-container-definitions"))]
+    spec = {"service": "ecs", "operation": "describe_task_definition", "address": TASK,
+            "parameters": {"taskDefinition": "processor"}}
+    observed = {"taskDefinition": {"family": "processor", "requiresCompatibilities": list(observed_compatibilities),
+                                   "containerDefinitions": observed_containers}}
+    reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64, "observed": observed}]
+    return plan_, reports, matrix(rows), [spec]
+
+
+def api_containers():
+    return [{"name": "sidecar", "image": "side:1", "portMappings": [], "volumesFrom": []},
+            {"name": "app", "image": "img:1", "essential": True, "cpu": None, "portMappings": [],
+             "environment": [{"name": "A", "value": "1"}, {"name": "B", "value": "2"}]}]
+
+
+def test_codificacao_ecs_container_definitions_ignora_ordem_e_campos_vazios():
+    plan_, reports, matrix_, specs = task_case(api_containers())
+    assert coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("mutation", ["imagem", "variavel", "container-a-mais"])
+def test_codificacao_ecs_container_definitions_recusa_diferenca_funcional(mutation):
+    containers = api_containers()
+    if mutation == "imagem":
+        containers[1]["image"] = "img:2"
+    if mutation == "variavel":
+        containers[1]["environment"][0]["value"] = "9"
+    if mutation == "container-a-mais":
+        containers.append({"name": "outro", "image": "o:1"})
+    plan_, reports, matrix_, specs = task_case(containers)
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a())
+
+
+def test_codificacao_ecs_container_definitions_recusa_nome_duplicado():
+    plan_, reports, matrix_, specs = task_case(api_containers() + [{"name": "app", "image": "img:1"}])
+    with pytest.raises(ValueError, match="drift container projection"):
+        coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a())
+
+
+def test_codificacao_json_set_ignora_ordem_e_recusa_elemento_diferente():
+    plan_, reports, matrix_, specs = task_case(api_containers(), ("FARGATE",))
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a())
+
+
+def tags_case(observed_tags):
+    attributes = role(tags_all={"Project": "cnes", "ReleaseId": "r1"})
+    plan_ = plan(change(ROLE, attributes, attributes))
+    rows = role_rows() + [{"address": ROLE, "attribute": "tags_all", "readback": 0, "path": ["Role", "Tags"],
+                           "encoding": "tags-kv"}]
+    observed = observed_role()
+    observed["Role"]["Tags"] = observed_tags
+    return plan_, [report(observed)], matrix(rows), [call()]
+
+
+def test_codificacao_tags_kv_compara_lista_de_chave_valor_com_mapa():
+    tags = [{"Key": "ReleaseId", "Value": "r1"}, {"Key": "Project", "Value": "cnes"}]
+    plan_, reports, matrix_, specs = tags_case(tags)
+    assert coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("tags,message", [
+    ([{"Key": "ReleaseId", "Value": "r2"}, {"Key": "Project", "Value": "cnes"}], "saved-plan live functional drift"),
+    ([{"Key": "ReleaseId", "Value": "r1"}], "saved-plan live functional drift"),
+    ([{"Key": "ReleaseId", "Value": "r1"}, {"Key": "ReleaseId", "Value": "r1"}, {"Key": "Project", "Value": "cnes"}],
+     "drift tags projection"),
+    ([{"Key": "ReleaseId", "Value": "r1", "Extra": 1}, {"Key": "Project", "Value": "cnes"}], "drift tags projection"),
+    ({"ReleaseId": "r1", "Project": "cnes"}, "drift tags projection")])
+def test_codificacao_tags_kv_recusa_valor_diferente_duplicata_e_forma_errada(tags, message):
+    plan_, reports, matrix_, specs = tags_case(tags)
+    with pytest.raises(ValueError, match=message):
+        coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a())
