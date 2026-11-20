@@ -463,6 +463,7 @@ CONFTEST_SESSION = (
 def test_arquivo_divisivel_recusa_fixtures_amplas_de_todos_os_tipos(tmp_path):
     for name, suite in BROAD_CASES.items():
         case = tmp_path / name
+        case.mkdir()
         result = pytest_run(
             case,
             *_args(case, case / "report", "test_b.py"),

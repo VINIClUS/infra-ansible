@@ -132,7 +132,7 @@ class CiPlugin:
         self.session_started = time.time()
         self.times = [None, None]
         self.canonical_ids = []
-        self.selected = []
+        self.selected = None
         self.quarantined = []
         self.collect_errors = []
         self.reports = {}
@@ -229,6 +229,7 @@ class CiPlugin:
 
     def _write_all(self, exitstatus, finished):
         merged = self._merge_nodes()
+        self.selected = self.selected or []
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self._write_collection(merged)
         self._write_results()
@@ -237,7 +238,7 @@ class CiPlugin:
             self._write_json("quarantined.json", self.quarantined)
 
     def _merge_nodes(self):
-        outputs = [out for out in self.node_outputs if "ci_collection" in out]
+        outputs = [out for out in self.node_outputs if out.get("ci_selected") is not None]
         if not outputs:
             return not _distributed(self.config)
         first = outputs[0]
