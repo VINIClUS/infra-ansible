@@ -56,6 +56,32 @@ jobs:
           --github-env "${GITHUB_ENV}"
           --github-path "${GITHUB_PATH}"
 
+      - name: Check the CnesData delivery formal models
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+          ALLOY_URL: >-
+            https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar
+          ALLOY_SHA256: 6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/formal-tools"
+          mkdir -p "${tools}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --output "${tools}/tla2tools.jar" "${TLA_TOOLS_URL}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --output "${tools}/alloy.jar" "${ALLOY_URL}"
+          printf '%s  %s\n' \
+            "${TLA_TOOLS_SHA256}" "${tools}/tla2tools.jar" \
+            "${ALLOY_SHA256}" "${tools}/alloy.jar" | sha256sum --check --strict
+          java -version
+          python3 formal/cnesdata_delivery/check.py \
+            --tla-jar "${tools}/tla2tools.jar" --alloy-jar "${tools}/alloy.jar"
+          printf 'FORMAL_TLA_JAR=%s\n' "${tools}/tla2tools.jar" >> "${GITHUB_ENV}"
+          printf 'FORMAL_ALLOY_JAR=%s\n' "${tools}/alloy.jar" >> "${GITHUB_ENV}"
+
       - name: Run Python tests (public context; external targets reported)
         shell: bash
         env:

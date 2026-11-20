@@ -115,6 +115,7 @@ def test_validation_runs_the_complete_static_and_container_suite():
 
     for command in (
         "python -m pytest -q",
+        "python3 formal/cnesdata_delivery/check.py",
         "pwsh -NoProfile -File tests/Validate-InfraAnsibleScaffold.ps1",
         "pwsh -NoProfile -File tests/Validate-AnsibleContainer.ps1",
         "pwsh -NoProfile -File tests/Validate-ProxmoxBackupStorageRole.ps1",
