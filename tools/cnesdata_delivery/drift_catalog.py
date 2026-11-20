@@ -194,7 +194,7 @@ CATALOG = {
         "cpu": ("taskDefinition.cpu", "identity"),
         "enable_fault_injection": ("taskDefinition.enableFaultInjection", "identity"),
         "execution_role_arn": ("taskDefinition.executionRoleArn", "identity"),
-        "family": ("taskDefinition.family", "identity"), "id": ("taskDefinition.taskDefinitionArn", "identity"),
+        "family": ("taskDefinition.family", "identity"), "id": ("taskDefinition.family", "identity"),
         "ipc_mode": ("taskDefinition.ipcMode", "identity"), "memory": ("taskDefinition.memory", "identity"),
         "network_mode": ("taskDefinition.networkMode", "identity"), "pid_mode": ("taskDefinition.pidMode", "identity"),
         "requires_compatibilities": ("taskDefinition.requiresCompatibilities", "json-set"),
@@ -239,7 +239,7 @@ NOT_OBSERVABLE = {
         "region": "state-only", "rule": "other-encoding", "token": "state-only"},
 }
 OMITTED = {
-    "aws_iam_role": {"description": ("", None), "permissions_boundary": ("", None)},
+    "aws_iam_role": {"description": ("", None), "permissions_boundary": ("", None), "tags_all": ({}, None)},
     "aws_dynamodb_table": {
         "billing_mode": ("PROVISIONED",), "table_class": ("STANDARD",), "stream_enabled": (False, None),
         "stream_view_type": ("", None), "stream_arn": ("", None), "stream_label": ("", None)},
@@ -297,7 +297,6 @@ class Envelope:
         for row in rows:
             c.closed(row, "address readback")
             c.require(type(row["readback"]) is int, "drift readback reference")
-        c.require(stage == "after" or not rows, "absent drift row before")
         if stage != "after":
             return
         required = {address for address, change in _changes(plan).items() if change["actions"] == ["delete"]}

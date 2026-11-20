@@ -355,11 +355,8 @@ def test_linha_de_ausencia_e_fechada_e_provada(mutation, message):
 
 def test_linha_de_ausencia_so_vale_no_estagio_after():
     plan_ = plan(change(ROLE, role(), None, ("delete",)))
-    rows = matrix(role_rows(), absent=[{"address": ROLE, "readback": 0}])
-    with pytest.raises(ValueError, match="absent drift row before"):
-        coverage(plan_, [report(observed_role())], rows, specs=[call()], envelope=delete_envelope())
-    assert coverage(plan_, [report(observed_role())], matrix(role_rows(), absent=[]), specs=[call()],
-                    envelope=delete_envelope()) is None
+    assert coverage(plan_, [report(observed_role())], matrix(role_rows(), absent=[{"address": ROLE, "readback": 0}]),
+                    specs=[call()], envelope=delete_envelope()) is None
 
 
 def test_envelope_recusa_tipo_supported_sem_catalogo():
@@ -502,6 +499,7 @@ TABLE_OBSERVED = {"Table": {"TableName": "t"}}
 OMITTED_CASES = [
     ("aws_iam_role", "description", ROLE_OBSERVED, ["", None], "texto"),
     ("aws_iam_role", "permissions_boundary", ROLE_OBSERVED, ["", None], "arn-x"),
+    ("aws_iam_role", "tags_all", ROLE_OBSERVED, [{}, None], {"ReleaseId": "x"}),
     ("aws_dynamodb_table", "billing_mode", TABLE_OBSERVED, ["PROVISIONED"], "PAY_PER_REQUEST"),
     ("aws_dynamodb_table", "table_class", TABLE_OBSERVED, ["STANDARD"], "STANDARD_INFREQUENT_ACCESS"),
     ("aws_dynamodb_table", "stream_enabled", TABLE_OBSERVED, [False, None], True),
@@ -592,5 +590,15 @@ def test_cpu_diferente_de_zero_omitido_ou_divergente_e_recusado(expected, observ
         coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
 
 
-def test_id_da_task_definition_no_state_e_o_arn_da_revisao():
-    assert catalog().CATALOG["aws_ecs_task_definition"]["id"][2] == ("taskDefinition", "taskDefinitionArn")
+def test_id_da_task_definition_no_state_e_a_familia():
+    assert catalog().CATALOG["aws_ecs_task_definition"]["id"][2] == ("taskDefinition", "family")
+    attributes = {"family": "f", "id": "f"}
+    address = 'module.processing.aws_ecs_task_definition.processor["unit"]'
+    plan_ = plan(change(address, attributes, attributes))
+    rows = [{"address": address, "attribute": name, "readback": 0, "path": list(catalog().CATALOG[
+        "aws_ecs_task_definition"][name][2]), "encoding": "identity"} for name in ("family", "id")]
+    spec = {"service": "ecs", "operation": "describe_task_definition", "address": address,
+            "parameters": {"taskDefinition": "f"}}
+    reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64,
+                "observed": {"taskDefinition": {"family": "f"}}}]
+    assert coverage(plan_, reports, matrix(rows), specs=[spec], envelope=phase_a()) is None

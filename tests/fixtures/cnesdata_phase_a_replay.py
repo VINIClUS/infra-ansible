@@ -95,7 +95,7 @@ class Replay:
                  "execution_role_arn": f"arn:aws:iam::{ACCOUNT}:role/{self.prefix}-processor-execution",
                  "task_role_arn": f"arn:aws:iam::{ACCOUNT}:role/{self.prefix}-processor-{mode}",
                  "container_definitions": self.container(digest), "tags": {}}
-        return known | {"arn": arn(family, revision), "id": arn(family, revision), "revision": revision,
+        return known | {"arn": arn(family, revision), "id": family, "revision": revision,
                         "arn_without_revision": arn(family, revision).rsplit(":", 1)[0]}
 
     def build_resources(self):
