@@ -66,6 +66,81 @@ def test_missing_output_cannot_hide_existing_revisions_or_schedulers(kind):
         c.scheduler_preflight(saved({"recovery": None, "audit": None}), state)
 
 
+SCHEDULER_IAM = [
+    {"mode": "managed", "module": "module.schedulers", "type": "aws_iam_role", "name": "scheduler",
+     "instances": [{"index_key": mode, "attributes": {}} for mode in ("audit", "recovery")]},
+    {"mode": "managed", "module": "module.schedulers", "type": "aws_iam_role_policy", "name": "run",
+     "instances": [{"index_key": mode, "attributes": {}} for mode in ("audit", "recovery")]},
+]
+NULL_INPUTS = {"recovery": None, "audit": None}
+
+
+def processors(state):
+    state["resources"] = [{"mode": "managed", "module": "module.processing", "type": "aws_ecs_task_definition",
+                           "name": "processor", "instances": [{"index_key": mode, "attributes": {"arn": arn}}
+                                                              for mode, arn in REVISIONS.items()]}]
+    return state
+
+
+@pytest.mark.parametrize("scheduler_iam", [[], SCHEDULER_IAM])
+def test_fase_a_posterior_sem_schedulers_admite_entradas_nulas_com_mapa_completo(scheduler_iam):
+    state = processors(prior())
+    state["resources"] += copy.deepcopy(scheduler_iam)
+    c.scheduler_preflight(saved(NULL_INPUTS), state)
+
+
+@pytest.mark.parametrize("kind,name", [
+    ("aws_scheduler_schedule", "mode"), ("aws_scheduler_schedule_group", "mode"),
+    ("aws_cloudwatch_event_rule", "task_outcome"), ("aws_cloudwatch_metric_alarm", "repeated_failure"),
+    ("aws_cloudwatch_metric_alarm", "outbox_backlog"), ("aws_iam_role", "extra"),
+    ("aws_iam_role_policy", "other"), ("aws_sns_topic", "anything")])
+def test_qualquer_recurso_de_schedulers_alem_do_iam_fixo_recusa_entradas_nulas(kind, name):
+    state = processors(prior())
+    state["resources"] += copy.deepcopy(SCHEDULER_IAM) + [
+        {"mode": "managed", "module": "module.schedulers", "type": kind, "name": name,
+         "instances": [{"index_key": "audit", "attributes": {}}]}]
+    with pytest.raises(ValueError, match="scheduler input differs from prior applied revision"):
+        c.scheduler_preflight(saved(NULL_INPUTS), state)
+
+
+def test_iam_de_schedulers_com_chave_fora_do_conjunto_fixo_recusa():
+    state = processors(prior())
+    state["resources"] += copy.deepcopy(SCHEDULER_IAM)
+    state["resources"][-1]["instances"].append({"index_key": "unit", "attributes": {}})
+    with pytest.raises(ValueError, match="scheduler input differs from prior applied revision"):
+        c.scheduler_preflight(saved(NULL_INPUTS), state)
+
+
+@pytest.mark.parametrize("mode", ["recovery", "audit"])
+def test_sem_schedulers_entrada_nao_nula_diferente_da_revisao_anterior_recusa(mode):
+    state = processors(prior())
+    plan = saved()
+    plan["variables"][f"scheduler_{mode}_task_definition_arn"]["value"] = REVISIONS[mode].replace(":2", ":3")
+    with pytest.raises(ValueError, match="scheduler input differs from prior applied revision"):
+        c.scheduler_preflight(plan, state)
+
+
+@pytest.mark.parametrize("null_mode", ["recovery", "audit"])
+def test_sem_schedulers_so_uma_entrada_nula_recusa(null_mode):
+    with pytest.raises(ValueError, match="scheduler input differs from prior applied revision"):
+        c.scheduler_preflight(saved(REVISIONS | {null_mode: None}), processors(prior()))
+
+
+@pytest.mark.parametrize("revisions", [
+    {"unit": REVISIONS["unit"]},
+    {"unit": "unknown", "recovery": REVISIONS["recovery"], "audit": REVISIONS["audit"]},
+    {**REVISIONS, "extra": REVISIONS["unit"]}])
+def test_mapa_parcial_ou_malformado_recusa_mesmo_sem_schedulers_e_entradas_nulas(revisions):
+    with pytest.raises(ValueError, match="scheduler"):
+        c.scheduler_preflight(saved(NULL_INPUTS), processors(prior(revisions)))
+
+
+@pytest.mark.parametrize("output", [None, {}])
+def test_saida_ausente_com_task_definitions_no_state_recusa_entradas_nulas(output):
+    with pytest.raises(ValueError, match="scheduler output absent outside initial bootstrap"):
+        c.scheduler_preflight(saved(NULL_INPUTS), processors(prior(output)))
+
+
 @pytest.mark.parametrize("variables", [{}, {"scheduler_recovery_task_definition_arn": {"value": None}}, {"scheduler_recovery_task_definition_arn": {}, "scheduler_audit_task_definition_arn": {"value": None}}])
 def test_unresolved_scheduler_variables_are_not_caller_defaults(variables):
     with pytest.raises(ValueError, match="scheduler"):
