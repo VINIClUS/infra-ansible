@@ -5,7 +5,7 @@ set -euo pipefail
 if [[ "${GITHUB_ACTIONS:-}" != true ||
       "${RUNNER_ENVIRONMENT:-}" != github-hosted ||
       "${RUNNER_OS:-}" != Linux ||
-      ( "${GITHUB_JOB:-}" != validate && "${GITHUB_JOB:-}" != proof ) ||
+      "${GITHUB_JOB:-}" != validate ||
       "${GITHUB_REPOSITORY:-}" != VINIClUS/infra-ansible ||
       "${ImageOS:-}" != ubuntu26 || "$EUID" == 0 ]]; then
   printf '%s\n' 'hosted_userns_scope_refused: requires unprivileged public validate on GitHub-hosted ubuntu26' >&2

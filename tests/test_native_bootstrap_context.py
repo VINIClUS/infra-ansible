@@ -238,4 +238,3 @@ def test_userns_permission_is_application_specific_without_global_policy_change(
     assert 'systemctl' not in script
     assert '/etc/apparmor.d/' not in script
     assert 'EUID' in script
-    assert '"${GITHUB_JOB:-}" != proof' in script
