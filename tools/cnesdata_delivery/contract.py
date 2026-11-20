@@ -172,7 +172,67 @@ def _bind(spec, report, row):
             "readback report binding")
 
 
-def _projection(row, observed, value):
+STRICT_ENCODINGS = {"identity", "json"}
+ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions"}
+EMPTY = (None, [], {})
+
+
+def _json(value):
+    return loads(value.encode()) if type(value) is str else value
+
+
+def _tags(value):
+    require(type(value) is list, "drift tags projection")
+    tags = {}
+    for item in value:
+        require(type(item) is dict and set(item) == {"Key", "Value"} and type(item["Key"]) is str
+                and type(item["Value"]) is str and item["Key"] not in tags, "drift tags projection")
+        tags[item["Key"]] = item["Value"]
+    return tags
+
+
+def _members(value):
+    value = [] if value is None else _json(value)
+    require(type(value) is list, "drift set projection")
+    return sorted(canonical(item).decode() for item in value)
+
+
+def _compact(value):
+    if type(value) is dict:
+        return {key: _compact(item) for key, item in value.items() if item not in EMPTY}
+    if type(value) is list:
+        return [_compact(item) for item in value]
+    return value
+
+
+def _named(items):
+    require(type(items) is list and all(type(item) is dict and type(item.get("name")) is str for item in items)
+            and len({item["name"] for item in items}) == len(items), "drift container projection")
+    return sorted(items, key=lambda item: item["name"])
+
+
+def _containers(value):
+    containers = _named(_compact(_json(value)))
+    for container in containers:
+        for key in ("environment", "secrets"):
+            if key in container:
+                container[key] = _named(container[key])
+    return containers
+
+
+def _encoded(encoding, value, observed):
+    if encoding == "json":
+        return _json(value), _json(observed)
+    if encoding == "tags-kv":
+        return {} if value is None else value, _tags(observed)
+    if encoding == "json-set":
+        return _members(value), _members(observed)
+    if encoding == "ecs-container-definitions":
+        return _containers(value), _containers(observed)
+    return value, observed
+
+
+def _projection(row, observed, value, encodings):
     require(type(row["path"]) is list and len(row["path"]) <= 32, "drift response path")
     for component in row["path"]:
         if type(observed) is dict:
@@ -180,10 +240,8 @@ def _projection(row, observed, value):
         else:
             require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
         observed = observed[component]
-    require(row["encoding"] in {"identity", "json"}, "unknown drift projection encoding")
-    if row["encoding"] == "json":
-        value = loads(value.encode()) if type(value) is str else value
-        observed = loads(observed.encode()) if type(observed) is str else observed
+    require(row["encoding"] in encodings, "unknown drift projection encoding")
+    value, observed = _encoded(row["encoding"], value, observed)
     require(canonical(value) == canonical(observed), "saved-plan live functional drift")
 
 
@@ -222,7 +280,8 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
             used.add(index)
         if envelope is not None:
             envelope.bind(specs[index], row)
-        _projection(row, reports[index]["observed"], expected[row["address"]][row["attribute"]])
+        _projection(row, reports[index]["observed"], expected[row["address"]][row["attribute"]],
+                    STRICT_ENCODINGS if envelope is None else ENCODINGS)
     require(seen == required, "incomplete governed drift coverage; Production blocked")
     if envelope is not None:
         envelope.absent(plan, matrix["absent"], (specs, reports, used), stage)

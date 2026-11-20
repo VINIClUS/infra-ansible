@@ -463,3 +463,11 @@ def test_codificacao_tags_kv_recusa_valor_diferente_duplicata_e_forma_errada(tag
     plan_, reports, matrix_, specs = tags_case(tags)
     with pytest.raises(ValueError, match=message):
         coverage(plan_, reports, matrix_, specs=specs, envelope=phase_a())
+
+
+@pytest.mark.parametrize("encoding", ["tags-kv", "json-set", "ecs-container-definitions"])
+def test_chamada_sem_envelope_so_aceita_identity_e_json(encoding):
+    plan_, reports, matrix_ = strict_case()
+    matrix_["before"][0]["encoding"] = encoding
+    with pytest.raises(ValueError, match="unknown drift projection encoding"):
+        coverage(plan_, reports, matrix_, specs=[call()])
