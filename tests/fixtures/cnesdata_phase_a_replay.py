@@ -112,7 +112,7 @@ class Replay:
         for mode in ("recovery", "audit"):
             role = self.before[f'module.schedulers.aws_iam_role.scheduler["{mode}"]']
             self.before[f'module.schedulers.aws_iam_role_policy.run["{mode}"]'] = {
-                "id": f"{role['name']}:run", "name": role["name"] + "-run", "role": role["name"],
+                "name": role["name"] + "-run", "role": role["name"],
                 "policy": json.dumps({"Version": "2012-10-17", "Statement": []})}
         for name in CANARY_ROLES + (FENCE,):
             address = f"module.runtime_iam.aws_iam_role.{name}[0]"
@@ -139,7 +139,7 @@ class Replay:
             new = oracle_policy(address, 4, self.canary_id)
             if address in KNOWN_UPDATE:
                 old["Statement"] = old["Statement"][:-1]
-            row = {"id": f"{item['role']}:{item['name']}", "name": item["name"], "role": item["role"]}
+            row = {"name": item["name"], "role": item["role"]}
             self.before[address] = row | {"policy": json.dumps(old, sort_keys=True)}
             if address in UPDATED_POLICIES or address in KNOWN_UPDATE:
                 self.after[address] = row | {"policy": json.dumps(new, sort_keys=True)}
@@ -210,32 +210,40 @@ class ReplayChain(OwnerChain):
         self.install_governance()
         self.configure("plan", 1)
 
-    def policy_docs(self, resources):
-        return {address: {"RoleName": resources[address]["role"], "PolicyName": resources[address]["name"],
-                          "PolicyDocument": json.loads(resources[address]["policy"])}
-                for address in POLICIES}
-
     def install_governance(self):
         replay = self.replay
-        self.docs = {"before": self.policy_docs(replay.before), "after": self.policy_docs(replay.after)}
-        self.order = sorted(replay.before)
-        self.synthetic = {stage: [resources[address] for address in self.order]
-                          for stage, resources in (("before", replay.before), ("after", replay.after))}
-        specs = [{"service": "dynamodb", "operation": "describe_table", "parameters": {"TableName": "fixture"},
-                  "expected_sha256": c.sha(c.canonical(self.synthetic))}]
-        traced = (*UPDATED_POLICIES, *KNOWN_UPDATE)
-        for address in (*traced, f"module.runtime_iam.aws_iam_role_policy.{FENCE}[0]"):
-            doc = self.docs["before"][address]
-            specs.append({"service": "iam", "operation": "get_role_policy",
-                          "parameters": {"RoleName": doc["RoleName"], "PolicyName": doc["PolicyName"]},
-                          "expected_sha256": c.sha(c.canonical(doc))})
-        self.gov["readbacks"] = specs
-        rows = {stage: [{"address": address, "attribute": name, "readback": 0, "path": [stage, index, name],
-                         "encoding": "identity"} for index, address in enumerate(self.order)
-                        for name in resources[address]]
-                for stage, resources in (("before", replay.before), ("after", replay.after))}
-        self.gov["drift_matrix"] = self.gov["drift_matrix"] | rows
+        self.responses = {"before": {}, "after": {}}
+        readbacks, matrix = {}, {}
+        for stage, resources in (("before", replay.before), ("after", replay.after)):
+            specs, rows = [], []
+            for address in sorted(resources):
+                service, operation, parameters, document, paths = self.projection(address, resources[address], stage)
+                self.responses[stage][operation, json.dumps(parameters, sort_keys=True)] = document
+                rows += [{"address": address, "attribute": name, "readback": len(specs), "path": paths[name],
+                          "encoding": "json" if name == "policy" else "identity"} for name in resources[address]]
+                specs.append({"service": service, "operation": operation, "address": address})
+            readbacks[stage], matrix[stage] = specs, rows
+        self.gov["readbacks"] = readbacks
+        self.gov["drift_matrix"] = self.gov["drift_matrix"] | matrix
         self.gov["baseline"]["phase_a_graph"] = self.graph()
+
+    def projection(self, address, attributes, stage):
+        kind = address.split(".")[-2]
+        if kind == "aws_iam_role_policy":
+            document = {"RoleName": attributes["role"], "PolicyName": attributes["name"],
+                        "PolicyDocument": json.loads(attributes["policy"])}
+            paths = {"name": ["PolicyName"], "role": ["RoleName"], "policy": ["PolicyDocument"]}
+            parameters = {"RoleName": attributes["role"], "PolicyName": attributes["name"]}
+            return "iam", "get_role_policy", parameters, document, paths
+        service, operation, parameters = {
+            "aws_iam_role": ("iam", "get_role", {"RoleName": attributes.get("name")}),
+            "aws_ecs_task_definition": ("ecs", "describe_task_definition", {"taskDefinition": attributes.get("family")}),
+            "aws_ecs_cluster": ("ecs", "describe_clusters", {"clusters": [attributes.get("name")]}),
+            "aws_dynamodb_table": ("dynamodb", "describe_table", {"TableName": attributes.get("name")}),
+            "aws_s3_bucket": ("s3", "get_bucket_versioning", {"Bucket": attributes.get("bucket")}),
+        }[kind]
+        return (service, operation, parameters, {"D": copy.deepcopy(attributes)},
+                {name: ["D", name] for name in attributes})
 
     def graph(self):
         plan = self.replay.plan
@@ -260,12 +268,10 @@ class ReplayChain(OwnerChain):
     def sdk(self, service, operation, parameters):
         meta = {"ResponseMetadata": {"HTTPHeaders": {"date": time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime())},
                                      "RequestId": "replay-readback"}}
-        if service == "dynamodb":
-            return copy.deepcopy(self.synthetic) | meta
-        if service == "iam" and operation == "get_role_policy":
-            stage = "after" if self.applied else "before"
-            match = [doc for doc in self.docs[stage].values() if doc["PolicyName"] == parameters["PolicyName"]]
-            return copy.deepcopy(match[0]) | meta
+        stage = "after" if self.applied else "before"
+        found = self.responses[stage].get((operation, json.dumps(parameters, sort_keys=True, default=str)))
+        if found is not None and service in {"iam", "ecs", "dynamodb", "s3"}:
+            return copy.deepcopy(found) | meta
         return super().sdk(service, operation, parameters)
 
     def process_run(self, command, **kwargs):

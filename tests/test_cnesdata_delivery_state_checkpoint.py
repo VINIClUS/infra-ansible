@@ -194,12 +194,13 @@ class CheckpointChain(OwnerChain):
         self.final_state, _, self.certificate, _, _ = fixture()
         attrs = self.final_state["resources"][0]["instances"][0]["attributes"]
         plan = c.loads(self.plan_files["plan.json"], state=True)
-        plan["resource_changes"][0]["change"]["after"] = attrs
+        plan["resource_changes"][0]["change"]["after"] = {k: v for k, v in attrs.items() if k != "arn"}
+        plan["resource_changes"][0]["change"]["after_unknown"] = {"arn": True}
         plan.update(saved() if established else saved({"recovery": None, "audit": None}))
         self.plan_files["plan.json"] = c.canonical(plan)
-        self.expected = {"Table": attrs}
-        self.gov["readbacks"] = [{"service": "dynamodb", "operation": "describe_table", "parameters": {"TableName": "fixture"}, "expected_sha256": c.sha(c.canonical(self.expected))}]
-        self.gov["drift_matrix"]["after"] = [{"address": "aws_acm_certificate.static_web", "attribute": name, "readback": 0, "path": ["Table", name], "encoding": "identity"} for name in attrs]
+        self.attrs = attrs
+        self.gov["readbacks"] = {"before": [], "after": [{"service": "acm", "operation": "describe_certificate", "address": "aws_acm_certificate.static_web"}]}
+        self.gov["drift_matrix"]["after"] = [{"address": "aws_acm_certificate.static_web", "attribute": name, "readback": 0, "path": ["Certificate", name], "encoding": "identity"} for name in attrs]
         if established:
             self.final_state.update(lineage="original", serial=4)
             self.objects[self.gov["state_bucket"], KEY] = c.canonical(prior()), "same-etag"
@@ -207,10 +208,8 @@ class CheckpointChain(OwnerChain):
         self.configure("plan", 1)
 
     def sdk(self, service, operation, parameters):
-        if service == "dynamodb" and hasattr(self, "expected"):
-            return self.expected | {"ResponseMetadata": {"HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)}, "RequestId": "checkpoint-readback"}}
         if service == "acm":
-            return {"Certificate": self.certificate, "ResponseMetadata": {"HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)}, "RequestId": "checkpoint-acm"}}
+            return {"Certificate": self.certificate | self.attrs, "ResponseMetadata": {"HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)}, "RequestId": "checkpoint-acm"}}
         result = super().sdk(service, operation, parameters)
         if service == "s3" and operation == "get_object" and parameters["Key"] == KEY:
             result["VersionId"] = self.version
