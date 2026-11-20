@@ -1035,7 +1035,7 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
     monkeypatch.setattr(runtime, "previous_success", lambda *args, **kwargs: result)
     monkeypatch.setattr(contract, "validate_envelope", lambda *args, **kwargs: plan)
     monkeypatch.setattr(contract, "applied_state", lambda *args: None)
-    monkeypatch.setattr(contract, "drift_coverage", lambda *args: None)
+    monkeypatch.setattr(contract, "drift_coverage", lambda *args, **kwargs: None)
     monkeypatch.setattr(runtime, "_stage_calls", lambda *args: [])
     monkeypatch.setattr(runtime, "_readbacks", lambda *args: [])
     monkeypatch.setattr(outputs, "acm", lambda *args: {"exact": "original"})
