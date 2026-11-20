@@ -636,6 +636,26 @@ def test_complete_original_source_admission_checks_real_archive_bytes(
     assert set(files) == {"release-manifest.json", "compose.yml", "config.json"}
 
 
+def test_host_gate_recusa_cost_handoff_sem_source_manifest_sha256(
+    tmp_path, monkeypatch
+):
+    g = runtime()
+    request, gov, api, _ = authenticated_fixture(tmp_path, monkeypatch)
+    del gov["cost_handoff"]["source_manifest_sha256"]
+    with pytest.raises(ValueError, match="closed object fields"):
+        g.authenticate_request(request, gov, api, g.instant("2029-12-31T23:03:00Z"))
+
+
+def test_host_gate_recusa_source_manifest_sha256_diferente_da_medicao(
+    tmp_path, monkeypatch
+):
+    g = runtime()
+    request, gov, api, _ = authenticated_fixture(tmp_path, monkeypatch)
+    gov["cost_handoff"]["source_manifest_sha256"] = "f" * 64
+    with pytest.raises(ValueError, match="cost manifest bound"):
+        g.authenticate_request(request, gov, api, g.instant("2029-12-31T23:03:00Z"))
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
