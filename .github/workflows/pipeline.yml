@@ -149,6 +149,7 @@ jobs:
     timeout-minutes: 75
     strategy:
       fail-fast: false
+      max-parallel: 3
       matrix:
         lane: [serial, xdist-a, xdist-b, xdist-hog, order-reverse, order-seed]
     steps:
