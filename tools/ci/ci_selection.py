@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import random
 from pathlib import Path
@@ -5,6 +6,15 @@ from pathlib import Path
 import pytest
 
 BROAD_SCOPES = {"class", "module", "package", "session"}
+QUARANTINE_DENY = (
+    "tests/test_cnesdata_*",
+    "tests/test_reusable_workflow_secrets.py",
+    "tests/test_github_workflow*.py",
+    "tests/test_formal_*",
+    "tests/production*",
+    "tests/production/*",
+    "tests/test_ci_*",
+)
 WRAPPER_PREFIXES = ("_xunit_setup_", "_unittest_setUpClass_fixture_")
 CANONICAL = pytest.StashKey[str]()
 
@@ -62,6 +72,39 @@ def split_quarantine(items, marks, mode):
     kept = [item for item in items if id(item) not in dropped_ids]
     entries = [{"nodeid": item.nodeid, **marks[item.nodeid]} for item in quarantined]
     return kept, dropped, entries
+
+
+def load_registry(path):
+    entries = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [{**entry, "issue": str(entry["issue"])} for entry in entries]
+
+
+def _denied(nodeid):
+    return any(fnmatch.fnmatchcase(file_of(nodeid), pattern) for pattern in QUARANTINE_DENY)
+
+
+def _stale(entry, marks, collected, rootpath):
+    name = file_of(entry["nodeid"])
+    if not (rootpath / name).exists():
+        return True
+    return name in collected and entry["nodeid"] not in marks
+
+
+def quarantine_violations(marks, registry, collected, rootpath):
+    registered = {(e["nodeid"], e["reason"], e["issue"]) for e in registry}
+    found = []
+    for nodeid, mark in marks.items():
+        if _denied(nodeid):
+            found.append(f"ci_quarantine_forbidden nodeid={nodeid}")
+        elif (nodeid, mark["reason"], mark["issue"]) not in registered:
+            found.append(f"ci_quarantine_unregistered nodeid={nodeid}")
+    for entry in registry:
+        nodeid = entry["nodeid"]
+        if _denied(nodeid):
+            found.append(f"ci_quarantine_forbidden nodeid={nodeid}")
+        elif _stale(entry, marks, collected, rootpath):
+            found.append(f"ci_quarantine_stale nodeid={nodeid}")
+    return list(dict.fromkeys(found))
 
 
 def load_splittable(path):

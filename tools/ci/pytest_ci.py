@@ -12,6 +12,7 @@ from tools.ci import ci_selection as selection
 SUPPORTED = {"pytest": "9.2.0", "pytest-xdist": "3.8.0"}
 CANONICAL = selection.CANONICAL
 DEFAULT_SPLITTABLE = Path(__file__).with_name("xdist_splittable.json")
+DEFAULT_REGISTRY = Path(__file__).with_name("quarantine.json")
 PHASES = ("setup", "call", "teardown")
 
 
@@ -30,6 +31,14 @@ def pytest_addoption(parser):
         "--ci-quarantine", dest="ci_quarantine", default=None, choices=("exclude", "only")
     )
     group.addoption("--ci-splittable", dest="ci_splittable", default=str(DEFAULT_SPLITTABLE))
+    group.addoption(
+        "--ci-quarantine-registry", dest="ci_quarantine_registry", default=str(DEFAULT_REGISTRY)
+    )
+
+
+def _refuse(error):
+    sys.stderr.write(f"{error}\n")
+    raise error
 
 
 def _is_worker(config):
@@ -165,6 +174,8 @@ class CiPlugin:
     def _prepare(self, config, items):
         marks = selection.quarantine_marks(items)
         order = config.getoption("ci_order")
+        if config.getoption("ci_quarantine"):
+            self._check_quarantine(config, items, marks)
         if order:
             items[:] = selection.reorder(items, order)
         mode = config.getoption("ci_quarantine")
@@ -178,8 +189,14 @@ class CiPlugin:
         try:
             selection.apply_groups(items, splittable, config.rootpath)
         except pytest.UsageError as error:
-            sys.stderr.write(f"{error}\n")
-            raise
+            _refuse(error)
+
+    def _check_quarantine(self, config, items, marks):
+        registry = selection.load_registry(config.getoption("ci_quarantine_registry"))
+        collected = {selection.file_of(item.nodeid) for item in items}
+        found = selection.quarantine_violations(marks, registry, collected, config.rootpath)
+        if found:
+            _refuse(pytest.UsageError("\n".join(found)))
 
     def _quarantine(self, config, items, marks, mode):
         kept, dropped, self.quarantined = selection.split_quarantine(items, marks, mode)
@@ -220,15 +237,33 @@ class CiPlugin:
         self.node_outputs.append(getattr(node, "workeroutput", None) or {})
 
     def pytest_sessionfinish(self, session, exitstatus):
-        if _is_worker(self.config) or self.report_dir is None:
+        if _is_worker(self.config):
             return
         try:
-            self._write_all(int(exitstatus), time.time())
+            merged = self._merge_nodes()
+            if self.report_dir is not None:
+                self._write_all(merged, int(exitstatus), time.time())
         except (OSError, ValueError, TypeError, KeyError) as error:
             sys.stderr.write(f"ci_report_write_failed error={error!r}\n")
+        self._quarantine_status(session, int(exitstatus))
 
-    def _write_all(self, exitstatus, finished):
-        merged = self._merge_nodes()
+    def _quarantine_status(self, session, exitstatus):
+        if self.config.getoption("ci_quarantine") != "only":
+            return
+        passing = [
+            entry["nodeid"]
+            for entry in self.quarantined
+            if _row(entry["nodeid"], self.reports.get(entry["nodeid"], {}))["outcome"]
+            in {"passed", "xpassed"}
+        ]
+        for nodeid in passing:
+            sys.stderr.write(f"ci_quarantine_now_passes nodeid={nodeid}\n")
+        if passing:
+            session.exitstatus = 1
+        elif exitstatus in (0, 1):
+            session.exitstatus = 0
+
+    def _write_all(self, merged, exitstatus, finished):
         self.selected = self.selected or []
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self._write_collection(merged)

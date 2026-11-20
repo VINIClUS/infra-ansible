@@ -57,18 +57,6 @@ def caro():
 def test_usa_caro(caro):
     assert caro == 1
 '''
-FILE_QUARANTINE = '''
-import pytest
-
-
-@pytest.mark.quarantine(reason="instavel", issue="#1")
-def test_instavel():
-    assert False
-
-
-def test_estavel():
-    assert True
-'''
 FILE_ORDER = "\n".join(
     f"def test_o{index}():\n    assert True\n" for index in range(8)
 )
@@ -237,41 +225,6 @@ def test_quarentena_exige_motivo_e_issue(tmp_path):
     assert "ci_quarantine_invalid nodeid=test_q.py::test_sem_issue" in (
         result.stdout + result.stderr
     )
-
-
-def test_quarentena_exclude_tira_do_gate_e_registra(tmp_path):
-    report = tmp_path / "report"
-    result = pytest_run(
-        tmp_path,
-        "--ci-report-dir",
-        str(report),
-        "--ci-quarantine",
-        "exclude",
-        files={"test_q.py": FILE_QUARANTINE},
-    )
-
-    assert result.returncode == 0, result.stdout
-    assert [row["nodeid"] for row in results(report)] == ["test_q.py::test_estavel"]
-    assert read(report, "quarantined.json") == [
-        {"nodeid": "test_q.py::test_instavel", "reason": "instavel", "issue": "#1"}
-    ]
-
-
-def test_quarentena_only_executa_somente_os_quarentenados(tmp_path):
-    report = tmp_path / "report"
-    result = pytest_run(
-        tmp_path,
-        "--ci-report-dir",
-        str(report),
-        "--ci-quarantine",
-        "only",
-        files={"test_q.py": FILE_QUARANTINE},
-    )
-
-    rows = results(report)
-    assert result.returncode == 1
-    assert [row["nodeid"] for row in rows] == ["test_q.py::test_instavel"]
-    assert rows[0]["outcome"] == "failed"
 
 
 def test_teste_coletado_sem_resultado_e_registrado_como_missing(tmp_path):

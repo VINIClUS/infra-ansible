@@ -97,9 +97,8 @@ jobs:
           -p tools.ci.pytest_ci --ci-report-dir "${RUNNER_TEMP}/ci-report"
           --ci-quarantine exclude
 
-      - name: Run quarantined tests (non-blocking)
+      - name: Run quarantined tests (fails if one now passes)
         if: ${{ !cancelled() }}
-        continue-on-error: true
         shell: bash
         env:
           CNESDATA_NATIVE_CONTEXT: public-ci

@@ -310,10 +310,10 @@ def test_pytest_roda_com_xdist_loadgroup_e_plugin():
 
 def test_quarentena_roda_em_passo_que_nao_bloqueia():
     validate = load_workflow()["jobs"]["validate"]
-    step = step_named(validate, "Run quarantined tests (non-blocking)")
+    step = step_named(validate, "Run quarantined tests (fails if one now passes)")
     command = " ".join(step["run"].split())
 
-    assert step["continue-on-error"] is True
+    assert "continue-on-error" not in step
     assert step["if"] == "${{ !cancelled() }}"
     assert "--ci-quarantine only" in command
     assert '--ci-report-dir "${RUNNER_TEMP}/ci-quarantine"' in command

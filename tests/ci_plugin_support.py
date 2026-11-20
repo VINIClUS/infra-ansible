@@ -78,17 +78,18 @@ def write_suite(tmp_path, files=None):
     inner = tmp_path / "inner"
     inner.mkdir(parents=True, exist_ok=True)
     for name, content in (files or {"test_inner.py": INNER_SUITE}).items():
+        (inner / name).parent.mkdir(parents=True, exist_ok=True)
         (inner / name).write_text(content, encoding="utf-8")
     return inner
 
 
-def pytest_run(tmp_path, *args, plugin=True, cwd=None, env=None, files=None):
+def pytest_run(tmp_path, *args, plugin=True, cwd=None, env=None, files=None, targets=None):
     inner = write_suite(tmp_path, files)
     command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "-rA"]
     command += ["--rootdir", str(inner)]
     if plugin:
         command += ["-p", "tools.ci.pytest_ci"]
-    command += [*args, str(inner)]
+    command += [*args, *(targets or [str(inner)])]
     return subprocess.run(
         command,
         cwd=cwd or tmp_path,
