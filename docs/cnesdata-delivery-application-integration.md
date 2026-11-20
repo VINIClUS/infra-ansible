@@ -1,6 +1,6 @@
 # Spec de integracao do application (P02): decisoes DD-1 a DD-7
 
-> **Estado:** proposta para ratificacao. Esta spec recomenda e nao ratifica: toda recomendacao abaixo e "proposta, aguarda ratificacao" da coordenadora em infra-ansible#55. Nenhum codigo, teste, workflow ou doc de contrato muda neste PR. Registro de decisao: infra-ansible#55 comentarios 7024515854 e 7038419407 (ordem unica de PRs, IDs P01a..P33, em 7038419407 §3).
+> **Estado:** proposta para ratificacao. Esta spec recomenda e nao ratifica: toda recomendacao abaixo e "proposta, aguarda ratificacao" da coordenadora em infra-ansible#55, exceto as decisoes do dono marcadas (O19-O22, O24; DD-1, DD-6 e a parte do O22 no DD-7). Nenhum codigo, teste, workflow ou doc de contrato muda neste PR. Registro de decisao: infra-ansible#55 comentarios 7024515854 e 7038419407 (ordem unica de PRs, IDs P01a..P33, em 7038419407 §3).
 
 **Pins lidos:**
 - IA = infra-ansible `b9760be354d86d1f0faab025fdec15a09638d75b` (`main`; o codigo e identico ao de `be2f6b52`, pois o PR #83 so adicionou a spec dos produtores). Prefixo `tools/cnesdata_delivery/` salvo indicacao.
@@ -15,7 +15,7 @@ Fatos que ancoram tudo (leitura do codigo, nao opiniao):
 - Cada etapa do lifecycle e plan + audit independente + deploy: o deploy recusa sem `approval.json` do job de audit (`LR:1348-1354`; `DOC:48`). A estimativa anterior contava 6 pausas para a preparacao; o minimo pelo codigo e 8 pausas nas quatro chamadas de plan/deploy (`observer-bootstrap` e `operational`, plan e deploy cada) e mais as do audit (DD-5), 10 no desenho atual.
 - Cada comando tofu so e admitido se o seu proprio `timeout` couber antes do deadline: `LifecycleWatchdog.run` chama `phase_capacity(operation_seconds=timeout)` (`LR:898-902`), e `phase_capacity` exige `now + operation_seconds + 157 < preparation_deadline` antes do fence (`LC:1550-1552`). Um `tofu apply` (timeout 120, `LR:1372`) so pode **comecar** ate 623 s depois do acquire. Na cadeia de DD-1, o ultimo `apply` e precedido por 11 operacoes tofu (4 `init`, 2 `plan`, 4 `show`, 1 `apply`), cujos tetos somam 620 s (`LR:1331,1340,1341,1366,1372`).
 
-| DD | Recomendacao (proposta, aguarda ratificacao) | PRs afetados |
+| DD | Recomendacao (proposta, aguarda ratificacao, exceto as decisoes do dono marcadas: O19-O22, O24) | PRs afetados |
 |---|---|---|
 | DD-1 | Preparacao em tres tempos, `observer-bootstrap`, `inventory`, `operational`, com o mode-canary co-aplicado na etapa `operational` (1C); a alternativa sem mode-canary na janela (1A) so se o primeiro `execute` nao precisar de `accepted-open` (O19) | P14, P16, P19, P25, P27, P28 |
 | DD-2 | Job `closed-ready` do caller vira sonda que espera; o keeper publica o artefato `cnesdata-closed-ready-*` no proprio job; host gate e trust inalterados | P13, P14, P27 |
@@ -263,7 +263,7 @@ A troca de custodia so vale se o R24 provar que o secret de ambiente chega ao re
 
 ## 9. Perguntas ao dono (O18 em diante)
 
-Todas aguardam o dono; esta spec nao decide nenhuma. O17 ja existe na spec dos produtores (§8, item 17), por isso a numeracao aqui comeca em O18.
+A O18 aguarda o dono; a O19-O22 e a O24 tem resposta do dono registrada; a O23 foi retirada. Esta spec nao decide nenhuma. O17 ja existe na spec dos produtores (§8, item 17), por isso a numeracao aqui comeca em O18.
 
 18. **O18, custodia do DD-6.** Aceita a governanca (e, se for o caso, a `report_hmac_key`) em secret de repositorio, custodia mais fraca, se o DR2/R24 mostrar que o secret de environment nao chega ao reusable por nome, ou se a opcao (ii) do DD-6 for escolhida? Depende do resultado do drill R24.
     - **Resposta do dono (2026-11-20):** ainda aberta; depende do drill R24/DR2.
