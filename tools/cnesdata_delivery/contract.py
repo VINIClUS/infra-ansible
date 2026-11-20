@@ -233,6 +233,15 @@ TARGET_SETS = {"capacity_provider_strategy": ("CapacityProviderStrategy", (
     "placement_strategy": ("PlacementStrategy", (("field", "field"), ("type", "type")))}
 
 
+def _prune(value):
+    if type(value) is dict:
+        value = {key: _prune(item) for key, item in value.items()}
+        return {key: item for key, item in value.items() if item not in EMPTY and item != ""}
+    if type(value) is list:
+        return [item for item in (_prune(item) for item in value) if item not in EMPTY and item != ""]
+    return value
+
+
 def _one(value):
     require(value in (None, []) or (type(value) is list and len(value) == 1), "drift target projection")
     return value[0] if value else None
@@ -251,7 +260,8 @@ def _target_sets(source, side):
         require(type(items) is list, "drift target projection")
         names = {pair[side] for pair in pairs}
         rows = [_target_pick(item, pairs, side, names) for item in items]
-        result[key] = sorted(canonical(row).decode() for row in rows)
+        encoded = [canonical(row).decode() for row in rows]
+        result[key] = encoded if key == "placement_strategy" else sorted(encoded)
     return result
 
 
@@ -278,6 +288,8 @@ def _target_tags(source, side):
     tags = source.get("tags" if side == 0 else "Tags")
     if side == 1 and tags:
         require(type(tags) is list and all(type(item) is dict for item in tags), "drift target projection")
+        keys = [key for item in tags for key in item]
+        require(len(keys) == len(set(keys)), "drift target projection")
         tags = {key: item[key] for item in tags for key in item}
     return tags or {}
 
@@ -293,6 +305,7 @@ def _target_keys(side):
 
 def _target(source, side):
     top, ecs_keys = _target_keys(side)
+    source = _prune(source)
     require(type(source) is dict and all(key in top or source[key] in EMPTY for key in source),
             "drift target projection")
     pick = lambda value, pairs: _target_pick(value, pairs, side, {pair[side] for pair in pairs})

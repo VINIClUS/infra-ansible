@@ -507,3 +507,79 @@ def test_fase_a_continua_recusando_leitura_de_lifecycle_na_admissao():
     assert "stepfunctions" not in mapa.READ_ONLY and "aws_sfn_state_machine" not in mapa.IDENTITY
     with pytest.raises(ValueError, match="read-only API boundary"):
         mapa.require_read_only("cloudwatch", "describe_alarms")
+
+
+def realistic_state_target():
+    ecs = {"capacity_provider_strategy": [], "enable_ecs_managed_tags": False, "enable_execute_command": False,
+           "group": "", "launch_type": "FARGATE", "network_configuration": [{
+               "assign_public_ip": False, "security_groups": ["sg-1"], "subnets": ["s-a", "s-b"]}],
+           "placement_constraints": [], "placement_strategy": [], "platform_version": "", "propagate_tags": "",
+           "reference_id": "", "tags": {}, "task_count": 1, "task_definition_arn": "synthetic-task:1"}
+    return [{"arn": "synthetic-cluster", "dead_letter_config": [], "ecs_parameters": [ecs],
+             "eventbridge_parameters": [], "input": "", "kinesis_parameters": [], "retry_policy": [{
+                 "maximum_event_age_in_seconds": 3600, "maximum_retry_attempts": 2}],
+             "role_arn": "synthetic-role", "sagemaker_pipeline_parameters": [], "sqs_parameters": []}]
+
+
+def realistic_live_target():
+    return {"Arn": "synthetic-cluster", "RoleArn": "synthetic-role",
+            "RetryPolicy": {"MaximumEventAgeInSeconds": 3600, "MaximumRetryAttempts": 2},
+            "EcsParameters": {"TaskDefinitionArn": "synthetic-task:1", "TaskCount": 1, "LaunchType": "FARGATE",
+                              "EnableECSManagedTags": False, "EnableExecuteCommand": False,
+                              "NetworkConfiguration": {"awsvpcConfiguration": {
+                                  "AssignPublicIp": "DISABLED", "Subnets": ["s-b", "s-a"],
+                                  "SecurityGroups": ["sg-1"]}}}}
+
+
+def test_target_com_forma_realista_do_state_do_tofu_confere_com_a_leitura_da_aws():
+    assert target_coverage(realistic_state_target(), realistic_live_target()) is None
+
+
+def test_recusa_target_realista_cuja_leitura_ao_vivo_divergiu():
+    live = realistic_live_target()
+    live["EcsParameters"]["TaskDefinitionArn"] = "synthetic-task:2"
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        target_coverage(realistic_state_target(), live)
+
+
+def test_bloco_vazio_com_string_vazia_no_state_nao_conta_como_bloco_desconhecido():
+    state = realistic_state_target()
+    state[0]["sqs_parameters"] = [{"message_group_id": ""}]
+    assert target_coverage(state, realistic_live_target()) is None
+
+
+def strategy_state(*order):
+    state = realistic_state_target()
+    state[0]["ecs_parameters"][0]["placement_strategy"] = [{"type": t, "field": f} for t, f in order]
+    return state
+
+
+def strategy_live(*order):
+    live = realistic_live_target()
+    live["EcsParameters"]["PlacementStrategy"] = [{"type": t, "field": f} for t, f in order]
+    return live
+
+
+def test_placement_strategy_preserva_a_ordem_porque_o_ecs_a_trata_como_ordenada():
+    first, second = ("spread", "attribute:ecs.availability-zone"), ("binpack", "memory")
+    assert target_coverage(strategy_state(first, second), strategy_live(first, second)) is None
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        target_coverage(strategy_state(first, second), strategy_live(second, first))
+
+
+def test_recusa_chave_de_tag_duplicada_na_leitura_do_target():
+    state = realistic_state_target()
+    state[0]["ecs_parameters"][0]["tags"] = {"a": "1"}
+    live = realistic_live_target()
+    live["EcsParameters"]["Tags"] = [{"a": "1"}, {"a": "2"}]
+    with pytest.raises(ValueError, match="drift target projection"):
+        target_coverage(state, live)
+
+
+def test_tipos_do_envelope_da_fase_a_ficam_dentro_das_tabelas_estritas():
+    mapa = catalog()
+    for tipo in mapa.PHASE_A_ENVELOPE.supported:
+        assert tipo in mapa.IDENTITY, tipo
+        service, operation = mapa._operation(tipo)
+        assert operation in mapa.READ_ONLY[service], tipo
+    assert mapa.PHASE_A_ENVELOPE.identity is mapa.IDENTITY
