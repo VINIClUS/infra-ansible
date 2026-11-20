@@ -84,6 +84,7 @@ def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
+    c.require("application_product_source_manifest" not in governance, "inline product source manifest")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
     request_raw = os.environ["REQUEST_DESCRIPTOR"].encode()
@@ -98,7 +99,8 @@ def admission(role):
     c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
     api = ArtifactDigests(GitHub()) if role == "application" else GitHub()
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
-    from tools.cnesdata_delivery.provenance import application_caller
+    from tools.cnesdata_delivery.provenance import application_caller, product_source_manifest
+    governance = governance | {"application_product_source_manifest": product_source_manifest(api, governance, time.time())}
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
     c.require(request["application_purpose"] == caller["application_purpose"]
               and request["caller_binding_sha256"] == c.sha(c.canonical(caller)), "original requested application caller")

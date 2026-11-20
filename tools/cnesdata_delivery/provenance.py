@@ -52,6 +52,41 @@ def lifecycle_artifact(api, reference, now, *, source, run_id, attempt, producer
     return unzip(raw)
 
 
+PRODUCT_SOURCE_MANIFEST_WORKFLOW = ".github/workflows/product-source-manifest.yml"
+PRODUCT_SOURCE_MANIFEST_MEMBER = "product-source-manifest.json"
+PRODUCT_SOURCE_MANIFEST_LIMIT = 4 * 1024**2
+
+
+def product_source_manifest(api, governance, now):
+    """Authenticate the manifest artifact of the governed source and return its parsed member."""
+    require("application_product_source_manifest" not in governance, "inline product source manifest")
+    reference = closed(governance["application_product_source_manifest_artifact"],
+                       "artifact_id artifact_digest run_id run_attempt")
+    source = digest(governance["source_sha"], 40)
+    for key in ("artifact_id", "run_id", "run_attempt"):
+        integer(reference[key])
+    name = f"product-source-manifest-{source}-{reference['run_id']}-{reference['run_attempt']}"
+    metadata = api.read(f"repos/{REPOSITORY}/actions/artifacts/{reference['artifact_id']}")
+    require(metadata["id"] == reference["artifact_id"] and metadata["name"] == name,
+            "product source manifest artifact name")
+    files = api.artifact({"repository": REPOSITORY, "run_id": reference["run_id"],
+                          "run_attempt": reference["run_attempt"], "artifact_id": reference["artifact_id"],
+                          "artifact_digest": reference["artifact_digest"],
+                          "workflow_path": PRODUCT_SOURCE_MANIFEST_WORKFLOW, "workflow_sha": source,
+                          "source_sha": source}, now)
+    require(set(files) == {PRODUCT_SOURCE_MANIFEST_MEMBER}, "product source manifest member")
+    raw = files[PRODUCT_SOURCE_MANIFEST_MEMBER]
+    manifest = loads(raw, canonical=True, limit=PRODUCT_SOURCE_MANIFEST_LIMIT)
+    closed(manifest, "version source_sha files")
+    require(type(manifest["version"]) is int and manifest["version"] == 1 and manifest["source_sha"] == source
+            and type(manifest["files"]) is dict and 1 <= len(manifest["files"]) <= 16384
+            and "scripts/promotion/promote_api.py" in manifest["files"]
+            and all(type(path) is str and digest(value) for path, value in manifest["files"].items())
+            and sha(raw) == digest(governance["application_product_source_closure_sha256"]),
+            "product source manifest content")
+    return manifest
+
+
 def application_caller(api, governance, run, role, step, *, include_job=False):
     """Original caller source and running job, independent of future receipts."""
     import base64
