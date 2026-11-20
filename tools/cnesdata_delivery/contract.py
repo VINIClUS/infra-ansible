@@ -134,17 +134,8 @@ def applied_state(plan, state):
             match(change["after"], state["outputs"][name]["value"], change.get("after_unknown", False))
 
 
-def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None):
-    """Every managed attribute must have a source-bound live projection.
-
-    This deliberately refuses unsupported/unobservable fields. A production
-    matrix and concrete provider/API projections remain an owner handoff;
-    a nonempty collection of chosen API hashes cannot stand in for coverage.
-    """
-    closed(matrix, "matrix_version source_sha purpose before after")
-    require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == 1
-            and matrix["source_sha"] == source_sha and matrix["purpose"] == purpose
-            and stage in {"before", "after"}, "governed drift matrix identity")
+def stage_expectation(plan, stage, state=None):
+    """Attributes expected per address: saved-plan before, or applied state after."""
     changes = {item["address"]: item["change"] for item in plan.get("resource_changes", [])
                if item.get("mode") == "managed"}
     expected = {address: change[stage] for address, change in changes.items() if change[stage] is not None}
@@ -159,6 +150,21 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
             for instance in resource.get("instances", []):
                 suffix = "[" + canonical(instance["index_key"])[:-1].decode() + "]" if "index_key" in instance else ""
                 expected[prefix + suffix] = instance["attributes"]
+    return expected
+
+
+def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None):
+    """Every managed attribute must have a source-bound live projection.
+
+    This deliberately refuses unsupported/unobservable fields. A production
+    matrix and concrete provider/API projections remain an owner handoff;
+    a nonempty collection of chosen API hashes cannot stand in for coverage.
+    """
+    closed(matrix, "matrix_version source_sha purpose before after")
+    require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == 1
+            and matrix["source_sha"] == source_sha and matrix["purpose"] == purpose
+            and stage in {"before", "after"}, "governed drift matrix identity")
+    expected = stage_expectation(plan, stage, state)
     required = {(address, name) for address, values in expected.items() for name in values}
     rows = matrix[stage]
     require(type(rows) is list and len(rows) <= 4096, "bounded drift coverage")

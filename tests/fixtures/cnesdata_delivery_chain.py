@@ -51,8 +51,7 @@ class Chain:
                     "drift_matrix": {"matrix_version": 1, "source_sha": "a" * 40, "purpose": purpose, "before": [], "after": []}}
         if compact_names:
             self.gov.update(evidence_bucket="evi", evidence_prefix="cnesdata/prod/e")
-        self.gov["readbacks"] = [{"service": "dynamodb", "operation": "describe_table", "parameters": {"TableName": "fixture"},
-                                  "expected_sha256": c.sha(c.canonical({"Table": {"Status": "ACTIVE"}}))}]
+        self.gov["readbacks"] = {"before": [], "after": []}
         self.gov["proof_producers"] = [{"repository": "VINIClUS/infra-ansible", "workflow_path": ".github/workflows/proof.yml", "workflow_sha": "e" * 40}]
         self.gov["caller_allowlist"] = [{"repository": c.REPOSITORY, "ref": "refs/heads/main", "source_ref": "a" * 40,
                                         "workflow_ref": f"{c.REPOSITORY}/.github/workflows/infra-{role}.yml@" + "a" * 40}
