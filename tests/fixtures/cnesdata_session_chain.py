@@ -6,6 +6,7 @@ from email.utils import formatdate
 from fixtures.cnesdata_delivery_chain import Chain
 from fixtures.cnesdata_session_cases import expected_documents
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import session_owner
 from tools.cnesdata_delivery.session_policy import managed_arn
 
 
@@ -77,19 +78,7 @@ class OwnerChain(Chain):
         if not self.owner_mode:
             return reference
         pin = self.gov["session_policy_pins"][role]
-        fact = {
-            "account_id": pin["account_id"],
-            "role_arn_sha256": c.sha(pin["role_arn"].encode()),
-            "policy_arn_sha256": c.sha(pin["policy_arn"].encode()),
-            "root_source_sha": pin["root_source_sha"],
-            "default_version_id": pin["default_version_id"],
-            "document_sha256": pin["document_sha256"],
-            "observed_at": pin["observed_at"],
-            "expires_at": pin["expires_at"],
-            "frozen_until": pin["frozen_until"],
-            "attachment_count": 0,
-            "permissions_boundary_usage_count": 0,
-        }
+        fact = session_owner._facts(pin, c.report_key(self.gov))
         members = dict(
             self.artifacts[reference["repository"], reference["artifact_id"]][2]
         )

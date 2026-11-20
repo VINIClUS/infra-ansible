@@ -376,7 +376,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
                document=json.loads(resources["aws_iam_policy.application_session[0]"]["policy"]))
     pin["document_sha256"] = c.sha(c.canonical(pin["document"]))
     gov["session_policy_pins"]["application"] = pin
-    measured = {"managed_session_policy": session_owner._facts(pin), "application_fragment_sha256": c.sha(c.canonical(fragment))}
+    measured = {"managed_session_policy": session_owner._facts(pin, c.report_key(gov)), "application_fragment_sha256": c.sha(c.canonical(fragment))}
     name = "policy-evaluation.json"
     files[name] = c.canonical({"check_id": "policy-evaluation", "source_sha": descriptor["source_sha"], "measurement": measured})
     next(x for x in proof["reports"] if x["check_id"] == "policy-evaluation").update(size=len(files[name]), sha256=c.sha(files[name]))

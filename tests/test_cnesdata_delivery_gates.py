@@ -172,19 +172,19 @@ def test_application_gate_bootstrap_fetches_complete_runtime_import_closure():
 
 
 def test_purpose_cost_pre_requires_real_guardrail_context(contract):
-    from fixtures.cnesdata_cost import fixture
+    from fixtures.cnesdata_cost import SOURCE_MANIFEST_SHA256, fixture
     cost, stage, evidence, manifest = fixture(False)
-    contract.validate_cost(cost, purpose="bootstrap", stage=stage, evidence=evidence, manifest=manifest, now=1794053700)
+    contract.validate_cost(cost, purpose="bootstrap", stage=stage, evidence=evidence, manifest=manifest, now=1794053700, source_manifest_sha256=SOURCE_MANIFEST_SHA256)
     for context in [None, stage | {"stage": "active"}]:
         with pytest.raises(ValueError):
-            contract.validate_cost(cost, purpose="bootstrap", stage=context, evidence=evidence, manifest=manifest, now=1794053700)
+            contract.validate_cost(cost, purpose="bootstrap", stage=context, evidence=evidence, manifest=manifest, now=1794053700, source_manifest_sha256=SOURCE_MANIFEST_SHA256)
     with pytest.raises(ValueError):
-        contract.validate_cost(cost, purpose="phase-a", stage=stage, evidence=evidence, manifest=manifest, now=1794053700)
+        contract.validate_cost(cost, purpose="phase-a", stage=stage, evidence=evidence, manifest=manifest, now=1794053700, source_manifest_sha256=SOURCE_MANIFEST_SHA256)
 
 
 @pytest.mark.parametrize("mutation", ["unbound", "credits", "guardrail", "stale", "wrong-binding", "aggregate", "paid"])
 def test_cost_purpose_scope_rejects_lie_or_missing_measurement(contract, mutation):
-    from fixtures.cnesdata_cost import fixture
+    from fixtures.cnesdata_cost import SOURCE_MANIFEST_SHA256, fixture
     cost, stage, evidence, manifest = fixture(mutation in {"wrong-binding", "stale"})
     purpose = "phase-a" if cost["scope"] == "active" else "bootstrap"
     if mutation == "unbound":
@@ -202,7 +202,7 @@ def test_cost_purpose_scope_rejects_lie_or_missing_measurement(contract, mutatio
     else:
         cost["paid_actions_limit_usd"] = "1.00"
     with pytest.raises(ValueError):
-        contract.validate_cost(cost, purpose=purpose, stage=stage, evidence=evidence, manifest=manifest, now=1794053700)
+        contract.validate_cost(cost, purpose=purpose, stage=stage, evidence=evidence, manifest=manifest, now=1794053700, source_manifest_sha256=SOURCE_MANIFEST_SHA256)
 
 
 def graph_case(contract):

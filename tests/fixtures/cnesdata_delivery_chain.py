@@ -40,7 +40,7 @@ class Chain:
         measured["measurement"]["manifest_sha256"] = cost["manifest_sha256"]
         cost["evidence_sha256"] = c.sha(c.canonical(measured))
         self.gov = {"authority": "infra-ansible#28/6715994616+6716076093+6716241666+6716490764+6716699477+6718141241+6718506538",
-                    "activation_enabled": True, "region": "us-east-2", "account_id": "111122223333",
+                    "activation_enabled": True, "region": "us-east-2", "account_id": "111122223333", "report_hmac_key": "5a" * 32,
                     "roles": {"plan": "arn:aws:iam::111122223333:role/plan", "deploy": "arn:aws:iam::111122223333:role/deploy"},
                     "gate_shas": {"plan": "b" * 40, "deploy": "c" * 40}, "baseline": baseline, "cost": cost,
                     "dependencies": baseline["dependencies"], "required_checks": ["source-ci"],
@@ -58,7 +58,7 @@ class Chain:
                                         "workflow_ref": f"{c.REPOSITORY}/.github/workflows/infra-{role}.yml@" + "a" * 40}
                                        for role in ("plan", "apply")]
         self.gov["artifact_purposes"] = sorted({"backend", "policy", "cost", "drift", "shared-outputs", "toolchain"})
-        self.gov["artifact_references"] = {purpose: self.add_artifact(200 + index, {"facts.json": b'{"facts":"measured"}\n'}, f".github/workflows/{purpose}.yml")
+        self.gov["artifact_references"] = {purpose: self.add_artifact(200 + index, {"facts.json": b'{"facts":"measured"}\n'}, f"w/{purpose[:1]}.yml")
                                            for index, purpose in enumerate(self.gov["artifact_purposes"])}
         self.gov["baseline_artifacts"] = [{"purpose": purpose, "reference": self.gov["artifact_references"][purpose]}
                                           for purpose in self.gov["artifact_purposes"]]
