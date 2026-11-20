@@ -5,11 +5,13 @@ from pathlib import Path
 
 
 def _load(directory):
-    rows = {}
+    rows, duplicates = {}, []
     for line in (Path(directory) / "results.jsonl").read_text(encoding="utf-8").splitlines():
         row = json.loads(line)
+        if row["nodeid"] in rows:
+            duplicates.append(row["nodeid"])
         rows[row["nodeid"]] = row
-    return rows
+    return rows, duplicates
 
 
 def _ground_truth(path):
@@ -17,10 +19,9 @@ def _ground_truth(path):
     return {line.strip() for line in lines if line.strip()}
 
 
-def _id_problems(name, ids, expected, label):
-    problems = [f"ids_ausentes dir={name} nodeid={nodeid}" for nodeid in sorted(expected - ids)]
-    problems += [f"ids_extras dir={name} nodeid={nodeid}" for nodeid in sorted(ids - expected)]
-    return [problem.replace("ids_", label, 1) if label else problem for problem in problems]
+def _id_problems(name, ids, expected):
+    absent = [f"ids_ausentes dir={name} nodeid={nodeid}" for nodeid in sorted(expected - ids)]
+    return absent + [f"ids_extras dir={name} nodeid={nodeid}" for nodeid in sorted(ids - expected)]
 
 
 def _truth_problems(name, ids, truth):
@@ -46,14 +47,26 @@ def _value_problems(reference, other, field):
     return problems
 
 
+def _repeated(directories):
+    seen, problems = set(), []
+    for path in directories:
+        if path in seen:
+            problems.append(f"diretorio_repetido dir={path}")
+        seen.add(path)
+    return problems
+
+
 def compare(directories, truth=None):
-    reports = {Path(path).name: _load(path) for path in directories}
+    problems = _repeated(directories)
+    loaded = {path: _load(path) for path in dict.fromkeys(directories)}
+    reports = {name: rows for name, (rows, _) in loaded.items()}
+    for name, (_, duplicates) in loaded.items():
+        problems += [f"nodeid_duplicado dir={name} nodeid={nodeid}" for nodeid in duplicates]
     names = list(reports)
     union = set().union(*(set(rows) for rows in reports.values()))
-    problems = []
     for name in names:
         ids = set(reports[name])
-        problems += _id_problems(name, ids, union, "")
+        problems += _id_problems(name, ids, union)
         problems += _missing_problems(name, reports[name])
         if truth is not None:
             problems += _truth_problems(name, ids, truth)
@@ -61,7 +74,7 @@ def compare(directories, truth=None):
     for name in names[1:]:
         problems += _value_problems(reference, reports[name], "outcome")
         problems += _value_problems(reference, reports[name], "skip_reason")
-    return problems, len(union)
+    return problems, len(union), len(reports)
 
 
 def main(argv=None):
@@ -70,13 +83,13 @@ def main(argv=None):
     parser.add_argument("--ground-truth")
     args = parser.parse_args(argv)
     truth = _ground_truth(args.ground_truth) if args.ground_truth else None
-    problems, count = compare(args.directories, truth)
+    problems, count, dirs = compare(args.directories, truth)
     for problem in problems:
         print(problem)
     if problems:
         print(f"compare_failed problems={len(problems)}")
         return 1
-    print(f"compare_ok ids={count} dirs={len(args.directories)}")
+    print(f"compare_ok ids={count} dirs={dirs}")
     return 0
 
 

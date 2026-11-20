@@ -43,7 +43,7 @@ def test_falha_com_id_ausente_em_um_relatorio(tmp_path, capsys):
     second = _report(tmp_path, "dois", BASE_ROWS[:2])
 
     assert main([first, second]) == 1
-    assert "ids_ausentes dir=dois nodeid=t.py::c" in capsys.readouterr().out
+    assert f"ids_ausentes dir={second} nodeid=t.py::c" in capsys.readouterr().out
 
 
 def test_falha_com_resultado_diferente(tmp_path, capsys):
@@ -70,7 +70,7 @@ def test_falha_com_resultado_missing(tmp_path, capsys):
     second = _report(tmp_path, "dois", missing)
 
     assert main([first, second]) == 1
-    assert "missing dir=um nodeid=t.py::c" in capsys.readouterr().out
+    assert f"missing dir={first} nodeid=t.py::c" in capsys.readouterr().out
 
 
 def test_falha_quando_difere_da_verdade_de_coleta(tmp_path, capsys):
@@ -81,5 +81,59 @@ def test_falha_quando_difere_da_verdade_de_coleta(tmp_path, capsys):
 
     assert main([first, second, "--ground-truth", str(truth)]) == 1
     out = capsys.readouterr().out
-    assert "fora_da_verdade dir=um nodeid=t.py::c" in out
-    assert "ausente_da_verdade dir=um nodeid=t.py::z" in out
+    assert f"fora_da_verdade dir={first} nodeid=t.py::c" in out
+    assert f"ausente_da_verdade dir={first} nodeid=t.py::z" in out
+
+
+def _report_at(directory, rows):
+    directory.mkdir(parents=True)
+    lines = [
+        {"nodeid": nodeid, "outcome": outcome, "skip_reason": reason}
+        for nodeid, outcome, reason in rows
+    ]
+    (directory / "results.jsonl").write_text(
+        "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8"
+    )
+    return str(directory)
+
+
+def test_diretorios_com_mesmo_nome_sao_comparados_separadamente(tmp_path, capsys):
+    changed = [BASE_ROWS[0], BASE_ROWS[1], ("t.py::c", "passed", None)]
+    first = _report_at(tmp_path / "um" / "lane", BASE_ROWS)
+    second = _report_at(tmp_path / "dois" / "lane", changed)
+
+    assert main([first, second]) == 1
+    out = capsys.readouterr().out
+    assert "outcome_diferente nodeid=t.py::c" in out
+
+
+def test_rotulo_dir_usa_o_caminho_informado(tmp_path, capsys):
+    first = _report_at(tmp_path / "um" / "lane", BASE_ROWS)
+    second = _report_at(tmp_path / "dois" / "lane", BASE_ROWS[:2])
+
+    assert main([first, second]) == 1
+    assert f"ids_ausentes dir={second} nodeid=t.py::c" in capsys.readouterr().out
+
+
+def test_diretorio_repetido_e_recusado(tmp_path, capsys):
+    only = _report_at(tmp_path / "um" / "lane", BASE_ROWS)
+
+    assert main([only, only]) == 1
+    assert f"diretorio_repetido dir={only}" in capsys.readouterr().out
+
+
+def test_nodeid_duplicado_no_relatorio_falha(tmp_path, capsys):
+    duplicated = BASE_ROWS + [("t.py::a", "passed", None)]
+    first = _report_at(tmp_path / "um" / "lane", duplicated)
+    second = _report_at(tmp_path / "dois" / "lane", BASE_ROWS)
+
+    assert main([first, second]) == 1
+    assert f"nodeid_duplicado dir={first} nodeid=t.py::a" in capsys.readouterr().out
+
+
+def test_sucesso_conta_os_diretorios_distintos(tmp_path, capsys):
+    first = _report_at(tmp_path / "um" / "lane", BASE_ROWS)
+    second = _report_at(tmp_path / "dois" / "lane", BASE_ROWS)
+
+    assert main([first, second]) == 0
+    assert "ids=3 dirs=2" in capsys.readouterr().out
