@@ -198,7 +198,8 @@ CATALOG = {
         "ipc_mode": ("taskDefinition.ipcMode", "identity"), "memory": ("taskDefinition.memory", "identity"),
         "network_mode": ("taskDefinition.networkMode", "identity"), "pid_mode": ("taskDefinition.pidMode", "identity"),
         "requires_compatibilities": ("taskDefinition.requiresCompatibilities", "json-set"),
-        "revision": ("taskDefinition.revision", "identity"), "task_role_arn": ("taskDefinition.taskRoleArn", "identity")}),
+        "revision": ("taskDefinition.revision", "identity"),
+        "task_role_arn": ("taskDefinition.taskRoleArn", "identity")}),
     "aws_dynamodb_table": _read("dynamodb", "describe_table", {
         "arn": ("Table.TableArn", "identity"), "billing_mode": ("Table.BillingModeSummary.BillingMode", "identity"),
         "deletion_protection_enabled": ("Table.DeletionProtectionEnabled", "identity"),
