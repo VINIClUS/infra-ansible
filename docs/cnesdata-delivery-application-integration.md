@@ -22,10 +22,12 @@ Fatos que ancoram tudo (leitura do codigo, nao opiniao):
 | DD-3 | Gatilho externo so onde um job do caller publica (host, phase-c-*); interno onde o journal do keeper ja tem a observacao (static, unit); uma emenda por transicao | P14, P15, P16, P17 |
 | DD-4 | A regra de aceite vive no handler do adapter (reaproveita `_unit_checks`, `accept_mode_canary`, `freeze_proof`); o keeper valida forma, compromissos e `accepted is True` | P13, P16, P17 |
 | DD-5 | Audit como reusable proprio de job unico, com role e trust proprios (nao um terceiro job no plan/deploy) | P11, P12, P19, P22, P28 |
-| DD-6 | A estimativa e **negativa** para o desenho atual; replanejar P10-P17 com `validate` dobrado no `execute` (custodia neutra) e levar ao dono a politica de pausas dentro das janelas (O20, O21) | P10-P17, P25-P30 |
+| DD-6 | A estimativa e **negativa** para o desenho atual; o dono decidiu (O20, O21, O24) manter um revisor por job, a janela de 900 s e 60 s por pausa: replanejar para o desenho C (`validate` dobrado no `execute`, 6 pausas) | P10-P17, P25-P30 |
 | DD-7 | `finish` e `publish_terminal` no processo do keeper; `lifecycle_terminal_job` = o proprio job do application; a conclusao do run depende de O22 | P17, P27-P30 |
 
 Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imposto pelo produto e pelo host gate; o caminho critico de 10 nos nao encurta.
+
+Respostas do dono em 2026-11-20 (§9): O19 `accepted-open` no primeiro `execute` (DD-1 1C decidida); O20 e O24 um revisor por job, `validate` dobrado, 60 s por pausa; O21 janela de 900 s mantida; O22 terminal `failed-*` fica vermelho. O18 segue aberta.
 
 ## 1. DD-1: ordem e conteudo da preparacao em 900 s
 
@@ -46,7 +48,7 @@ Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imp
 | 1B: 1A + mode-canary como terceira etapa (plan, audit, deploy) | 6 (+ 3 audits) | Gate: remove `LR:1358` com oraculo completo (P16). Pausas e maquina somam 50 por cento (§6.3): nao cabe em nenhum cenario medido. |
 | 1C: 1A com os oito enderecos de modo co-aplicados no plan/deploy `operational` | 4 (+ 2 audits) | Gate: `validate_delta` da etapa `operational` passa a admitir tambem os oito enderecos (`LC:1326-1405`, `LC:1288-1323`); o conjunto fechado de modos (`LC:1343`) ganha uma forma. Reusables: nenhum novo. CnesData: um `inputs.json` carrega `static_promotion` e `mode_canary` (`CD:infra/opentofu/env/prod/variables.tf:1-41`). Risco: dois oraculos num plano so. |
 
-**Recomendacao (proposta, aguarda ratificacao): 1C**, na ordem `observer-bootstrap` (plan, audit, deploy), `inventory` (adapter), `operational` com modos (plan, audit, deploy). 1B e inviavel pela conta do §6. 1A e a escolha se o dono aceitar que o primeiro `execute` termine sem `accepted-open` (O19). O `inventory` precisa de um gatilho dentro do `application-prepare` (hoje `STAGE_TRIGGERS` so liga `prepared` e `phase-b`, `LC:1230`): o evento e o job `observer-bootstrap / execute` do deploy concluido com sucesso, mesmo padrao de `stage_event_source` (`AG:1265-1282`). O resultado do `inventory` chega ao job que monta o `inputs.json` do plan `operational` pelo mesmo canal do DD-2.
+**Decidido pelo dono (O19, 2026-11-20): 1C**; o primeiro `execute` deve alcancar `accepted-open`. Recomendacao original (proposta): **1C**, na ordem `observer-bootstrap` (plan, audit, deploy), `inventory` (adapter), `operational` com modos (plan, audit, deploy). 1B e inviavel pela conta do §6. 1A e a escolha se o dono aceitar que o primeiro `execute` termine sem `accepted-open` (O19). O `inventory` precisa de um gatilho dentro do `application-prepare` (hoje `STAGE_TRIGGERS` so liga `prepared` e `phase-b`, `LC:1230`): o evento e o job `observer-bootstrap / execute` do deploy concluido com sucesso, mesmo padrao de `stage_event_source` (`AG:1265-1282`). O resultado do `inventory` chega ao job que monta o `inputs.json` do plan `operational` pelo mesmo canal do DD-2.
 
 **Nao determinado pelo codigo.** Quem produz o `inputs.json` privado do plan `operational`: os testes usam `input_jobs: {}` nesse passo (`tests/test_cnesdata_delivery_lifecycle.py:511,523`) e o catalogo ainda nao modela um job de entrada. P19 e P25 fecham.
 
@@ -113,7 +115,7 @@ R16: o remedio (teto por run, `DeleteObjects` em lote ou uma execucao `static-ma
 - Os formatos de `routing` e `terminal-readback` sao SINTETICOS (`AG:100-102`); o produto nao tem handler (`CD:scripts/promotion/promote_api.py:107-109,189-192`).
 
 **Opcoes.**
-- (a) O handler do adapter roda a regra do produto e emite uma observacao fechada `{accepted, checks, compromissos}`; o validador do keeper confere forma, hashes dos originais e `accepted is True`. Justificativa: o handler e as funcoes de aceite sao codigo do produto autenticado em S pelo manifesto de fonte (`AG:14-58`; P09/P10, D6), e a observacao compromete os hashes dos originais; risco residual declarado: o produto julga o proprio aceite. Isso difere do DD-5, onde o audit tem de ser independente de quem faz o deploy; aqui o produto ja e a fonte de todas as observacoes dos validadores existentes (`AG:97-98`).
+- (a) O handler do adapter roda a regra do produto e emite uma observacao fechada `{accepted, checks, compromissos}`; o validador do keeper confere forma, hashes dos originais e `accepted is True`. Justificativa: o handler e as funcoes de aceite sao codigo do produto autenticado em S pelo manifesto de fonte (`AG:14-58`; P09/P10, D6), e a observacao compromete os hashes dos originais; risco residual declarado: o produto julga o proprio aceite. Isso difere do DD-5, onde o audit tem de ser independente de quem faz o deploy; aqui o produto ja e a fonte de varias observacoes dos validadores existentes (`AG:97-98`; as de host e de decisao de recuperacao tem outra origem).
 - (b) O keeper reimplementa as regras. Gate: mais codigo num `application_gate.py` (hoje 137 954 B, cerca de 53 por cento do teto de 256 KiB por arquivo do closure, `LC:616`; sobram ~124 KB).
 - (c) Acrescentar um campo de veredito ao `mode-canary v2`: muda o contrato do produto e os vetores.
 
@@ -186,7 +188,18 @@ Premissas: a cadeia ate o `prepared` e a de DD-1 com o mode-canary co-aplicado (
 | C: `validate` dobrado no `execute`, audit com pausa | 148 | 6 | 240 | 388 | 235 | 738 | -263 |
 | D: C sem pausa dentro da janela (O20) | 148 | 0 | 0 | 148 | 475 | 0 | 475 |
 
-Nos tetos do codigo, um ciclo de plan soma 45+120+20 = 185 s e um de deploy 45+20+120 = 185 s (o deploy tambem roda `tofu show`, `LR:1366`); duas de cada somam 740 s contra 742 s de janela util (900 menos a reserva de 158). Antes do ultimo `apply` comecar sao 4 `init` (180), 2 `plan` (240), 4 `show` (80) e o primeiro `apply` (120) = 620 s contra o limite de 623 s: 3 s de folga com zero pausa e zero maquina. Essa soma e pior caso, nao regra de admissao (`phase_capacity` confere so o timeout de cada comando contra o deadline), entao nao sustenta sozinha o veredito. **Veredito: negativo**, com base nas linhas de pausa media (116 s) e p75 (123 s), que estouram A, B e C por centenas de segundos (tabela acima). Nos tipicos a conta e indeterminada, porque nenhum plan ou apply real foi medido; no desenho atual (A) a mediana de espera deixa 63 s para as 11 operacoes tofu, todas as admissoes e o `inventory`. Nao ha leitura positiva demonstravel do desenho atual, e a regra acordada em 7038419407 diz o que fazer: **P10-P17 sao replanejados antes de comecar.** Sem 1C (mode-canary em chamadas proprias, 1B) a conta piora de 4 para 6 chamadas de plan/deploy e 3 audits, e nao fecha em nenhum cenario.
+Nos tetos do codigo, um ciclo de plan soma 45+120+20 = 185 s e um de deploy 45+20+120 = 185 s (o deploy tambem roda `tofu show`, `LR:1366`); duas de cada somam 740 s contra 742 s de janela util (900 menos a reserva de 158). Antes do ultimo `apply` comecar sao 4 `init` (180), 2 `plan` (240), 4 `show` (80) e o primeiro `apply` (120) = 620 s contra o limite de 623 s: 3 s de folga com zero pausa e zero maquina. Essa soma e pior caso, nao regra de admissao (`phase_capacity` confere so o timeout de cada comando contra o deadline), entao nao sustenta sozinha o veredito. **Veredito: negativo**, com base nas linhas de pausa media (116 s, §6.2) e p75 (123 s), que estouram A, B e C por centenas de segundos (tabela acima). Nos tipicos a conta e indeterminada, porque nenhum plan ou apply real foi medido; no desenho atual (A) a mediana de espera deixa 63 s para as 11 operacoes tofu, todas as admissoes e o `inventory`. Nao ha leitura positiva demonstravel do desenho atual, e a regra acordada em 7038419407 diz o que fazer: **P10-P17 sao replanejados antes de comecar.** Sem 1C (mode-canary em chamadas proprias, 1B) a conta piora de 4 para 6 chamadas de plan/deploy e 3 audits, e nao fecha em nenhum cenario.
+
+#### 6.3.1 Desenho C no alvo de 60 s por pausa (decisao do dono)
+
+Cenario C (maquina 148 s, 6 pausas, limite de 623 s para o inicio do ultimo `apply`):
+
+| Espera por pausa | Espera total | Inicio do ultimo apply | Folga |
+|---|---|---|---|
+| 60 s (alvo do dono, O24) | 360 s | 508 s | +115 s |
+| 123 s (p75 medido, sem aviso) | 738 s | 886 s | -263 s |
+
+No alvo a janela e **positiva, mas fina e nao demonstrada**: 115 s cobrem a duracao real das 11 operacoes tofu, as admissoes de cada job, o `inventory` e a passagem entre jobs, nenhuma medida; nos tetos do codigo a soma e 620 s contra 623 s e nao cabe (pior caso, nao regra de admissao). Com os revisores avisados e presentes (R22) a espera de 60 s e meta, nao medida: os dados medidos (mediana 40 s, p75 123 s) vieram de aprovacoes sem aviso. Se os revisores perderem o alvo, o ciclo falha fechado: o `phase_capacity` recusa o comando seguinte, o lease fica preso e a recuperacao e a do runbook do P32 (e o run fica vermelho, O22). O pior caso do teto continua valendo como nota: a folga so se confirma na primeira execucao gated.
 
 O mesmo calculo vale para as janelas ratificadas de B (360 s) e C (240 s cada), `LC:1225-1227`, cada uma com plan, audit e deploy: maquina ~81 s e 5 pausas (200 s a 40 s) deixam 79 s em B e -41 s em C com o desenho atual, **sem tofu** (so pausas e maquina; nos tetos, plan mais deploy somam 370 s, acima dos 360 s de B); com `validate` dobrado, 3 pausas deixam 165 s em B e 45 s em C; sem pausas, 285 s e 165 s. Estimativa pela mesma base, sem tofu e sem a regra de capacidade pos-fence conferida: o minimo e levar a pergunta ao dono (O20, O21).
 
@@ -200,7 +213,7 @@ O mesmo calculo vale para as janelas ratificadas de B (360 s) e C (240 s cada), 
 | (iv) ampliar a janela de preparacao | emenda de `AG:2119` e `LC:972`, e revisao de `DOC:753-767` (a sessao de 900 s) | nenhuma; decisao do dono (O21). Antes do fence a preparacao nao fecha o API (`LC:1550-1552`), o risco e o tempo de lease preso. |
 | (v) fusao do mode-canary (DD-1, 1C) | menos chamadas | neutra |
 
-**Recomendacao (proposta, aguarda ratificacao): (i) mais (v)**, ambos neutros em custodia e anteriores a X*, e levar (iii) e (iv) ao dono. **Efeito no caminho critico:** o replanejamento pode alongar a cadeia de REL. P19 depende de P10, P11 e P12 (folga de 1 no, pois P18 e mais profundo); P30 tem folga de ~2 a 3 sobre P16 e P17; P28 depende de P11; a opcao (i) edita os reusables de plan e deploy, onde P07, que esta no caminho critico, tambem trabalha. A cadeia tem de ser recalculada com o script de profundidades depois do replanejamento, como a ordem unica exige; nenhuma profundidade nova foi calculada aqui.
+**Decisao do dono (2026-11-20): (i) mais (v), sem (iii) nem (iv).** Mantem um revisor por job, a janela de 900 s e o doc de autoridade do lifecycle sem mudanca. Replanejar P10-P17 "para o desenho C" significa: os reusables de plan e deploy perdem o job `validate` separado (a admissao ja repetida no `execute` passa a ser a unica) e o mode-canary e fundido na etapa `operational` (DD-1 1C). A coordenadora atribui os PRs na ratificacao; esta spec nao os atribui. Recalculo no §6.3.1. **Efeito no caminho critico:** o replanejamento pode alongar a cadeia de REL. P19 depende de P10, P11 e P12 (folga de 1 no, pois P18 e mais profundo); P30 tem folga de ~2 a 3 sobre P16 e P17; P28 depende de P11; a opcao (i) edita os reusables de plan e deploy, onde P07, que esta no caminho critico, tambem trabalha. A cadeia tem de ser recalculada com o script de profundidades depois do replanejamento, como a ordem unica exige; nenhuma profundidade nova foi calculada aqui.
 
 Medida que falta: o tempo de `tofu plan` e `apply` e das admissoes so aparece na primeira execucao gated da Phase A, que depende de X*; ate la a estimativa fica sem um ponto tipico.
 
@@ -231,7 +244,7 @@ A troca de custodia so vale se o R24 provar que o secret de ambiente chega ao re
 - 7a: `finish` e `publish_terminal` no processo do keeper, no fim do `execute`; `lifecycle_terminal_job` = o nome do job do application (`<job do caller> / execute`, como `HOST_JOB`, `AG:1759`). O artefato nasce dentro do intervalo do proprio job.
 - 7b: job de terminal separado no caller. Os validadores precisam do journal em memoria do keeper (`AG:93-96`), entao o job teria de rodar dentro do processo do keeper: nao serve.
 
-**Recomendacao (proposta, aguarda ratificacao): 7a.** `execute` passa a retornar apos `finish` e `publish_terminal`; a CLI de terminal e uma operacao do mesmo entrypoint, nao um job novo. Como o run termina `success` depende do terminal: para `accepted-open` o job sai com 0 e, se todos os jobs do caller forem `success`, o run conclui `success`. Para `failed-closed-quiescent` e `failed-prepare-quiescent` a promocao falhou, mas o lease foi liberado e o terminal publicado; para o proximo acquire aceitar esse run, o run tem de concluir `success` (`AG:382-398`). Isso pede jobs do caller com `continue-on-error` ou um run que fica vermelho e exige recuperacao revisada. Escolha do dono (O22).
+**Recomendacao (proposta, aguarda ratificacao): 7a.** `execute` passa a retornar apos `finish` e `publish_terminal`; a CLI de terminal e uma operacao do mesmo entrypoint, nao um job novo. Como o run termina `success` depende do terminal: para `accepted-open` o job sai com 0 e, se todos os jobs do caller forem `success`, o run conclui `success`. Para `failed-closed-quiescent` e `failed-prepare-quiescent` a promocao falhou, mas o lease foi liberado e o terminal publicado; para o proximo acquire aceitar esse run, o run tem de concluir `success` (`AG:382-398`). Isso pediria jobs do caller com `continue-on-error`. **Decidido pelo dono (O22, 2026-11-20): o run que termina limpo em `failed-*` fica vermelho e exige recuperacao revisada** (runbook de recuperacao do lease, P32); o proximo acquire recusa esse run (`AG:382-398`) e os jobs do caller nao usam `continue-on-error`.
 
 **PRs afetados.** P17 (`finish`, `publish_terminal`, retorno de `execute`), P13 (`reopen`, `terminal-readback`), P27 a P30 (nome do job, `needs` e `continue-on-error` conforme O22).
 
@@ -253,16 +266,22 @@ A troca de custodia so vale se o R24 provar que o secret de ambiente chega ao re
 Todas aguardam o dono; esta spec nao decide nenhuma. O17 ja existe na spec dos produtores (§8, item 17), por isso a numeracao aqui comeca em O18.
 
 18. **O18, custodia do DD-6.** Aceita a governanca (e, se for o caso, a `report_hmac_key`) em secret de repositorio, custodia mais fraca, se o DR2/R24 mostrar que o secret de environment nao chega ao reusable por nome, ou se a opcao (ii) do DD-6 for escolhida? Depende do resultado do drill R24.
+    - **Resposta do dono (2026-11-20):** ainda aberta; depende do drill R24/DR2.
 19. **O19, alvo do primeiro `execute`.** O primeiro `execute` de producao precisa alcancar `accepted-open` (mode-canary na janela, DD-1 1C) ou pode terminar num terminal `failed-*` controlado (DD-1 1A)?
+    - **Resposta do dono (2026-11-20):** o primeiro `execute` deve alcancar `accepted-open` (DD-1 1C); o mode-canary e co-aplicado no plan/deploy `operational`.
 20. **O20, pausas dentro das janelas.** Aceita um segundo environment sem revisores para os jobs de plan, audit e deploy dentro das janelas (aprovacao humana unica no job do application), com a mudanca de trust e a duplicacao do secret que isso exige, ou mantem um revisor por job e aceita as janelas so com revisores presentes (R22)?
+    - **Resposta do dono (2026-11-20):** um revisor por job; `validate` dobrado no `execute` (6 pausas); revisores presentes e avisados antes da janela (R22).
 21. **O21, janela de preparacao de 900 s.** Aceita emendar o valor de 900 s (DD-6 opcao iv), ou mantem a janela e o desenho do DD-6 (i) mais (v)?
+    - **Resposta do dono (2026-11-20):** mantem a janela de 900 s: DD-6 (i) mais (v), sem mudar o doc de autoridade do lifecycle.
 22. **O22, conclusao do run em terminal `failed-*`.** O run de uma promocao que falhou e terminou limpa (lease liberado, terminal publicado) deve concluir `success` para que o proximo acquire passe, ou fica vermelho e exige recuperacao revisada (DD-7)?
+    - **Resposta do dono (2026-11-20):** o run que termina limpo em `failed-*` fica vermelho e exige recuperacao revisada (runbook de recuperacao do lease, P32).
 23. **O23, retirada.** O remedio do R16 deixou de ser pergunta ao dono: ver D-C1 abaixo.
 24. **O24, tempo-alvo por pausa.** Se as pausas ficarem, qual espera por pausa o dono assume e os revisores confirmam? Medido: mediana 40 s, p75 123 s, sem aviso previo (§6.2). Cobre tambem o R22: os revisores estao presentes e avisados antes da janela.
+    - **Resposta do dono (2026-11-20):** cada aprovacao em ate 60 s, com revisores presentes e avisados (R22).
 
 Decisoes da coordenadora na ratificacao (a delegacao de emendas e dela, nao do dono):
 
-- **D-C1, remedio do R16** (`DOC:893-898`). Proposta: execucao `static-maintenance` posterior, porque os dois outros remedios (teto por run, `DeleteObjects` em lote como nova operacao ABI) mudam o gate; aguarda ratificacao.
+- **D-C1, remedio do R16** (`DOC:893-898`). Proposta: execucao `static-maintenance` posterior, que nao muda o estagio `static`, mas exige estagio, gatilho e entrada de IAM proprios (hoje ausentes de `STAGES`, `LC:1225-1227`, e vazia em `iam_source.py:100`); os outros dois remedios (teto por run, `DeleteObjects` em lote como nova operacao ABI) mudam o gate. Custo a confirmar; aguarda ratificacao.
 
 ## 10. Lacunas desta spec
 
