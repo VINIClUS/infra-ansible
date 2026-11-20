@@ -113,12 +113,12 @@ def test_recusa_identidade_desconhecida_ou_divergente_entre_before_e_after(case)
         mapa.readback_calls(bad, [spec()], stage, state)
 
 
-def test_identidade_pode_mudar_na_substituicao_mas_nao_pode_ser_desconhecida():
+def test_identidade_pode_mudar_na_substituicao_mas_nao_pode_faltar():
     mapa = catalog()
     replaced = role_plan(after={"name": "novo", "tags": {}}, actions=("delete", "create"))
     assert mapa.readback_calls(replaced, [spec()], "before")[0]["parameters"] == {"RoleName": "fence"}
     with pytest.raises(ValueError, match="readback identity"):
-        mapa.readback_calls(role_plan(actions=("delete", "create"), unknown={"name": True}), [spec()], "before")
+        mapa.readback_calls(role_plan(actions=("delete", "create"), after={"tags": {}}), [spec()], "before")
 
 
 def test_criacao_nao_tem_before_e_identidade_vem_do_plano():
@@ -227,3 +227,100 @@ def test_admissao_pre_acquire_recusa_after_mal_formado(mutation, message):
         rows[:] = [r | {"readback": r["readback"] - (r["readback"] > index)} for r in rows if r["readback"] != index]
     with pytest.raises(ValueError, match=message):
         mapa.admit_stages(plan_, readbacks, matrix, tracked)
+
+
+def state_of(address_type, name, attributes, module="module.iam"):
+    return {"resources": [{"mode": "managed", "module": module, "type": address_type, "name": name,
+                           "instances": [{"index_key": 0, "attributes": attributes}]}]}
+
+
+CREATES = {
+    "acm": ("aws_acm_certificate.static_web", "aws_acm_certificate", "static_web",
+            {"domain_name": "d.example"}, {"arn": True, "id": True}, {"arn": "arn:x", "domain_name": "d.example", "id": "i"},
+            "describe_certificate", "acm", {"CertificateArn": "arn:x"}),
+    "politica-de-role-criado": ("module.iam.aws_iam_role_policy.canary[0]", "aws_iam_role_policy", "canary",
+                                {"name": "p", "policy": "{}"}, {"role": True, "id": True},
+                                {"role": "canary-role", "name": "p", "policy": "{}", "id": "i"},
+                                "get_role_policy", "iam", {"RoleName": "canary-role", "PolicyName": "p"}),
+    "s3-de-bucket-criado": ("module.processing.aws_s3_bucket_versioning.canary[0]", "aws_s3_bucket_versioning",
+                            "canary", {"versioning_configuration": []}, {"bucket": True, "id": True},
+                            {"bucket": "canary-bucket", "versioning_configuration": [], "id": "i"},
+                            "get_bucket_versioning", "s3", {"Bucket": "canary-bucket"}),
+}
+
+
+def create_case(name):
+    address, tipo, local, after, unknown, applied, operation, service, expected = CREATES[name]
+    module = address.rsplit(".", 2)[0] if address.startswith("module.") else ""
+    plan_ = plan(change(address, None, after, ("create",), unknown))
+    state = state_of(tipo, local, applied, module)
+    state["resources"][0]["instances"][0]["index_key"] = 0 if address.endswith("[0]") else None
+    if not address.endswith("[0]"):
+        del state["resources"][0]["instances"][0]["index_key"]
+        del state["resources"][0]["module"]
+    return plan_, state, spec(address, operation, service), expected
+
+
+@pytest.mark.parametrize("name", sorted(CREATES))
+def test_criacao_com_identidade_desconhecida_no_plano_le_do_state_aplicado(name):
+    mapa = catalog()
+    plan_, state, one, expected = create_case(name)
+    assert mapa.admit_stages(plan_, {"before": [], "after": [one]}, {"before": [], "after": [
+        {"address": one["address"], "attribute": "id", "readback": 0, "path": ["x"], "encoding": "identity"}]}, set()) is None
+    assert mapa.readback_calls(plan_, [one], "after", state)[0]["parameters"] == expected
+
+
+@pytest.mark.parametrize("name", sorted(CREATES))
+def test_criacao_recusa_identidade_ausente_do_plano_e_valor_vazio_no_state(name):
+    mapa = catalog()
+    plan_, state, one, _ = create_case(name)
+    change_ = plan_["resource_changes"][0]["change"]
+    change_["after_unknown"] = {"id": True}
+    with pytest.raises(ValueError, match="readback identity"):
+        mapa.readback_calls(plan_, [one], "after", state)
+    change_["after_unknown"] = CREATES[name][4]
+    attributes = state["resources"][0]["instances"][0]["attributes"]
+    attributes[next(k for k in CREATES[name][4] if k != "id")] = ""
+    with pytest.raises(ValueError):
+        mapa.readback_calls(plan_, [one], "after", state)
+
+
+def test_atualizacao_continua_exigindo_identidade_conhecida_no_plano():
+    with pytest.raises(ValueError, match="readback identity"):
+        catalog().readback_calls(role_plan(unknown={"name": True}), [spec()], "after",
+                                 state_of("aws_iam_role", "fence", {"name": "fence", "tags": {"ReleaseId": "x"}}))
+
+
+def admit_case_mutation(mutation):
+    plan_, readbacks, matrix, tracked = admission_case()
+    victim = readbacks["after"][2]
+    if mutation == "chave-extra":
+        victim["parameters"] = {}
+    if mutation == "operacao":
+        victim["operation"] = "delete_role"
+    if mutation == "servico":
+        victim["service"] = "kms"
+    if mutation == "endereco-fora-do-plano":
+        victim["address"] = matrix["after"][2]["address"] = "module.iam.aws_iam_role_policy.fantasma[0]"
+    if mutation == "tipo-fora-do-catalogo":
+        plan_["resource_changes"].append(change("aws_kms_key.k", {"name": "k"}, {"name": "k"}))
+        victim["address"] = matrix["after"][2]["address"] = "aws_kms_key.k"
+    return plan_, readbacks, matrix, tracked
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ("chave-extra", "closed object fields"), ("operacao", "read-only API boundary"),
+    ("servico", "read-only API boundary"), ("endereco-fora-do-plano", "readback address"),
+    ("tipo-fora-do-catalogo", "identity type")])
+def test_admissao_pre_acquire_valida_toda_spec_do_after(mutation, message):
+    plan_, readbacks, matrix, _ = admit_case_mutation(mutation)
+    with pytest.raises(ValueError, match=message):
+        catalog().admit_stages(plan_, readbacks, matrix, set())
+
+
+def test_admissao_recusa_spec_extra_do_fence_com_outra_operacao():
+    plan_, readbacks, matrix, tracked = admission_case()
+    readbacks["after"].append(spec(FENCE_ROLE, "get_role_policy"))
+    matrix["after"].append(matrix["after"][0] | {"readback": 3})
+    with pytest.raises(ValueError, match="fence readback"):
+        catalog().admit_stages(plan_, readbacks, matrix, tracked)

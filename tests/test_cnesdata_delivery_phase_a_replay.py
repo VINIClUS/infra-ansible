@@ -262,3 +262,62 @@ def test_after_mal_formado_falha_antes_do_acquire_no_deploy(monkeypatch, tmp_pat
     with pytest.raises(ValueError, match=message):
         runtime.execute("deploy")
     assert not acquired and not applies(chain)
+
+
+def mutate_spec(chain, mutation):
+    specs, rows = chain.gov["readbacks"]["after"], chain.gov["drift_matrix"]["after"]
+    victim = specs[next(i for i, s in enumerate(specs) if s["operation"] == "get_role" and s["address"] != FENCE_ROLE)]
+    if mutation == "chave-extra":
+        victim["parameters"] = {"RoleName": "x"}
+        return "closed object fields"
+    if mutation == "operacao":
+        victim["operation"] = "delete_role"
+        return "read-only API boundary"
+    if mutation == "servico":
+        victim["service"] = "kms"
+        return "read-only API boundary"
+    old, victim["address"] = victim["address"], "module.runtime_iam.aws_iam_role.fantasma[0]"
+    for row in rows:
+        if row["address"] == old:
+            row["address"] = victim["address"]
+    return "readback address"
+
+
+@pytest.mark.parametrize("mutation", ["chave-extra", "operacao", "servico", "endereco-fora-do-plano"])
+def test_spec_invalida_do_after_falha_antes_do_acquire_no_deploy(monkeypatch, tmp_path, mutation):
+    from tools.cnesdata_delivery import coordination_lease
+    chain = ReplayChain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    reference = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    message = mutate_spec(chain, mutation)
+    chain.configure("deploy", 2, reference)
+    acquired = []
+    original = coordination_lease.Lease.acquire
+    monkeypatch.setattr(coordination_lease.Lease, "acquire", lambda self: acquired.append(1) or original(self))
+    with pytest.raises(ValueError, match=message):
+        runtime.execute("deploy")
+    assert not acquired and not applies(chain)
+
+
+def test_tipo_fora_do_catalogo_no_after_falha_antes_do_acquire_no_deploy(monkeypatch, tmp_path):
+    from tools.cnesdata_delivery import coordination_lease
+    chain = ReplayChain(monkeypatch, tmp_path)
+    address = "module.processing.aws_s3_bucket_public_access_block.canary[0]"
+    plan = c.loads(chain.plan_files["plan.json"], state=True)
+    plan["resource_changes"].append({"address": address, "mode": "managed", "type": "aws_s3_bucket_public_access_block",
+        "change": {"actions": ["create"], "before": None, "after": {"bucket": "b"}, "after_unknown": {"id": True}}})
+    chain.plan_files["plan.json"] = c.canonical(plan)
+    runtime.execute("plan")
+    reference = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    chain.gov["readbacks"]["after"].append({"service": "s3", "operation": "get_bucket_policy", "address": address})
+    chain.gov["drift_matrix"]["after"].append({"address": address, "attribute": "bucket",
+        "readback": len(chain.gov["readbacks"]["after"]) - 1, "path": ["D", "bucket"], "encoding": "identity"})
+    chain.configure("deploy", 2, reference)
+    acquired = []
+    original = coordination_lease.Lease.acquire
+    monkeypatch.setattr(coordination_lease.Lease, "acquire", lambda self: acquired.append(1) or original(self))
+    with pytest.raises(ValueError, match="identity type"):
+        runtime.execute("deploy")
+    assert not acquired and not applies(chain)
