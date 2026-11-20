@@ -4,6 +4,7 @@
 
 .ansible/
 .worktrees/
+.claude/
 *.retry
 __pycache__/
 *.pyc
