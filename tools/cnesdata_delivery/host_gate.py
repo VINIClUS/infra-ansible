@@ -2304,7 +2304,10 @@ def verify_cost_handoff(governance, now):
         raise ValueError("cost validator unavailable")
     module = importlib.util.module_from_spec(spec)
     exec(compile(raw, str(path), "exec"), module.__dict__)  # noqa: S102 -- execute only the exact hash-verified installed EXT1 source
-    handoff = closed(governance["cost_handoff"], "cost stage evidence manifest")
+    handoff = closed(
+        governance["cost_handoff"],
+        "cost stage evidence manifest source_manifest_sha256",
+    )
     b = governance["binding"]
     require(
         handoff["stage"]["source_sha"] == b["caller"]["source_sha"],
@@ -2323,6 +2326,7 @@ def verify_cost_handoff(governance, now):
         evidence=handoff["evidence"],
         manifest=handoff["manifest"],
         now=now,
+        source_manifest_sha256=handoff["source_manifest_sha256"],
     )
 
 

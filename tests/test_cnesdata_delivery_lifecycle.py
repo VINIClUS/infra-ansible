@@ -409,7 +409,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                   "context_kind": owner["context_kind"], "account_id": "111122223333", "source_closure": {}, "cost": {},
                   "baseline": {"toolchain": {"opentofu": {"binary_sha256": c.sha(tofu.read_bytes())},
                                              "lock_sha256": c.sha((root / ".terraform.lock.hcl").read_bytes())},
-                               "cost_context": {}, "cost_evidence": {}, "cost_manifest": {},
+                               "cost_context": {}, "cost_evidence": {}, "cost_manifest": {}, "source_manifest_sha256": "9" * 64,
                                "backend": {"configuration": {"type": "s3", "workspace": "default"}}}}
     request = {"source_sha": owner["source_sha"], "application_purpose": purpose, "caller_binding_sha256": owner["caller_binding_sha256"]}
     monkeypatch.setattr(lr, "admission", lambda role: (governance, request, step, None,

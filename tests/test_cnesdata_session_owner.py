@@ -83,19 +83,7 @@ def original_owner(role="plan", purpose="bootstrap"):
         "owner_producer": owner,
     }
     pin["document_sha256"] = c.sha(c.canonical(pin["document"]))
-    fact = {
-        "account_id": pin["account_id"],
-        "role_arn_sha256": c.sha(pin["role_arn"].encode()),
-        "policy_arn_sha256": c.sha(pin["policy_arn"].encode()),
-        "root_source_sha": pin["root_source_sha"],
-        "default_version_id": pin["default_version_id"],
-        "document_sha256": pin["document_sha256"],
-        "observed_at": observed,
-        "expires_at": expires,
-        "frozen_until": expires,
-        "attachment_count": 0,
-        "permissions_boundary_usage_count": 0,
-    }
+    fact = session_owner._facts(pin, bytes.fromhex(gov["report_hmac_key"]))
     purposes = ["backend", "policy", "cost", "drift", "shared-outputs", "toolchain"]
     refs = {
         name: {"repository": c.REPOSITORY, "artifact_id": index}

@@ -2,7 +2,7 @@
 import copy
 import hashlib
 
-from fixtures.cnesdata_cost import encoded, fixture
+from fixtures.cnesdata_cost import SOURCE_MANIFEST_SHA256, encoded, fixture
 
 
 def hashed(data):
@@ -41,6 +41,7 @@ def packet():
             "release": None, "phase_a_inputs": None}
     baseline = {k: copy.deepcopy(plan[k]) for k in ("dependencies", "toolchain", "backend")}
     baseline |= {"cost_context": stage, "cost_evidence": evidence, "cost_manifest": manifest,
+                 "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
                  "deploy_role_arn": "arn:aws:iam::111122223333:role/cnesdata-test-deploy"}
     envelope = {"schema_version": 1, "status": "planned", "plan": plan, "apply": None, "plan_binding_sha256": hashed(encoded(plan))}
     return envelope, files, baseline

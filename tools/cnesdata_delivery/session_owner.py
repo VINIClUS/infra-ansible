@@ -48,7 +48,7 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
     report = next(x for x in proof["reports"] if x["check_id"] == "policy-evaluation")
     check = next(x for x in proof["checks"] if x["check_id"] == "policy-evaluation")
     measured = c.loads(files[report["name"]], canonical=True)["measurement"]
-    c.require(measured.get("managed_session_policy") == _facts(pin)
+    c.require(measured.get("managed_session_policy") == _facts(pin, c.report_key(governance))
               and check["observed_at"] == pin["observed_at"] and check["expires_at"] == pin["expires_at"], "original policy facts")
     expiry = c.instant(proof["expires_at"])
     c.require(c.instant(pin["observed_at"]) <= now and now + 3600 <= expiry <= c.instant(pin["expires_at"])
@@ -288,14 +288,13 @@ def _pin(governance, role):
     return pin
 
 
-def _facts(pin):
+def _facts(pin, key):
     return {
-        "account_id": pin["account_id"],
-        "role_arn_sha256": c.sha(pin["role_arn"].encode()),
-        "policy_arn_sha256": c.sha(pin["policy_arn"].encode()),
+        "role_arn_hmac": c.report_hmac(key, "role_arn", pin["role_arn"].encode()),
+        "policy_arn_hmac": c.report_hmac(key, "policy_arn", pin["policy_arn"].encode()),
         "root_source_sha": pin["root_source_sha"],
         "default_version_id": pin["default_version_id"],
-        "document_sha256": pin["document_sha256"],
+        "document_hmac": c.report_hmac(key, "document", pin["document_sha256"].encode()),
         "observed_at": pin["observed_at"],
         "expires_at": pin["expires_at"],
         "frozen_until": pin["frozen_until"],
@@ -383,7 +382,7 @@ def authenticate(
     c.require(
         type(measured) is dict
         and c.canonical(measured.get("managed_session_policy"))
-        == c.canonical(_facts(pin)),
+        == c.canonical(_facts(pin, c.report_key(governance))),
         "original owner managed-session facts absent or mixed",
     )
     c.require(
