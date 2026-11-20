@@ -84,6 +84,10 @@ pred cli_escreve_governanca {
   Governanca.proof_producers = Janela.k
 }
 
+pred cli_diff_de_arvore_sem_superficie {
+  all f: Superficie | Janela.k.conteudo[f] = Janela.x.conteudo[f]
+}
+
 pred gate_admite_sha_da_governanca {
   all p: Papel | CnesData.uses[p] = Governanca.gate_shas[p]
 }
@@ -145,9 +149,24 @@ assert caller_em_k_e_realizavel {
   verificacoes implies caller_em_k_cita_commit_que_ja_existia
 }
 
+assert diff_de_arvore_preserva_os_asserts {
+  (base and apply_unico_da_raiz and cli_x_ancestral_de_k and cli_k_diferente_de_x
+    and cli_uses_do_caller_igual_a_x and cli_diff_de_arvore_sem_superficie)
+    implies (superficie_executada_igual_a_x and pinos_iguais_a_x
+      and caller_em_k_cita_commit_que_ja_existia)
+}
+
+assert diff_de_arvore_dispensa_ancestralidade_nos_bytes {
+  (base and apply_unico_da_raiz and cli_k_diferente_de_x and cli_uses_do_caller_igual_a_x
+    and cli_diff_de_arvore_sem_superficie and caller_em_k_cita_commit_que_ja_existia)
+    implies superficie_executada_igual_a_x
+}
+
 check gate_em_k_executa_bytes_de_x for 6 but 7 Commit
 check trusts_e_pinos_aceitam_so_x for 6 but 7 Commit
 check caller_em_k_e_realizavel for 6 but 7 Commit
+check diff_de_arvore_preserva_os_asserts for 6 but 7 Commit
+check diff_de_arvore_dispensa_ancestralidade_nos_bytes for 6 but 7 Commit
 
 check mutant_sem_ancestralidade {
   (base and apply_unico_da_raiz and cli_k_diferente_de_x and cli_uses_do_caller_igual_a_x
