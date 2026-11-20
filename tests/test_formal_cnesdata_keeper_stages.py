@@ -8,8 +8,14 @@ from tools.cnesdata_delivery import application_gate as ag
 from tools.cnesdata_delivery import lifecycle_contract as lc
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL = ROOT / "formal" / "cnesdata_delivery" / "KeeperStages.tla"
-ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-z-]+)">>,?$')
+FORMAL = ROOT / "formal" / "cnesdata_delivery"
+MODEL = FORMAL / "KeeperStages.tla"
+EXPECT = re.compile(r"^\\\* expect (\S+)$", re.M)
+MUTANTS = {
+    "KeeperStagesMutantNoApiTrigger": ("NoApiTriggerRows", ["deadlock"]),
+    "KeeperStagesMutantInternalHostTrigger": ("InternalHostTriggerRows", ["invariant:DeclaredTrigger"]),
+}
+ROW =re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-z-]+)">>,?$')
 TERMINAL_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)">>,?$')
 STAGE_ROW = re.compile(r'^ {4}"([a-z-]+)",?$')
 EXPECTED_DIFFERENCE = {
@@ -53,10 +59,32 @@ def _between_code_stages(rows):
     return {row for row in rows if row[0] in stages and row[3] in stages}
 
 
+def _cfg(name):
+    return (FORMAL / f"{name}.cfg").read_text(encoding="utf-8")
+
+
 def test_cfg_do_modelo_verifica_a_tabela_conferida_aqui():
     _model()
-    cfg = MODEL.with_suffix(".cfg").read_text(encoding="utf-8").splitlines()
-    assert "CONSTANT TriggerRows <- ModelTriggerRows" in cfg
+    assert "CONSTANT TriggerRows <- ModelTriggerRows" in _cfg("KeeperStages").splitlines()
+    assert EXPECT.findall(_cfg("KeeperStages")) == []
+
+
+@pytest.mark.parametrize("name", sorted(MUTANTS))
+def test_mutante_declara_a_violacao_esperada(name):
+    assert EXPECT.findall(_cfg(name)) == MUTANTS[name][1]
+
+
+@pytest.mark.parametrize("name", sorted(MUTANTS))
+def test_mutante_estende_o_modelo_e_so_troca_a_tabela_de_gatilhos(name):
+    module = (FORMAL / f"{name}.tla").read_text(encoding="utf-8")
+    assert re.search(rf"^-+ MODULE {name} -+$", module, re.M)
+    assert re.search(r"^EXTENDS KeeperStages$", module, re.M)
+    base = _cfg("KeeperStages").replace("<- ModelTriggerRows", f"<- {MUTANTS[name][0]}")
+    assert [line for line in _cfg(name).splitlines() if not EXPECT.match(line)] == base.splitlines()
+
+
+def test_conjunto_de_mutantes_do_keeper_e_fechado():
+    assert {path.stem for path in FORMAL.glob("KeeperStages*.tla")} == {"KeeperStages", *MUTANTS}
 
 
 def test_ordem_dos_estagios_do_modelo_e_a_do_contrato():
