@@ -153,10 +153,11 @@ Wait ==
     /\ budget' = budget - 1
     /\ UNCHANGED <<stage, failing, published, journal, trail, halted, terminal>>
 
-Advance ==
+OpsSettled(ops) == \A o \in ops : journal[<<stage, o>>] = "settled"
+
+Leave ==
     /\ Live /\ Normal /\ budget >= 1 /\ Uncertain = {}
     /\ stage \in Connected
-    /\ \A o \in Ops(stage) : journal[<<stage, o>>] = "settled"
     /\ TriggerReady(stage)
     /\ trail' = Append(trail, Trigger(stage))
     /\ IF Trigger(stage)[4] = "terminal"
@@ -167,6 +168,8 @@ Advance ==
             /\ budget' = Budget(Trigger(stage)[4])
             /\ UNCHANGED terminal
     /\ UNCHANGED <<failing, published, journal, halted>>
+
+Advance == Leave /\ OpsSettled(Ops(stage))
 
 Exhaust ==
     /\ Live /\ Normal /\ budget = 0
@@ -185,13 +188,14 @@ Refuse ==
     /\ halted' = TRUE
     /\ UNCHANGED <<stage, failing, budget, published, journal, trail, terminal>>
 
-Finish(kind) ==
+Close(kind) ==
     /\ Live /\ Uncertain = {} /\ budget >= 1
     /\ stage = TerminalStage(kind)
     /\ stage = "recovery" \/ failing
-    /\ \A o \in FailureOps : journal[<<stage, o>>] = "settled"
     /\ terminal' = kind
     /\ UNCHANGED <<stage, failing, budget, published, journal, trail, halted>>
+
+Finish(kind) == Close(kind) /\ OpsSettled(FailureOps)
 
 Done ==
     /\ terminal /= "none"
@@ -211,7 +215,9 @@ Next ==
     \/ Wait
     \/ Done
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(KeeperStep) /\ WF_vars(Wait)
+Fairness == WF_vars(KeeperStep) /\ WF_vars(Wait)
+
+Spec == Init /\ [][Next]_vars /\ Fairness
 
 Current == IF trail = <<>> THEN "application-prepare" ELSE trail[Len(trail)][4]
 Position(s) == CHOOSE i \in DOMAIN StageOrder : StageOrder[i] = s
@@ -246,6 +252,11 @@ DeclaredTrigger ==
 
 CallerPublicationsBeforeLeaving ==
     \A i \in DOMAIN trail : trail[i][4] /= "recovery" => CallerOwned(trail[i][1]) \subseteq published
+
+ExitWithOpsSettled ==
+    /\ \A i \in DOMAIN trail :
+        trail[i][4] /= "recovery" => \A o \in Ops(trail[i][1]) : journal[<<trail[i][1], o>>] = "settled"
+    /\ terminal /= "none" => \A o \in ActiveOps : journal[<<stage, o>>] = "settled"
 
 TerminalWithoutUncertainty == terminal /= "none" => Uncertain = {}
 
