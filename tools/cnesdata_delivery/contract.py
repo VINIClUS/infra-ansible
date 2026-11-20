@@ -441,14 +441,16 @@ def _account_derived_values(governance):
     named = [governance.get(name) for name in ("state_bucket", "evidence_bucket", "evidence_kms_key_arn", "state_kms_key_arn")]
     known = named + list(governance.get("roles", {}).values())
     for pin in governance.get("session_policy_pins", {}).values():
+        require(type(pin) is dict and {"role_arn", "policy_arn", "document_sha256"} <= set(pin), "session pin fields")
         known += [pin["role_arn"], pin["policy_arn"], pin["document_sha256"]]
     plain = [value for value in known if type(value) is str and value]
-    return [governance.get("account_id"), governance.get("report_hmac_key")] + plain + [
+    return [governance.get("account_id"), governance["report_hmac_key"]] + plain + [
         sha(value.encode()) for value in plain]
 
 
 def refuse_account_derived(raw, governance):
     """Public reports carry no account, no key and no plain hash or ARN of known values."""
+    report_key(governance)
     text = raw.decode()
     require(not any(type(v) is str and v and v in text for v in _account_derived_values(governance)),
             "account-derived value in public report")
