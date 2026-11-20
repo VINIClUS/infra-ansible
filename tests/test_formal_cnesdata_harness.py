@@ -156,14 +156,53 @@ def test_mutante_sem_cfg_reprova_a_execucao(tmp_path):
     assert lines(result)["CounterMutantLost"][0] == "FAIL"
 
 
-def test_modulo_sem_cfg_e_biblioteca_usavel_por_extends(tmp_path):
+def test_modulo_sem_cfg_reprova_mesmo_quando_estendido(tmp_path):
     files = {"Base.tla": COUNTER.format(name="Base"),
              "Derived.tla": "---- MODULE Derived ----\nEXTENDS Base\n====\n",
              "Derived.cfg": PASSING_CFG}
     result = run_check(write(tmp_path / "m", files))
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 1
+    assert lines(result)["Base"] == ("FAIL", "FAIL tla Base expected=cfg observed=module-without-cfg seconds=0.0")
     assert lines(result)["Derived"][0] == "PASS"
-    assert "Base" not in lines(result)
+
+
+def test_modelo_com_cfg_continua_estendivel_por_outro(tmp_path):
+    files = tla("Base", PASSING_CFG) | {"Derived.tla": "---- MODULE Derived ----\nEXTENDS Base\n====\n",
+                                        "Derived.cfg": PASSING_CFG}
+    result = run_check(write(tmp_path / "m", files))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert lines(result)["Base"][0] == lines(result)["Derived"][0] == "PASS"
+
+
+def test_mutante_tla_com_violacao_declarada_aprova_e_mostra_a_expectativa(tmp_path):
+    cfg = "\\* expect invariant:Small\n" + VIOLATING_CFG
+    result = run_check(write(tmp_path / "m", tla("CounterMutantCut", cfg)))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert lines(result)["CounterMutantCut"][1].startswith(
+        "PASS tla CounterMutantCut expected=invariant:Small observed=invariant:Small ")
+
+
+@pytest.mark.parametrize("body, cfg, observed", [
+    ("[Inc \\/ Done]_x", "\\* expect invariant:Bounded\n" + VIOLATING_CFG, "observed=invariant:Small"),
+    ("[Inc]_x", "\\* expect invariant:Bounded\nSPECIFICATION Spec\nINVARIANT Bounded\n", "observed=deadlock"),
+])
+def test_mutante_tla_com_violacao_diferente_da_declarada_reprova(tmp_path, body, cfg, observed):
+    files = tla("CounterMutantOther", cfg)
+    files["CounterMutantOther.tla"] = files["CounterMutantOther.tla"].replace("[Inc \\/ Done]_x", body)
+    result = run_check(write(tmp_path / "m", files))
+    assert result.returncode == 1
+    status, line = lines(result)["CounterMutantOther"]
+    assert status == "FAIL" and "expected=invariant:Bounded" in line and observed in line
+
+
+@pytest.mark.parametrize("name, cfg", [
+    ("CounterMutantTwice", "\\* expect invariant:Small\n\\* expect deadlock\n" + VIOLATING_CFG),
+    ("Counter", "\\* expect invariant:Small\n" + PASSING_CFG),
+])
+def test_declaracao_de_violacao_ambigua_ou_em_modelo_que_passa_reprova(tmp_path, name, cfg):
+    result = run_check(write(tmp_path / "m", tla(name, cfg)))
+    assert result.returncode == 1
+    assert lines(result)[name][0] == "FAIL"
 
 
 def test_check_alloy_sem_contraexemplo_aprova_e_run_sat_satisfativel_aprova(tmp_path):
@@ -180,6 +219,28 @@ def test_comandos_alloy_sem_escopo_explicito_sao_verificados(tmp_path):
     assert result.returncode == 1
     assert lines(result)["toy.als:cycle_free"][0] == "FAIL"
     assert lines(result)["toy.als:sat_edge"][0] == "PASS"
+
+
+def test_comandos_alloy_a_partir_do_indice_10_sao_verificados(tmp_path):
+    early = "\n".join(f"check c{index} {{ all n: Node | n not in n.^succ or some n.succ }} for 2"
+                      for index in range(10))
+    late = ("check mutant_late { all n: Node | n not in n.^succ or some n.succ } for 2\n"
+            "run sat_late { some Node and no Node } for 2")
+    result = run_check(write(tmp_path / "m", alloy(early + "\n" + late)))
+    assert result.returncode == 1
+    found = lines(result)
+    assert [found[f"toy.als:c{index}"][0] for index in range(10)] == ["PASS"] * 10
+    assert found["toy.als:mutant_late"][0] == found["toy.als:sat_late"][0] == "FAIL"
+    assert "SUMMARY checked=12 failures=2" in result.stdout
+
+
+def test_listagem_alloy_com_linha_numerada_irreconhecivel_reprova(tmp_path):
+    fake = tmp_path / "listing-java"
+    fake.write_text("#!/bin/sh\nprintf '0 . Check a for 2\\n1x Check b for 2\\n'\n", encoding="utf-8")
+    fake.chmod(0o755)
+    result = run_check(write(tmp_path / "m", alloy("check acyclic_or_linked for 3")), java=str(fake))
+    assert result.returncode == 1
+    assert "FAIL alloy toy.als expected=commands observed=unparsed-listing" in result.stdout
 
 
 def test_check_mutant_sem_contraexemplo_reprova_a_execucao(tmp_path):

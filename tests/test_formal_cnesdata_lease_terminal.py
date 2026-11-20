@@ -33,6 +33,11 @@ MUTANTS = {
     "LeaseTerminalMutantO22": {"INVARIANT": {"RefuseFailedUntilReview"}, "PROPERTY": set()},
     "LeaseTerminalMutantReachability": {"INVARIANT": {"NoFullStory"}, "PROPERTY": set()},
 }
+EXPECTED_VIOLATIONS = {
+    "LeaseTerminalMutantB7": ["invariant:HolderCanMove"],
+    "LeaseTerminalMutantO22": ["invariant:RefuseFailedUntilReview"],
+    "LeaseTerminalMutantReachability": ["invariant:NoFullStory"],
+}
 
 
 def model_sets():
@@ -161,7 +166,9 @@ def test_resultado_de_cada_terminal_do_modelo_e_o_do_codigo():
 def cfg_names(path):
     found = {"INVARIANT": set(), "PROPERTY": set()}
     section = None
-    for token in path.read_text(encoding="utf-8").split():
+    text = path.read_text(encoding="utf-8")
+    body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("\\*"))
+    for token in body.split():
         if token in ("INVARIANT", "INVARIANTS", "PROPERTY", "PROPERTIES"):
             section = "INVARIANT" if token.startswith("INVARIANT") else "PROPERTY"
         elif token.isupper():
@@ -181,6 +188,12 @@ def test_mutante_obrigatorio_estende_o_modelo_e_mira_so_a_sua_propriedade(name):
     assert re.search(rf"^-+ MODULE {name} -+$", module, re.M)
     assert re.search(r"^EXTENDS LeaseTerminal$", module, re.M)
     assert cfg_names(FORMAL / f"{name}.cfg") == MUTANTS[name]
+
+
+@pytest.mark.parametrize("name", sorted(MUTANTS))
+def test_mutante_obrigatorio_declara_a_violacao_esperada(name):
+    text = (FORMAL / f"{name}.cfg").read_text(encoding="utf-8")
+    assert re.findall(r"^\\\* expect (\S+)$", text, re.M) == EXPECTED_VIOLATIONS[name]
 
 
 def test_conjunto_de_mutantes_do_lease_e_fechado():
