@@ -60,18 +60,32 @@ def _masked(change, attribute):
     return unknown is True or (type(unknown) is dict and unknown.get(attribute) not in (None, False))
 
 
+def _usable(attributes, attribute):
+    c.require(attribute in attributes, "readback identity unknown")
+    value = attributes[attribute]
+    c.require(type(value) is str and bool(value), "readback identity value")
+
+
 def _known(change, tipo):
     after = change.get("after")
     if after is None:
         return
     for attribute, _ in _identity(tipo):
-        c.require(not _masked(change, attribute) and attribute in after, "readback identity unknown")
+        c.require(not _masked(change, attribute), "readback identity unknown")
+        _usable(after, attribute)
 
 
 def _declared(change, tipo):
     after = change.get("after") or {}
     for attribute, _ in _identity(tipo):
-        c.require(attribute in after or _masked(change, attribute), "readback identity unknown")
+        if not _masked(change, attribute):
+            _usable(after, attribute)
+
+
+def _planned(change, tipo):
+    before = change.get("before") or {}
+    for attribute, _ in _identity(tipo):
+        _usable(before, attribute)
 
 
 def _stable(change, tipo):
@@ -82,14 +96,18 @@ def _stable(change, tipo):
         c.require(before.get(attribute) == after.get(attribute), "readback identity changed")
 
 
-def check_spec(spec, changes):
-    """Args: spec, plan changes by address. Returns: resource type. Raises: ValueError."""
+def check_spec(spec, changes, stage):
+    """Args: spec, plan changes by address, stage. Returns: resource type. Raises: ValueError."""
     c.closed(spec, "service operation address")
     require_read_only(spec["service"], spec["operation"])
     c.require(spec["address"] in changes, "readback address")
     tipo = resource_type(spec["address"])
     _identity(tipo)
     change = changes[spec["address"]]
+    c.require(stage != "before" or change["before"] is not None, "readback absent before")
+    c.require(stage != "after" or change["after"] is not None, "readback absent after")
+    if stage == "before":
+        _planned(change, tipo)
     if "create" in change["actions"]:
         _declared(change, tipo)
     else:
@@ -98,8 +116,8 @@ def check_spec(spec, changes):
     return tipo
 
 
-def _call(spec, changes, expected):
-    tipo = check_spec(spec, changes)
+def _call(spec, changes, expected, stage):
+    tipo = check_spec(spec, changes, stage)
     c.require(spec["address"] in expected, "readback absent before")
     return spec | {"parameters": parameters(tipo, expected[spec["address"]])}
 
@@ -109,7 +127,7 @@ def readback_calls(plan, specs, stage, state=None):
     c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"}, "readback specs")
     changes = _changes(plan)
     expected = c.stage_expectation(plan, stage, state)
-    return [_call(spec, changes, expected) for spec in specs]
+    return [_call(spec, changes, expected, stage) for spec in specs]
 
 
 def bind_rows(calls, rows):
@@ -144,7 +162,7 @@ def admit_stages(plan, readbacks, matrix, tracked):
     for stage in ("before", "after"):
         c.require(type(readbacks[stage]) is list and type(matrix.get(stage)) is list, "readback specs")
         for spec in readbacks[stage]:
-            check_spec(spec, changes)
+            check_spec(spec, changes, stage)
         bind_rows(readbacks[stage], matrix[stage])
     after = readbacks["after"]
     for address in sorted(tracked):
