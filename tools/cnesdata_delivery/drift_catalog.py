@@ -15,14 +15,23 @@ IDENTITY = {
     "aws_s3_bucket_object_lock_configuration": (("bucket", "Bucket"),),
     "aws_scheduler_schedule": (("name", "Name"), ("group_name", "GroupName")),
     "aws_acm_certificate": (("arn", "CertificateArn"),),
+    "aws_sfn_state_machine": (("arn", "stateMachineArn"),),
+    "aws_scheduler_schedule_group": (("name", "Name"),),
+    "aws_cloudwatch_event_rule": (("name", "Name"),),
+    "aws_cloudwatch_metric_alarm": (("alarm_name", "AlarmNames"),),
+    "aws_s3_bucket_lifecycle_configuration": (("bucket", "Bucket"),),
+    "aws_cloudfront_response_headers_policy": (("id", "Id"),),
 }
 FENCE_READS = {"module.runtime_iam.aws_iam_role.promotion_fence_operator[0]": "get_role",
                "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]": "get_role_policy"}
 READ_ONLY = {"iam": {"get_role", "get_role_policy", "get_policy", "get_policy_version"},
-             "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule"},
-             "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
-             "dynamodb": {"describe_table"}, "acm": {"describe_certificate"}}
-LIST_PARAMETERS = {"clusters"}
+             "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule", "get_schedule_group"},
+             "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration",
+                    "get_bucket_lifecycle_configuration"},
+             "dynamodb": {"describe_table"}, "acm": {"describe_certificate"},
+             "stepfunctions": {"describe_state_machine"}, "events": {"describe_rule"},
+             "cloudwatch": {"describe_alarms"}, "cloudfront": {"get_response_headers_policy"}}
+LIST_PARAMETERS = {"clusters", "AlarmNames"}
 CREATE_DELETE = {"create", "delete"}
 
 
@@ -214,6 +223,28 @@ CATALOG = {
     "aws_s3_bucket_policy": _read("s3", "get_bucket_policy", {"policy": ("Policy", "json")}),
     "aws_s3_bucket_object_lock_configuration": _read("s3", "get_object_lock_configuration", {
         "object_lock_enabled": ("ObjectLockConfiguration.ObjectLockEnabled", "identity")}),
+    "aws_sfn_state_machine": _read("stepfunctions", "describe_state_machine", {
+        "arn": ("stateMachineArn", "identity"), "definition": ("definition", "json"),
+        "id": ("stateMachineArn", "identity"), "name": ("name", "identity"), "role_arn": ("roleArn", "identity"),
+        "status": ("status", "identity"), "type": ("type", "identity")}),
+    "aws_scheduler_schedule": _read("scheduler", "get_schedule", {
+        "arn": ("Arn", "identity"), "group_name": ("GroupName", "identity"), "name": ("Name", "identity"),
+        "schedule_expression": ("ScheduleExpression", "identity"), "state": ("State", "identity")}),
+    "aws_scheduler_schedule_group": _read("scheduler", "get_schedule_group", {
+        "arn": ("Arn", "identity"), "id": ("Name", "identity"), "name": ("Name", "identity"),
+        "state": ("State", "identity")}),
+    "aws_cloudwatch_event_rule": _read("events", "describe_rule", {
+        "arn": ("Arn", "identity"), "event_pattern": ("EventPattern", "json"), "id": ("Name", "identity"),
+        "name": ("Name", "identity"), "state": ("State", "identity")}),
+    "aws_cloudwatch_metric_alarm": {
+        name: ("cloudwatch", "describe_alarms", ("MetricAlarms", 0, field), "identity")
+        for name, field in {"alarm_name": "AlarmName", "arn": "AlarmArn", "comparison_operator": "ComparisonOperator",
+                            "evaluation_periods": "EvaluationPeriods", "id": "AlarmName"}.items()},
+    "aws_s3_bucket_lifecycle_configuration": _read("s3", "get_bucket_lifecycle_configuration", {
+        "transition_default_minimum_object_size": ("TransitionDefaultMinimumObjectSize", "identity")}),
+    "aws_cloudfront_response_headers_policy": _read("cloudfront", "get_response_headers_policy", {
+        "etag": ("ETag", "identity"), "id": ("ResponseHeadersPolicy.Id", "identity"),
+        "name": ("ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name", "identity")}),
 }
 NOT_OBSERVABLE = {
     "aws_iam_role": {"force_detach_policies": "state-only", "inline_policy": "other-api",
@@ -237,6 +268,41 @@ NOT_OBSERVABLE = {
     "aws_s3_bucket_object_lock_configuration": {
         "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
         "region": "state-only", "rule": "other-encoding", "token": "state-only"},
+    "aws_sfn_state_machine": {
+        "creation_date": "other-encoding", "description": "other-encoding", "encryption_configuration": "other-encoding",
+        "logging_configuration": "other-encoding", "name_prefix": "state-only", "publish": "state-only",
+        "region": "state-only", "revision_id": "other-encoding", "state_machine_version_arn": "state-only",
+        "tags": "other-api", "tags_all": "other-api", "timeouts": "state-only",
+        "tracing_configuration": "other-encoding", "version_description": "state-only"},
+    "aws_scheduler_schedule": {
+        "action_after_completion": "other-encoding", "description": "other-encoding", "end_date": "other-encoding",
+        "flexible_time_window": "other-encoding", "id": "other-encoding", "kms_key_arn": "other-encoding",
+        "name_prefix": "state-only", "region": "state-only", "schedule_expression_timezone": "other-encoding",
+        "start_date": "other-encoding", "target": "other-encoding"},
+    "aws_scheduler_schedule_group": {
+        "creation_date": "other-encoding", "last_modification_date": "other-encoding", "name_prefix": "state-only",
+        "region": "state-only", "tags": "other-api", "tags_all": "other-api", "timeouts": "state-only"},
+    "aws_cloudwatch_event_rule": {
+        "description": "other-encoding", "event_bus_name": "other-encoding", "force_destroy": "state-only",
+        "is_enabled": "state-only", "name_prefix": "state-only", "region": "state-only", "role_arn": "other-encoding",
+        "schedule_expression": "other-encoding", "tags": "other-api", "tags_all": "other-api"},
+    "aws_cloudwatch_metric_alarm": {
+        "actions_enabled": "other-encoding", "alarm_actions": "other-encoding", "alarm_description": "other-encoding",
+        "datapoints_to_alarm": "other-encoding", "dimensions": "other-encoding",
+        "evaluate_low_sample_count_percentiles": "other-encoding", "evaluation_criteria": "other-encoding",
+        "evaluation_interval": "other-encoding", "extended_statistic": "other-encoding",
+        "insufficient_data_actions": "other-encoding", "metric_name": "other-encoding",
+        "metric_query": "other-encoding", "namespace": "other-encoding", "ok_actions": "other-encoding",
+        "period": "other-encoding", "region": "state-only", "statistic": "other-encoding", "tags": "other-api",
+        "tags_all": "other-api", "threshold": "other-encoding", "threshold_metric_id": "other-encoding",
+        "treat_missing_data": "other-encoding", "unit": "other-encoding"},
+    "aws_s3_bucket_lifecycle_configuration": {
+        "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
+        "region": "state-only", "rule": "other-encoding", "timeouts": "state-only"},
+    "aws_cloudfront_response_headers_policy": {
+        "arn": "state-only", "comment": "other-encoding", "cors_config": "other-encoding",
+        "custom_headers_config": "other-encoding", "remove_headers_config": "other-encoding",
+        "security_headers_config": "other-encoding", "server_timing_headers_config": "other-encoding"},
 }
 NO_CHANGE = (["no-op"], ["read"])
 
@@ -310,7 +376,80 @@ PHASE_A_ENVELOPE = Envelope(
     covered={"aws_iam_role", "aws_iam_role_policy", "aws_ecs_task_definition"},
     supported={"aws_iam_role", "aws_iam_role_policy", "aws_ecs_task_definition", "aws_dynamodb_table",
                "aws_s3_bucket_policy", "aws_s3_bucket_object_lock_configuration"})
-ENVELOPES = {"phase-a": PHASE_A_ENVELOPE}
+LIFECYCLE_ENVELOPE = Envelope(
+    covered={"aws_iam_role", "aws_iam_role_policy"},
+    supported={"aws_iam_role", "aws_iam_role_policy", "aws_sfn_state_machine", "aws_scheduler_schedule",
+               "aws_scheduler_schedule_group", "aws_cloudwatch_event_rule", "aws_cloudwatch_metric_alarm",
+               "aws_s3_bucket_lifecycle_configuration", "aws_cloudfront_response_headers_policy"})
+ENVELOPES = {"phase-a": PHASE_A_ENVELOPE, "lifecycle": LIFECYCLE_ENVELOPE}
+ABSENT_CODES = {
+    ("stepfunctions", "describe_state_machine"): frozenset({"StateMachineDoesNotExist"}),
+    ("scheduler", "get_schedule"): frozenset({"ResourceNotFoundException"}),
+    ("scheduler", "get_schedule_group"): frozenset({"ResourceNotFoundException"}),
+    ("events", "describe_rule"): frozenset({"ResourceNotFoundException"}),
+}
+DELETING_FIELD = {("stepfunctions", "describe_state_machine"): "status", ("scheduler", "get_schedule_group"): "State"}
+LIFECYCLE_SPEC_FIELDS = {"service", "operation", "address", "absent", "members", "parameters"}
+
+
+def absent_by_error(service, operation, code):
+    """Args: service, operation, AWS error code. Returns: absent observation. Raises: ValueError."""
+    c.require(code in ABSENT_CODES.get((service, operation), frozenset()), "readback unknown")
+    return {"absent": True}
+
+
+def _alarms(spec, value):
+    alarms, composites = value.get("MetricAlarms"), value.get("CompositeAlarms", [])
+    c.require(type(alarms) is list and type(composites) is list, "readback unknown")
+    if spec["absent"]:
+        c.require(not alarms and not composites, "resource still exists")
+        return {"absent": True}
+    c.require(len(alarms) == 1 and not composites, "readback absent")
+    return value
+
+
+def observe_response(spec, value):
+    """Args: spec, successful response. Returns: observed value, or the absent projection. Raises: ValueError."""
+    key = (spec["service"], spec["operation"])
+    if key == ("cloudwatch", "describe_alarms"):
+        return _alarms(spec, value)
+    field = DELETING_FIELD.get(key)
+    state = value.get(field) if field else None
+    if spec["absent"]:
+        c.require(state == "DELETING", "resource still exists")
+        return {"absent": True}
+    c.require(field is None or state == "ACTIVE", "resource DELETING/unknown")
+    return value
+
+
+def _lifecycle_call(spec, changes, expected):
+    c.require(type(spec) is dict and {"service", "operation", "address", "absent"} <= set(spec)
+              <= LIFECYCLE_SPEC_FIELDS and type(spec["absent"]) is bool, "readback spec fields")
+    grouped = "members" in spec
+    c.require(not grouped or (spec["service"], spec["operation"]) == ("scheduler", "list_schedules"),
+              "readback spec fields")
+    change = changes.get(spec["address"])
+    c.require(change is not None, "readback address")
+    tipo = resource_type(spec["address"])
+    if spec["absent"]:
+        c.require(change["actions"] == ["delete"] and change["before"] is not None, "absence identity")
+        derived = parameters(tipo, change["before"])
+    else:
+        c.require(spec["address"] in expected, "readback absent before")
+        _stable(change, tipo)
+        derived = parameters(tipo, expected[spec["address"]])
+    if grouped:
+        c.require(tipo == "aws_scheduler_schedule_group", "readback spec fields")
+        derived = {"GroupName": derived["Name"]}
+    c.require(spec.get("parameters", derived) == derived, "readback parameters")
+    return spec | {"parameters": derived}
+
+
+def lifecycle_calls(plan, specs, stage, state=None):
+    """Args: plan, specs, stage, state. Returns: specs plus identity-derived parameters. Raises: ValueError."""
+    c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"}, "readback specs")
+    changes, expected = _changes(plan), c.stage_expectation(plan, stage, state)
+    return [_lifecycle_call(spec, changes, expected) for spec in specs]
 
 
 def catalog_document():

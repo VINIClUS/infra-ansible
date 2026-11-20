@@ -285,7 +285,8 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
     require(seen == required, "incomplete governed drift coverage; Production blocked")
     if envelope is not None:
         envelope.absent(plan, matrix["absent"], (specs, reports, used), stage)
-    require(specs is None or used == set(range(len(specs))), "orphan readback")
+    inventories = {index for index, spec in enumerate(specs or []) if "members" in spec}
+    require(specs is None or used | inventories == set(range(len(specs))), "orphan readback")
 
 
 def closed(value, fields):
