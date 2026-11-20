@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import contract as c, drift_catalog
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Lease, Watchdog, mapped_deadline
 from tools.cnesdata_delivery.provenance import GitHub, historical_plan_governance, preflight, validate_proof
@@ -35,6 +35,7 @@ def configuration(role):
     matrix = value.get("drift_matrix")
     c.require(type(matrix) is dict, "concrete governed drift matrix absent; Production blocked")
     c.closed(matrix, "matrix_version source_sha purpose before after")
+    c.closed(value.get("readbacks"), "before after")
     c.require(matrix["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"] and matrix["purpose"] == os.environ["PURPOSE"],
               "source/purpose-specific drift matrix required")
     return value
@@ -138,7 +139,14 @@ def _environment():
     return result
 
 
-def _readbacks(aws, governance, watchdog, raw_state=None, resolver=None):
+def _stage_calls(governance, plan, stage, state=None):
+    calls = drift_catalog.readback_calls(plan, governance["readbacks"][stage], stage, state)
+    drift_catalog.bind_rows(calls, governance["drift_matrix"][stage])
+    return calls
+
+
+def _readbacks(aws, calls, watchdog, iam=None):
+    raw_state, resolver = iam if iam is not None else (None, None)
     resources = None
     resolved_policies = set()
     if raw_state is not None:
@@ -149,10 +157,8 @@ def _readbacks(aws, governance, watchdog, raw_state=None, resolver=None):
                "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
                "dynamodb": {"describe_table"}, "acm": {"describe_certificate"}}
     reports = []
-    c.require(bool(governance["readbacks"]), "live readback specification missing")
-    for spec in governance["readbacks"]:
+    for spec in calls:
         watchdog.check()
-        c.closed(spec, "service operation parameters expected_sha256")
         c.require(spec["operation"] in allowed.get(spec["service"], set()), "read-only API boundary")
         value = aws.call(spec["service"], spec["operation"], **spec["parameters"])
         value.pop("ResponseMetadata", None)
@@ -170,17 +176,28 @@ def _readbacks(aws, governance, watchdog, raw_state=None, resolver=None):
         if raw_state is not None and spec["service"] == "iam" and spec["operation"] == "get_role_policy":
             from tools.cnesdata_delivery.iam_boundary import verify_api
             address = verify_api(resolver, resources, spec["parameters"], value)
-            if address is None:
-                c.require(c.sha(encoded) == spec["expected_sha256"], "live drift/readback mismatch")
-            else:
+            if address is not None:
                 c.require(address not in resolved_policies, "iam=duplicate_policy_api")
                 resolved_policies.add(address)
-        else:
-            c.require(c.sha(encoded) == spec["expected_sha256"], "live drift/readback mismatch")
         reports.append({"service": spec["service"], "operation": spec["operation"], "sha256": c.sha(encoded), "observed": dates(value)})
     if resolver is not None and raw_state is not None:
         c.require(resolved_policies == set(resolver.traces), "iam=complete_policy_api_inventory")
     return reports
+
+
+class _Unguarded:
+    check = staticmethod(lambda: None)
+
+
+def _admit_before(aws, governance, files, binding):
+    source, purpose = binding
+    plan = c.loads(files["plan.json"], state=True)
+    state_bytes, _ = aws.get_state(absent=True)
+    c.scheduler_preflight(plan, c.loads(state_bytes, state=True) if state_bytes is not None else None)
+    calls = _stage_calls(governance, plan, "before")
+    reports = _readbacks(aws, calls, _Unguarded)
+    c.drift_coverage(plan, reports, governance["drift_matrix"], source, purpose, "before")
+    return calls
 
 
 def _publisher_ready():
@@ -444,7 +461,9 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     state = c.loads(state_raw, state=True)
     saved = c.loads(files["plan.json"], state=True)
     c.applied_state(saved, state)
-    reports = _readbacks(aws, governance, ReadOnly(), state_raw if baseline.get("iam_resolver") is not None else None, baseline.get("iam_resolver"))
+    resolver = baseline.get("iam_resolver")
+    reports = _readbacks(aws, _stage_calls(governance, saved, "after", state), ReadOnly(),
+                         (state_raw, resolver) if resolver is not None else None)
     c.drift_coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state)
     if purpose == "phase-a":
         aws.verify_ecr(c.loads(files["promotion.json"], canonical=True), guard=guard)
@@ -577,6 +596,7 @@ def execute(role):
             (temp / "inputs.tfvars.json").write_bytes(c.canonical(inputs))
         if role == "deploy" and _reuse_completed(aws, api, governance, lease, envelope, files, baseline, source, purpose):
             return
+        before_calls = _admit_before(aws, governance, files, (source, purpose)) if role == "deploy" else None
         session_owner.verify_managed(aws, session_authority, session_expires)
         lease.acquire()
         expiry = min(expiry, c.instant(proof["expires_at"]), *api.expiries.values())
@@ -599,8 +619,8 @@ def execute(role):
                 from tools.cnesdata_delivery.outputs import initial_admission
                 initial_admission(c.loads(files["plan.json"], state=True), c.loads(files["inputs.tfvars.json"]), state_bytes,
                                   governance["bootstrap_checkpoint"], source, aws, governance["account_id"], time.time())
-        before_reports = _readbacks(aws, governance, watchdog)
         if role == "deploy":
+            before_reports = _readbacks(aws, before_calls, watchdog)
             c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
                              source, purpose, "before")
         if purpose == "phase-a":
@@ -670,6 +690,8 @@ def execute(role):
             files |= {name: (temp / name).read_bytes() for name in ("plan.bin", "plan.json", "inputs.tfvars.json")}
             files["redacted-plan.json"] = c.redacted_plan(files["plan.json"], source, purpose)
             c.validate_delta(c.loads(files["plan.json"], state=True), purpose)
+            before_calls = _stage_calls(governance, c.loads(files["plan.json"], state=True), "before")
+            before_reports = _readbacks(aws, before_calls, watchdog)
             c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
                              source, purpose, "before")
             if purpose == "bootstrap":
@@ -718,10 +740,13 @@ def execute(role):
         if role == "deploy":
             c.require(after_bytes is not None, "applied state absent; recovery_required")
             c.applied_state(c.loads(files["plan.json"], state=True), c.loads(after_bytes, state=True))
-        reports = _readbacks(aws, governance, watchdog, after_bytes if role == "deploy" and iam_resolver is not None else None, iam_resolver)
+        after_state = c.loads(after_bytes, state=True) if role == "deploy" else None
+        calls = _stage_calls(governance, c.loads(files["plan.json"], state=True), "after", after_state) \
+            if role == "deploy" else before_calls
+        reports = _readbacks(aws, calls, watchdog, (after_bytes, iam_resolver) if role == "deploy" and iam_resolver is not None else None)
         c.drift_coverage(c.loads(files["plan.json"], state=True), reports, governance["drift_matrix"],
                          source, purpose, "after" if role == "deploy" else "before",
-                         c.loads(after_bytes, state=True) if role == "deploy" else None)
+                         after_state)
         applied_outputs = None
         drift_raw = None
         if role == "deploy":

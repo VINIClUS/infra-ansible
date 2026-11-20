@@ -959,11 +959,10 @@ def test_resolved_policy_widening_is_not_authorized_by_state_api_and_complete_ma
     watchdog = Watchdog(owner, fixed_deadline=time.monotonic() + 3600, credential_deadline=time.monotonic() + 3600)
     aws = SimpleNamespace(call=lambda *args, **kwargs: {"RoleName": observed[address]["role"],
         "PolicyName": observed[address]["name"], "PolicyDocument": wide})
-    governance = {"readbacks": [{"service": "iam", "operation": "get_role_policy",
-        "parameters": {"RoleName": observed[address]["role"], "PolicyName": observed[address]["name"]},
-        "expected_sha256": "0" * 64}]}
+    calls = [{"service": "iam", "operation": "get_role_policy", "address": address,
+        "parameters": {"RoleName": observed[address]["role"], "PolicyName": observed[address]["name"]}}]
     with pytest.raises(ValueError):
-        reports = runtime._readbacks(aws, governance, watchdog, contract.canonical(state))
+        reports = runtime._readbacks(aws, calls, watchdog, (contract.canonical(state), None))
         rows = []
         for item in plan["resource_changes"]:
             attributes = observed[item["address"]]
@@ -1037,6 +1036,7 @@ def test_completed_retry_reads_original_receipt_without_mutation(monkeypatch, tm
     monkeypatch.setattr(contract, "validate_envelope", lambda *args, **kwargs: plan)
     monkeypatch.setattr(contract, "applied_state", lambda *args: None)
     monkeypatch.setattr(contract, "drift_coverage", lambda *args: None)
+    monkeypatch.setattr(runtime, "_stage_calls", lambda *args: [])
     monkeypatch.setattr(runtime, "_readbacks", lambda *args: [])
     monkeypatch.setattr(outputs, "acm", lambda *args: {"exact": "original"})
     monkeypatch.setattr(runtime.subprocess, "run", lambda *args, **kwargs: pytest.fail("retry cannot launch product child"))
@@ -1141,27 +1141,18 @@ def test_execute_preserves_readback_time_through_post_release_latency(monkeypatc
     plan = c.loads(chain.plan_files["plan.json"], state=True)
     plan["resource_changes"][0]["change"]["after"] = attrs
     chain.plan_files["plan.json"] = c.canonical(plan)
-    expected = {"Table": attrs}
-    chain.gov["readbacks"] = [{
-        "service": "dynamodb", "operation": "describe_table",
-        "parameters": {"TableName": "fixture"},
-        "expected_sha256": c.sha(c.canonical(expected)),
-    }]
+    chain.gov["readbacks"] = {"before": [], "after": [
+        {"service": "acm", "operation": "describe_certificate", "address": address}]}
     chain.gov["drift_matrix"]["after"] = [
         {"address": address, "attribute": field, "readback": 0,
-         "path": ["Table", field], "encoding": "identity"}
+         "path": ["Certificate", field], "encoding": "identity"}
         for field in attrs
     ]
     base_sdk, base_process = chain.sdk, chain.process
     def sdk(service, operation, parameters):
-        if service == "dynamodb":
-            return expected | {"ResponseMetadata": {
-                "HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)},
-                "RequestId": "independent-drift-boundary",
-            }}
         if service == "acm":
             assert operation == "describe_certificate"
-            return {"Certificate": certificate, "ResponseMetadata": {
+            return {"Certificate": certificate | attrs, "ResponseMetadata": {
                 "HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)},
                 "RequestId": "independent-certificate-boundary",
             }}

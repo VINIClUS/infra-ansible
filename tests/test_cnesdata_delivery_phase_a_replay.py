@@ -148,6 +148,26 @@ def test_replay_recusa_matriz_de_drift_incompleta(monkeypatch, tmp_path, stage):
         runtime.execute("deploy")
 
 
+@pytest.mark.parametrize("mutation", ["matriz", "preflight"])
+def test_leituras_before_e_preflight_falham_antes_do_acquire_no_deploy(monkeypatch, tmp_path, mutation):
+    from tools.cnesdata_delivery import coordination_lease
+    chain = ReplayChain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    reference = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    if mutation == "matriz":
+        chain.gov["drift_matrix"]["before"].pop()
+    else:
+        monkeypatch.setattr(c, "scheduler_preflight", lambda *args: c.require(False, "preflight probe"))
+    chain.configure("deploy", 2, reference)
+    acquired = []
+    original = coordination_lease.Lease.acquire
+    monkeypatch.setattr(coordination_lease.Lease, "acquire", lambda self: acquired.append(1) or original(self))
+    with pytest.raises(ValueError, match="incomplete governed drift coverage|preflight probe"):
+        runtime.execute("deploy")
+    assert not acquired and not applies(chain)
+
+
 def applied_release_sha256(chain):
     prefix = runtime._prefix(chain.gov, "a" * 40, 2, 1, "applied")
     envelope = c.loads(chain.objects[chain.gov["evidence_bucket"], prefix + "envelope.json"][0], canonical=True)

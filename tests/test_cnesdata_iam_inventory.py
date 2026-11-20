@@ -55,7 +55,7 @@ def test_all_documents_state_and_real_readback_path_match_fixed_oracles(purpose,
         observed[address].update(name=oracle["name"], role=oracle["role"], policy=json.dumps(oracle["policy"]))
         parameters = {"RoleName": oracle["role"], "PolicyName": oracle["name"]}
         documents[oracle["name"]] = parameters | {"PolicyDocument": copy.deepcopy(oracle["policy"])}
-        reports.append({"service": "iam", "operation": "get_role_policy", "parameters": parameters, "expected_sha256": "0" * 64})
+        reports.append({"service": "iam", "operation": "get_role_policy", "address": address, "parameters": parameters})
     first = next(iter(oracles))
     if mutation == "state":
         observed[first]["policy"] = '{"Statement":[],"Version":"2012-10-17"}'
@@ -66,7 +66,7 @@ def test_all_documents_state_and_real_readback_path_match_fixed_oracles(purpose,
     if mutation == "omitted-api":
         reports.pop()
     aws = SimpleNamespace(call=lambda _service, _operation, **parameters: copy.deepcopy(documents[parameters["PolicyName"]]))
-    args = (aws, {"readbacks": reports}, SimpleNamespace(check=lambda: None), contract.canonical(symbolic_state(observed)), resolver)
+    args = (aws, reports, SimpleNamespace(check=lambda: None), (contract.canonical(symbolic_state(observed)), resolver))
     if mutation:
         with pytest.raises(ValueError):
             runtime._readbacks(*args)
