@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-BROAD_SCOPES = {"module", "package", "session"}
+BROAD_SCOPES = {"class", "module", "package", "session"}
+WRAPPER_PREFIXES = ("_xunit_setup_", "_unittest_setUpClass_fixture_")
 CANONICAL = pytest.StashKey[str]()
 
 
@@ -77,9 +78,11 @@ def apply_groups(items, splittable, rootpath):
 
 
 def _is_project_fixture(fixturedef, rootpath):
+    if fixturedef.argname.startswith(WRAPPER_PREFIXES):
+        return True
     code = getattr(fixturedef.func, "__code__", None)
     if code is None:
-        return False
+        return True
     path = Path(code.co_filename)
     return path.is_relative_to(rootpath) and "site-packages" not in path.parts
 
@@ -87,11 +90,18 @@ def _is_project_fixture(fixturedef, rootpath):
 def _refuse_broad_fixtures(item, rootpath):
     info = getattr(item, "_fixtureinfo", None)
     for definitions in (info.name2fixturedefs.values() if info else ()):
-        last = definitions[-1]
-        if last.scope in BROAD_SCOPES and _is_project_fixture(last, rootpath):
-            raise pytest.UsageError(
-                f"ci_splittable_broad_fixture nodeid={item.nodeid} fixture={last.argname}"
-            )
+        for definition in definitions:
+            if definition.scope in BROAD_SCOPES and _is_project_fixture(definition, rootpath):
+                raise pytest.UsageError(
+                    f"ci_splittable_broad_fixture nodeid={item.nodeid} "
+                    f"fixture={definition.argname}"
+                )
+
+
+def strip_group_suffix(nodeid):
+    if nodeid.rfind("@") > nodeid.rfind("]"):
+        return nodeid.rsplit("@", 1)[0]
+    return nodeid
 
 
 def _group_names(item):

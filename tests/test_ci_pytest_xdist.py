@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -332,3 +333,168 @@ def test_teardown_com_erro_apos_call_aprovado_e_error(tmp_path):
     assert row["outcome"] == "error"
     assert row["call"]["outcome"] == "passed"
     assert row["teardown"]["outcome"] == "failed"
+
+
+FILE_CRASH = """
+import os
+
+
+def test_antes():
+    assert True
+
+
+def test_crash():
+    os._exit(1)
+
+
+def test_depois():
+    assert True
+"""
+FILE_CRASH_TEARDOWN = """
+import os
+import pytest
+
+
+@pytest.fixture
+def morre_no_fim():
+    yield
+    os._exit(1)
+
+
+def test_crash_td(morre_no_fim):
+    assert True
+"""
+FILE_XFAIL_SETUP = """
+import pytest
+
+
+@pytest.fixture
+def xfail_no_setup():
+    pytest.xfail("motivo")
+
+
+def test_xf(xfail_no_setup):
+    assert True
+"""
+
+
+def _crash_run(tmp_path, files, *paths):
+    report = tmp_path / "report"
+    pytest_run(tmp_path, *_args(tmp_path, report, *paths), files=files)
+    return report
+
+
+def test_crash_do_worker_apos_setup_nao_vira_passed(tmp_path):
+    report = _crash_run(tmp_path, {"test_c.py": FILE_CRASH})
+
+    outcomes = {row["nodeid"].split("::")[1]: row["outcome"] for row in results(report)}
+    assert outcomes["test_crash"] == "failed"
+
+
+def test_crash_em_arquivo_divisivel_nao_vira_passed(tmp_path):
+    report = _crash_run(tmp_path, {"test_c.py": FILE_CRASH}, "test_c.py")
+
+    outcomes = {row["nodeid"].split("::")[1]: row["outcome"] for row in results(report)}
+    assert outcomes["test_crash"] == "failed"
+
+
+def test_crash_no_teardown_nao_vira_passed(tmp_path):
+    report = _crash_run(tmp_path, {"test_c.py": FILE_CRASH_TEARDOWN})
+
+    assert by_name(report)["test_crash_td"]["outcome"] in {"failed", "missing"}
+
+
+def test_xfail_imperativo_no_setup_vira_xfailed(tmp_path):
+    report = tmp_path / "report"
+    pytest_run(
+        tmp_path, "--ci-report-dir", str(report), files={"test_x.py": FILE_XFAIL_SETUP}
+    )
+
+    assert by_name(report)["test_xf"]["outcome"] == "xfailed"
+
+
+def _summary(text):
+    last = [line for line in text.splitlines() if line.strip()][-1]
+    return re.sub(r" in [0-9.]+s.*$", "", last)
+
+
+def test_loadgroup_sem_workers_nao_altera_resultado(tmp_path):
+    files = {"test_a.py": FILE_A}
+    for name, extra in (
+        ("sem_n", ("--dist", "loadgroup")),
+        ("collect", ("-n", "2", "--collect-only")),
+    ):
+        com = pytest_run(
+            tmp_path / name / "com",
+            *extra,
+            "--ci-report-dir",
+            str(tmp_path / name / "r"),
+            files=files,
+        )
+        sem = pytest_run(tmp_path / name / "sem", *extra, plugin=False, files=files)
+        assert com.returncode == sem.returncode, (name, com.stdout)
+        assert _summary(com.stdout) == _summary(sem.stdout), name
+
+
+BROAD_CASES = {
+    "setup_module": "def setup_module(module):\n    pass\n\n\ndef test_x():\n    pass\n",
+    "setup_class": (
+        "class TestC:\n    def setup_class(cls):\n        pass\n\n"
+        "    def test_x(self):\n        pass\n"
+    ),
+    "fixture_de_classe": (
+        "import pytest\n\n\n@pytest.fixture(scope='class')\ndef caro():\n    return 1\n\n\n"
+        "def test_x(caro):\n    pass\n"
+    ),
+    "unittest_setupclass": (
+        "import unittest\n\n\nclass T(unittest.TestCase):\n    @classmethod\n"
+        "    def setUpClass(cls):\n        pass\n\n    def test_x(self):\n        pass\n"
+    ),
+    "override_de_funcao": (
+        "import pytest\n\n\n@pytest.fixture\ndef sess(sess):\n    return sess\n\n\n"
+        "def test_x(sess):\n    pass\n"
+    ),
+}
+CONFTEST_SESSION = (
+    "import pytest\n\n\n@pytest.fixture(scope='session')\ndef sess():\n    return 1\n"
+)
+
+
+def test_arquivo_divisivel_recusa_fixtures_amplas_de_todos_os_tipos(tmp_path):
+    for name, suite in BROAD_CASES.items():
+        case = tmp_path / name
+        result = pytest_run(
+            case,
+            *_args(case, case / "report", "test_b.py"),
+            files={"test_b.py": suite, "conftest.py": CONFTEST_SESSION},
+        )
+        assert result.returncode != 0, name
+        assert "ci_splittable_broad_fixture" in result.stdout + result.stderr, name
+
+
+def test_sem_saida_de_workers_marca_colecao_incompleta(tmp_path):
+    report = tmp_path / "report"
+    pytest_run(
+        tmp_path,
+        *_args(tmp_path, report, "test_broad.py"),
+        files={"test_broad.py": FILE_BROAD},
+    )
+
+    collection = read(report, "collection.json")
+    assert collection["workers_identical"] is False
+    assert collection["count"] == 0
+
+
+def test_falha_ao_gravar_relatorio_nao_altera_status(tmp_path):
+    (tmp_path / "arquivo").write_text("x", encoding="utf-8")
+    files = {"test_a.py": FILE_A}
+    com = pytest_run(
+        tmp_path / "com",
+        "--ci-report-dir",
+        str(tmp_path / "arquivo" / "sub"),
+        files=files,
+    )
+    sem = pytest_run(tmp_path / "sem", plugin=False, files=files)
+
+    assert com.returncode == sem.returncode == 0
+    assert "ci_report_write_failed" in com.stderr

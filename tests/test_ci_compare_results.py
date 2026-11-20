@@ -137,3 +137,19 @@ def test_sucesso_conta_os_diretorios_distintos(tmp_path, capsys):
 
     assert main([first, second]) == 0
     assert "ids=3 dirs=2" in capsys.readouterr().out
+
+
+def test_falha_com_relatorio_vazio(tmp_path, capsys):
+    first = _report_at(tmp_path / "um" / "lane", [])
+    second = _report_at(tmp_path / "dois" / "lane", [])
+
+    assert main([first, second]) == 1
+    assert f"relatorio_vazio dir={first}" in capsys.readouterr().out
+
+
+def test_diretorio_equivalente_por_caminho_resolvido_e_recusado(tmp_path, capsys):
+    only = _report_at(tmp_path / "e1", BASE_ROWS)
+    alias = f"{tmp_path}/./e1/../e1"
+
+    assert main([only, alias]) == 1
+    assert f"diretorio_repetido dir={alias}" in capsys.readouterr().out

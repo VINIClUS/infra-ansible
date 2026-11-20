@@ -86,24 +86,32 @@ def _skip_reason(report):
     return message.removeprefix("Skipped: ")
 
 
+def _xfail_report(reports):
+    return next((r for r in reports.values() if hasattr(r, "wasxfail")), None)
+
+
 def _classify(phases, reports):
     failed = {name for name, data in phases.items() if data["outcome"] == "failed"}
     if failed & {"setup", "teardown"}:
         return "error"
-    if "call" in failed:
+    if failed & {"call", "???"}:
         return "failed"
-    call = reports.get("call")
-    if call is not None and hasattr(call, "wasxfail"):
-        return "xfailed" if call.skipped else "xpassed"
+    xfail = _xfail_report(reports)
+    if xfail is not None:
+        return "xfailed" if xfail.skipped else "xpassed"
     if any(data["outcome"] == "skipped" for data in phases.values()):
         return "skipped"
-    return "passed" if phases else "missing"
+    return "passed" if {"call", "teardown"} <= set(phases) else "missing"
+
+
+def _worker_of(reports):
+    props = (dict(report.user_properties) for report in reports.values())
+    return next((p["ci_worker"] for p in props if p.get("ci_worker")), None)
 
 
 def _row(nodeid, reports):
-    phases = {name: _phase(reports[name]) for name in PHASES if name in reports}
+    phases = {name: _phase(r) for name, r in reports.items()}
     skipped = next((r for r in reports.values() if r.skipped), None)
-    props = dict(next(iter(reports.values())).user_properties) if reports else {}
     return {
         "nodeid": nodeid,
         "file": selection.file_of(nodeid),
@@ -112,7 +120,7 @@ def _row(nodeid, reports):
         "call": phases.get("call"),
         "teardown": phases.get("teardown"),
         "skip_reason": _skip_reason(skipped) if skipped is not None else None,
-        "worker": props.get("ci_worker"),
+        "worker": _worker_of(reports),
     }
 
 
@@ -149,7 +157,7 @@ class CiPlugin:
         self.canonical_ids = [item.nodeid for item in items]
         self._prepare(config, items)
         result = yield
-        if _distributed(config) and config.getvalue("loadgroup"):
+        if _is_worker(config) and getattr(config.option, "loadgroup", False):
             selection.suffix_group_ids(items)
         self.selected = [_canonical(item) for item in items]
         return result
@@ -162,7 +170,7 @@ class CiPlugin:
         mode = config.getoption("ci_quarantine")
         if mode:
             self._quarantine(config, items, marks, mode)
-        if _distributed(config):
+        if _is_worker(config):
             splittable = selection.load_splittable(config.getoption("ci_splittable"))
             self._group(config, items, splittable)
 
@@ -204,7 +212,7 @@ class CiPlugin:
         if _is_worker(self.config):
             return
         props = dict(report.user_properties)
-        nodeid = props.get("ci_nodeid", report.nodeid)
+        nodeid = props.get("ci_nodeid") or selection.strip_group_suffix(report.nodeid)
         self.reports.setdefault(nodeid, {})[report.when] = report
 
     @pytest.hookimpl(optionalhook=True)
@@ -214,19 +222,24 @@ class CiPlugin:
     def pytest_sessionfinish(self, session, exitstatus):
         if _is_worker(self.config) or self.report_dir is None:
             return
-        finished = time.time()
+        try:
+            self._write_all(int(exitstatus), time.time())
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            sys.stderr.write(f"ci_report_write_failed error={error!r}\n")
+
+    def _write_all(self, exitstatus, finished):
         merged = self._merge_nodes()
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self._write_collection(merged)
         self._write_results()
-        self._write_session(int(exitstatus), finished)
+        self._write_session(exitstatus, finished)
         if self.config.getoption("ci_quarantine"):
             self._write_json("quarantined.json", self.quarantined)
 
     def _merge_nodes(self):
         outputs = [out for out in self.node_outputs if "ci_collection" in out]
         if not outputs:
-            return None
+            return not _distributed(self.config)
         first = outputs[0]
         self.canonical_ids = first["ci_collection"]
         self.selected = first["ci_selected"]
@@ -253,7 +266,7 @@ class CiPlugin:
                 "count": len(self.selected),
                 "ids": self.selected,
                 "canonical_ids": self.canonical_ids,
-                "workers_identical": True if identical is None else identical,
+                "workers_identical": identical,
                 "errors": {"count": len(self.collect_errors), "nodeids": self.collect_errors},
                 "python_hash_seed": os.environ.get("PYTHONHASHSEED"),
                 "pytest_version": pytest.__version__,

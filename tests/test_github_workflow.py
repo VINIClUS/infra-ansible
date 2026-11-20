@@ -313,12 +313,13 @@ def test_quarentena_roda_em_passo_que_nao_bloqueia():
     command = " ".join(step["run"].split())
 
     assert step["continue-on-error"] is True
-    assert step["if"] == "always()"
+    assert step["if"] == "${{ !cancelled() }}"
     assert "--ci-quarantine only" in command
     assert '--ci-report-dir "${RUNNER_TEMP}/ci-quarantine"' in command
     assert "-eq 5" in command
     upload = step_named(validate, "Upload test reports")
-    assert upload["if"] == "always()"
+    assert upload["if"] == "${{ !cancelled() }}"
+    assert upload["continue-on-error"] is True
     assert upload["with"]["name"] == "ci-report-validate"
     assert upload["with"]["if-no-files-found"] == "warn"
     assert upload["with"]["overwrite"] is True
@@ -330,6 +331,7 @@ def test_instalacao_de_ci_exige_hashes():
     validate = load_workflow()["jobs"]["validate"]
     install = step_named(validate, "Install validation dependencies")
 
-    assert "--require-hashes -r tools/ci/requirements-ci.txt" in " ".join(install["run"].split())
+    command = " ".join(install["run"].split())
+    assert "--require-hashes --only-binary=:all: -r tools/ci/requirements-ci.txt" in command
     assert "ansible-galaxy collection install --requirements-file requirements.yml" in install["run"]
     assert "pip install" in install["run"] and "ansible-core \\" not in install["run"]

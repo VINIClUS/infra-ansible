@@ -115,13 +115,21 @@ def test_plugin_preserva_ids_parametrizados(tmp_path):
     assert collection["ids"] == [row["nodeid"] for row in results(report)]
 
 
-def test_plugin_sem_opcao_nao_escreve_nada(tmp_path):
-    result = run_inner(tmp_path)
+def _tree(base):
+    return sorted(str(path.relative_to(base)) for path in base.rglob("*"))
 
-    assert result.returncode == 1
-    entries = sorted(path.name for path in tmp_path.iterdir())
-    assert entries == ["inner"]
-    assert sorted(path.name for path in (tmp_path / "inner").iterdir()) == ["test_inner.py"]
+
+def test_plugin_sem_opcao_nao_escreve_nada(tmp_path):
+    com = tmp_path / "com"
+    sem = tmp_path / "sem"
+    com.mkdir()
+    sem.mkdir()
+    with_plugin = run_inner(com)
+    without_plugin = run_inner(sem, plugin=False)
+
+    assert with_plugin.returncode == without_plugin.returncode == 1
+    assert _tree(com) == _tree(sem)
+    assert not (com / "report").exists()
 
 
 def test_plugin_registra_erros_de_coleta(tmp_path):

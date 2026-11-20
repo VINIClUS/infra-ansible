@@ -47,21 +47,24 @@ def _value_problems(reference, other, field):
     return problems
 
 
-def _repeated(directories):
-    seen, problems = set(), []
+def _unique_by_path(directories):
+    unique, problems = {}, []
     for path in directories:
-        if path in seen:
+        key = str(Path(path).resolve())
+        if key in unique:
             problems.append(f"diretorio_repetido dir={path}")
-        seen.add(path)
-    return problems
+        else:
+            unique[key] = path
+    return list(unique.values()), problems
 
 
 def compare(directories, truth=None):
-    problems = _repeated(directories)
-    loaded = {path: _load(path) for path in dict.fromkeys(directories)}
+    unique, problems = _unique_by_path(directories)
+    loaded = {path: _load(path) for path in unique}
     reports = {name: rows for name, (rows, _) in loaded.items()}
-    for name, (_, duplicates) in loaded.items():
+    for name, (rows, duplicates) in loaded.items():
         problems += [f"nodeid_duplicado dir={name} nodeid={nodeid}" for nodeid in duplicates]
+        problems += [f"relatorio_vazio dir={name}"] if not rows else []
     names = list(reports)
     union = set().union(*(set(rows) for rows in reports.values()))
     for name in names:
