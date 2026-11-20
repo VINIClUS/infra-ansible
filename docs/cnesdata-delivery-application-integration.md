@@ -13,7 +13,7 @@ Convencoes: `AG`=`application_gate.py`, `LC`=`lifecycle_contract.py`, `LR`=`life
 Fatos que ancoram tudo (leitura do codigo, nao opiniao):
 - Cada chamada de plan ou de deploy e um reusable com dois jobs, `validate` e `execute`, ambos com `environment: production` (`REU-plan:60-62,128-130`; `REU-deploy` nas mesmas linhas). O environment `production` do CnesData tem um revisor obrigatorio e nenhum `wait_timer` (medido, §6.2). Logo cada chamada custa **2 pausas de reviewer**.
 - Cada etapa do lifecycle e plan + audit independente + deploy: o deploy recusa sem `approval.json` do job de audit (`LR:1348-1354`; `DOC:48`). A estimativa anterior contava 6 pausas para a preparacao; o minimo pelo codigo e 8 pausas nas quatro chamadas de plan/deploy (`observer-bootstrap` e `operational`, plan e deploy cada) e mais as do audit (DD-5), 10 no desenho atual.
-- Cada comando tofu so e admitido se o seu proprio `timeout` couber antes do deadline: `LifecycleWatchdog.run` chama `phase_capacity(operation_seconds=timeout)` (`LR:898-902`), e `phase_capacity` exige `now + operation_seconds + 157 < preparation_deadline` antes do fence (`LC:1550-1552`). Um `tofu apply` (timeout 120, `LR:1372`) so pode **comecar** ate 623 s depois do acquire.
+- Cada comando tofu so e admitido se o seu proprio `timeout` couber antes do deadline: `LifecycleWatchdog.run` chama `phase_capacity(operation_seconds=timeout)` (`LR:898-902`), e `phase_capacity` exige `now + operation_seconds + 157 < preparation_deadline` antes do fence (`LC:1550-1552`). Um `tofu apply` (timeout 120, `LR:1372`) so pode **comecar** ate 623 s depois do acquire. Na cadeia de DD-1, o ultimo `apply` e precedido por 11 operacoes tofu (4 `init`, 2 `plan`, 4 `show`, 1 `apply`), cujos tetos somam 620 s (`LR:1331,1340,1341,1366,1372`).
 
 | DD | Recomendacao (proposta, aguarda ratificacao) | PRs afetados |
 |---|---|---|
@@ -25,7 +25,7 @@ Fatos que ancoram tudo (leitura do codigo, nao opiniao):
 | DD-6 | A estimativa e **negativa** para o desenho atual; replanejar P10-P17 com `validate` dobrado no `execute` (custodia neutra) e levar ao dono a politica de pausas dentro das janelas (O20, O21) | P10-P17, P25-P30 |
 | DD-7 | `finish` e `publish_terminal` no processo do keeper; `lifecycle_terminal_job` = o proprio job do application; a conclusao do run depende de O22 | P17, P27-P30 |
 
-Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imposto pelo produto e nao pelo gate; o caminho critico de 10 nos nao encurta.
+Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imposto pelo produto e pelo host gate; o caminho critico de 10 nos nao encurta.
 
 ## 1. DD-1: ordem e conteudo da preparacao em 900 s
 
@@ -44,7 +44,7 @@ Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imp
 |---|---|---|
 | 1A: `observer-bootstrap`, `inventory`, `operational`; sem mode-canary na janela | 4 (+ 2 audits) | Gate: nada novo no oraculo. O primeiro `execute` nao alcanca `accepted-open` (faltam unit, recovery, audit), so os terminais `failed-*`. |
 | 1B: 1A + mode-canary como terceira etapa (plan, audit, deploy) | 6 (+ 3 audits) | Gate: remove `LR:1358` com oraculo completo (P16). Pausas e maquina somam 50 por cento (§6.3): nao cabe em nenhum cenario medido. |
-| 1C: 1A com os oito enderecos de modo co-aplicados no plan/deploy `operational` | 4 (+ 2 audits) | Gate: `validate_delta` da etapa `operational` passa a admitir tambem os oito enderecos (`LC:1326-1405`, `LC:1288-1323`); o conjunto fechado de modos (`LC:1343`) ganha uma forma. Reusables: nenhum novo. CnesData: um `inputs.json` carrega `static_promotion` e `mode_canary` (`CD:infra/opentofu/env/prod/variables.tf:1-37`). Risco: dois oraculos num plano so. |
+| 1C: 1A com os oito enderecos de modo co-aplicados no plan/deploy `operational` | 4 (+ 2 audits) | Gate: `validate_delta` da etapa `operational` passa a admitir tambem os oito enderecos (`LC:1326-1405`, `LC:1288-1323`); o conjunto fechado de modos (`LC:1343`) ganha uma forma. Reusables: nenhum novo. CnesData: um `inputs.json` carrega `static_promotion` e `mode_canary` (`CD:infra/opentofu/env/prod/variables.tf:1-41`). Risco: dois oraculos num plano so. |
 
 **Recomendacao (proposta, aguarda ratificacao): 1C**, na ordem `observer-bootstrap` (plan, audit, deploy), `inventory` (adapter), `operational` com modos (plan, audit, deploy). 1B e inviavel pela conta do §6. 1A e a escolha se o dono aceitar que o primeiro `execute` termine sem `accepted-open` (O19). O `inventory` precisa de um gatilho dentro do `application-prepare` (hoje `STAGE_TRIGGERS` so liga `prepared` e `phase-b`, `LC:1230`): o evento e o job `observer-bootstrap / execute` do deploy concluido com sucesso, mesmo padrao de `stage_event_source` (`AG:1265-1282`). O resultado do `inventory` chega ao job que monta o `inputs.json` do plan `operational` pelo mesmo canal do DD-2.
 
@@ -57,7 +57,7 @@ Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imp
 **Questao.** Quem publica `cnesdata-closed-ready-<run>-<attempt>`, quem libera o `host-gate`, e como o `host-outcome` obtem `closed_ready_sha256`.
 
 **Evidencia.**
-- O verificador do host exige, no run original do caller, **um unico job de nome literal `closed-ready`**, `completed`/`success` (`HG:4894-4904`), e o artefato `cnesdata-closed-ready-<run_id>-<run_attempt>` com `job.started_at < artifact.created_at < job.completed_at` (`HG:4906`, `HG:4934-4936`), tres membros exatos `close-drain.json`, `phase-b.json`, `closed-ready.json` (`HG:4953-4955`). A amarra entre artefato e job e so o nome e esse intervalo.
+- O verificador do host exige, no run original do caller, **um unico job de nome literal `closed-ready`**, `completed`/`success` (`HG:4894-4904`), e o artefato `cnesdata-closed-ready-<run_id>-<run_attempt>` com `job.started_at < artifact.created_at < job.completed_at` (`HG:4906`, `HG:4934-4936`), tres membros exatos `close-drain.json`, `phase-b.json`, `closed-ready.json` (`HG:4940-4955`). A amarra entre artefato e job e so o nome e esse intervalo.
 - Hoje o job `closed-ready` do CD e um placeholder que sai com erro (`CD:.github/workflows/promote-production.yml:67-79`); `host-gate` e `host-outcome` dependem dele (`:82`, `:99`) e `host-outcome` le `needs.closed-ready.outputs.closed_ready_sha256` (`:128`).
 - O keeper roda o run inteiro: o job do application so conclui no terminal (`AG:2046-2063`, `DOC:544-546`: nenhuma saida de reusable). Ele ja consome o artefato publico do host (`HOST_JOB`, `AG:1756-1765`; `authenticate_host_handoff`, `AG:1826`) e ja publica artefatos (`publish_terminal`, `AG:351`; o `REU-app:142-150` traz o SDK de artefatos).
 - O `host-gate` nao tem pausa de reviewer (`REU-host:49-99` nao declara environment) e roda dentro da janela API de 180 s (`LC:1225-1227`).
@@ -67,7 +67,7 @@ Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imp
 | Opcao | O que muda |
 |---|---|
 | 2a: o job do application e o `closed-ready` | Impossivel sem reescrever o host gate: o job precisa estar `completed` (`HG:4903-4904`) e o keeper continua rodando durante o host. Exigiria trocar o nome literal e o conceito de job concluido no `HG`, no trust e nos inputs do `host-outcome`. |
-| 2b: sonda + artefato do keeper | O keeper sobe o artefato de tres membros no proprio job. O job `closed-ready` do caller vira sonda: comeca junto com o application, espera o artefato aparecer, confere os tres membros e conclui, expondo `closed_ready_sha256`. Host gate, `HG` e trust do host: inalterados. Gate: o keeper ganha a publicacao (P14), com o limite de 2 MiB e 1 MiB (`HG:4953-4955`). CnesData: o placeholder (`:67-79`) vira a sonda (P27). |
+| 2b: sonda + artefato do keeper | O keeper sobe o artefato de tres membros no proprio job. O job `closed-ready` do caller vira sonda: comeca junto com o application, espera o artefato aparecer, confere os tres membros e conclui, expondo `closed_ready_sha256`. Host gate, `HG` e trust do host: inalterados. Gate: o keeper ganha a publicacao (P14), com o limite de 2 MiB e 1 MiB (`HG:4940-4955`). A latencia da sonda (intervalo de poll mais conclusao do job e fila do `host-gate`, ~8 s por analogia com poll de 5 s e fila de 2 s mais setup de 1 s) consome parte dos 180 s da janela API (`LC:1225-1227`); o intervalo de poll e escolha de P27. CnesData: o placeholder (`:67-79`) vira a sonda (P27). |
 | 2c: dispatch ou saida de reusable | Fora da regra fechada do DOC (`DOC:544-546`); exige emenda e muda o trust. |
 
 **Propriedade de confianca da 2b.** O artefato passa no verificador porque nasce dentro do intervalo do job sonda (`HG:4934-4936`). A sonda nao cria nem assina bytes: os tres membros carregam os compromissos do keeper (`HG:4628-4668`), e o caller que contem a sonda e medido pela source closure (`HG:4857-4864`). Falha segura: se a sonda iniciar depois do upload, o intervalo falha e o host recusa. O keeper deve conferir, pelo inventario de jobs do run, que o job `closed-ready` esta em andamento antes de subir (padrao `_same_run_job`, `AG:1217`).
@@ -98,7 +98,7 @@ Resultado do S unico (§8): **um S unico serve a Phase A e ao application**, imp
 | phase-c-recovery para phase-c-audit | externo | deploy `phase-c-recovery` mais aceite do modo `recovery` (DD-4) |
 | phase-c-audit para final | externo | deploy `phase-c-audit` mais aceite do modo `audit` (DD-4); o `final` e interno (DD-7) |
 
-R16: o remedio (teto por run, `DeleteObjects` em lote ou uma execucao `static-maintenance` posterior) segue em aberto como decisao do dono (O23). Ate la o estagio `static` nao retira versoes.
+R16: o remedio (teto por run, `DeleteObjects` em lote ou uma execucao `static-maintenance` posterior) segue em aberto como decisao da coordenadora na ratificacao (D-C1). Ate la o estagio `static` nao retira versoes.
 
 **PRs afetados.** P14 (api), P15 (static, R16), P16 (unit, C-recovery, C-audit), P17 (final). Cada PR reescreve o teste que fixa o stop (`T-SE:876`) e o conjunto fechado de call sites (`tests/test_cnesdata_application_gate.py:5445-5490`).
 
@@ -113,8 +113,8 @@ R16: o remedio (teto por run, `DeleteObjects` em lote ou uma execucao `static-ma
 - Os formatos de `routing` e `terminal-readback` sao SINTETICOS (`AG:100-102`); o produto nao tem handler (`CD:scripts/promotion/promote_api.py:107-109,189-192`).
 
 **Opcoes.**
-- (a) O handler do adapter roda a regra do produto e emite uma observacao fechada `{accepted, checks, compromissos}`; o validador do keeper confere forma, hashes dos originais e `accepted is True`.
-- (b) O keeper reimplementa as regras. Gate: mais codigo num `application_gate.py` perto do teto de 256 KiB do closure (`LC:616`).
+- (a) O handler do adapter roda a regra do produto e emite uma observacao fechada `{accepted, checks, compromissos}`; o validador do keeper confere forma, hashes dos originais e `accepted is True`. Justificativa: o handler e as funcoes de aceite sao codigo do produto autenticado em S pelo manifesto de fonte (`AG:14-58`; P09/P10, D6), e a observacao compromete os hashes dos originais; risco residual declarado: o produto julga o proprio aceite. Isso difere do DD-5, onde o audit tem de ser independente de quem faz o deploy; aqui o produto ja e a fonte de todas as observacoes dos validadores existentes (`AG:97-98`).
+- (b) O keeper reimplementa as regras. Gate: mais codigo num `application_gate.py` (hoje 137 954 B, cerca de 53 por cento do teto de 256 KiB por arquivo do closure, `LC:616`; sobram ~124 KB).
 - (c) Acrescentar um campo de veredito ao `mode-canary v2`: muda o contrato do produto e os vetores.
 
 **Recomendacao (proposta, aguarda ratificacao): (a).** `restoration` exige, alem da observacao do `rollback`, os handlers `reopen` e `terminal-readback` e uma prova de API e primeira publicacao estatica ausente: definir o formato fechado em P13/P17 com as regras acima. O que significa "operational-pending" (`DOC:261`) continua indeterminavel pelo codigo e sai do aceite.
@@ -169,15 +169,15 @@ Evidencia de codigo: pausas `REU-plan:62,130`, `REU-deploy:62,130`; timeouts de 
 | `upload-artifact` | 40 | 2 | 3 | |
 | `tofu init -backend=false -lockfile=readonly` na raiz de producao | 7 | 9 | 10 | piso do `init` do gate (o gate ainda configura o backend S3) |
 
-Resultado por job: `validate` ~3 s (fila 2 e setup 1); `execute` ate o primeiro comando mutante ~26 s e ~28 s com o upload; audit de job unico ~19 s (analogia; as leituras AWS nao estao medidas).
+Resultado por job: `validate` >= ~3 s (fila 2 e setup 1; faltam os dois passos de carga do produtor e de prova de admissao, `REU-plan:71,126`); `execute` >= ~26 s ate o primeiro comando mutante (soma dos p50 da tabela: fila 2, setup 1, dois checkouts 6, node 3, instalacao 5, `init` 9) e ~28 s com o upload, sem contar carga do produtor, admissao, bridge e a repeticao do gate, que nao estao medidos; audit de job unico ~19 s (analogia; as leituras AWS nao estao medidas).
 
 **Espera do reviewer.** O environment `production` do CnesData tem um revisor obrigatorio, `prevent_self_review` falso, nenhum `wait_timer` e politica de branch custom. Fonte: 15 runs do `Deploy main` (`workflow_dispatch`, 2026-09-18 a 2026-10-11): 38108059903, 38101178340, 36279073204, 36135957764, 36015859448, 35905048806, 35800360776, 35799259545, 35782304011, 35746153331, 35539182577, 35416290819, 35350504778, 35348386961, 35345051252. Regra de inclusao unica: so aprovacoes com estado `approved` no endpoint `approvals` do run, attempt 1; a espera e `deploy.started_at` menos o maior `completed_at` dos jobs de que ele depende. Ficam fora o run com aprovacao rejeitada (35799259545), o com aprovacao pulada (35345051252) e o attempt 2 de 38108059903 (duplica o 1 e nao tem registro de aprovacao). Amostra: 12 aprovacoes, esperas em segundos 13, 19, 24, 30, 32, 34, 45, 113, 123, 183, 352, 424. **Mediana 40 s, p75 123 s, p90 352 s, media 116 s.** Vieses: o job de deploy roda num runner proprio, entao a espera inclui a captura do runner; e as aprovacoes nao foram avisadas, enquanto o R22 supoe revisores avisados e presentes. Nao ha como separar, nesses dados, a latencia humana da do runner. O `Deploy esusdata` do infra-ansible nao entra: o environment dele resolve no infra-ansible e nao pausa.
 
-**Referencia do desenho anterior.** O orcamento da Phase A em `docs/cnesdata-delivery-producers.md` §6.1 assume 4 min no `validate` e 3 min no setup do `execute`; os insumos medidos aqui (~3 s e ~28 s) mostram que essa parte da conta e conservadora. Ela nao diz nada sobre o `tofu plan` e o `apply`, que seguem sem medida.
+**Referencia do desenho anterior.** O orcamento da Phase A em `docs/cnesdata-delivery-producers.md` §6.1 assume 4 min no `validate` e 3 min no setup do `execute`; os insumos medidos aqui sao so pisos (~3 s e ~28 s, sem os passos de admissao) e nao permitem concluir que essa premissa e conservadora. Tambem nao dizem nada sobre o `tofu plan` e o `apply`, que seguem sem medida.
 
 ### 6.3 Estimativa
 
-Premissas: a cadeia ate o `prepared` e a de DD-1 com o mode-canary co-aplicado (1C): `observer-bootstrap` (plan, audit, deploy), `operational` (plan, audit, deploy). O teto util e o inicio do ultimo `apply` ate 623 s depois do acquire (900 menos 277, `LR:1372`, `LC:1552`); depois dele ainda cabem o proprio `apply`, a publicacao, o poll, o handler `prepared` e o close-drain, que tambem precisa de `now + op + 157 < deadline`. A conta abaixo e a soma de pausas e maquina medida ate esse inicio; a folga cobre ainda tres operacoes tofu, as admissoes de cada job, o `inventory` e a passagem entre jobs, tudo sem medida.
+Premissas: a cadeia ate o `prepared` e a de DD-1 com o mode-canary co-aplicado (1C): `observer-bootstrap` (plan, audit, deploy), `operational` (plan, audit, deploy). O teto util e o inicio do ultimo `apply` ate 623 s depois do acquire (900 menos 277, `LR:1372`, `LC:1552`); depois dele ainda cabem o proprio `apply`, a publicacao, o poll, o handler `prepared` e o close-drain, que tambem precisa de `now + op + 157 < deadline`. A conta abaixo e a soma de pausas e maquina medida ate esse inicio; a folga cobre ainda a duracao real das 11 operacoes tofu que precedem o ultimo `apply`, as admissoes de cada job, o `inventory` e a passagem entre jobs, tudo sem medida.
 
 | Cenario | Maquina (s) | Pausas | Espera a 40 s | Inicio do ultimo apply | Folga | Espera a 123 s | Folga |
 |---|---|---|---|---|---|---|---|
@@ -186,9 +186,9 @@ Premissas: a cadeia ate o `prepared` e a de DD-1 com o mode-canary co-aplicado (
 | C: `validate` dobrado no `execute`, audit com pausa | 148 | 6 | 240 | 388 | 235 | 738 | -263 |
 | D: C sem pausa dentro da janela (O20) | 148 | 0 | 0 | 148 | 475 | 0 | 475 |
 
-Nos tetos do codigo a conta e negativa por si so: duas chamadas de plan (45+120+20) e duas de deploy (45+120) somam 700 s de tofu contra 742 s de janela util (900 menos a reserva de 158), antes de fila, setup, pausa, audit, `inventory` e close-drain. **Veredito: negativo.** Nos tipicos a conta e indeterminada, porque nenhum plan ou apply real foi medido; no desenho atual (A) a mediana de espera deixa 63 s para tres operacoes tofu, todas as admissoes e o `inventory`, e com p75 a conta estoura. Nao ha leitura positiva demonstravel do desenho atual, e a regra acordada em 7038419407 diz o que fazer: **P10-P17 sao replanejados antes de comecar.** Sem 1C (mode-canary em chamadas proprias, 1B) a conta piora de 4 para 6 chamadas de plan/deploy e 3 audits, e nao fecha em nenhum cenario.
+Nos tetos do codigo, um ciclo de plan soma 45+120+20 = 185 s e um de deploy 45+20+120 = 185 s (o deploy tambem roda `tofu show`, `LR:1366`); duas de cada somam 740 s contra 742 s de janela util (900 menos a reserva de 158). Antes do ultimo `apply` comecar sao 4 `init` (180), 2 `plan` (240), 4 `show` (80) e o primeiro `apply` (120) = 620 s contra o limite de 623 s: 3 s de folga com zero pausa e zero maquina. Essa soma e pior caso, nao regra de admissao (`phase_capacity` confere so o timeout de cada comando contra o deadline), entao nao sustenta sozinha o veredito. **Veredito: negativo**, com base nas linhas de pausa media (116 s) e p75 (123 s), que estouram A, B e C por centenas de segundos (tabela acima). Nos tipicos a conta e indeterminada, porque nenhum plan ou apply real foi medido; no desenho atual (A) a mediana de espera deixa 63 s para as 11 operacoes tofu, todas as admissoes e o `inventory`. Nao ha leitura positiva demonstravel do desenho atual, e a regra acordada em 7038419407 diz o que fazer: **P10-P17 sao replanejados antes de comecar.** Sem 1C (mode-canary em chamadas proprias, 1B) a conta piora de 4 para 6 chamadas de plan/deploy e 3 audits, e nao fecha em nenhum cenario.
 
-O mesmo calculo vale para as janelas ratificadas de B (360 s) e C (240 s cada), `LC:1225-1227`, cada uma com plan, audit e deploy: maquina ~81 s e 5 pausas (200 s a 40 s) deixam 79 s em B e -41 s em C com o desenho atual; com `validate` dobrado, 3 pausas deixam 165 s em B e 45 s em C; sem pausas, 285 s e 165 s. Isso e uma estimativa pela mesma base e sem a regra de capacidade pos-fence conferida: o minimo e levar a pergunta ao dono (O20, O21).
+O mesmo calculo vale para as janelas ratificadas de B (360 s) e C (240 s cada), `LC:1225-1227`, cada uma com plan, audit e deploy: maquina ~81 s e 5 pausas (200 s a 40 s) deixam 79 s em B e -41 s em C com o desenho atual, **sem tofu** (so pausas e maquina; nos tetos, plan mais deploy somam 370 s, acima dos 360 s de B); com `validate` dobrado, 3 pausas deixam 165 s em B e 45 s em C; sem pausas, 285 s e 165 s. Estimativa pela mesma base, sem tofu e sem a regra de capacidade pos-fence conferida: o minimo e levar a pergunta ao dono (O20, O21).
 
 ### 6.4 Opcoes e recomendacao
 
@@ -200,7 +200,9 @@ O mesmo calculo vale para as janelas ratificadas de B (360 s) e C (240 s cada), 
 | (iv) ampliar a janela de preparacao | emenda de `AG:2119` e `LC:972`, e revisao de `DOC:753-767` (a sessao de 900 s) | nenhuma; decisao do dono (O21). Antes do fence a preparacao nao fecha o API (`LC:1550-1552`), o risco e o tempo de lease preso. |
 | (v) fusao do mode-canary (DD-1, 1C) | menos chamadas | neutra |
 
-**Recomendacao (proposta, aguarda ratificacao): (i) mais (v)**, ambos neutros em custodia e anteriores a X*, e levar (iii) e (iv) ao dono. Medida que falta: o tempo de `tofu plan` e `apply` e das admissoes so aparece na primeira execucao gated da Phase A, que depende de X*; ate la a estimativa fica sem um ponto tipico.
+**Recomendacao (proposta, aguarda ratificacao): (i) mais (v)**, ambos neutros em custodia e anteriores a X*, e levar (iii) e (iv) ao dono. **Efeito no caminho critico:** o replanejamento pode alongar a cadeia de REL. P19 depende de P10, P11 e P12 (folga de 1 no, pois P18 e mais profundo); P30 tem folga de ~2 a 3 sobre P16 e P17; P28 depende de P11; a opcao (i) edita os reusables de plan e deploy, onde P07, que esta no caminho critico, tambem trabalha. A cadeia tem de ser recalculada com o script de profundidades depois do replanejamento, como a ordem unica exige; nenhuma profundidade nova foi calculada aqui.
+
+Medida que falta: o tempo de `tofu plan` e `apply` e das admissoes so aparece na primeira execucao gated da Phase A, que depende de X*; ate la a estimativa fica sem um ponto tipico.
 
 ### 6.5 Tamanho da governanca
 
@@ -242,7 +244,7 @@ A troca de custodia so vale se o R24 provar que o secret de ambiente chega ao re
 - A release da Phase A e o candidate: `release.source_sha == expected_source` e `candidate["source_sha"] == source` (`ct:652-655`, `rt:610-613`, `LC:119`, `LR:321`). Release igual implica candidate igual (`candidate_sha256`) e portanto `candidate.source_sha` igual ao S da Phase A.
 - O produto exige o contrario: `_candidate` recusa se `candidate.source_sha != request.source_sha` e se o `release_id` nao comeca por `candidate-<request.source_sha>-`, e e chamado por `inventory` e `publish-static` (`CD:scripts/promotion/promote_api.py:129-148,220-229`). O `request.source_sha` e o `source_sha` do dono (`AG:1940-1941`), igual ao `github.sha` do `promote-production` (`LC:14-19`, `LR:36-38`). O host gate amarra a release do closed-ready (`HG:4642-4657`) e exige `job.head_sha == caller.source_sha` (`HG:4901`).
 
-**Resposta: sim.** O S unico e imposto pelo produto (handlers de `inventory` e `publish-static` e o binding de release do host), nao pelo gate. Relaxar exigiria quebrar a igualdade de release (mudanca [X] no gate e novo X*) ou afrouxar `promote_api.py:222-229` (perder o binding candidate-fonte). Nenhuma das duas e recomendada.
+**Resposta: sim.** O S unico e imposto pelo produto (handlers de `inventory` e `publish-static`, `promote_api.py:222-229`) e pelo host gate (`HG:4642-4657`, `HG:4901`), nao pelo gate de application. Relaxar exigiria quebrar a igualdade de release (mudanca [X] no gate e novo X*) ou afrouxar `promote_api.py:222-229` (perder o binding candidate-fonte). Nenhuma das duas e recomendada.
 
 **Consequencia (proposta, aguarda ratificacao).** S tem de conter os callers da Phase A, os callers do application (P27 a P30) e os pins (P31); a Phase A gated nao pode rodar antes de P30 e da release por tree (REL). A cadeia critica de 10 nos nao encurta (P01a-P05-P06-P07-P18-P19-P28-P29-P30-REL, ordem unica em 7038419407 §3), P27-P30 ficam no caminho, e o atalho "S' anterior" da ordem unica nao se abre. Nenhuma profundidade nova foi calculada: o resultado confirma a existente.
 
@@ -255,8 +257,12 @@ Todas aguardam o dono; esta spec nao decide nenhuma. O17 ja existe na spec dos p
 20. **O20, pausas dentro das janelas.** Aceita um segundo environment sem revisores para os jobs de plan, audit e deploy dentro das janelas (aprovacao humana unica no job do application), com a mudanca de trust e a duplicacao do secret que isso exige, ou mantem um revisor por job e aceita as janelas so com revisores presentes (R22)?
 21. **O21, janela de preparacao de 900 s.** Aceita emendar o valor de 900 s (DD-6 opcao iv), ou mantem a janela e o desenho do DD-6 (i) mais (v)?
 22. **O22, conclusao do run em terminal `failed-*`.** O run de uma promocao que falhou e terminou limpa (lease liberado, terminal publicado) deve concluir `success` para que o proximo acquire passe, ou fica vermelho e exige recuperacao revisada (DD-7)?
-23. **O23, remedio do R16.** Qual remedio para a retirada de versoes estaticas (teto por run, `DeleteObjects` em lote, ou uma execucao `static-maintenance` posterior)? (`DOC:893-898`.)
-24. **O24, tempo-alvo por pausa.** Se as pausas ficarem, qual espera por pausa o dono assume e os revisores confirmam? Medido: mediana 40 s, p75 123 s, sem aviso previo (§6.2).
+23. **O23, retirada.** O remedio do R16 deixou de ser pergunta ao dono: ver D-C1 abaixo.
+24. **O24, tempo-alvo por pausa.** Se as pausas ficarem, qual espera por pausa o dono assume e os revisores confirmam? Medido: mediana 40 s, p75 123 s, sem aviso previo (§6.2). Cobre tambem o R22: os revisores estao presentes e avisados antes da janela.
+
+Decisoes da coordenadora na ratificacao (a delegacao de emendas e dela, nao do dono):
+
+- **D-C1, remedio do R16** (`DOC:893-898`). Proposta: execucao `static-maintenance` posterior, porque os dois outros remedios (teto por run, `DeleteObjects` em lote como nova operacao ABI) mudam o gate; aguarda ratificacao.
 
 ## 10. Lacunas desta spec
 
