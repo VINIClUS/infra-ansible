@@ -238,6 +238,12 @@ NOT_OBSERVABLE = {
         "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
         "region": "state-only", "rule": "other-encoding", "token": "state-only"},
 }
+OMITTED = {
+    "aws_iam_role": {"description": ("", None), "permissions_boundary": ("", None), "tags_all": ({}, None)},
+    "aws_dynamodb_table": {
+        "billing_mode": ("PROVISIONED",), "table_class": ("STANDARD",), "stream_enabled": (False, None),
+        "stream_view_type": ("", None), "stream_arn": ("", None), "stream_label": ("", None)},
+}
 NO_CHANGE = (["no-op"], ["read"])
 
 
@@ -273,6 +279,10 @@ class Envelope:
     def observable(row):
         c.require(row["attribute"] not in NOT_OBSERVABLE.get(resource_type(row["address"]), {}),
                   "not observable drift row")
+
+    @staticmethod
+    def omitted(row):
+        return OMITTED.get(resource_type(row["address"]), {}).get(row["attribute"])
 
     @staticmethod
     def bind(spec, row):
@@ -321,7 +331,9 @@ def catalog_document():
             "envelopes": {name: {"covered": sorted(envelope.covered), "supported": sorted(envelope.supported)}
                           for name, envelope in ENVELOPES.items()},
             "identity": {tipo: [list(pair) for pair in pairs] for tipo, pairs in IDENTITY.items()},
-            "not_observable": NOT_OBSERVABLE}
+            "not_observable": NOT_OBSERVABLE,
+            "omitted": {tipo: {name: list(values) for name, values in entries.items()} for tipo, entries in OMITTED.items()},
+            "container_defaults": c.CONTAINER_DEFAULTS}
 
 
 CATALOG_SHA256 = c.sha(c.canonical(catalog_document()))
