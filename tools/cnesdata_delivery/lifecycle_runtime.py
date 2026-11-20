@@ -1279,6 +1279,8 @@ def execute(role):
         if "plan.json" in files:
             plan_indexes.append(index)
     admit_approval_origin(governance, role, origins)
+    if role != "deploy":
+        payload.pop("approval.json", None)
     product = Path.cwd() / "product"
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=product, capture_output=True, text=True, check=True, timeout=5).stdout.strip()
     c.require(source == request["source_sha"], "immutable product checkout")
@@ -1412,12 +1414,12 @@ def execute(role):
 
 
 def admit_approval_origin(governance, role, origins):
+    if role != "deploy":
+        return
     steps = governance["lifecycle_steps"]
-    for name, producer in origins.items():
-        c.require(producer in steps, "private original producer step")
-        c.require((name == "approval.json") == (steps[producer]["role"] == "audit"),
-                  "approval producer is not the independent audit")
-    c.require(role != "deploy" or "approval.json" in origins, "independent audit approval absent")
+    c.require("approval.json" in origins, "independent audit approval absent")
+    c.require(origins["approval.json"] in steps and steps[origins["approval.json"]]["role"] == "audit",
+              "approval producer is not the independent audit")
 
 
 def _spec_fields(spec):

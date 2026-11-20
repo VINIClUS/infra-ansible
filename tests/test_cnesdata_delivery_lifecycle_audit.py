@@ -223,3 +223,26 @@ def test_replay_p2_deriva_chamadas_iguais_ao_caminho_legado_e_satisfaz_a_ligacao
                         call["parameters"], sort_keys=True)])} for call in calls]
         c.drift_coverage(plan, reports, matrix, matrix["source_sha"], matrix["purpose"], stage, extra.get("state"),
                          specs=calls)
+
+
+STEPS = {"a-plan": {"role": "plan"}, "a-deploy": {"role": "deploy"}, "a-audit": {"role": "audit"}}
+
+
+@pytest.mark.parametrize("role", ["plan", "audit"])
+def test_plan_ou_audit_apos_deploy_nao_e_bloqueado_pelo_approval_republicado(role):
+    origins = {"checkpoint.json": "a-deploy", "approval.json": "a-deploy"}
+    lr.admit_approval_origin({"lifecycle_steps": STEPS}, role, origins)
+
+
+@pytest.mark.parametrize("producer", ["a-deploy", "a-plan"])
+def test_deploy_recusa_approval_de_produtor_que_nao_e_o_audit(producer):
+    with pytest.raises(ValueError, match="approval producer is not the independent audit"):
+        lr.admit_approval_origin({"lifecycle_steps": STEPS}, "deploy",
+                                 {"plan.bin": "a-plan", "approval.json": producer})
+
+
+def test_deploy_aceita_approval_do_audit_e_recusa_sem_approval():
+    gov = {"lifecycle_steps": STEPS}
+    lr.admit_approval_origin(gov, "deploy", {"plan.bin": "a-plan", "approval.json": "a-audit"})
+    with pytest.raises(ValueError, match="independent audit approval absent"):
+        lr.admit_approval_origin(gov, "deploy", {"plan.bin": "a-plan"})
