@@ -134,17 +134,8 @@ def applied_state(plan, state):
             match(change["after"], state["outputs"][name]["value"], change.get("after_unknown", False))
 
 
-def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None):
-    """Every managed attribute must have a source-bound live projection.
-
-    This deliberately refuses unsupported/unobservable fields. A production
-    matrix and concrete provider/API projections remain an owner handoff;
-    a nonempty collection of chosen API hashes cannot stand in for coverage.
-    """
-    closed(matrix, "matrix_version source_sha purpose before after")
-    require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == 1
-            and matrix["source_sha"] == source_sha and matrix["purpose"] == purpose
-            and stage in {"before", "after"}, "governed drift matrix identity")
+def stage_expectation(plan, stage, state=None):
+    """Attributes expected per address: saved-plan before, or applied state after."""
     changes = {item["address"]: item["change"] for item in plan.get("resource_changes", [])
                if item.get("mode") == "managed"}
     expected = {address: change[stage] for address, change in changes.items() if change[stage] is not None}
@@ -159,32 +150,142 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
             for instance in resource.get("instances", []):
                 suffix = "[" + canonical(instance["index_key"])[:-1].decode() + "]" if "index_key" in instance else ""
                 expected[prefix + suffix] = instance["attributes"]
-    required = {(address, name) for address, values in expected.items() for name in values}
+    return expected
+
+
+SPEC_FIELDS = {"service", "operation", "address", "parameters", "absent", "members"}
+
+
+def _readback_specs(specs, reports):
+    if specs is None:
+        return
+    require(type(specs) is list and len(specs) == len(reports), "drift readback specs")
+    for spec in specs:
+        require(type(spec) is dict and {"service", "operation", "address"} <= set(spec) <= SPEC_FIELDS
+                and ("members" not in spec or (spec["service"], spec["operation"]) == ("scheduler", "list_schedules"))
+                and type(spec.get("absent", False)) is bool, "drift readback spec fields")
+
+
+def _bind(spec, report, row):
+    require(spec["address"] == row["address"], "readback address binding")
+    require(report.get("service") == spec["service"] and report.get("operation") == spec["operation"],
+            "readback report binding")
+
+
+STRICT_ENCODINGS = {"identity", "json"}
+ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions"}
+EMPTY = (None, [], {})
+
+
+def _json(value):
+    return loads(value.encode()) if type(value) is str else value
+
+
+def _tags(value):
+    require(type(value) is list, "drift tags projection")
+    tags = {}
+    for item in value:
+        require(type(item) is dict and set(item) == {"Key", "Value"} and type(item["Key"]) is str
+                and type(item["Value"]) is str and item["Key"] not in tags, "drift tags projection")
+        tags[item["Key"]] = item["Value"]
+    return tags
+
+
+def _members(value):
+    value = [] if value is None else _json(value)
+    require(type(value) is list, "drift set projection")
+    return sorted(canonical(item).decode() for item in value)
+
+
+def _compact(value):
+    if type(value) is dict:
+        return {key: _compact(item) for key, item in value.items() if item not in EMPTY}
+    if type(value) is list:
+        return [_compact(item) for item in value]
+    return value
+
+
+def _named(items):
+    require(type(items) is list and all(type(item) is dict and type(item.get("name")) is str for item in items)
+            and len({item["name"] for item in items}) == len(items), "drift container projection")
+    return sorted(items, key=lambda item: item["name"])
+
+
+def _containers(value):
+    containers = _named(_compact(_json(value)))
+    for container in containers:
+        for key in ("environment", "secrets"):
+            if key in container:
+                container[key] = _named(container[key])
+    return containers
+
+
+def _encoded(encoding, value, observed):
+    if encoding == "json":
+        return _json(value), _json(observed)
+    if encoding == "tags-kv":
+        return {} if value is None else value, _tags(observed)
+    if encoding == "json-set":
+        return _members(value), _members(observed)
+    if encoding == "ecs-container-definitions":
+        return _containers(value), _containers(observed)
+    return value, observed
+
+
+def _projection(row, observed, value, encodings):
+    require(type(row["path"]) is list and len(row["path"]) <= 32, "drift response path")
+    for component in row["path"]:
+        if type(observed) is dict:
+            require(type(component) is str and component in observed, "drift response field")
+        else:
+            require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
+        observed = observed[component]
+    require(row["encoding"] in encodings, "unknown drift projection encoding")
+    value, observed = _encoded(row["encoding"], value, observed)
+    require(canonical(value) == canonical(observed), "saved-plan live functional drift")
+
+
+def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None, *, specs=None, envelope=None):
+    """Every managed attribute must have a source-bound live projection.
+
+    This deliberately refuses unsupported/unobservable fields. A production
+    matrix and concrete provider/API projections remain an owner handoff;
+    a nonempty collection of chosen API hashes cannot stand in for coverage.
+    With `specs`, each row is bound to the spec of its own address; with an
+    `envelope` (matrix_version 2), coverage is the envelope's COVERED set.
+    """
+    closed(matrix, "matrix_version source_sha purpose before after" + (" absent" if envelope is not None else ""))
+    require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == (1 if envelope is None else 2)
+            and matrix["source_sha"] == source_sha and matrix["purpose"] == purpose
+            and stage in {"before", "after"}, "governed drift matrix identity")
+    require(envelope is None or specs is not None, "drift readback specs")
+    _readback_specs(specs, reports)
+    expected = stage_expectation(plan, stage, state)
+    required = envelope.required(plan, expected) if envelope is not None else {
+        (address, name) for address, values in expected.items() for name in values}
     rows = matrix[stage]
     require(type(rows) is list and len(rows) <= 4096, "bounded drift coverage")
-    seen = set()
+    seen, used = set(), set()
     for row in rows:
         closed(row, "address attribute readback path encoding")
+        if envelope is not None:
+            envelope.observable(row)
         key = (row["address"], row["attribute"])
         require(key in required and key not in seen, "unknown/duplicate drift coverage")
         seen.add(key)
         index = row["readback"]
         require(type(index) is int and 0 <= index < len(reports), "drift readback reference")
-        require(type(row["path"]) is list and len(row["path"]) <= 32, "drift response path")
-        observed = reports[index]["observed"]
-        for component in row["path"]:
-            if type(observed) is dict:
-                require(type(component) is str and component in observed, "drift response field")
-            else:
-                require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
-            observed = observed[component]
-        value = expected[row["address"]][row["attribute"]]
-        require(row["encoding"] in {"identity", "json"}, "unknown drift projection encoding")
-        if row["encoding"] == "json":
-            value = loads(value.encode()) if type(value) is str else value
-            observed = loads(observed.encode()) if type(observed) is str else observed
-        require(canonical(value) == canonical(observed), "saved-plan live functional drift")
+        if specs is not None:
+            _bind(specs[index], reports[index], row)
+            used.add(index)
+        if envelope is not None:
+            envelope.bind(specs[index], row)
+        _projection(row, reports[index]["observed"], expected[row["address"]][row["attribute"]],
+                    STRICT_ENCODINGS if envelope is None else ENCODINGS)
     require(seen == required, "incomplete governed drift coverage; Production blocked")
+    if envelope is not None:
+        envelope.absent(plan, matrix["absent"], (specs, reports, used), stage)
+    require(specs is None or used == set(range(len(specs))), "orphan readback")
 
 
 def closed(value, fields):
