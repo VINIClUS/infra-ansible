@@ -143,6 +143,129 @@ jobs:
           path: release-manifest.json
           if-no-files-found: error
 
+  proof:
+    name: Proof ${{ matrix.lane }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [serial, xdist-a, xdist-b, xdist-hog, order-reverse, order-seed]
+    steps:
+      - name: Check out the validated revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --require-hashes -r tools/ci/requirements-ci.txt
+          ansible-galaxy collection install --requirements-file requirements.yml
+
+      - name: Permit isolated native user namespaces on hosted validation
+        shell: bash
+        run: bash tools/ci/prepare-hosted-userns.sh
+
+      - name: Prepare pinned offline native-test toolchain
+        shell: bash
+        run: >-
+          python -m tools.ci.native_bootstrap
+          --destination "${RUNNER_TEMP}/cnesdata-native"
+          --github-env "${GITHUB_ENV}"
+          --github-path "${GITHUB_PATH}"
+
+      - name: Run the proof lane
+        shell: bash
+        env:
+          CNESDATA_NATIVE_CONTEXT: public-ci
+          LANE: ${{ matrix.lane }}
+        run: |
+          set +e
+          report="${RUNNER_TEMP}/proof-report"
+          mkdir -p "${report}"
+          python -m pytest --collect-only -q -p no:cacheprovider tests | grep '::' > "${report}/ground-truth.txt"
+          plugin="-p tools.ci.pytest_ci --ci-report-dir ${report}/lane"
+          split=$(python -c "import json;print(' '.join(json.load(open('tools/ci/xdist_splittable.json'))))")
+          case "${LANE}" in
+            serial) args="${plugin} tests" ;;
+            xdist-a|xdist-b) args="-n 4 --dist loadgroup ${plugin} tests" ;;
+            xdist-hog)
+              yes > /dev/null &
+              yes > /dev/null &
+              args="-n 4 --dist loadgroup ${plugin} tests" ;;
+            order-reverse) args="${plugin} --ci-order reverse ${split}" ;;
+            order-seed) args="${plugin} --ci-order seed:20261120 ${split}" ;;
+          esac
+          read -ra argv <<< "${args}"
+          /usr/bin/time -v -o "${report}/rss.txt" python -m pytest -q -ra -p no:cacheprovider "${argv[@]}" \
+            > "${report}/pytest.txt" 2>&1
+          echo "exit=$?" >> "${report}/rss.txt"
+          grep -E "Maximum resident|exit=" "${report}/rss.txt" || true
+          tail -3 "${report}/pytest.txt"
+          pkill yes || true
+          exit 0
+
+      - name: Upload proof lane
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-proof-${{ matrix.lane }}
+          path: ${{ runner.temp }}/proof-report
+          if-no-files-found: error
+          overwrite: true
+
+  proof-compare:
+    name: Proof compare
+    needs: proof
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the validated revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download proof lanes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ci-proof-*
+          path: proof
+
+      - name: Compare lanes
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          python tools/ci/compare_results.py proof/ci-proof-serial/lane proof/ci-proof-xdist-a/lane \
+            proof/ci-proof-xdist-b/lane proof/ci-proof-xdist-hog/lane \
+            --ground-truth proof/ci-proof-serial/ground-truth.txt || status=1
+          python - <<'PY'
+          import json
+          import pathlib
+
+          files = set(json.load(open("tools/ci/xdist_splittable.json")))
+          source = pathlib.Path("proof/ci-proof-serial/lane/results.jsonl")
+          target = pathlib.Path("proof/serial-split")
+          target.mkdir()
+          rows = [line for line in source.read_text().splitlines() if json.loads(line)["file"] in files]
+          (target / "results.jsonl").write_text("\n".join(rows) + "\n")
+          PY
+          python tools/ci/compare_results.py proof/serial-split proof/ci-proof-order-reverse/lane \
+            proof/ci-proof-order-seed/lane || status=1
+          for lane in proof/ci-proof-*; do
+            echo "${lane}: $(grep -E 'Maximum resident' "${lane}/rss.txt")"
+          done
+          exit "${status}"
+
   deploy:
     name: Deploy production
     needs: validate
