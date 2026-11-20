@@ -225,3 +225,49 @@ def test_fora_da_phase_a_drift_coverage_segue_sem_envelope_e_com_matriz_v1(chain
     monkeypatch.setattr(c, "drift_coverage", lambda *args, **kwargs: log.append((args, kwargs)) or original(*args, **kwargs))
     runtime.execute("plan")
     assert log and all(kwargs.get("envelope") is None and args[2]["matrix_version"] == 1 for args, kwargs in log)
+
+
+GOVERNANCE = {"state_bucket": "synthetic-state", "evidence_bucket": "evi"}
+
+
+@pytest.mark.parametrize("value", [
+    {"111122223333": 1}, {"x": {"id-111122223333": 1}}, {"synthetic-state": 1}, {"SYNTHETIC-STATE": 1}])
+def test_public_safe_varre_chaves_de_dicionario(value):
+    with pytest.raises(ValueError, match="private material in public transport"):
+        c.public_safe(value, GOVERNANCE)
+
+
+@pytest.mark.parametrize("value", [
+    "１１１１２２２２３３３３",
+    "1111-2222-3333", "1111 2222 3333", "1111_2222_3333", "conta 1111-2222-3333."])
+def test_public_safe_recusa_forma_normalizada_e_agrupada_da_conta(value):
+    with pytest.raises(ValueError, match="private material in public transport"):
+        c.public_safe({"campo": value})
+    with pytest.raises(ValueError, match="private material in public transport"):
+        c.public_safe({value: 1})
+
+
+@pytest.mark.parametrize("value", [
+    "synthetic-state.s3.us-east-2.amazonaws.com", "synthetic-state.", "SYNTHETIC-State", "x/Evi.s3"])
+def test_public_safe_recusa_bucket_em_host_e_em_qualquer_caixa(value):
+    with pytest.raises(ValueError, match="private material in public transport"):
+        c.public_safe({"campo": value}, GOVERNANCE)
+
+
+def test_public_safe_nao_aplica_a_regra_generica_de_12_digitos_a_inteiros():
+    c.public_safe({"job_id": 111122223333, "ids": [111122223333], "ok": "1111-2222-33"}, GOVERNANCE)
+    c.public_safe({"digest": "a" * 20 + "1111-2222-3333".replace("-", "") + "b" * 20})
+
+
+@pytest.mark.parametrize("mutation", ["colado", "inteiro", "chave"])
+def test_recusa_handoff_com_valor_derivado_da_conta_de_governanca(chain, mutation):
+    def edit(document):
+        if mutation == "colado":
+            document["matrix"]["after"][0]["path"] = ["id111122223333"]
+        elif mutation == "inteiro":
+            document["matrix"]["after"][0]["path"] = [111122223333]
+        else:
+            document["id111122223333"] = 1
+        return document
+    chain.handoff_edit = edit
+    refused(chain, "account-derived value in public report|private material in public transport")

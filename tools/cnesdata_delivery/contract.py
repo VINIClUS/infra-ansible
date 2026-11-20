@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import PurePosixPath
@@ -245,10 +246,11 @@ def _omitted(value, omitted):
 def _projection(row, observed, value, encodings, omitted=None):
     require(type(row["path"]) is list and len(row["path"]) <= 32, "drift response path")
     require(row["encoding"] in encodings, "unknown drift projection encoding")
-    for component in row["path"]:
+    for depth, component in enumerate(row["path"]):
         if type(observed) is dict:
             require(type(component) is str, "drift response field")
             if component not in observed:
+                require(depth > 0, "drift response field")
                 return _omitted(value, omitted)
         else:
             require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
@@ -528,13 +530,15 @@ def _secrets(value):
             _secrets(child)
 
 
-ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])")
+ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|[0-9]{4}[-_ ][0-9]{4}[-_ ][0-9]{4})(?![0-9A-Za-z])")
+PRIVATE_KEYS = {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}
+PRIVATE_TEXT = re.compile(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b")
 
 
 def _bucket_pattern(governance):
     names = [governance.get(key) for key in ("state_bucket", "evidence_bucket")] if type(governance) is dict else []
     names = [name for name in names if type(name) is str and name]
-    return re.compile("|".join(r"(?<![a-z0-9.-])" + re.escape(name) + r"(?![a-z0-9.-])" for name in names)) if names else None
+    return re.compile("|".join(r"(?<![a-z0-9.-])" + re.escape(name) + r"(?![a-z0-9-])" for name in names), re.I) if names else None
 
 
 def public_safe(value, governance=None):
@@ -542,18 +546,23 @@ def public_safe(value, governance=None):
     _public_safe(value, _bucket_pattern(governance))
 
 
+def _public_text(text, buckets):
+    text = unicodedata.normalize("NFKC", text)
+    require(len(text) <= 4096 and PRIVATE_TEXT.search(text) is None and ACCOUNT_LIKE.search(text) is None
+            and (buckets is None or buckets.search(text) is None), "private material in public transport")
+
+
 def _public_safe(value, buckets):
     if type(value) is dict:
         for key, child in value.items():
-            require(key.lower() not in {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}, "private field in public transport")
+            require(key.lower() not in PRIVATE_KEYS, "private field in public transport")
+            _public_text(key, buckets)
             _public_safe(child, buckets)
     elif type(value) is list:
         for child in value:
             _public_safe(child, buckets)
     elif type(value) is str:
-        require(len(value) <= 4096 and not re.search(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b", value)
-                and ACCOUNT_LIKE.search(value) is None and (buckets is None or buckets.search(value) is None),
-                "private material in public transport")
+        _public_text(value, buckets)
 
 
 def report_key(governance):

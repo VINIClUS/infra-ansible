@@ -77,6 +77,7 @@ def load(files, governance, proof, proof_files, *, source, purpose):
     _measurement(proof, proof_files, fixed["sha256"])
     document = c.loads(raw, canonical=True, limit=LIMIT)
     c.public_safe(document, governance)
+    c.refuse_account_derived(raw, governance)
     _shape(document, source, purpose)
     _addresses(document, purpose)
     return governance | {"drift_matrix": document["matrix"], "readbacks": document["readbacks"]}

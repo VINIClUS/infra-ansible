@@ -602,3 +602,16 @@ def test_id_da_task_definition_no_state_e_a_familia():
     reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64,
                 "observed": {"taskDefinition": {"family": "f"}}}]
     assert coverage(plan_, reports, matrix(rows), specs=[spec], envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("tipo,attribute,expected", [
+    ("aws_dynamodb_table", "billing_mode", "PROVISIONED"), ("aws_iam_role", "description", ""),
+    ("aws_iam_role", "tags_all", {})])
+def test_container_de_topo_ausente_nao_vale_como_omissao(tipo, attribute, expected):
+    mapa, c = catalog(), contract()
+    _, _, path, encoding = mapa.CATALOG[tipo][attribute]
+    row = {"address": ROLE, "attribute": attribute, "readback": 0, "path": list(path), "encoding": encoding}
+    declared = mapa.OMITTED[tipo][attribute]
+    with pytest.raises(ValueError, match="drift response field"):
+        c._projection(row, {}, expected, c.ENCODINGS, declared)
+    c._projection(row, {path[0]: {}}, expected, c.ENCODINGS, declared)
