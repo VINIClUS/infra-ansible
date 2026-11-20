@@ -72,6 +72,7 @@ def report(observed):
 def matrix(before=(), after=(), absent=None, version=2):
     value = {"matrix_version": version, "source_sha": SOURCE, "purpose": "phase-a",
              "before": list(before), "after": list(after)}
+    absent = [] if absent is None and version == 2 else absent
     return value if absent is None else value | {"absent": list(absent)}
 
 
@@ -120,9 +121,17 @@ def test_envelope_da_phase_a_e_o_minimo_da_spec():
     envelope = phase_a()
     assert envelope.covered == {"aws_iam_role", "aws_iam_role_policy", "aws_ecs_task_definition"}
     assert envelope.supported == envelope.covered | {
-        "aws_dynamodb_table", "aws_s3_bucket_policy", "aws_s3_bucket_versioning",
-        "aws_s3_bucket_object_lock_configuration"}
+        "aws_dynamodb_table", "aws_s3_bucket_policy", "aws_s3_bucket_object_lock_configuration"}
     assert envelope.supported <= set(catalog().CATALOG)
+
+
+def test_versioning_sem_atributo_observavel_fica_fora_do_supported_e_mudanca_e_recusada():
+    versioning = "module.processing.aws_s3_bucket_versioning.canary[0]"
+    assert "aws_s3_bucket_versioning" not in catalog().CATALOG
+    plan_ = plan(change(ROLE, role(), role()), change(versioning, {"bucket": "b", "versioning_configuration": []},
+                                                      {"bucket": "b", "versioning_configuration": [{"status": "x"}]}))
+    with pytest.raises(ValueError, match="unsupported changed type"):
+        coverage(plan_, [report(observed_role())], matrix(role_rows()), specs=[call()], envelope=phase_a())
 
 
 def test_catalog_sha256_e_computado_do_catalogo():
@@ -329,10 +338,12 @@ def test_linha_de_ausencia_e_fechada_e_provada(mutation, message):
     if mutation == "spec-sem-absent":
         spec = call()
     if mutation == "endereco-nao-removido":
-        plan_ = plan(change(ROLE, role(), None, ("delete",)), change(OTHER, role("outro"), role("outro"), ("no-op",)))
-        state = {"resources": [{"mode": "managed", "module": "module.iam", "type": "aws_iam_role", "name": "outro",
-                                "instances": [{"index_key": 0, "attributes": role("outro")}]}]}
-        spec, row = call(OTHER, "outro", absent=True), {"address": OTHER, "readback": 0}
+        plan_ = plan(change(ROLE, role(), None, ("delete",)), change(TABLE, {"name": "t"}, {"name": "t"}, ("no-op",)))
+        state = {"resources": [{"mode": "managed", "module": "module.processing", "type": "aws_dynamodb_table",
+                                "name": "canary", "instances": [{"index_key": 0, "attributes": {"name": "t"}}]}]}
+        spec = {"service": "dynamodb", "operation": "describe_table", "address": TABLE, "absent": True,
+                "parameters": {"TableName": "t"}}
+        row = {"address": TABLE, "readback": 0}
     if mutation == "outro-endereco":
         row = {"address": OTHER, "readback": 0}
     if mutation == "chave-extra":
