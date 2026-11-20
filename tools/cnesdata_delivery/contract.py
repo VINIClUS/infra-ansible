@@ -235,7 +235,7 @@ TARGET_SETS = {"capacity_provider_strategy": ("CapacityProviderStrategy", (
 
 def _prune(value):
     if type(value) is dict:
-        value = {key: _prune(item) for key, item in value.items()}
+        value = {key: item if key in ("tags", "Tags") else _prune(item) for key, item in value.items()}
         return {key: item for key, item in value.items() if item not in EMPTY and item != ""}
     if type(value) is list:
         return [item for item in (_prune(item) for item in value) if item not in EMPTY and item != ""]

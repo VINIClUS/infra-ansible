@@ -583,3 +583,22 @@ def test_tipos_do_envelope_da_fase_a_ficam_dentro_das_tabelas_estritas():
         service, operation = mapa._operation(tipo)
         assert operation in mapa.READ_ONLY[service], tipo
     assert mapa.PHASE_A_ENVELOPE.identity is mapa.IDENTITY
+
+
+def tag_case(state_tags, live_tags):
+    state = realistic_state_target()
+    state[0]["ecs_parameters"][0]["tags"] = state_tags
+    live = realistic_live_target()
+    if live_tags:
+        live["EcsParameters"]["Tags"] = live_tags
+    return target_coverage(state, live)
+
+
+def test_tag_com_valor_vazio_e_tag_real_e_confere_nos_dois_lados():
+    assert tag_case({"a": ""}, [{"a": ""}]) is None
+
+
+@pytest.mark.parametrize("state_tags,live_tags", [({"a": ""}, None), ({}, [{"a": ""}])])
+def test_recusa_tag_de_valor_vazio_presente_so_em_um_dos_lados(state_tags, live_tags):
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        tag_case(state_tags, live_tags)
