@@ -16,6 +16,8 @@ IDENTITY = {
     "aws_scheduler_schedule": (("name", "Name"), ("group_name", "GroupName")),
     "aws_acm_certificate": (("arn", "CertificateArn"),),
 }
+FENCE_READS = {"module.runtime_iam.aws_iam_role.promotion_fence_operator[0]": "get_role",
+               "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]": "get_role_policy"}
 LIST_PARAMETERS = {"clusters"}
 CREATE_DELETE = {"create", "delete"}
 
@@ -101,3 +103,23 @@ def absence(plan, address, observed):
     derived = parameters(resource_type(address), change["before"])
     c.require(observed == derived, "absence identity")
     return derived
+
+
+def _count(specs, address, operation):
+    return sum(spec["address"] == address and spec["operation"] == operation for spec in specs)
+
+
+def admit_stages(plan, readbacks, matrix, tracked):
+    """Args: plan, readbacks, matrix, tracked policy addresses. Raises: ValueError before acquire."""
+    c.closed(readbacks, "before after")
+    for stage in ("before", "after"):
+        c.require(type(readbacks[stage]) is list and type(matrix.get(stage)) is list, "readback specs")
+        bind_rows(readbacks[stage], matrix[stage])
+    after = readbacks["after"]
+    for address in sorted(tracked):
+        c.require(_count(after, address, "get_role_policy") == 1, "tracked policy readback")
+    present = _changes(plan)
+    for address, operation in FENCE_READS.items():
+        c.require(address not in present or _count(after, address, operation) == 1
+                  and _count(after, address, operation) == sum(s["address"] == address for s in after),
+                  "fence readback")

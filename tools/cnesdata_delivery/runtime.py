@@ -190,8 +190,10 @@ class _Unguarded:
 
 
 def _admit_before(aws, governance, files, binding):
-    source, purpose = binding
+    source, purpose, resolver = binding
     plan = c.loads(files["plan.json"], state=True)
+    drift_catalog.admit_stages(plan, governance["readbacks"], governance["drift_matrix"],
+                               set(resolver.traces) if resolver is not None else set())
     state_bytes, _ = aws.get_state(absent=True)
     c.scheduler_preflight(plan, c.loads(state_bytes, state=True) if state_bytes is not None else None)
     calls = _stage_calls(governance, plan, "before")
@@ -596,7 +598,7 @@ def execute(role):
             (temp / "inputs.tfvars.json").write_bytes(c.canonical(inputs))
         if role == "deploy" and _reuse_completed(aws, api, governance, lease, envelope, files, baseline, source, purpose):
             return
-        before_calls = _admit_before(aws, governance, files, (source, purpose)) if role == "deploy" else None
+        before_calls = _admit_before(aws, governance, files, (source, purpose, baseline.get("iam_resolver"))) if role == "deploy" else None
         session_owner.verify_managed(aws, session_authority, session_expires)
         lease.acquire()
         expiry = min(expiry, c.instant(proof["expires_at"]), *api.expiries.values())
