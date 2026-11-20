@@ -117,7 +117,7 @@ def test_actionlint_executes_pinned_workflows():
     version = subprocess.run([binary, "-version"], text=True, capture_output=True, check=True)
     assert version.stdout.splitlines()[0] == "1.7.7"
     subprocess.run([binary, *[str(ROOT / f".github/workflows/reusable-cnesdata-infra-{gate}-gate.yml")
-                             for gate in ("plan", "deploy")]], check=True)
+                             for gate in ("plan", "deploy", "audit")]], check=True)
 
 
 def _import_closure(entries):
@@ -162,6 +162,27 @@ def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
     for names in lists:
         assert len(names) == len(set(names))
         assert set(names) == required
+
+
+def test_audit_gate_e_um_reusable_de_job_unico_com_papel_e_entrada_proprios():
+    import yaml
+    raw, found = _fetch_lists("reusable-cnesdata-infra-audit-gate.yml")
+    workflow = yaml.safe_load(raw)
+    assert list(workflow["jobs"]) == ["execute"] and "needs" not in workflow["jobs"]["execute"]
+    assert workflow["jobs"]["execute"]["permissions"]["id-token"] == "write"
+    assert workflow["env"]["DELIVERY_ROLE"] == "audit"
+    assert set(workflow["on"]["workflow_call"]["inputs"]) == {
+        "request_descriptor", "request_descriptor_sha256", "contract_repository", "contract_source_sha",
+        "contract_path", "contract_sha256", "expected_source_sha", "purpose"}
+    assert len(found) == 1 and len(found[0]) == len(set(found[0]))
+    assert set(found[0]) == _import_closure({"audit_gate"})
+    assert "audit_gate.py" in found[0] and "audit_gate.py" not in _fetch_lists(
+        "reusable-cnesdata-infra-deploy-gate.yml")[1][0]
+    steps = [step.get("run", "") for step in workflow["jobs"]["execute"]["steps"]]
+    assert [run for run in steps if run.startswith("python3 -m tools.cnesdata_delivery.")] == [
+        "python3 -m tools.cnesdata_delivery.audit_gate preflight",
+        "python3 -m tools.cnesdata_delivery.audit_gate credentials",
+        "python3 -m tools.cnesdata_delivery.audit_gate execute"]
 
 
 def test_application_gate_bootstrap_fetches_complete_runtime_import_closure():
@@ -513,7 +534,7 @@ def test_artifact_sdk_multiline_outputs_are_read_without_exposing_credentials(mo
     assert result == {"id": 123, "digest": "sha256:" + "a" * 64}
 
 
-@pytest.mark.parametrize("role", ["plan", "deploy"])
+@pytest.mark.parametrize("role", ["plan", "deploy", "audit"])
 def test_real_workflow_bridges_node_handler_runtime_before_credentials(role):
     import yaml
     workflow = yaml.safe_load((ROOT / ".github/workflows" / f"reusable-cnesdata-infra-{role}-gate.yml").read_text())
@@ -1261,6 +1282,7 @@ REUSABLE_BRANCH_SITES = {
     "reusable-cnesdata-application-gate.yml": (1, 1),
     "reusable-cnesdata-infra-plan-gate.yml": (2, 0),
     "reusable-cnesdata-infra-deploy-gate.yml": (2, 0),
+    "reusable-cnesdata-infra-audit-gate.yml": (1, 0),
     "reusable-cnesdata-signing-gate.yml": (3, 3),
     "reusable-cnesdata-host-deploy-gate.yml": (2, 0),
 }
