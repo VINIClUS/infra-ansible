@@ -17,10 +17,18 @@ name: Validate and deploy
 permissions:
   contents: read
 
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+    && format('pipeline-pr-{0}', github.event.pull_request.number)
+    || format('pipeline-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out the validated revision
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -37,11 +45,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check \
-            pytest \
-            ansible-core \
-            ansible-lint \
-            yamllint
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r tools/ci/requirements-ci.txt
           ansible-galaxy collection install --requirements-file requirements.yml
 
       - name: Permit isolated native user namespaces on hosted validation
@@ -60,7 +65,35 @@ jobs:
         shell: bash
         env:
           CNESDATA_NATIVE_CONTEXT: public-ci
-        run: python -m pytest -q -ra
+        run: >-
+          python -m pytest -q -ra --durations=0 -n 4 --dist loadgroup
+          --junitxml "${RUNNER_TEMP}/ci-report/junit.xml"
+          -p tools.ci.pytest_ci --ci-report-dir "${RUNNER_TEMP}/ci-report"
+          --ci-quarantine exclude
+
+      - name: Run quarantined tests (non-blocking)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          CNESDATA_NATIVE_CONTEXT: public-ci
+        run: |
+          status=0
+          python -m pytest -q -ra -p tools.ci.pytest_ci --ci-quarantine only \
+            --ci-report-dir "${RUNNER_TEMP}/ci-quarantine" || status=$?
+          if [ "${status}" -eq 5 ]; then status=0; fi
+          exit "${status}"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-report-validate
+          path: |
+            ${{ runner.temp }}/ci-report
+            ${{ runner.temp }}/ci-quarantine
+          if-no-files-found: warn
+          overwrite: true
 
       - name: Validate repository scaffolds
         shell: bash
