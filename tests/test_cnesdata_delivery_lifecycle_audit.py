@@ -214,7 +214,8 @@ def test_replay_p2_deriva_chamadas_iguais_ao_caminho_legado_e_satisfaz_a_ligacao
     for stage, extra in (("before", {}), ("after", {"state": state})):
         legacy = chain.gov["readbacks"][stage]
         calls = lr.readback_calls(plan, [item | {"absent": False} for item in legacy], stage, **extra)
-        assert len(calls) > 20 and len(matrix[stage]) > 100
+        required = drift_catalog.PHASE_A_ENVELOPE.required(plan, c.stage_expectation(plan, stage, extra.get("state")))
+        assert len(calls) == len({address for address, _ in required}) > 15 and len(matrix[stage]) == len(required) > 50
         assert [{k: v for k, v in call.items() if k != "absent"} for call in calls] == \
             drift_catalog.readback_calls(plan, legacy, stage, extra.get("state"))
         assert all("parameters" not in item for item in legacy)
@@ -222,7 +223,7 @@ def test_replay_p2_deriva_chamadas_iguais_ao_caminho_legado_e_satisfaz_a_ligacao
                     "observed": copy.deepcopy(chain.responses[stage][call["operation"], __import__("json").dumps(
                         call["parameters"], sort_keys=True)])} for call in calls]
         c.drift_coverage(plan, reports, matrix, matrix["source_sha"], matrix["purpose"], stage, extra.get("state"),
-                         specs=calls)
+                         specs=calls, envelope=drift_catalog.PHASE_A_ENVELOPE)
 
 
 STEPS = {"a-plan": {"role": "plan"}, "a-deploy": {"role": "deploy"}, "a-audit": {"role": "audit"}}
