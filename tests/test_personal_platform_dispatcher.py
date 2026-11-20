@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from fixtures.cnesdata_cost import SOURCE_MANIFEST_SHA256
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -533,6 +534,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
             "cost": dict(cost),
             "checkpoint": stage,
             "manifest_sha256": cost["manifest_sha256"],
+            "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
         },
     }
     cost["evidence_sha256"] = g.sha(g.canonical(measured))
@@ -541,6 +543,7 @@ def authenticated_fixture(tmp_path, monkeypatch):
         "stage": stage,
         "evidence": measured,
         "manifest": financial,
+        "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
     }
     gov["runtime_contract_sha256"] = g.sha(
         Path(g.__file__).with_name("contract.py").read_bytes()
