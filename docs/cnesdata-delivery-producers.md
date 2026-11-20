@@ -24,7 +24,7 @@ Decisoes (justificativas nas secoes; alternativas e decisoes: infra-ansible#55 c
 **Achados B11, S48, conta, pin e listas de arquivos (v2):**
 - **B11, cobertura inviavel.** `ct:136-186` exige uma linha por atributo de todo recurso `managed`, inclusive `no-op`. `_readbacks` so aceita 6 servicos e 12 operacoes (`rt:147-150`); `drift_coverage` so aceita `identity` e `json` (`ct:181`). Contagens do v1 (47 tipos, 1773 pares, 753 pares tipo-atributo) **nao foram re-medidas**: o state do p2 nao foi localizado na revisao; so a ordem de grandeza importa e P21 recontar.
 - **B11 bloqueia o primeiro execute do application:** o lifecycle chama o mesmo `drift_coverage` com allowlist mais estreita (`LR:906-909`, chamadas `LR:1364`, `LR:1380`). O mecanismo do envelope do lifecycle entra em P06; as entradas de catalogo dos seus tipos tem PR proprio (P12).
-- **S48, teto do secret.** Codigo aceita 65 536 B (`rt:25`; 262 144 em `LR:86`); GitHub documenta 48 KB por secret (nao verificavel offline). Medido: o manifesto de custo do CD tem 17 972 B mas nao e carregado na governanca; o derivado do gate tem um componente por linha do CD (34 linhas x ~110 B + ~250 B = ~3,8 KB; cota dura 64 componentes = ~7,3 KB). Documento do plan sem matriz: ~30 KB esperado, ~37 KB na cota (§2.4). Sonda O2 continua exigida. O `source_closure` do lifecycle soma 6 824 B medidos (59 arquivos, `LR:688,1282`).
+- **S48, teto do secret.** Codigo aceita 65 536 B (`rt:25`; 262 144 em `LR:86`); teto medido na sonda O2 (2026-11-20, repositorio descartavel, secret de environment, valores aleatorios, sem AWS): 47 952 B de texto claro (48 000 B cifrados, com 48 B de overhead do sealed box); 47 953 B recusado com HTTP 422. O teto efetivo e o do GitHub, nao o do codigo. Medido: o manifesto de custo do CD tem 17 972 B mas nao e carregado na governanca; o derivado do gate tem um componente por linha do CD (34 linhas x ~110 B + ~250 B = ~3,8 KB; cota dura 64 componentes = ~7,3 KB). Documento do plan sem matriz: ~30 KB esperado, ~37 KB na cota (§2.4). Sonda O2 continua exigida. O `source_closure` do lifecycle soma 6 824 B medidos (59 arquivos, `LR:688,1282`).
 - **Conta e hashes de baixa entropia (G6).** `so:291-304` publica `account_id` em claro; `role_arn_sha256`, `policy_arn_sha256`, `document_sha256`, `repository_sha256` (`aws_boundary.py:181` inclui `registryId`) e `bucket_sha256` sao enumeraveis (so a conta e desconhecida).
 - **Fixacao do `job_workflow_ref`.** So e pinado a sha quando o job roda num reusable chamado por `uses: ...@<sha>` (`oidc.tf:79`). Workflow top-level carrega o ref git.
 - **Listas de arquivos (v2).** Todo modulo novo de `tools/cnesdata_delivery` que o gate importe entra em cinco lugares: `files` dos reusables plan (`reusable-cnesdata-infra-plan-gate.yml:114-118`, `:189-193`) e deploy (idem), o reusable do application, e `APPLICATION_PYBOOT` (`LC:599-603`; closure `LC:604-618`). Guarda existente so compara o reusable do application com `APPLICATION_PYBOOT` (`tests/test_cnesdata_application_closure.py:60-63`); as listas plan/deploy nao tem guarda (RED novo em P07).
@@ -69,7 +69,7 @@ Observações de contrato que o implementador não pode perder:
 
 Linha fechada `{address, attribute, readback, path, encoding}` compacta: 165 a 206 B (auditoria PR #82; amostra 168 B).
 
-| Cenário | Linhas por estágio | Dois estágios | Cabe em 48 KB? |
+| Cenário | Linhas por estágio | Dois estágios | Cabe em 47 952 B? |
 |---|---|---|---|
 | Todos os atributos (1773 pares) | 1773 | 3546 x ~180 B = ~640 KB | não (13x) |
 | Sem a classe 4 (122 pares só-state) | 1651 | ~594 KB | não |
@@ -130,13 +130,13 @@ Regras de sanitizacao (o observador falha fechado, e o gate repete `c.public_saf
 | `product_inputs` + `phase_a_inputs` | ~3 300 | `inputs.tfvars.json` do p2 2 157 B (nao re-medido) + 1 KB |
 | `toolchain` + `backend` + `dependencies` | ~2 000 | |
 | `release`, `phase_input_objects`, `roles`, `gate_shas`, `proof_producers`, `caller_allowlist`, `required_checks`, `admission_reference`, `drift_handoff`, `report_hmac_key`, chaves fixas | ~4 200 | |
-| **Total** | **~32 800 esperado; ~36 300 na cota** | sob 48 KB; sonda O2 continua |
+| **Total** | **~32 800 esperado; ~36 300 na cota** | cabe sob 47 952 B, com ~11,6 KB de margem na cota |
 
 Decisao (v2): **G3 nao hidrata `cost_manifest`**. `phase_a_graph` e pins ficam inline.
 
 **Documentos do lifecycle e documento 3 (application), nao medidos no v1 (v2):** todo documento de plan/deploy do lifecycle carrega `governance["source_closure"]` (arvore `infra/opentofu`, `LR:688,1117,1282`): 59 arquivos, 6 824 B canonicos (medido em CD `258e55c5`). O documento 3 soma ainda `application_fragment`, `application_configuration`, `lifecycle_predecessor`, o pin do role `application` e a referencia do manifesto de produto (D6, ~350 B; o manifesto de ~304 KB sai da governanca). O teto de codigo 262 144 nao vale sob 48 KB.
 
-**Aceite do PR P01a (esta spec, so texto):** sonda de 47 KB e 49 KB (O2). **(v3)** As medicoes saem do P01a e vao para o **P21**, porque precisam do `cost_ledger`, do derivador de `phase_a_graph` e dos documentos de sessao renderizados, entregas do P18 (P01 precede P18). Aceite do P21: (b) tamanho do documento 1 medido com o manifesto derivado real, o `phase_a_graph` do `plan.json` do p2 (§5.3) e os documentos de sessao renderizados; (c) tamanho do documento de plan/deploy do lifecycle e do documento 3 medidos (inclui `source_closure`); (d) "G3b adicional sim/nao" registrado. P20 depende de P21: fechado **antes** de X*, porque um G3b tardio forca novo X*.
+**Aceite do PR P01a (esta spec, so texto):** sonda O2 feita em 2026-11-20 (teto 47 952 B; ver S48). **(v3)** As medicoes saem do P01a e vao para o **P21**, porque precisam do `cost_ledger`, do derivador de `phase_a_graph` e dos documentos de sessao renderizados, entregas do P18 (P01 precede P18). Aceite do P21: (b) tamanho do documento 1 medido com o manifesto derivado real, o `phase_a_graph` do `plan.json` do p2 (§5.3) e os documentos de sessao renderizados; (c) tamanho do documento de plan/deploy do lifecycle e do documento 3 medidos (inclui `source_closure`); (d) "G3b adicional sim/nao" registrado. P20 depende de P21: fechado **antes** de X*, porque um G3b tardio forca novo X*.
 
 ### 2.5 Testes RED (novo arquivo `tests/test_cnesdata_delivery_drift_handoff.py`, fixtures em `tests/fixtures/cnesdata_delivery_chain.py`)
 
@@ -424,7 +424,7 @@ Revisão:
 2. P-B: run `verify-production` verde em `S`. Candidato cortado. P-C: `phase-a-prepare` aprovado (1 revisor), três objetos privados gravados.
 3. P-D: compromissos publicados. Dono entrega os três digests do CloudFront (O6).
 4. Ensaio local do P-A (modo local) com a release sintética e o plano de ensaio (o `plan.json` de ensaio sobe para `phase-inputs/`, §4.3 item 5): gera `drift-handoff`, `phase_a_graph`, roda os validadores do gate (`validate_delta`, `scheduler_preflight`, `drift_coverage`, resolver IAM).
-5. Leitura do objeto do lease (ausente ou liberado com recibo que ainda autentica) e runbook de recuperação do lease aprovado. **(v3, P32)** O runbook, a custodia e rotacao da `report_hmac_key` com o CLI do dono (§3.6) e o checklist de drills (DR1 R21, DR2 R24, DR3, sonda O2, presenca dos revisores R22, ordem de `predecessor_read` e escrita 3 na janela de ~24 h) sao entregaveis do **P32** (IA, docs, fora do closure, depende de P18; mergeado antes da janela, nao antes de X*).
+5. Leitura do objeto do lease (ausente ou liberado com recibo que ainda autentica) e runbook de recuperação do lease aprovado. **(v3, P32)** O runbook, a custodia e rotacao da `report_hmac_key` com o CLI do dono (§3.6) e o checklist de drills (DR1 R21, DR2 R24, DR3, presenca dos revisores R22, ordem de `predecessor_read` e escrita 3 na janela de ~24 h) sao entregaveis do **P32** (IA, docs, fora do closure, depende de P18; mergeado antes da janela, nao antes de X*).
 
 ### 6.1 Sequência com orçamento
 
@@ -454,7 +454,7 @@ Falha pós-acquire: lease preso, runbook da fase IV. Reduções desta spec: tudo
 
 ## 7. Divisao em PRs e pins (v2)
 
-A ordem unica dos dois documentos (IDs P01a..P33, dependencias, dono de cada bump de pin, PRs que mudam closure ou fixtures) esta em **comentario 7038419407 §3**. Mapa deste documento: PR1 -> P01a (so texto e sonda O2; medicao de tamanho em P21); PR2 (G4) -> P05; PR4 (G5) -> **P06, antes do G3** (o handoff valida `catalog_sha256`; achado de ordem do review); PR3 (G3) -> P07; PR5 (G6) -> P08; PR6 (produtores + derivador de custo) -> P18; PR7 (calibracao) -> P21; PR8 (raiz de entrega) -> P22; PR9 (P-B) -> P23; PR10 (P-C) -> P24; PR11 (pins) -> P31 (dono unico, junto de B PR-C5). Novos: P03 (desrastrear `spike_fb_driver`, D2), P04 (linha `kms_signing` e linhas nulas do manifesto de custo do CD, D3), P12 (catalogo do lifecycle), P32 (runbooks e checklist de drills, docs).
+A ordem unica dos dois documentos (IDs P01a..P33, dependencias, dono de cada bump de pin, PRs que mudam closure ou fixtures) esta em **comentario 7038419407 §3**. Mapa deste documento: PR1 -> P01a (so texto; sonda O2 ja feita; medicao de tamanho em P21); PR2 (G4) -> P05; PR4 (G5) -> **P06, antes do G3** (o handoff valida `catalog_sha256`; achado de ordem do review); PR3 (G3) -> P07; PR5 (G6) -> P08; PR6 (produtores + derivador de custo) -> P18; PR7 (calibracao) -> P21; PR8 (raiz de entrega) -> P22; PR9 (P-B) -> P23; PR10 (P-C) -> P24; PR11 (pins) -> P31 (dono unico, junto de B PR-C5). Novos: P03 (desrastrear `spike_fb_driver`, D2), P04 (linha `kms_signing` e linhas nulas do manifesto de custo do CD, D3), P12 (catalogo do lifecycle), P32 (runbooks e checklist de drills, docs).
 
 ### 7.1 Pin X* e caminho critico (v2)
 
@@ -483,7 +483,7 @@ A igualdade `HOST_GATE_SHA == PRODUCER` de `tests/production/delivery/test_trilh
 Decididas pelo codigo: o infra-ansible hospeda P-A (§4.1); o carrier e o `drift` (§2.2); a closure e o `content_sha256` (§5.1); o observador so le; os tres checks da Phase A sao medidos no P-A. **Decididas pelo dono (instrucao fixa):** O1 = envelope minimo (§3.5); nenhum hash simples de baixa entropia nem nome de bucket em evidencia publica.
 
 1. ~~O1~~ decidida.
-2. **O2, teto do secret.** Sondar em repositorio descartavel secret de 47 KB e 49 KB no formato do R24. Codigo aceita 65 536 B (262 144 no lifecycle); teto documentado do GitHub 48 KB.
+2. **O2, teto do secret (feita, 2026-11-20).** Sonda em repositorio descartavel, secret de environment: 47 000 B aceito; 48 000 B e 48 001 B recusados (HTTP 422); busca binaria: maior aceito 47 952 B, menor recusado 47 953 B (47 952 + 48 B de overhead = 48 000 B cifrados). Entrega a 47 952 B: o job com o environment recebeu 47 952 B com sha256 igual; o job sem o environment recebeu 0. Codigo aceita 65 536 B (262 144 no lifecycle); o teto efetivo e 47 952 B.
 3. ~~O3~~ removida: a conta nao e publicada (G6).
 4. **O4, nomes e enderecos.** Aceitar enderecos de modulo no artefato `drift` (nomes de recurso e bucket nao entram, §2.3).
 5. **O5, environment `cnesdata-observer`** (regra de branch so `main`, escrita de configuracao do GitHub que exige aprovacao do dono na janela, e o secret `report_hmac_key`, O14).
