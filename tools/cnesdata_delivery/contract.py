@@ -173,7 +173,7 @@ def _bind(spec, report, row):
 
 
 STRICT_ENCODINGS = {"identity", "json"}
-ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions"}
+ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions", "scheduler-target"}
 EMPTY = (None, [], {})
 
 
@@ -220,7 +220,102 @@ def _containers(value):
     return containers
 
 
+TARGET_TOP = (("arn", "Arn"), ("role_arn", "RoleArn"), ("input", "Input"))
+TARGET_ECS = (("task_definition_arn", "TaskDefinitionArn"), ("task_count", "TaskCount"),
+              ("launch_type", "LaunchType"), ("platform_version", "PlatformVersion"), ("group", "Group"),
+              ("reference_id", "ReferenceId"), ("enable_ecs_managed_tags", "EnableECSManagedTags"),
+              ("enable_execute_command", "EnableExecuteCommand"), ("propagate_tags", "PropagateTags"))
+TARGET_RETRY = (("maximum_event_age_in_seconds", "MaximumEventAgeInSeconds"),
+                ("maximum_retry_attempts", "MaximumRetryAttempts"))
+TARGET_SETS = {"capacity_provider_strategy": ("CapacityProviderStrategy", (
+    ("base", "base"), ("capacity_provider", "capacityProvider"), ("weight", "weight"))),
+    "placement_constraints": ("PlacementConstraints", (("expression", "expression"), ("type", "type"))),
+    "placement_strategy": ("PlacementStrategy", (("field", "field"), ("type", "type")))}
+
+
+def _one(value):
+    require(value in (None, []) or (type(value) is list and len(value) == 1), "drift target projection")
+    return value[0] if value else None
+
+
+def _target_pick(source, pairs, side, allowed):
+    source = {} if source is None else source
+    require(type(source) is dict and set(source) <= allowed, "drift target projection")
+    return {pair[0]: source[pair[side]] for pair in pairs if source.get(pair[side]) not in EMPTY}
+
+
+def _target_sets(source, side):
+    result = {}
+    for key, (api, pairs) in TARGET_SETS.items():
+        items = source.get(key if side == 0 else api) or []
+        require(type(items) is list, "drift target projection")
+        names = {pair[side] for pair in pairs}
+        rows = [_target_pick(item, pairs, side, names) for item in items]
+        result[key] = sorted(canonical(row).decode() for row in rows)
+    return result
+
+
+def _target_network(source, side):
+    if side == 0:
+        block = _one(source.get("network_configuration"))
+        block = {} if block is None else block
+        public = block.get("assign_public_ip")
+        keys = {"assign_public_ip", "security_groups", "subnets"}
+        require(set(block) <= keys, "drift target projection")
+        data = {"security_groups": block.get("security_groups"), "subnets": block.get("subnets"),
+                "assign_public_ip": None if public is None else "ENABLED" if public else "DISABLED"}
+    else:
+        outer = source.get("NetworkConfiguration") or {}
+        require(set(outer) <= {"awsvpcConfiguration"}, "drift target projection")
+        block = outer.get("awsvpcConfiguration") or {}
+        require(set(block) <= {"AssignPublicIp", "SecurityGroups", "Subnets"}, "drift target projection")
+        data = {"security_groups": block.get("SecurityGroups"), "subnets": block.get("Subnets"),
+                "assign_public_ip": block.get("AssignPublicIp")}
+    return {key: sorted(item) if type(item) is list else item for key, item in data.items() if item not in EMPTY}
+
+
+def _target_tags(source, side):
+    tags = source.get("tags" if side == 0 else "Tags")
+    if side == 1 and tags:
+        require(type(tags) is list and all(type(item) is dict for item in tags), "drift target projection")
+        tags = {key: item[key] for item in tags for key in item}
+    return tags or {}
+
+
+def _target_keys(side):
+    if side == 0:
+        return ({"arn", "role_arn", "input", "dead_letter_config", "ecs_parameters", "retry_policy"},
+                {pair[0] for pair in TARGET_ECS} | {"tags", "network_configuration"} | set(TARGET_SETS))
+    return ({"Arn", "RoleArn", "Input", "DeadLetterConfig", "EcsParameters", "RetryPolicy"},
+            {pair[1] for pair in TARGET_ECS} | {"Tags", "NetworkConfiguration"}
+            | {api for api, _ in TARGET_SETS.values()})
+
+
+def _target(source, side):
+    top, ecs_keys = _target_keys(side)
+    require(type(source) is dict and all(key in top or source[key] in EMPTY for key in source),
+            "drift target projection")
+    pick = lambda value, pairs: _target_pick(value, pairs, side, {pair[side] for pair in pairs})
+    shape = (lambda name, api: _one(source.get(name))) if side == 0 else (lambda name, api: source.get(api))
+    ecs = shape("ecs_parameters", "EcsParameters") or {}
+    require(type(ecs) is dict and all(key in ecs_keys or ecs[key] in EMPTY for key in ecs),
+            "drift target projection")
+    dead = pick(shape("dead_letter_config", "DeadLetterConfig"), (("arn", "Arn"),))
+    return _compact({
+        **_target_pick(source, TARGET_TOP, side, top),
+        "dead_letter_arn": dead.get("arn"),
+        "retry": pick(shape("retry_policy", "RetryPolicy"), TARGET_RETRY),
+        "ecs": {**_target_pick(ecs, TARGET_ECS, side, ecs_keys), **_target_sets(ecs, side), "network": _target_network(ecs, side),
+                "tags": _target_tags(ecs, side)}})
+
+
+def _scheduler_target(value, observed):
+    return _target(_one(value) or {}, 0), _target(observed, 1)
+
+
 def _encoded(encoding, value, observed):
+    if encoding == "scheduler-target":
+        return _scheduler_target(value, observed)
     if encoding == "json":
         return _json(value), _json(observed)
     if encoding == "tags-kv":

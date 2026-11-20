@@ -1101,6 +1101,9 @@ def _dates(value):
     from datetime import datetime
     if type(value) is datetime:
         return c.utc(value.timestamp())
+    if type(value) is float:
+        from decimal import Decimal
+        return Decimal(repr(value))
     if type(value) is dict:
         return {k: _dates(v) for k, v in value.items()}
     if type(value) is list:

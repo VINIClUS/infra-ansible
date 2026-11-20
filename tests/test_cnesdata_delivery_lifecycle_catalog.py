@@ -162,7 +162,9 @@ def test_catalogo_do_lifecycle_igual_ao_inventario():
         classified = set(mapa.CATALOG[tipo]) | set(mapa.NOT_OBSERVABLE[tipo])
         assert classified == set(found[tipo]), (tipo, sorted(classified ^ set(found[tipo])))
         assert not set(mapa.CATALOG[tipo]) & set(mapa.NOT_OBSERVABLE[tipo]), tipo
-        assert tipo in mapa.IDENTITY and mapa._operation(tipo)[1] in mapa.READ_ONLY[mapa._operation(tipo)[0]]
+        service, operation = mapa._operation(tipo)
+        assert tipo in mapa.IDENTITY | mapa.LIFECYCLE_IDENTITY
+        assert operation in mapa.LIFECYCLE_READ_ONLY.get(service, set()) | mapa.READ_ONLY.get(service, set())
 
 
 def test_catalogo_do_alarme_liga_o_indice_inteiro_da_lista_de_alarmes():
@@ -368,3 +370,140 @@ def test_catalog_sha256_continua_computado_do_documento_com_o_envelope_do_lifecy
     mapa, c = catalog(), contract()
     assert mapa.CATALOG_SHA256 == c.sha(c.canonical(mapa.catalog_document()))
     assert "lifecycle" in mapa.catalog_document()["envelopes"]
+
+
+OBSERVED_SCALARS = {
+    "aws_cloudwatch_metric_alarm": {
+        "threshold": "Threshold", "period": "Period", "metric_name": "MetricName", "namespace": "Namespace",
+        "statistic": "Statistic", "treat_missing_data": "TreatMissingData", "comparison_operator": "ComparisonOperator",
+        "evaluation_periods": "EvaluationPeriods"},
+    "aws_cloudwatch_event_rule": {"description": "Description"},
+    "aws_scheduler_schedule": {"description": "Description", "target": "Target"},
+}
+
+
+@pytest.mark.parametrize("tipo,name,field", [(t, n, f) for t, rows in OBSERVED_SCALARS.items()
+                                             for n, f in rows.items()])
+def test_atributo_que_o_lifecycle_altera_e_observado_e_nao_isento(tipo, name, field):
+    mapa = catalog()
+    assert name in mapa.CATALOG[tipo] and name not in mapa.NOT_OBSERVABLE[tipo]
+    assert mapa.CATALOG[tipo][name][2][-1] == field
+
+
+def test_isencao_so_guarda_atributo_de_state_ou_bloco_sem_codificacao():
+    mapa = catalog()
+    scalars = {"threshold", "period", "metric_name", "namespace", "statistic", "treat_missing_data", "description"}
+    for tipo in LIFECYCLE_TYPES:
+        assert not scalars & set(mapa.NOT_OBSERVABLE[tipo]), tipo
+
+
+ALARM = "module.schedulers.aws_cloudwatch_metric_alarm.lost_invocation[\"recovery\"]"
+
+
+def alarm_coverage(threshold_state, threshold_live):
+    from decimal import Decimal
+    attributes = {"alarm_name": "synthetic-recovery", "threshold": threshold_state}
+    plan_ = plan(change(ALARM, attributes, attributes))
+    live = runtime()._dates({"MetricAlarms": [{"AlarmName": "synthetic-recovery", "Threshold": threshold_live}],
+                             "CompositeAlarms": []})
+    call = spec("cloudwatch", "describe_alarms", ALARM, parameters={"AlarmNames": ["synthetic-recovery"]})
+    rows = [{"address": ALARM, "attribute": name, "readback": 0, "path": ["MetricAlarms", 0, field],
+             "encoding": "identity"} for name, field in (("alarm_name", "AlarmName"), ("threshold", "Threshold"))]
+    matrix = {"matrix_version": 2, "source_sha": SOURCE, "purpose": "phase-b", "before": rows, "after": [],
+              "absent": []}
+    report = {"service": "cloudwatch", "operation": "describe_alarms", "observed": live}
+    assert Decimal
+    return contract().drift_coverage(plan_, [report], matrix, SOURCE, "phase-b", "before", specs=[call],
+                                     envelope=envelope())
+
+
+def test_limiar_do_alarme_com_float_da_aws_confere_com_o_state():
+    from decimal import Decimal
+    assert alarm_coverage(Decimal("1"), 1.0) is None
+    assert alarm_coverage(Decimal("2.5"), 2.5) is None
+
+
+def test_recusa_limiar_do_alarme_que_divergiu_ao_vivo():
+    from decimal import Decimal
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        alarm_coverage(Decimal("1"), 5.0)
+
+
+SCHEDULE = "module.schedulers.aws_scheduler_schedule.mode[\"recovery\"]"
+
+
+def state_target(task="synthetic-task:1", **extra):
+    ecs = {"task_definition_arn": task, "task_count": 1, "launch_type": "FARGATE",
+           "network_configuration": [{"assign_public_ip": False, "subnets": ["s-b", "s-a"],
+                                      "security_groups": ["sg-1"]}]} | extra
+    return [{"arn": "synthetic-cluster", "role_arn": "synthetic-role", "input": "{}",
+             "retry_policy": [{"maximum_event_age_in_seconds": 3600, "maximum_retry_attempts": 2}],
+             "ecs_parameters": [ecs]}]
+
+
+def live_target(task="synthetic-task:1"):
+    return {"Arn": "synthetic-cluster", "RoleArn": "synthetic-role", "Input": "{}",
+            "RetryPolicy": {"MaximumEventAgeInSeconds": 3600, "MaximumRetryAttempts": 2},
+            "EcsParameters": {"TaskDefinitionArn": task, "TaskCount": 1, "LaunchType": "FARGATE",
+                              "NetworkConfiguration": {"awsvpcConfiguration": {
+                                  "AssignPublicIp": "DISABLED", "Subnets": ["s-a", "s-b"],
+                                  "SecurityGroups": ["sg-1"]}}}}
+
+
+def target_coverage(state, live):
+    attributes = {"name": "synthetic-recovery", "group_name": "synthetic-recovery", "target": state}
+    plan_ = plan(change(SCHEDULE, attributes, attributes))
+    call = spec("scheduler", "get_schedule", SCHEDULE,
+                parameters={"Name": "synthetic-recovery", "GroupName": "synthetic-recovery"})
+    observed = {"Name": "synthetic-recovery", "GroupName": "synthetic-recovery", "Target": live}
+    entries = {"name": ["Name"], "group_name": ["GroupName"], "target": ["Target"]}
+    rows = [{"address": SCHEDULE, "attribute": name, "readback": 0, "path": path,
+             "encoding": "scheduler-target" if name == "target" else "identity"} for name, path in entries.items()]
+    matrix = {"matrix_version": 2, "source_sha": SOURCE, "purpose": "phase-c-recovery", "before": rows,
+              "after": [], "absent": []}
+    report = {"service": "scheduler", "operation": "get_schedule", "observed": observed}
+    return contract().drift_coverage(plan_, [report], matrix, SOURCE, "phase-c-recovery", "before",
+                                     specs=[call], envelope=envelope())
+
+
+def test_target_do_schedule_confere_com_projecao_fechada_e_canonica():
+    assert target_coverage(state_target(), live_target()) is None
+
+
+@pytest.mark.parametrize("mutation", ["task", "role", "subnet", "retry", "bloco-desconhecido"])
+def test_recusa_target_do_schedule_que_divergiu_ou_tem_bloco_fora_da_projecao(mutation):
+    state, live = state_target(), live_target()
+    if mutation == "task":
+        live = live_target("synthetic-task:2")
+    if mutation == "role":
+        live["RoleArn"] = "other-role"
+    if mutation == "subnet":
+        live["EcsParameters"]["NetworkConfiguration"]["awsvpcConfiguration"]["Subnets"] = ["s-a"]
+    if mutation == "retry":
+        live["RetryPolicy"]["MaximumRetryAttempts"] = 9
+    if mutation == "bloco-desconhecido":
+        live["SqsParameters"] = {"MessageGroupId": "g"}
+    with pytest.raises(ValueError, match="saved-plan live functional drift|drift target projection"):
+        target_coverage(state, live)
+
+
+def test_target_do_state_com_bloco_fora_da_projecao_e_recusado():
+    state = state_target()
+    state[0]["sqs_parameters"] = [{"message_group_id": "g"}]
+    with pytest.raises(ValueError, match="drift target projection"):
+        target_coverage(state, live_target())
+
+
+def test_fase_a_continua_recusando_leitura_de_lifecycle_na_admissao():
+    mapa = catalog()
+    machine = contrato().STATE_MACHINE
+    attributes = {"arn": MACHINE_ARN}
+    plan_ = plan(change(machine, attributes, attributes, ("no-op",)))
+    read_spec = {"service": "stepfunctions", "operation": "describe_state_machine", "address": machine}
+    matrix = {"matrix_version": 2, "source_sha": SOURCE, "purpose": "phase-a", "before": [], "after": [],
+              "absent": []}
+    with pytest.raises(ValueError, match="read-only API boundary"):
+        mapa.admit_stages(plan_, {"before": [read_spec], "after": [read_spec]}, matrix, [])
+    assert "stepfunctions" not in mapa.READ_ONLY and "aws_sfn_state_machine" not in mapa.IDENTITY
+    with pytest.raises(ValueError, match="read-only API boundary"):
+        mapa.require_read_only("cloudwatch", "describe_alarms")

@@ -15,6 +15,8 @@ IDENTITY = {
     "aws_s3_bucket_object_lock_configuration": (("bucket", "Bucket"),),
     "aws_scheduler_schedule": (("name", "Name"), ("group_name", "GroupName")),
     "aws_acm_certificate": (("arn", "CertificateArn"),),
+}
+LIFECYCLE_IDENTITY = {
     "aws_sfn_state_machine": (("arn", "stateMachineArn"),),
     "aws_scheduler_schedule_group": (("name", "Name"),),
     "aws_cloudwatch_event_rule": (("name", "Name"),),
@@ -22,15 +24,17 @@ IDENTITY = {
     "aws_s3_bucket_lifecycle_configuration": (("bucket", "Bucket"),),
     "aws_cloudfront_response_headers_policy": (("id", "Id"),),
 }
+LIFECYCLE_ONLY = IDENTITY | LIFECYCLE_IDENTITY
 FENCE_READS = {"module.runtime_iam.aws_iam_role.promotion_fence_operator[0]": "get_role",
                "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]": "get_role_policy"}
 READ_ONLY = {"iam": {"get_role", "get_role_policy", "get_policy", "get_policy_version"},
-             "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule", "get_schedule_group"},
-             "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration",
-                    "get_bucket_lifecycle_configuration"},
-             "dynamodb": {"describe_table"}, "acm": {"describe_certificate"},
-             "stepfunctions": {"describe_state_machine"}, "events": {"describe_rule"},
-             "cloudwatch": {"describe_alarms"}, "cloudfront": {"get_response_headers_policy"}}
+             "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule"},
+             "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
+             "dynamodb": {"describe_table"}, "acm": {"describe_certificate"}}
+LIFECYCLE_READ_ONLY = {"stepfunctions": {"describe_state_machine"}, "scheduler": {"get_schedule_group"},
+                       "events": {"describe_rule"}, "cloudwatch": {"describe_alarms"},
+                       "cloudfront": {"get_response_headers_policy"},
+                       "s3": {"get_bucket_lifecycle_configuration"}}
 LIST_PARAMETERS = {"clusters", "AlarmNames"}
 CREATE_DELETE = {"create", "delete"}
 
@@ -44,15 +48,15 @@ def require_read_only(service, operation):
     c.require(operation in READ_ONLY.get(service, set()), "read-only API boundary")
 
 
-def _identity(tipo):
-    c.require(tipo in IDENTITY, "readback identity type")
-    return IDENTITY[tipo]
+def _identity(tipo, table=IDENTITY):
+    c.require(tipo in table, "readback identity type")
+    return table[tipo]
 
 
-def parameters(tipo, atributos):
-    """Args: tipo, atributos. Returns: call parameters. Raises: ValueError."""
+def parameters(tipo, atributos, table=IDENTITY):
+    """Args: tipo, atributos, identity table. Returns: call parameters. Raises: ValueError."""
     result = {}
-    for attribute, name in _identity(tipo):
+    for attribute, name in _identity(tipo, table):
         value = atributos.get(attribute) if type(atributos) is dict else None
         c.require(type(value) is str and bool(value), "readback identity value")
         result[name] = [value] if name in LIST_PARAMETERS else value
@@ -97,11 +101,11 @@ def _planned(change, tipo):
         _usable(before, attribute)
 
 
-def _stable(change, tipo):
+def _stable(change, tipo, table=IDENTITY):
     before, after = change.get("before"), change.get("after")
     if before is None or after is None or CREATE_DELETE & set(change["actions"]):
         return
-    for attribute, _ in _identity(tipo):
+    for attribute, _ in _identity(tipo, table):
         c.require(before.get(attribute) == after.get(attribute), "readback identity changed")
 
 
@@ -151,11 +155,11 @@ def bind_rows(calls, rows):
     c.require(used == set(range(len(calls))), "orphan readback")
 
 
-def absence(plan, address, observed):
-    """Args: plan, address, observed parameters. Returns: parameters equal to the plan before."""
+def absence(plan, address, observed, table=IDENTITY):
+    """Args: plan, address, observed parameters, identity table. Returns: parameters equal to the plan before."""
     change = _changes(plan).get(address)
     c.require(change is not None and change.get("before") is not None, "absence identity")
-    derived = parameters(resource_type(address), change["before"])
+    derived = parameters(resource_type(address), change["before"], table)
     c.require(observed == derived, "absence identity")
     return derived
 
@@ -225,27 +229,45 @@ CATALOG = {
         "object_lock_enabled": ("ObjectLockConfiguration.ObjectLockEnabled", "identity")}),
     "aws_sfn_state_machine": _read("stepfunctions", "describe_state_machine", {
         "arn": ("stateMachineArn", "identity"), "definition": ("definition", "json"),
-        "id": ("stateMachineArn", "identity"), "name": ("name", "identity"), "role_arn": ("roleArn", "identity"),
+        "description": ("description", "identity"), "id": ("stateMachineArn", "identity"),
+        "name": ("name", "identity"), "role_arn": ("roleArn", "identity"),
         "status": ("status", "identity"), "type": ("type", "identity")}),
     "aws_scheduler_schedule": _read("scheduler", "get_schedule", {
-        "arn": ("Arn", "identity"), "group_name": ("GroupName", "identity"), "name": ("Name", "identity"),
-        "schedule_expression": ("ScheduleExpression", "identity"), "state": ("State", "identity")}),
+        "action_after_completion": ("ActionAfterCompletion", "identity"), "arn": ("Arn", "identity"),
+        "description": ("Description", "identity"), "group_name": ("GroupName", "identity"),
+        "kms_key_arn": ("KmsKeyArn", "identity"), "name": ("Name", "identity"),
+        "schedule_expression": ("ScheduleExpression", "identity"),
+        "schedule_expression_timezone": ("ScheduleExpressionTimezone", "identity"),
+        "state": ("State", "identity"), "target": ("Target", "scheduler-target")}),
     "aws_scheduler_schedule_group": _read("scheduler", "get_schedule_group", {
         "arn": ("Arn", "identity"), "id": ("Name", "identity"), "name": ("Name", "identity"),
         "state": ("State", "identity")}),
     "aws_cloudwatch_event_rule": _read("events", "describe_rule", {
-        "arn": ("Arn", "identity"), "event_pattern": ("EventPattern", "json"), "id": ("Name", "identity"),
-        "name": ("Name", "identity"), "state": ("State", "identity")}),
+        "arn": ("Arn", "identity"), "description": ("Description", "identity"),
+        "event_bus_name": ("EventBusName", "identity"), "event_pattern": ("EventPattern", "json"),
+        "id": ("Name", "identity"), "name": ("Name", "identity"), "role_arn": ("RoleArn", "identity"),
+        "schedule_expression": ("ScheduleExpression", "identity"), "state": ("State", "identity")}),
     "aws_cloudwatch_metric_alarm": {
         name: ("cloudwatch", "describe_alarms", ("MetricAlarms", 0, field), "identity")
-        for name, field in {"alarm_name": "AlarmName", "arn": "AlarmArn", "comparison_operator": "ComparisonOperator",
-                            "evaluation_periods": "EvaluationPeriods", "id": "AlarmName"}.items()},
+        for name, field in {
+            "actions_enabled": "ActionsEnabled", "alarm_description": "AlarmDescription", "alarm_name": "AlarmName",
+            "arn": "AlarmArn", "comparison_operator": "ComparisonOperator",
+            "datapoints_to_alarm": "DatapointsToAlarm", "evaluation_periods": "EvaluationPeriods",
+            "extended_statistic": "ExtendedStatistic", "id": "AlarmName", "metric_name": "MetricName",
+            "namespace": "Namespace", "period": "Period", "statistic": "Statistic", "threshold": "Threshold",
+            "threshold_metric_id": "ThresholdMetricId", "treat_missing_data": "TreatMissingData",
+            "unit": "Unit"}.items()},
     "aws_s3_bucket_lifecycle_configuration": _read("s3", "get_bucket_lifecycle_configuration", {
         "transition_default_minimum_object_size": ("TransitionDefaultMinimumObjectSize", "identity")}),
     "aws_cloudfront_response_headers_policy": _read("cloudfront", "get_response_headers_policy", {
+        "comment": ("ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Comment", "identity"),
         "etag": ("ETag", "identity"), "id": ("ResponseHeadersPolicy.Id", "identity"),
         "name": ("ResponseHeadersPolicy.ResponseHeadersPolicyConfig.Name", "identity")}),
 }
+CATALOG["aws_cloudwatch_metric_alarm"].update({
+    name: ("cloudwatch", "describe_alarms", ("MetricAlarms", 0, field), "json-set")
+    for name, field in {"alarm_actions": "AlarmActions", "insufficient_data_actions": "InsufficientDataActions",
+                        "ok_actions": "OkActions"}.items()})
 NOT_OBSERVABLE = {
     "aws_iam_role": {"force_detach_policies": "state-only", "inline_policy": "other-api",
                      "managed_policy_arns": "other-api", "name_prefix": "state-only", "tags": "state-only"},
@@ -269,38 +291,30 @@ NOT_OBSERVABLE = {
         "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
         "region": "state-only", "rule": "other-encoding", "token": "state-only"},
     "aws_sfn_state_machine": {
-        "creation_date": "other-encoding", "description": "other-encoding", "encryption_configuration": "other-encoding",
+        "creation_date": "other-encoding", "encryption_configuration": "other-encoding",
         "logging_configuration": "other-encoding", "name_prefix": "state-only", "publish": "state-only",
         "region": "state-only", "revision_id": "other-encoding", "state_machine_version_arn": "state-only",
         "tags": "other-api", "tags_all": "other-api", "timeouts": "state-only",
         "tracing_configuration": "other-encoding", "version_description": "state-only"},
     "aws_scheduler_schedule": {
-        "action_after_completion": "other-encoding", "description": "other-encoding", "end_date": "other-encoding",
-        "flexible_time_window": "other-encoding", "id": "other-encoding", "kms_key_arn": "other-encoding",
-        "name_prefix": "state-only", "region": "state-only", "schedule_expression_timezone": "other-encoding",
-        "start_date": "other-encoding", "target": "other-encoding"},
+        "end_date": "other-encoding", "flexible_time_window": "other-encoding", "id": "other-encoding",
+        "name_prefix": "state-only", "region": "state-only", "start_date": "other-encoding"},
     "aws_scheduler_schedule_group": {
         "creation_date": "other-encoding", "last_modification_date": "other-encoding", "name_prefix": "state-only",
         "region": "state-only", "tags": "other-api", "tags_all": "other-api", "timeouts": "state-only"},
     "aws_cloudwatch_event_rule": {
-        "description": "other-encoding", "event_bus_name": "other-encoding", "force_destroy": "state-only",
-        "is_enabled": "state-only", "name_prefix": "state-only", "region": "state-only", "role_arn": "other-encoding",
-        "schedule_expression": "other-encoding", "tags": "other-api", "tags_all": "other-api"},
+        "force_destroy": "state-only", "is_enabled": "state-only", "name_prefix": "state-only",
+        "region": "state-only", "tags": "other-api", "tags_all": "other-api"},
     "aws_cloudwatch_metric_alarm": {
-        "actions_enabled": "other-encoding", "alarm_actions": "other-encoding", "alarm_description": "other-encoding",
-        "datapoints_to_alarm": "other-encoding", "dimensions": "other-encoding",
+        "dimensions": "other-encoding",
         "evaluate_low_sample_count_percentiles": "other-encoding", "evaluation_criteria": "other-encoding",
-        "evaluation_interval": "other-encoding", "extended_statistic": "other-encoding",
-        "insufficient_data_actions": "other-encoding", "metric_name": "other-encoding",
-        "metric_query": "other-encoding", "namespace": "other-encoding", "ok_actions": "other-encoding",
-        "period": "other-encoding", "region": "state-only", "statistic": "other-encoding", "tags": "other-api",
-        "tags_all": "other-api", "threshold": "other-encoding", "threshold_metric_id": "other-encoding",
-        "treat_missing_data": "other-encoding", "unit": "other-encoding"},
+        "evaluation_interval": "other-encoding", "metric_query": "other-encoding", "region": "state-only",
+        "tags": "other-api", "tags_all": "other-api"},
     "aws_s3_bucket_lifecycle_configuration": {
         "bucket": "request-parameter", "expected_bucket_owner": "state-only", "id": "request-parameter",
         "region": "state-only", "rule": "other-encoding", "timeouts": "state-only"},
     "aws_cloudfront_response_headers_policy": {
-        "arn": "state-only", "comment": "other-encoding", "cors_config": "other-encoding",
+        "arn": "state-only", "cors_config": "other-encoding",
         "custom_headers_config": "other-encoding", "remove_headers_config": "other-encoding",
         "security_headers_config": "other-encoding", "server_timing_headers_config": "other-encoding"},
 }
@@ -314,8 +328,8 @@ def _operation(tipo):
 class Envelope:
     """COVERED and SUPPORTED resource types of one purpose; entries come from CATALOG."""
 
-    def __init__(self, covered, supported):
-        self.covered, self.supported = frozenset(covered), frozenset(supported)
+    def __init__(self, covered, supported, identity=IDENTITY):
+        self.covered, self.supported, self.identity = frozenset(covered), frozenset(supported), identity
         c.require(self.covered <= self.supported and all(CATALOG.get(tipo) for tipo in self.supported),
                   "envelope catalog")
 
@@ -367,7 +381,7 @@ class Envelope:
                       "absent drift proof")
             c.require((specs[index]["service"], specs[index]["operation"]) == _operation(resource_type(address)),
                       "catalog drift row")
-            absence(plan, address, specs[index].get("parameters"))
+            absence(plan, address, specs[index].get("parameters"), self.identity)
             used.add(index)
         c.require(seen == required, "absent drift coverage")
 
@@ -380,7 +394,8 @@ LIFECYCLE_ENVELOPE = Envelope(
     covered={"aws_iam_role", "aws_iam_role_policy"},
     supported={"aws_iam_role", "aws_iam_role_policy", "aws_sfn_state_machine", "aws_scheduler_schedule",
                "aws_scheduler_schedule_group", "aws_cloudwatch_event_rule", "aws_cloudwatch_metric_alarm",
-               "aws_s3_bucket_lifecycle_configuration", "aws_cloudfront_response_headers_policy"})
+               "aws_s3_bucket_lifecycle_configuration", "aws_cloudfront_response_headers_policy"},
+    identity=LIFECYCLE_ONLY)
 ENVELOPES = {"phase-a": PHASE_A_ENVELOPE, "lifecycle": LIFECYCLE_ENVELOPE}
 ABSENT_CODES = {
     ("stepfunctions", "describe_state_machine"): frozenset({"StateMachineDoesNotExist"}),
@@ -433,11 +448,11 @@ def _lifecycle_call(spec, changes, expected):
     tipo = resource_type(spec["address"])
     if spec["absent"]:
         c.require(change["actions"] == ["delete"] and change["before"] is not None, "absence identity")
-        derived = parameters(tipo, change["before"])
+        derived = parameters(tipo, change["before"], LIFECYCLE_ONLY)
     else:
         c.require(spec["address"] in expected, "readback absent before")
-        _stable(change, tipo)
-        derived = parameters(tipo, expected[spec["address"]])
+        _stable(change, tipo, LIFECYCLE_ONLY)
+        derived = parameters(tipo, expected[spec["address"]], LIFECYCLE_ONLY)
     if grouped:
         c.require(tipo == "aws_scheduler_schedule_group", "readback spec fields")
         derived = {"GroupName": derived["Name"]}
@@ -459,7 +474,7 @@ def catalog_document():
                         for tipo, entries in CATALOG.items()},
             "envelopes": {name: {"covered": sorted(envelope.covered), "supported": sorted(envelope.supported)}
                           for name, envelope in ENVELOPES.items()},
-            "identity": {tipo: [list(pair) for pair in pairs] for tipo, pairs in IDENTITY.items()},
+            "identity": {tipo: [list(pair) for pair in pairs] for tipo, pairs in LIFECYCLE_ONLY.items()},
             "not_observable": NOT_OBSERVABLE}
 
 
