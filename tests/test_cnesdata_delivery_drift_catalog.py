@@ -328,3 +328,49 @@ def test_admissao_recusa_spec_extra_do_fence_com_outra_operacao():
     matrix["after"].append(matrix["after"][0] | {"readback": 3})
     with pytest.raises(ValueError, match="fence readback"):
         catalog().admit_stages(plan_, readbacks, matrix, tracked)
+
+
+def admit_one(plan_, one, stage):
+    row = [{"address": one["address"], "attribute": "name", "readback": 0, "path": ["x"], "encoding": "identity"}]
+    readbacks = {"before": [], "after": []} | {stage: [one]}
+    matrix = {"before": [], "after": []} | {stage: row}
+    return catalog().admit_stages(plan_, readbacks, matrix, set())
+
+
+def test_spec_de_after_em_endereco_removido_e_recusada_antes_do_acquire():
+    deleted = role_plan(after=None, actions=("delete",))
+    deleted["resource_changes"][0]["change"]["after"] = None
+    with pytest.raises(ValueError, match="readback absent after"):
+        admit_one(deleted, spec(), "after")
+    assert admit_one(deleted, spec(), "before") is None
+
+
+def test_spec_de_before_em_endereco_criado_e_recusada_antes_do_acquire():
+    created = role_plan(actions=("create",))
+    created["resource_changes"][0]["change"]["before"] = None
+    with pytest.raises(ValueError, match="readback absent before"):
+        admit_one(created, spec(), "before")
+    assert admit_one(created, spec(), "after") is None
+
+
+@pytest.mark.parametrize("value", ["", 7, None, ["fence"]])
+@pytest.mark.parametrize("actions", [("update",), ("create",)])
+def test_identidade_conhecida_do_after_tem_de_ser_str_nao_vazia(actions, value):
+    bad = role_plan(before={"name": value, "tags": {}}, after={"name": value, "tags": {}}, actions=actions)
+    if actions == ("create",):
+        bad["resource_changes"][0]["change"]["before"] = None
+    with pytest.raises(ValueError, match="readback identity"):
+        admit_one(bad, spec(), "after")
+
+
+@pytest.mark.parametrize("value", ["", 7, None, ["fence"]])
+def test_identidade_do_before_tem_de_ser_str_nao_vazia(value):
+    with pytest.raises(ValueError, match="readback identity"):
+        admit_one(role_plan(before={"name": value, "tags": {}}, after={"name": value, "tags": {}}), spec(), "before")
+
+
+def test_relaxacao_de_criacao_nao_vale_para_spec_de_before():
+    replaced = role_plan(before={"tags": {}}, after={"name": "novo", "tags": {}}, actions=("delete", "create"))
+    with pytest.raises(ValueError, match="readback identity"):
+        admit_one(replaced, spec(), "before")
+    assert admit_one(replaced, spec(), "after") is None

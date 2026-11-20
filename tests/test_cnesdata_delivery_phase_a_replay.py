@@ -321,3 +321,32 @@ def test_tipo_fora_do_catalogo_no_after_falha_antes_do_acquire_no_deploy(monkeyp
     with pytest.raises(ValueError, match="identity type"):
         runtime.execute("deploy")
     assert not acquired and not applies(chain)
+
+
+def delete_address(monkeypatch, address):
+    from tools.cnesdata_delivery import drift_catalog
+    original = drift_catalog._changes
+
+    def changes(plan):
+        found = original(plan)
+        found[address] = found[address] | {"actions": ["delete"], "after": None, "after_unknown": {}}
+        return found
+    monkeypatch.setattr(drift_catalog, "_changes", changes)
+
+
+def test_spec_de_after_em_endereco_removido_falha_antes_do_acquire_no_deploy(monkeypatch, tmp_path):
+    from tools.cnesdata_delivery import coordination_lease
+    chain = ReplayChain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    reference = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    victim = next(s["address"] for s in chain.gov["readbacks"]["after"]
+                  if s["operation"] == "get_role" and s["address"] != FENCE_ROLE)
+    delete_address(monkeypatch, victim)
+    chain.configure("deploy", 2, reference)
+    acquired = []
+    original = coordination_lease.Lease.acquire
+    monkeypatch.setattr(coordination_lease.Lease, "acquire", lambda self: acquired.append(1) or original(self))
+    with pytest.raises(ValueError, match="readback absent after"):
+        runtime.execute("deploy")
+    assert not acquired and not applies(chain)
