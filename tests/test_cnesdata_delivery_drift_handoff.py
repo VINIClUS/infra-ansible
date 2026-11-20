@@ -214,8 +214,8 @@ def test_public_safe_recusa_nome_de_bucket_de_governanca_so_com_a_governanca():
     c.public_safe({"campo": "evidence previous synthetic-state-2 evi-x"}, governance)
 
 
-def test_public_safe_com_governanca_exige_chaves_de_bucket():
-    c.public_safe({"campo": "ok"}, {})
+def test_public_safe_com_governanca_completa_aceita_valor_neutro():
+    c.public_safe({"campo": "ok"}, GOVERNANCE)
 
 
 
@@ -271,3 +271,37 @@ def test_recusa_handoff_com_valor_derivado_da_conta_de_governanca(chain, mutatio
         return document
     chain.handoff_edit = edit
     refused(chain, "account-derived value in public report|private material in public transport")
+
+
+ACCOUNT_GOVERNANCE = {"report_hmac_key": "5a" * 32, "account_id": "111122223333",
+                      "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence"}
+
+
+@pytest.mark.parametrize("value", [
+    "id１１１１２２２２３３３３",
+    "id1111-2222-3333",
+    "id1111_2222 3333",
+    "XSYNTHETIC-STATEY",
+    "abcSynthetic-Stateqrs"])
+def test_recusa_de_valor_derivado_da_conta_normaliza_unicode_caixa_e_separadores(value):
+    raw = ('{"campo":"' + value + '"}').encode()
+    with pytest.raises(ValueError, match="account-derived value in public report"):
+        c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
+
+
+def test_recusa_de_valor_derivado_da_conta_aceita_relatorio_sem_valores_conhecidos():
+    raw = '{"campo":"id1111-2222-33","outro":"ＡＢＣ 1111 2222"}'.encode()
+    c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
+
+
+@pytest.mark.parametrize("governance", [{}, {"state_bucket": "synthetic-state"},
+                                        {"evidence_bucket": "synthetic-evidence"},
+                                        {"state_bucket": "", "evidence_bucket": "synthetic-evidence"},
+                                        {"state_bucket": 1, "evidence_bucket": "x"}])
+def test_public_safe_com_governanca_sem_bucket_falha_fechado(governance):
+    with pytest.raises(ValueError, match="bucket governance"):
+        c.public_safe({"campo": "ok"}, governance)
+
+
+def test_public_safe_sem_governanca_segue_sem_regra_de_bucket():
+    c.public_safe({"campo": "synthetic-state"})

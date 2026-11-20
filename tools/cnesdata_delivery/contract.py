@@ -543,6 +543,10 @@ def _bucket_pattern(governance):
 
 def public_safe(value, governance=None):
     """Defense in depth on the already authenticated sanitized producer reports."""
+    if governance is not None:
+        require(type(governance) is dict and all(
+            type(governance.get(key)) is str and governance[key] for key in ("state_bucket", "evidence_bucket")),
+            "bucket governance")
     _public_safe(value, _bucket_pattern(governance))
 
 
@@ -586,11 +590,18 @@ def _account_derived_values(governance):
         sha(value.encode()) for value in plain]
 
 
+GROUP_SEPARATOR = re.compile(r"(?<=[0-9])[-_ ](?=[0-9])")
+
+
+def _comparable(text):
+    return GROUP_SEPARATOR.sub("", unicodedata.normalize("NFKC", text).casefold())
+
+
 def refuse_account_derived(raw, governance):
     """Public reports carry no account, no key and no plain hash or ARN of known values."""
     report_key(governance)
-    text = raw.decode()
-    require(not any(type(v) is str and v and v in text for v in _account_derived_values(governance)),
+    text = _comparable(raw.decode())
+    require(not any(type(v) is str and v and _comparable(v) in text for v in _account_derived_values(governance)),
             "account-derived value in public report")
 
 

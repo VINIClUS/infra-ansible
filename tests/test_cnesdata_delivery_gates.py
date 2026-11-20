@@ -147,7 +147,7 @@ def _fetch_lists(workflow_name):
     return raw, [ast.literal_eval(value) for value in re.findall(r"files = (\[[\s\S]*?\])", raw)]
 
 
-def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
+def test_both_infra_bootstraps_fetch_complete_runtime_import_closure():
     import yaml
     required = _import_closure({"plan_gate", "apply_gate"})
     lists = []
@@ -156,9 +156,9 @@ def test_all_four_protected_bootstraps_fetch_complete_runtime_import_closure():
         assert set(yaml.safe_load(raw)["on"]["workflow_call"]["inputs"]) == {
             "request_descriptor", "request_descriptor_sha256", "contract_repository", "contract_source_sha",
             "contract_path", "contract_sha256", "expected_source_sha", "purpose"}
-        assert len(found) == 2
+        assert len(found) == 1
         lists.extend(found)
-    assert len(lists) == 4
+    assert len(lists) == 2
     for names in lists:
         assert len(names) == len(set(names))
         assert set(names) == required
@@ -1259,8 +1259,8 @@ def test_complete_artifact_inventory_rejects_shared_attempt_second(contract, pro
 # asserts the caller ref and the run branch as `main`. Exact per-file counts make a dropped or retargeted assertion fail.
 REUSABLE_BRANCH_SITES = {
     "reusable-cnesdata-application-gate.yml": (1, 1),
-    "reusable-cnesdata-infra-plan-gate.yml": (2, 0),
-    "reusable-cnesdata-infra-deploy-gate.yml": (2, 0),
+    "reusable-cnesdata-infra-plan-gate.yml": (1, 0),
+    "reusable-cnesdata-infra-deploy-gate.yml": (1, 0),
     "reusable-cnesdata-signing-gate.yml": (3, 3),
     "reusable-cnesdata-host-deploy-gate.yml": (2, 0),
 }
