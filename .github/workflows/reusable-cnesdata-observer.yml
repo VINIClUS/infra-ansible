@@ -1,0 +1,217 @@
+---
+name: CnesData observer and admission assembler
+
+"on":
+  workflow_call:
+    inputs:
+      purpose:
+        description: Gate purpose, public
+        required: true
+        type: string
+      role:
+        description: Delivery role, plan or deploy
+        required: true
+        type: string
+      source_sha:
+        description: Product source commit
+        required: true
+        type: string
+      x_star:
+        description: X* literal that the caller pins in its uses line
+        required: true
+        type: string
+      request:
+        description: Public request JSON, references and digests only
+        required: true
+        type: string
+    secrets:
+      report_hmac_key:
+        description: Per-cycle report key of the cnesdata-observer environment
+        required: true
+      observer_config:
+        description: Private observer configuration without credentials
+        required: true
+      observer_role_arn:
+        description: Read-only observer role
+        required: true
+    outputs:
+      drift_artifact_id:
+        value: ${{ jobs.observe.outputs.drift_artifact_id }}
+
+permissions: {}
+
+env:
+  PURPOSE: ${{ inputs.purpose }}
+  ROLE: ${{ inputs.role }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  X_STAR: ${{ inputs.x_star }}
+  REQUEST: ${{ inputs.request }}
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    environment: cnesdata-observer
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      REPORT_HMAC_KEY: ${{ secrets.report_hmac_key }}
+      OBSERVER_CONFIG: ${{ secrets.observer_config }}
+      OBSERVER_ROLE_ARN: ${{ secrets.observer_role_arn }}
+    outputs:
+      drift_artifact_id: ${{ steps.drift.outputs.artifact-id }}
+      drift_artifact_digest: ${{ steps.drift.outputs.artifact-digest }}
+    steps:
+      - name: Fetch the pinned producer modules from the authenticated reusable sha
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require("fs");
+            const path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml";
+            if (context.repo.owner !== "VINIClUS" || context.repo.repo !== "infra-ansible" ||
+                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main") {
+              throw new Error("Manual main source required");
+            }
+            const {data: run} = await github.rest.actions.getWorkflowRunAttempt({
+              ...context.repo, run_id: context.runId, attempt_number: Number(process.env.GITHUB_RUN_ATTEMPT)
+            });
+            const refs = run.referenced_workflows.filter(r => r.path.startsWith(path + "@"));
+            if (refs.length !== 1 || !/^[a-f0-9]{40}$/.test(refs[0].sha) ||
+                refs[0].path !== path + "@" + refs[0].sha ||
+                refs[0].sha !== process.env.X_STAR) throw new Error("Producer pin");
+            const modules = [
+              "contract.py",
+              "coordination_lease.py",
+              "drift_catalog.py",
+              "drift_handoff.py",
+              "provenance.py",
+              "session_owner.py",
+              "session_policy.py",
+              "runtime-requirements.txt",
+              "producers/aws_reader.py",
+              "producers/chain.py",
+              "producers/drift_handoff.py",
+              "producers/observer.py",
+              "producers/phase_inputs.py"
+            ];
+            fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
+            for (const name of modules) {
+              const {data: item} = await github.rest.repos.getContent({
+                owner: "VINIClUS", repo: "infra-ansible", path: "tools/cnesdata_delivery/" + name, ref: refs[0].sha
+              });
+              if (item.type !== "file" || item.encoding !== "base64" || item.size > 262144) throw new Error("Module");
+              fs.writeFileSync("tools/cnesdata_delivery/" + name, Buffer.from(item.content, "base64"), {mode: 0o600});
+            }
+      - name: Install checksum-locked read-only runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/observer-python"
+          "${RUNNER_TEMP}/observer-python/bin/pip" install --disable-pip-version-check --require-hashes \
+            --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
+          echo "${RUNNER_TEMP}/observer-python/bin" >> "${GITHUB_PATH}"
+      - name: Compose the observation request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import datetime, json, os
+          value = json.loads(os.environ["REQUEST"])
+          value |= {"purpose": os.environ["PURPOSE"], "role": os.environ["ROLE"],
+                    "source_sha": os.environ["SOURCE_SHA"], "mode": "ci",
+                    "observed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+          open(os.path.join(os.environ["RUNNER_TEMP"], "request.json"), "w").write(json.dumps(value))
+          PY
+      - name: Observe with the read-only role
+        run: >-
+          python3 -m tools.cnesdata_delivery.producers.observer
+          --request "${RUNNER_TEMP}/request.json" --out "${RUNNER_TEMP}/observed"
+      - name: Derive the short source name
+        id: names
+        run: echo "source8=${SOURCE_SHA:0:8}" >> "${GITHUB_OUTPUT}"
+      - name: Upload the drift baseline
+        id: drift
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-drift-${{ steps.names.outputs.source8 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observed/drift-handoff.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the observations for the assemble job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-observed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observed/observations.json
+          retention-days: 1
+          if-no-files-found: error
+
+  assemble:
+    needs: observe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      DRIFT_ARTIFACT_ID: ${{ needs.observe.outputs.drift_artifact_id }}
+      DRIFT_ARTIFACT_DIGEST: ${{ needs.observe.outputs.drift_artifact_digest }}
+    steps:
+      - name: Fetch the pinned producer modules from the authenticated reusable sha
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require("fs");
+            const path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml";
+            if (context.repo.owner !== "VINIClUS" || context.repo.repo !== "infra-ansible" ||
+                context.eventName !== "workflow_dispatch" || context.ref !== "refs/heads/main") {
+              throw new Error("Manual main source required");
+            }
+            const {data: run} = await github.rest.actions.getWorkflowRunAttempt({
+              ...context.repo, run_id: context.runId, attempt_number: Number(process.env.GITHUB_RUN_ATTEMPT)
+            });
+            const refs = run.referenced_workflows.filter(r => r.path.startsWith(path + "@"));
+            if (refs.length !== 1 || !/^[a-f0-9]{40}$/.test(refs[0].sha) ||
+                refs[0].path !== path + "@" + refs[0].sha ||
+                refs[0].sha !== process.env.X_STAR) throw new Error("Producer pin");
+            const modules = [
+              "contract.py",
+              "drift_catalog.py",
+              "lifecycle_contract.py",
+              "provenance.py",
+              "producers/assembler.py",
+              "producers/chain.py",
+              "producers/cost_context.py",
+              "producers/cost_ledger.py",
+              "producers/inputs.py",
+              "producers/measurements.py",
+              "producers/pins.py"
+            ];
+            fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
+            for (const name of modules) {
+              const {data: item} = await github.rest.repos.getContent({
+                owner: "VINIClUS", repo: "infra-ansible", path: "tools/cnesdata_delivery/" + name, ref: refs[0].sha
+              });
+              if (item.type !== "file" || item.encoding !== "base64" || item.size > 262144) throw new Error("Module");
+              fs.writeFileSync("tools/cnesdata_delivery/" + name, Buffer.from(item.content, "base64"), {mode: 0o600});
+            }
+      - name: Download the observations of this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: delivery-observed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observed
+      - name: Assemble the admission proof without AWS
+        run: >-
+          python3 -m tools.cnesdata_delivery.producers.assembler
+          --observed "${RUNNER_TEMP}/observed" --out "${RUNNER_TEMP}/admission"
+      - name: Upload the admission proof
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-admission-${{ inputs.role }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/admission
+          retention-days: 30
+          if-no-files-found: error
+      - name: Wait for the artifact to be strictly interior to the run
+        run: sleep 3
