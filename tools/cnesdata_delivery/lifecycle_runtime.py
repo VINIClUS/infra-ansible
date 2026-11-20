@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import drift_catalog
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Watchdog
@@ -902,15 +903,19 @@ class LifecycleWatchdog(Watchdog):
         return super().run(command, cwd=cwd, env=env, output=output, timeout=timeout, mutating=mutating)
 
 
+LIFECYCLE_READ_API = {"iam": {"get_role", "get_role_policy"}, "stepfunctions": {"describe_state_machine"},
+                      "scheduler": {"get_schedule", "get_schedule_group", "list_schedules"},
+                      "events": {"describe_rule"}, "cloudwatch": {"describe_alarms"},
+                      "cloudfront": {"get_response_headers_policy"}, "s3": {"get_bucket_lifecycle_configuration"}}
+
+
 def readbacks(aws, specifications, guard):
-    allowed = {"iam": {"get_role", "get_role_policy"}, "stepfunctions": {"describe_state_machine"},
-               "scheduler": {"get_schedule", "get_schedule_group", "list_schedules"},
-               "events": {"describe_rule"}, "cloudwatch": {"describe_alarms"},
-               "cloudfront": {"get_response_headers_policy"}, "s3": {"get_bucket_lifecycle_configuration"}}
+    allowed = LIFECYCLE_READ_API
     reports = []
     for spec in specifications:
         grouped = spec.get("service") == "scheduler" and spec.get("operation") == "list_schedules"
-        c.closed(spec, "service operation parameters absent" + (" members" if grouped else ""))
+        c.closed(spec, "service operation parameters absent" + (" members" if grouped else "")
+                 + (" address" if "address" in spec else ""))
         c.require(spec["operation"] in allowed.get(spec["service"], set()), "lifecycle readback API")
         c.require(type(spec["parameters"]) is dict and type(spec["absent"]) is bool, "readback parameters")
         if grouped:
@@ -922,13 +927,11 @@ def readbacks(aws, specifications, guard):
             value = aws.call(spec["service"], spec["operation"], **spec["parameters"])
         except Exception as error:
             code = getattr(error, "response", {}).get("Error", {}).get("Code")
-            c.require(spec["absent"] is True and code in {"ResourceNotFoundException", "StateMachineDoesNotExist", "ResourceNotFound"}, "readback unknown")
-            value = {"absent": True}
+            c.require(spec["absent"] is True, "readback unknown")
+            value = drift_catalog.absent_by_error(spec["service"], spec["operation"], code)
         else:
-            c.require(spec["absent"] is False, "resource still exists/DELETING")
             value.pop("ResponseMetadata", None)
-            if spec["operation"] in {"get_schedule_group", "describe_state_machine"}:
-                c.require(value.get("State", value.get("status")) == "ACTIVE", "resource DELETING/unknown")
+            value = drift_catalog.observe_response(spec, value)
         guard.check()
         reports.append({"service": spec["service"], "operation": spec["operation"], "observed": _dates(value)})
     return reports
@@ -1098,6 +1101,9 @@ def _dates(value):
     from datetime import datetime
     if type(value) is datetime:
         return c.utc(value.timestamp())
+    if type(value) is float:
+        from decimal import Decimal
+        return Decimal(repr(value))
     if type(value) is dict:
         return {k: _dates(v) for k, v in value.items()}
     if type(value) is list:
@@ -1361,8 +1367,10 @@ def execute(role):
             c.require(approval["delta"]["before"] == lc.state_resources(c.loads(before_raw, state=True)), "audit actual full state")
             lc.validate_delta(plan, approval["delta"])
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
-            before_reports = readbacks(aws, approval["readbacks"]["before"], guard)
-            c.drift_coverage(plan, before_reports, approval["drift_matrix"], source, step["purpose"], "before")
+            before_calls = drift_catalog.lifecycle_calls(plan, approval["readbacks"]["before"], "before")
+            before_reports = readbacks(aws, before_calls, guard)
+            c.drift_coverage(plan, before_reports, approval["drift_matrix"], source, step["purpose"], "before",
+                             specs=before_calls, envelope=drift_catalog.LIFECYCLE_ENVELOPE)
             (temp / "plan.bin").write_bytes(payload["plan.bin"])
             guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "saved.json", timeout=20, mutating=False)
             c.require(c.loads((temp / "saved.json").read_bytes(), state=True) == plan, "binary/json exact plan")
@@ -1377,8 +1385,10 @@ def execute(role):
             if resolver:
                 from tools.cnesdata_delivery.iam_boundary import bind_state
                 bind_state(resolver, state)
-            reports = readbacks(aws, approval["readbacks"]["after"], guard)
-            c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state)
+            calls = drift_catalog.lifecycle_calls(plan, approval["readbacks"]["after"], "after", state)
+            reports = readbacks(aws, calls, guard)
+            c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state,
+                             specs=calls, envelope=drift_catalog.LIFECYCLE_ENVELOPE)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}

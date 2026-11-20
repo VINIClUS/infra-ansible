@@ -108,11 +108,11 @@ def test_atributo_isento_nao_tem_entrada_no_catalogo():
 
 def test_todo_tipo_do_catalogo_declara_identidade_e_entradas_fechadas():
     mapa = catalog()
-    encodings = {"identity", "json", "tags-kv", "json-set", "ecs-container-definitions"}
+    encodings = {"identity", "json", "tags-kv", "json-set", "ecs-container-definitions", "scheduler-target"}
     for tipo, entries in mapa.CATALOG.items():
-        assert tipo in mapa.IDENTITY
+        assert tipo in mapa.IDENTITY | mapa.LIFECYCLE_IDENTITY
         for attribute, (service, operation, path, encoding) in entries.items():
-            assert operation in mapa.READ_ONLY[service], (tipo, attribute)
+            assert operation in mapa.READ_ONLY.get(service, set()) | mapa.LIFECYCLE_READ_ONLY.get(service, set()), (tipo, attribute)
             assert encoding in encodings and type(path) is tuple and path, (tipo, attribute)
         assert len({entry[:2] for entry in entries.values()}) == 1, tipo
 
