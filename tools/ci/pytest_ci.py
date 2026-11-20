@@ -276,4 +276,3 @@ class CiPlugin:
                 "count": len(self.selected),
             },
         )
-

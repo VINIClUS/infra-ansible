@@ -45,8 +45,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --require-hashes \
-            -r tools/ci/requirements-ci.txt
+          python -m pip install --disable-pip-version-check --require-hashes -r tools/ci/requirements-ci.txt
           ansible-galaxy collection install --requirements-file requirements.yml
 
       - name: Permit isolated native user namespaces on hosted validation
