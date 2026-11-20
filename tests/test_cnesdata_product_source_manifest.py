@@ -249,3 +249,61 @@ def test_execute_confere_o_checkout_contra_o_manifesto_hidratado(tmp_path, mutat
     else:
         with pytest.raises(ValueError):
             authenticate_adapter_closure(tmp_path, source, hydrated, closure)
+
+
+def _plan_admission(monkeypatch, mutation):
+    import base64
+    from test_cnesdata_application_gate import _application_caller_fixture
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    gov, caller_api, run, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", "plan")
+    inline = gov.pop("application_product_source_manifest")
+    world, world_api, _ = manifest_world(inline, source="b" * 40)
+    gov["application_product_source_manifest_artifact"] = world["application_product_source_manifest_artifact"]
+    contract = b"contract"
+    step.update(role="plan", purpose="application-prepare", input_jobs={})
+    gov.update(activation_enabled=True, lifecycle_enabled=True, lifecycle_authority="infra-ansible#55/6755178450",
+               lifecycle_steps={"keeper": step},
+               lifecycle_contract={"repository": "VINIClUS/infra-ansible", "source_sha": "a" * 40,
+                                   "path": "docs/cnesdata-delivery-application-lifecycle.md", "sha256": c.sha(contract)})
+    from tools.cnesdata_delivery.provenance import application_caller
+    observed = lr.source_admission(gov, caller_api, "plan", "b" * 40, 44, 2)
+    caller = application_caller(caller_api, gov | {"application_product_source_manifest": inline}, observed, "plan", step)
+    if mutation == "hash":
+        gov["application_product_source_closure_sha256"] = "0" * 64
+    request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
+                           "payloads": {}, "application_purpose": "promotion",
+                           "caller_binding_sha256": c.sha(c.canonical(caller))})
+
+    class API:
+        def read(self, path, **kwargs):
+            if "/actions/artifacts/" in path:
+                return world_api.read(path, **kwargs)
+            if "docs/cnesdata-delivery-application-lifecycle.md" in path:
+                return {"encoding": "base64", "content": base64.b64encode(contract).decode()}
+            return caller_api.read(path, **kwargs)
+
+        def artifact(self, reference, now, **options):
+            return world_api.artifact(reference, now, **options)
+    for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(gov, limit=262144).decode(),
+                       "REQUEST_DESCRIPTOR": request.decode(), "REQUEST_DESCRIPTOR_SHA256": c.sha(request),
+                       "EXPECTED_SOURCE_SHA": "b" * 40, "PURPOSE": "application-prepare",
+                       "GITHUB_RUN_ID": "44", "GITHUB_RUN_ATTEMPT": "2",
+                       "CONTRACT_REPOSITORY": "VINIClUS/infra-ansible", "CONTRACT_SOURCE_SHA": "a" * 40,
+                       "CONTRACT_PATH": "docs/cnesdata-delivery-application-lifecycle.md",
+                       "CONTRACT_SHA256": c.sha(contract)}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(lr, "GitHub", API)
+    return lr
+
+
+@pytest.mark.parametrize("mutation", [None, "hash"])
+def test_admission_plan_sem_checkout_hidrata_o_manifesto_do_artefato(monkeypatch, tmp_path, mutation):
+    monkeypatch.chdir(tmp_path)
+    lr = _plan_admission(monkeypatch, mutation)
+    if mutation:
+        with pytest.raises(ValueError, match="product source manifest content"):
+            lr.admission("plan")
+        return
+    governance, _, _, _, _, _ = lr.admission("plan")
+    assert governance["application_product_source_manifest"]["files"][ADAPTER] == "c" * 64
+    assert governance["role"] == "plan" and "application_product_source_manifest_artifact" in governance
