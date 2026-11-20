@@ -149,3 +149,29 @@ def test_erro_de_verificacao_nao_ecoa_a_chave():
     with pytest.raises(ValueError) as caught:
         session_owner.authenticate(gov, descriptor, proof, files, api, now, "plan", "bootstrap")
     assert "ab" * 32 not in str(caught.value)
+
+
+@pytest.mark.parametrize("key", [None, "", "zz" * 32, "ab" * 16])
+def test_recusa_de_relatorio_publico_falha_fechado_sem_chave_valida(key):
+    gov = {"account_id": "111122223333"}
+    if key is not None:
+        gov["report_hmac_key"] = key
+    with pytest.raises(ValueError):
+        c.refuse_account_derived(b'{"fact":1}', gov)
+
+
+@pytest.mark.parametrize("missing", ["role_arn", "policy_arn", "document_sha256"])
+def test_recusa_de_relatorio_publico_com_pin_malformado_levanta_value_error(missing):
+    pin = {"role_arn": "r", "policy_arn": "p", "document_sha256": "d" * 64}
+    pin.pop(missing)
+    gov = {"report_hmac_key": "5a" * 32, "session_policy_pins": {"plan": pin}}
+    with pytest.raises(ValueError):
+        c.refuse_account_derived(b'{"fact":1}', gov)
+
+
+def test_validate_proof_sem_chave_na_governanca_e_recusado():
+    gov, descriptor, proof, files, api, now = original_owner()
+    gov.pop("report_hmac_key")
+    from tools.cnesdata_delivery.provenance import validate_proof
+    with pytest.raises(ValueError, match="report hmac key"):
+        validate_proof(proof, files, gov, api, now, descriptor["source_sha"], "bootstrap", "plan")
