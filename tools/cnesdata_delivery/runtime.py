@@ -195,7 +195,7 @@ def _admit_before(aws, governance, files, binding):
     c.scheduler_preflight(plan, c.loads(state_bytes, state=True) if state_bytes is not None else None)
     calls = _stage_calls(governance, plan, "before")
     reports = _readbacks(aws, calls, _Unguarded)
-    c.drift_coverage(plan, reports, governance["drift_matrix"], source, purpose, "before")
+    c.drift_coverage(plan, reports, governance["drift_matrix"], source, purpose, "before", specs=calls)
     return calls
 
 
@@ -461,9 +461,9 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     saved = c.loads(files["plan.json"], state=True)
     c.applied_state(saved, state)
     resolver = baseline.get("iam_resolver")
-    reports = _readbacks(aws, _stage_calls(governance, saved, "after", state), ReadOnly(),
-                         (state_raw, resolver) if resolver is not None else None)
-    c.drift_coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state)
+    calls = _stage_calls(governance, saved, "after", state)
+    reports = _readbacks(aws, calls, ReadOnly(), (state_raw, resolver) if resolver is not None else None)
+    c.drift_coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state, specs=calls)
     if purpose == "phase-a":
         aws.verify_ecr(c.loads(files["promotion.json"], canonical=True), guard=guard)
         observed = _outputs(state_raw, envelope["plan"], f"{governance['account_id']}.dkr.ecr.us-east-2.amazonaws.com/{governance['ecr_repository']}")
@@ -621,7 +621,7 @@ def execute(role):
         if role == "deploy":
             before_reports = _readbacks(aws, before_calls, watchdog)
             c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
-                             source, purpose, "before")
+                             source, purpose, "before", specs=before_calls)
         if purpose == "phase-a":
             promotion = c.loads(files["promotion.json"], canonical=True)
             candidate_raw = files["candidate.json"]
@@ -692,7 +692,7 @@ def execute(role):
             before_calls = _stage_calls(governance, c.loads(files["plan.json"], state=True), "before")
             before_reports = _readbacks(aws, before_calls, watchdog)
             c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
-                             source, purpose, "before")
+                             source, purpose, "before", specs=before_calls)
             if purpose == "bootstrap":
                 from tools.cnesdata_delivery.outputs import initial_admission
                 initial_admission(c.loads(files["plan.json"], state=True), c.loads(files["inputs.tfvars.json"]), state_bytes,
@@ -745,7 +745,7 @@ def execute(role):
         reports = _readbacks(aws, calls, watchdog, (after_bytes, iam_resolver) if role == "deploy" and iam_resolver is not None else None)
         c.drift_coverage(c.loads(files["plan.json"], state=True), reports, governance["drift_matrix"],
                          source, purpose, "after" if role == "deploy" else "before",
-                         after_state)
+                         after_state, specs=calls)
         applied_outputs = None
         drift_raw = None
         if role == "deploy":
