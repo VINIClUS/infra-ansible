@@ -11,7 +11,7 @@ from email.utils import formatdate
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from tools.cnesdata_delivery import contract as c, runtime
+from tools.cnesdata_delivery import contract as c, drift_catalog, runtime
 from tools.cnesdata_delivery.provenance import BASE_CHECKS, GitHub
 from fixtures.cnesdata_plan import packet
 
@@ -24,6 +24,10 @@ class Chain:
         self.commands = []
         self.now = int(time.time()) - 1
         self.purpose = purpose
+        self.handoff_edit = lambda document: document
+        self.handoff_bytes_edit = lambda raw: raw
+        self.report_edit = lambda measurement: measurement
+        self.governance_edit = lambda governance: governance
         self.expires = c.utc(self.now + 3600)
         envelope, self.plan_files, baseline = packet()
         cost = envelope["plan"]["cost"]
@@ -48,7 +52,7 @@ class Chain:
                     "evidence_bucket": "synthetic-evidence", "evidence_kms_key_arn": "arn:aws:kms:us-east-2:111122223333:key/evidence",
                     "evidence_prefix": "cnesdata/prod/evidence", "product_inputs": {},
                     "contract_sha256": c.sha(b"immutable authority fixture"),
-                    "drift_matrix": {"matrix_version": 1, "source_sha": "a" * 40, "purpose": purpose, "before": [], "after": []}}
+                    "drift_matrix": self.empty_matrix()}
         if compact_names:
             self.gov.update(evidence_bucket="evi", evidence_prefix="cnesdata/prod/e")
         self.gov["readbacks"] = {"before": [], "after": []}
@@ -122,6 +126,30 @@ class Chain:
         self.plan_files["plan.json"] = c.canonical(saved)
         self.configure("plan", 1)
 
+    def empty_matrix(self):
+        matrix = {"matrix_version": 1, "source_sha": "a" * 40, "purpose": self.purpose, "before": [], "after": []}
+        return matrix | {"matrix_version": 2, "absent": []} if self.purpose == "phase-a" else matrix
+
+    def publish_drift(self):
+        document = {"handoff_version": 1, "source_sha": "a" * 40, "purpose": self.purpose,
+                    "catalog_sha256": drift_catalog.CATALOG_SHA256, "matrix": copy.deepcopy(self.gov["drift_matrix"]),
+                    "readbacks": copy.deepcopy(self.gov["readbacks"])}
+        raw = self.handoff_bytes_edit(c.canonical(self.handoff_edit(document)))
+        current = self.gov["artifact_references"]["drift"]
+        key = (current["repository"], current["artifact_id"])
+        if self.artifacts[key][2].get("drift-handoff.json") != raw:
+            reference = self.add_artifact(current["run_id"], {"facts.json": b'{"facts":"measured"}\n', "drift-handoff.json": raw},
+                                          current["workflow_path"])
+            self.gov["artifact_references"]["drift"] = reference
+            self.gov["baseline_artifacts"] = [{"purpose": name, "reference": self.gov["artifact_references"][name]}
+                                              for name in self.gov["artifact_purposes"] if name in {
+                                                  "backend", "policy", "cost", "drift", "shared-outputs", "toolchain"}]
+        self.handoff_sha256 = c.sha(raw)
+
+    def drift_measurement(self):
+        return self.report_edit({"handoff_sha256": self.handoff_sha256, "rehearsal_plan_sha256": "e" * 64,
+                                 "catalog_sha256": drift_catalog.CATALOG_SHA256})
+
     def run(self, repository, run_id, path, source="a" * 40, *, terminal=True, role=None):
         value = {"id": run_id, "run_attempt": 1, "repository": {"full_name": repository}, "head_sha": source, "path": path,
                  "status": "completed" if terminal else "in_progress", "conclusion": "success" if terminal else None,
@@ -158,7 +186,8 @@ class Chain:
         checks, reports, members = [], [], {}
         for check_id in sorted(required):
             value = self.gov["baseline"]["cost_evidence"] if check_id == "cost-ledger-purpose-scope" else {
-                "check_id": check_id, "source_sha": "a" * 40, "measurement": {"fact": check_id}}
+                "check_id": check_id, "source_sha": "a" * 40, "measurement": (
+                    self.drift_measurement() if check_id == "drift-baseline" else {"fact": check_id})}
             raw, name = c.canonical(value), check_id + ".json"
             measured = c.sha(c.canonical(value["measurement"]))
             checks.append({"check_id": check_id, "subject_sha256": "d" * 64, "expected_sha256": measured,
@@ -182,18 +211,23 @@ class Chain:
         reference = self.add_artifact(producer_id, members, producer["workflow_path"], repository=producer["repository"], source=producer["workflow_sha"])
         return reference
 
+    def public_governance(self):
+        return {key: value for key, value in self.gov.items() if key not in {"drift_matrix", "readbacks"}} | {
+            "drift_handoff": {"member": "drift-handoff.json", "sha256": self.handoff_sha256}}
+
     def configure(self, role, run_id, planned=None):
         self.role = role
         if planned:
             self.gov["artifact_purposes"] = sorted(self.gov["artifact_purposes"] + ["planned"])
             self.gov["artifact_references"]["planned"] = planned
+        self.publish_drift()
         binding = None if not planned else c.loads(self.artifacts[c.REPOSITORY, planned["artifact_id"]][2]["index.json"])["plan_binding_sha256"]
         self.gov["admission_reference"] = self.proof(role, binding)
         self.run(c.REPOSITORY, run_id, f".github/workflows/infra-{'plan' if role == 'plan' else 'apply'}.yml", terminal=False, role=role)
         descriptor = {"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "a" * 40,
                       "producer_pins": self.gov["dependencies"], "baseline_artifacts": self.gov["baseline_artifacts"],
                       "payload_artifact": planned or (self.gov["artifact_references"].get("phase-inputs") if self.purpose == "phase-a" else None)}
-        for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(self.gov).decode(), "GITHUB_RUN_ID": str(run_id),
+        for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(self.governance_edit(self.public_governance())).decode(), "GITHUB_RUN_ID": str(run_id),
                            "REQUEST_DESCRIPTOR": c.canonical(descriptor).decode(),
                            "REQUEST_DESCRIPTOR_SHA256": c.sha(c.canonical(descriptor))}.items():
             self.monkeypatch.setenv(key, value)

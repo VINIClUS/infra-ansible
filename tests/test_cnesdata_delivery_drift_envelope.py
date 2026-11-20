@@ -139,7 +139,7 @@ def test_catalog_sha256_e_computado_do_catalogo():
     expected = c.sha(c.canonical(mapa.catalog_document()))
     assert mapa.CATALOG_SHA256 == expected
     document = mapa.catalog_document()
-    assert set(document) == {"catalog", "envelopes", "identity", "not_observable"}
+    assert set(document) == {"catalog", "envelopes", "identity", "not_observable", "omitted", "container_defaults"}
 
 
 def test_envelope_aceita_linhas_ligadas_ao_catalogo():
@@ -368,10 +368,12 @@ def test_envelope_recusa_tipo_supported_sem_catalogo():
 
 def test_runtime_passa_specs_em_toda_chamada_de_drift_coverage():
     source = (ROOT / "tools/cnesdata_delivery/runtime.py").read_text()
-    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
-             and isinstance(node.func, ast.Attribute) and node.func.attr == "drift_coverage"]
+    nodes = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)]
+    calls = [node for node in nodes if getattr(node.func, "id", None) == "_coverage"]
     assert len(calls) == 5
     assert all(any(keyword.arg == "specs" for keyword in node.keywords) for node in calls)
+    direct = [node for node in nodes if getattr(node.func, "attr", None) == "drift_coverage"]
+    assert len(direct) == 1 and {keyword.arg for keyword in direct[0].keywords} == {"specs", "envelope"}
 
 
 TASK = 'module.processing.aws_ecs_task_definition.processor["unit"]'
@@ -471,3 +473,145 @@ def test_chamada_sem_envelope_so_aceita_identity_e_json(encoding):
     matrix_["before"][0]["encoding"] = encoding
     with pytest.raises(ValueError, match="unknown drift projection encoding"):
         coverage(plan_, reports, matrix_, specs=[call()])
+
+
+TABLE_NAME = {"name": "t"}
+
+
+def omitted_case(tipo, attribute, observed, expected, absent_at=None):
+    mapa = catalog()
+    service, operation, path, encoding = mapa.CATALOG[tipo][attribute]
+    address = ROLE if tipo == "aws_iam_role" else TABLE
+    identity = {"name": "fence"} if tipo == "aws_iam_role" else TABLE_NAME
+    attributes = identity | {attribute: expected}
+    plan_ = plan(change(address, attributes, attributes))
+    spec = {"service": service, "operation": operation, "address": address,
+            "parameters": {"RoleName": "fence"} if tipo == "aws_iam_role" else {"TableName": "t"}}
+    names = sorted({"name", attribute})
+    rows = [{"address": address, "attribute": name, "readback": 0, "path": list(mapa.CATALOG[tipo][name][2]),
+             "encoding": mapa.CATALOG[tipo][name][3]} for name in names]
+    reports = [{"service": service, "operation": operation, "sha256": "0" * 64, "observed": observed}]
+    return plan_, reports, matrix(rows), spec
+
+
+ROLE_OBSERVED = {"Role": {"RoleName": "fence"}}
+TABLE_OBSERVED = {"Table": {"TableName": "t"}}
+OMITTED_CASES = [
+    ("aws_iam_role", "description", ROLE_OBSERVED, ["", None], "texto"),
+    ("aws_iam_role", "permissions_boundary", ROLE_OBSERVED, ["", None], "arn-x"),
+    ("aws_iam_role", "tags_all", ROLE_OBSERVED, [{}, None], {"ReleaseId": "x"}),
+    ("aws_dynamodb_table", "billing_mode", TABLE_OBSERVED, ["PROVISIONED"], "PAY_PER_REQUEST"),
+    ("aws_dynamodb_table", "table_class", TABLE_OBSERVED, ["STANDARD"], "STANDARD_INFREQUENT_ACCESS"),
+    ("aws_dynamodb_table", "stream_enabled", TABLE_OBSERVED, [False, None], True),
+    ("aws_dynamodb_table", "stream_view_type", TABLE_OBSERVED, ["", None], "NEW_IMAGE"),
+    ("aws_dynamodb_table", "stream_arn", TABLE_OBSERVED, ["", None], "arn-x"),
+    ("aws_dynamodb_table", "stream_label", TABLE_OBSERVED, ["", None], "label"),
+]
+
+
+@pytest.mark.parametrize("tipo,attribute,observed,empties,filled", OMITTED_CASES)
+def test_campo_omitido_pela_api_casa_so_com_o_vazio_declarado(tipo, attribute, observed, empties, filled):
+    for empty in empties:
+        plan_, reports, rows, spec = omitted_case(tipo, attribute, observed, empty)
+        assert coverage(plan_, reports, rows, specs=[spec], envelope=phase_a()) is None
+    plan_, reports, rows, spec = omitted_case(tipo, attribute, observed, filled)
+    with pytest.raises(ValueError, match="drift response field"):
+        coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
+
+
+def test_campo_omitido_vazio_nao_aceita_valor_diferente_do_declarado():
+    plan_, reports, rows, spec = omitted_case("aws_dynamodb_table", "billing_mode", TABLE_OBSERVED, "OUTRO")
+    with pytest.raises(ValueError, match="drift response field"):
+        coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
+
+
+def test_campo_omitido_so_vale_em_atributo_declarado():
+    plan_, reports, rows, spec = omitted_case("aws_iam_role", "path", ROLE_OBSERVED, "")
+    with pytest.raises(ValueError, match="drift response field"):
+        coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
+
+
+def test_omissao_no_ultimo_componente_do_caminho_tambem_casa_o_vazio():
+    observed = {"Role": {"RoleName": "fence", "PermissionsBoundary": {}}}
+    plan_, reports, rows, spec = omitted_case("aws_iam_role", "permissions_boundary", observed, "")
+    assert coverage(plan_, reports, rows, specs=[spec], envelope=phase_a()) is None
+
+
+def test_valor_presente_na_api_continua_comparado_ao_state():
+    observed = {"Role": {"RoleName": "fence", "Description": "x"}}
+    plan_, reports, rows, spec = omitted_case("aws_iam_role", "description", observed, "")
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
+
+
+def test_v1_sem_envelope_continua_estrito_com_campo_omitido():
+    plan_, reports, rows, spec = omitted_case("aws_iam_role", "description", ROLE_OBSERVED, "")
+    rows = rows | {"matrix_version": 1}
+    rows.pop("absent")
+    with pytest.raises(ValueError, match="drift response field"):
+        coverage(plan_, reports, rows, specs=[spec])
+
+
+def test_omitidos_declarados_so_apontam_atributos_do_catalogo_e_entram_no_hash():
+    mapa, c = catalog(), contract()
+    for tipo, entries in mapa.OMITTED.items():
+        assert set(entries) <= set(mapa.CATALOG[tipo]), tipo
+    assert "omitted" in mapa.catalog_document()
+    altered = mapa.catalog_document() | {"omitted": {}}
+    assert c.sha(c.canonical(altered)) != mapa.CATALOG_SHA256
+
+
+def container_case(expected_cpu, observed_cpu):
+    expected = {"name": "app", "image": "i"} | ({} if expected_cpu is None else {"cpu": expected_cpu})
+    seen = {"name": "app", "image": "i"} | ({} if observed_cpu is None else {"cpu": observed_cpu})
+    address = "module.processing.aws_ecs_task_definition.processor[\"unit\"]"
+    attributes = {"family": "f", "container_definitions": json.dumps([expected])}
+    plan_ = plan(change(address, attributes, attributes))
+    mapa = catalog()
+    rows = [{"address": address, "attribute": name, "readback": 0, "path": list(mapa.CATALOG["aws_ecs_task_definition"][name][2]),
+             "encoding": mapa.CATALOG["aws_ecs_task_definition"][name][3]} for name in ("container_definitions", "family")]
+    observed = {"taskDefinition": {"family": "f", "containerDefinitions": [seen]}}
+    spec = {"service": "ecs", "operation": "describe_task_definition", "address": address,
+            "parameters": {"taskDefinition": "f"}}
+    reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64, "observed": observed}]
+    return plan_, reports, matrix(rows), spec
+
+
+@pytest.mark.parametrize("expected,observed", [(None, 0), (0, None), (0, 0), (None, None), (256, 256)])
+def test_cpu_zero_do_container_equivale_a_ausencia_nos_dois_sentidos(expected, observed):
+    plan_, reports, rows, spec = container_case(expected, observed)
+    assert coverage(plan_, reports, rows, specs=[spec], envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("expected,observed", [(256, None), (None, 256), (256, 0), (0, 256)])
+def test_cpu_diferente_de_zero_omitido_ou_divergente_e_recusado(expected, observed):
+    plan_, reports, rows, spec = container_case(expected, observed)
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        coverage(plan_, reports, rows, specs=[spec], envelope=phase_a())
+
+
+def test_id_da_task_definition_no_state_e_a_familia():
+    assert catalog().CATALOG["aws_ecs_task_definition"]["id"][2] == ("taskDefinition", "family")
+    attributes = {"family": "f", "id": "f"}
+    address = 'module.processing.aws_ecs_task_definition.processor["unit"]'
+    plan_ = plan(change(address, attributes, attributes))
+    rows = [{"address": address, "attribute": name, "readback": 0, "path": list(catalog().CATALOG[
+        "aws_ecs_task_definition"][name][2]), "encoding": "identity"} for name in ("family", "id")]
+    spec = {"service": "ecs", "operation": "describe_task_definition", "address": address,
+            "parameters": {"taskDefinition": "f"}}
+    reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64,
+                "observed": {"taskDefinition": {"family": "f"}}}]
+    assert coverage(plan_, reports, matrix(rows), specs=[spec], envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("tipo,attribute,expected", [
+    ("aws_dynamodb_table", "billing_mode", "PROVISIONED"), ("aws_iam_role", "description", ""),
+    ("aws_iam_role", "tags_all", {})])
+def test_container_de_topo_ausente_nao_vale_como_omissao(tipo, attribute, expected):
+    mapa, c = catalog(), contract()
+    _, _, path, encoding = mapa.CATALOG[tipo][attribute]
+    row = {"address": ROLE, "attribute": attribute, "readback": 0, "path": list(path), "encoding": encoding}
+    declared = mapa.OMITTED[tipo][attribute]
+    with pytest.raises(ValueError, match="drift response field"):
+        c._projection(row, {}, expected, c.ENCODINGS, declared)
+    c._projection(row, {path[0]: {}}, expected, c.ENCODINGS, declared)
