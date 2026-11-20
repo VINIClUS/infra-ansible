@@ -3,6 +3,9 @@ import hashlib
 import json
 
 
+SOURCE_MANIFEST_SHA256 = "9" * 64
+
+
 def encoded(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
 
@@ -26,6 +29,7 @@ def fixture(active=True):
     stage = {"stage": cost["scope"], "source_sha": "a" * 40, "checkpoint_sha256": "d" * 64,
              "target_sha256": "e" * 64, "cloudfront": cloudfront if active else None, "unbound_required": not active}
     evidence = {"check_id": "cost-ledger-purpose-scope", "source_sha": "a" * 40,
-                "measurement": {"cost": cost.copy(), "checkpoint": stage.copy(), "manifest_sha256": cost["manifest_sha256"]}}
+                "measurement": {"cost": cost.copy(), "checkpoint": stage.copy(), "manifest_sha256": cost["manifest_sha256"],
+                               "source_manifest_sha256": SOURCE_MANIFEST_SHA256}}
     cost["evidence_sha256"] = hashlib.sha256(encoded(evidence)).hexdigest()
     return cost, stage, evidence, manifest

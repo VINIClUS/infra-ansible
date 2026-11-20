@@ -56,7 +56,8 @@ A representação privada contém Binding fechado v6, envelope original, allowli
 de workflows/images, checks obrigatórios com app_id, source_files por SHA e hash,
 archive_member exato, runtime_sha256, runtime_contract_sha256, plan_run_id e região.
 O cost_handoff conserva os quatro objetos originais cost/stage/evidence/manifest
-e é validado pelo mesmo contrato EXT1, incluindo somas gross, datas, FREE ACTIVE
+mais o source_manifest_sha256 do governance do owner, que deve igualar
+evidence.measurement.source_manifest_sha256, e é validado pelo mesmo contrato EXT1, incluindo somas gross, datas, FREE ACTIVE
 e bindings. Nenhum literal pass substitui a medição. Os campos runner
 identificam role ARN, objetos S3/version/hash/size, os três parâmetros SSM,
 hostname/known_hosts e versão/checksum do cloudflared. O fragmento host fixa slot,

@@ -3,6 +3,7 @@
 No network/credentials here. The consumer-owned JSON schema remains #468's work.
 """
 import hashlib
+import hmac
 import json
 import re
 from datetime import datetime, timezone
@@ -329,7 +330,7 @@ def budget(product, aggregate, paid_actions):
     require(money(product) <= 8 and money(aggregate) < 15 and paid_actions == "0.00", "budget freeze/paid fallback")
 
 
-def validate_cost(value, *, purpose, stage, evidence, manifest, now):
+def validate_cost(value, *, purpose, stage, evidence, manifest, now, source_manifest_sha256):
     common = "verdict evidence_sha256 manifest_sha256 product_monthly_usd aggregate_monthly_usd paid_actions_limit_usd calculated_at expires_at scope cloudfront"
     pre = value.get("scope") == "pre-activation"
     closed(value, common + (" activation dns workloads unbound_monthly_usd" if pre else ""))
@@ -346,6 +347,8 @@ def validate_cost(value, *, purpose, stage, evidence, manifest, now):
             and evidence["measurement"]["checkpoint"] == stage, "measured cost/checkpoint; no selfhash")
     require(sha(canonical(manifest)) == digest(value["manifest_sha256"])
             == evidence["measurement"]["manifest_sha256"], "separate financial manifest")
+    require(evidence["measurement"].get("source_manifest_sha256") == digest(source_manifest_sha256),
+            "cost manifest bound to authenticated source manifest")
     require(manifest["source_sha"] == stage["source_sha"] and manifest["gross"] is True
             and manifest["credits_usd"] == "0.00" and manifest["calculated_at"] == value["calculated_at"]
             and manifest["expires_at"] == value["expires_at"], "gross source-bound ledger without credits")
@@ -422,6 +425,35 @@ def public_safe(value):
             public_safe(child)
     elif type(value) is str:
         require(len(value) <= 4096 and not re.search(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b", value), "private material in public transport")
+
+
+def report_key(governance):
+    value = governance.get("report_hmac_key")
+    require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None, "report hmac key")
+    return bytes.fromhex(value)
+
+
+def report_hmac(key, label, value):
+    return hmac.new(key, label.encode() + b"\0" + value, hashlib.sha256).hexdigest()
+
+
+def _account_derived_values(governance):
+    named = [governance.get(name) for name in ("state_bucket", "evidence_bucket", "evidence_kms_key_arn", "state_kms_key_arn")]
+    known = named + list(governance.get("roles", {}).values())
+    for pin in governance.get("session_policy_pins", {}).values():
+        require(type(pin) is dict and {"role_arn", "policy_arn", "document_sha256"} <= set(pin), "session pin fields")
+        known += [pin["role_arn"], pin["policy_arn"], pin["document_sha256"]]
+    plain = [value for value in known if type(value) is str and value]
+    return [governance.get("account_id"), governance["report_hmac_key"]] + plain + [
+        sha(value.encode()) for value in plain]
+
+
+def refuse_account_derived(raw, governance):
+    """Public reports carry no account, no key and no plain hash or ARN of known values."""
+    report_key(governance)
+    text = raw.decode()
+    require(not any(type(v) is str and v and v in text for v in _account_derived_values(governance)),
+            "account-derived value in public report")
 
 
 def redacted_plan(raw, source_sha, purpose):
@@ -635,7 +667,8 @@ def validate_envelope(envelope, files, baseline, now, expected_source, status="p
     for key in set(policy) - {"verdict"}:
         digest(policy[key])
     validate_cost(plan["cost"], purpose=plan["purpose"], stage=baseline["cost_context"],
-                  evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=now)
+                  evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=now,
+                  source_manifest_sha256=baseline["source_manifest_sha256"])
     if plan["cost"]["scope"] == "pre-activation":
         creating_unbound = any(item["type"] in {"aws_cloudfront_distribution", "aws_wafv2_web_acl"}
                                and "create" in item["change"]["actions"] for item in loads(files["plan.json"], state=True).get("resource_changes", []))

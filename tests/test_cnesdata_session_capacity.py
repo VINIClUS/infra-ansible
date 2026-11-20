@@ -12,6 +12,7 @@ def governance():
     return {
         "account_id": account,
         "role": "plan",
+        "report_hmac_key": "5a" * 32,
         "roles": {
             role: f"arn:aws:iam::{account}:role/cnesdata-infra-{role}"
             for role in ("plan", "deploy")

@@ -13,7 +13,7 @@ from email.utils import parsedate_to_datetime
 from tools.cnesdata_delivery.contract import (
     CONTRACT_PATH, CONTRACT_SHA, REPOSITORY, canonical, closed, digest, instant,
     integer, loads, require, sha,
-    public_safe,
+    public_safe, refuse_account_derived,
 )
 
 BASE_CHECKS = {"source-develop-checks", "artifact-origin-attempt-expiry", "dependency-pins",
@@ -299,6 +299,7 @@ def validate_proof(proof, files, governance, api, now, source_sha, purpose, role
                 and sha(files[report["name"]]) == digest(report["sha256"]), "report bytes")
         measured = loads(files[report["name"]], canonical=True, limit=262144)
         public_safe(measured)
+        refuse_account_derived(files[report["name"]], governance)
         closed(measured, "check_id source_sha measurement")
         # Exact trusted evaluator pins own the report-specific facts, not caller input.
         require(type(measured) is dict and measured.get("check_id") == check["check_id"]

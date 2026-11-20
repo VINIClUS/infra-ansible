@@ -1318,7 +1318,8 @@ def execute(role):
     c.require(all(c.canonical(inputs.get(key)) == c.canonical(original_phase[key]) for key in
                   ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")), "original Phase A release/principal inputs")
     c.validate_cost(governance["cost"], purpose=step["purpose"], stage=baseline["cost_context"],
-                    evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time())
+                    evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time(),
+                    source_manifest_sha256=baseline["source_manifest_sha256"])
     with tempfile.TemporaryDirectory(prefix="cnesdata-lifecycle-") as directory:
         temp = Path(directory)
         temp.chmod(0o700)

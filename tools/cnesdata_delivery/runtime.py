@@ -71,7 +71,8 @@ def admission(role):
     cost_report = next(item for item in proof["reports"] if item["check_id"] == "cost-ledger-purpose-scope")
     c.require(c.loads(files[cost_report["name"]], canonical=True) == baseline["cost_evidence"], "authenticated measured cost report")
     c.validate_cost(governance["cost"], purpose=os.environ["PURPOSE"], stage=baseline["cost_context"],
-                    evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time())
+                    evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time(),
+                    source_manifest_sha256=baseline["source_manifest_sha256"])
     # Source metadata is live; baseline bodies are authenticated content, not assertions.
     for baseline in descriptor["baseline_artifacts"]:
         api.artifact(baseline["reference"], time.time())
