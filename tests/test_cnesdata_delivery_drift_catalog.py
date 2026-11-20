@@ -180,3 +180,50 @@ def test_listas_dos_reusables_cobrem_os_modulos_do_pyboot():
             required = (entry["application"] if "application" in name else entry["infra"]) | set(pyboot)
             assert required <= set(files), (name, sorted(required - set(files)))
             assert len(files) == len(set(files)), name
+
+
+FENCE_ROLE = "module.runtime_iam.aws_iam_role.promotion_fence_operator[0]"
+FENCE_POLICY = "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]"
+TRACKED = "module.processing.aws_iam_role_policy.step_functions_ecs[0]"
+
+
+def admission_case():
+    plan_ = plan(change(FENCE_ROLE, {"name": "f"}, {"name": "f"}), change(FENCE_POLICY, {"role": "f", "name": "p"},
+                 {"role": "f", "name": "p"}), change(TRACKED, {"role": "r", "name": "t"}, {"role": "r", "name": "t"}))
+    after = [spec(FENCE_ROLE), spec(FENCE_POLICY, "get_role_policy"), spec(TRACKED, "get_role_policy")]
+    rows = [{"address": s["address"], "attribute": "name", "readback": i, "path": ["x"], "encoding": "identity"}
+            for i, s in enumerate(after)]
+    readbacks = {"before": [], "after": after}
+    matrix = {"before": [], "after": rows}
+    return plan_, readbacks, matrix, {TRACKED}
+
+
+def test_admissao_pre_acquire_aceita_after_completo():
+    mapa = catalog()
+    mapa.admit_stages(*admission_case())
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ("orfa-after", "orphan readback"), ("orfa-before", "orphan readback"),
+    ("rastreado-duplicado", "tracked policy readback"), ("rastreado-ausente", "tracked policy readback"),
+    ("fence-duplicado", "fence readback"), ("fence-ausente", "fence readback")])
+def test_admissao_pre_acquire_recusa_after_mal_formado(mutation, message):
+    mapa = catalog()
+    plan_, readbacks, matrix, tracked = admission_case()
+    after, rows = readbacks["after"], matrix["after"]
+    if mutation == "orfa-after":
+        after.append(spec(FENCE_ROLE.replace("fence_operator", "outro")))
+    if mutation == "orfa-before":
+        readbacks["before"].append(spec())
+    if mutation in {"rastreado-duplicado", "fence-duplicado"}:
+        source = TRACKED if mutation == "rastreado-duplicado" else FENCE_ROLE
+        index = next(i for i, s in enumerate(after) if s["address"] == source)
+        after.append(dict(after[index]))
+        rows.append(rows[index] | {"readback": len(after) - 1})
+    if mutation in {"rastreado-ausente", "fence-ausente"}:
+        gone = TRACKED if mutation == "rastreado-ausente" else FENCE_POLICY
+        index = next(i for i, s in enumerate(after) if s["address"] == gone)
+        del after[index]
+        rows[:] = [r | {"readback": r["readback"] - (r["readback"] > index)} for r in rows if r["readback"] != index]
+    with pytest.raises(ValueError, match=message):
+        mapa.admit_stages(plan_, readbacks, matrix, tracked)

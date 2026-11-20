@@ -213,3 +213,52 @@ def test_preflight_publico_e_keeper_admitem_o_predecessor_real(monkeypatch, tmp_
     assert first_checkpoint(keeper.predecessor, current, owner, state, state_object) == keeper.predecessor["checkpoint"]
     assert keeper.predecessor["lease"] == previous
     assert current["lifecycle"]["predecessor_sha256"] == c.sha(c.canonical(reference))
+
+
+FENCE_POLICY = f"module.runtime_iam.aws_iam_role_policy.{FENCE}[0]"
+
+
+def retarget(chain, operation, address, mutation_address):
+    specs, rows = chain.gov["readbacks"]["after"], chain.gov["drift_matrix"]["after"]
+    index = next(i for i, s in enumerate(specs) if s["operation"] == operation
+                 and s["address"] not in {address, FENCE_ROLE, FENCE_POLICY, *UPDATED_POLICIES, *KNOWN_UPDATE})
+    old = specs[index]["address"]
+    specs[index]["address"] = mutation_address
+    for row in rows:
+        if row["address"] == old:
+            row["address"] = mutation_address
+
+
+def mutate_after(chain, mutation):
+    specs, rows = chain.gov["readbacks"]["after"], chain.gov["drift_matrix"]["after"]
+    if mutation == "orfa":
+        victim = next(s["address"] for s in specs if s["operation"] == "get_role" and s["address"] != FENCE_ROLE)
+        rows[:] = [r for r in rows if r["address"] != victim]
+        return "orphan readback"
+    if mutation == "rastreado-duplicado":
+        retarget(chain, "get_role_policy", UPDATED_POLICIES[0], UPDATED_POLICIES[0])
+        return "tracked policy readback"
+    if mutation == "fence-duplicado":
+        retarget(chain, "get_role", FENCE_ROLE, FENCE_ROLE)
+        return "fence readback"
+    gone = next(i for i, s in enumerate(specs) if s["address"] == FENCE_POLICY)
+    del specs[gone]
+    rows[:] = [r | {"readback": r["readback"] - (r["readback"] > gone)} for r in rows if r["readback"] != gone]
+    return "fence readback"
+
+
+@pytest.mark.parametrize("mutation", ["orfa", "rastreado-duplicado", "fence-duplicado", "fence-ausente"])
+def test_after_mal_formado_falha_antes_do_acquire_no_deploy(monkeypatch, tmp_path, mutation):
+    from tools.cnesdata_delivery import coordination_lease
+    chain = ReplayChain(monkeypatch, tmp_path)
+    runtime.execute("plan")
+    reference = chain.planned()
+    shutil.rmtree(chain.product / "infra/opentofu/env/prod/.terraform")
+    message = mutate_after(chain, mutation)
+    chain.configure("deploy", 2, reference)
+    acquired = []
+    original = coordination_lease.Lease.acquire
+    monkeypatch.setattr(coordination_lease.Lease, "acquire", lambda self: acquired.append(1) or original(self))
+    with pytest.raises(ValueError, match=message):
+        runtime.execute("deploy")
+    assert not acquired and not applies(chain)
