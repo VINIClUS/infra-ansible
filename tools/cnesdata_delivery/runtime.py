@@ -11,7 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from tools.cnesdata_delivery import contract as c, drift_catalog
+from tools.cnesdata_delivery import contract as c, drift_catalog, drift_handoff
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Lease, Watchdog, mapped_deadline
 from tools.cnesdata_delivery.provenance import GitHub, historical_plan_governance, preflight, validate_proof
@@ -32,12 +32,7 @@ def configuration(role):
               and backend["key"] == "cnesdata/prod/opentofu.tfstate" and backend["workspace"] == "default",
               "one exact governed product backend, not delivery state")
     value["role"] = role
-    matrix = value.get("drift_matrix")
-    c.require(type(matrix) is dict, "concrete governed drift matrix absent; Production blocked")
-    c.closed(matrix, "matrix_version source_sha purpose before after")
-    c.closed(value.get("readbacks"), "before after")
-    c.require(matrix["source_sha"] == os.environ["EXPECTED_SOURCE_SHA"] and matrix["purpose"] == os.environ["PURPOSE"],
-              "source/purpose-specific drift matrix required")
+    drift_handoff.pin(value)
     return value
 
 
@@ -75,8 +70,11 @@ def admission(role):
                     evidence=baseline["cost_evidence"], manifest=baseline["cost_manifest"], now=time.time(),
                     source_manifest_sha256=baseline["source_manifest_sha256"])
     # Source metadata is live; baseline bodies are authenticated content, not assertions.
-    for baseline in descriptor["baseline_artifacts"]:
-        api.artifact(baseline["reference"], time.time())
+    drift_files = {}
+    for entry in descriptor["baseline_artifacts"]:
+        drift_files[entry["purpose"]] = api.artifact(entry["reference"], time.time())
+    governance = drift_handoff.load(drift_files["drift"], governance, proof, files,
+                                    source=descriptor["source_sha"], purpose=os.environ["PURPOSE"])
     if role == "deploy":
         payload = descriptor["payload_artifact"]
         c.require(payload is not None and payload["source_sha"] == descriptor["source_sha"], "planned payload source")
@@ -96,7 +94,7 @@ def admission(role):
                     "run_id": payload["run_id"], "run_attempt": payload["run_attempt"]}, "transport exact producing run/attempt")
         for field in ("plan_binding_sha256", "envelope_sha256", "package_aggregate_sha256"):
             c.digest(index[field])
-        c.public_safe(index)
+        c.public_safe(index, governance)
         c.require(index["cost"] == governance["cost"], "complete index/A3 cost projection")
         historical = validate_proof(index["admission_proof"], transport,
                                     historical_plan_governance(governance, os.environ["PURPOSE"]),
@@ -138,6 +136,11 @@ def _environment():
     if os.environ.get("RUNNER_TRACKING_ID"):
         result["RUNNER_TRACKING_ID"] = os.environ["RUNNER_TRACKING_ID"]
     return result
+
+
+def _coverage(plan, reports, matrix, source, purpose, stage, state=None, *, specs):
+    c.drift_coverage(plan, reports, matrix, source, purpose, stage, state, specs=specs,
+                     envelope=drift_catalog.ENVELOPES.get(purpose))
 
 
 def _stage_calls(governance, plan, stage, state=None):
@@ -195,7 +198,7 @@ def _admit_before(aws, governance, files, binding):
     c.scheduler_preflight(plan, c.loads(state_bytes, state=True) if state_bytes is not None else None)
     calls = _stage_calls(governance, plan, "before")
     reports = _readbacks(aws, calls, _Unguarded)
-    c.drift_coverage(plan, reports, governance["drift_matrix"], source, purpose, "before", specs=calls)
+    _coverage(plan, reports, governance["drift_matrix"], source, purpose, "before", specs=calls)
     return calls
 
 
@@ -357,7 +360,7 @@ def _published_receipt(api, governance, run_id, attempt):
                                               "run_id": run_id, "run_attempt": attempt, "status": status},
               "previous index identity and locator")
     c.require(c.instant(receipt["verified_at"]) < c.instant(index["expires_at"]) - 120, "previous R1 publication validity")
-    c.public_safe(index)
+    c.public_safe(index, governance)
     return run, status, receipt, index
 
 
@@ -463,7 +466,7 @@ def _reuse_completed(aws, api, governance, lease, plan_envelope, files, baseline
     resolver = baseline.get("iam_resolver")
     calls = _stage_calls(governance, saved, "after", state)
     reports = _readbacks(aws, calls, ReadOnly(), (state_raw, resolver) if resolver is not None else None)
-    c.drift_coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state, specs=calls)
+    _coverage(saved, reports, governance["drift_matrix"], source, purpose, "after", state, specs=calls)
     if purpose == "phase-a":
         aws.verify_ecr(c.loads(files["promotion.json"], canonical=True), guard=guard)
         observed = _outputs(state_raw, envelope["plan"], f"{governance['account_id']}.dkr.ecr.us-east-2.amazonaws.com/{governance['ecr_repository']}")
@@ -620,7 +623,7 @@ def execute(role):
                                   governance["bootstrap_checkpoint"], source, aws, governance["account_id"], time.time())
         if role == "deploy":
             before_reports = _readbacks(aws, before_calls, watchdog)
-            c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
+            _coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
                              source, purpose, "before", specs=before_calls)
         if purpose == "phase-a":
             promotion = c.loads(files["promotion.json"], canonical=True)
@@ -691,7 +694,7 @@ def execute(role):
             c.validate_delta(c.loads(files["plan.json"], state=True), purpose)
             before_calls = _stage_calls(governance, c.loads(files["plan.json"], state=True), "before")
             before_reports = _readbacks(aws, before_calls, watchdog)
-            c.drift_coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
+            _coverage(c.loads(files["plan.json"], state=True), before_reports, governance["drift_matrix"],
                              source, purpose, "before", specs=before_calls)
             if purpose == "bootstrap":
                 from tools.cnesdata_delivery.outputs import initial_admission
@@ -743,7 +746,7 @@ def execute(role):
         calls = _stage_calls(governance, c.loads(files["plan.json"], state=True), "after", after_state) \
             if role == "deploy" else before_calls
         reports = _readbacks(aws, calls, watchdog, (after_bytes, iam_resolver) if role == "deploy" and iam_resolver is not None else None)
-        c.drift_coverage(c.loads(files["plan.json"], state=True), reports, governance["drift_matrix"],
+        _coverage(c.loads(files["plan.json"], state=True), reports, governance["drift_matrix"],
                          source, purpose, "after" if role == "deploy" else "before",
                          after_state, specs=calls)
         applied_outputs = None
@@ -819,7 +822,7 @@ def execute(role):
         public.mkdir()
         public_files = {"index.json": c.canonical(index), "redacted-plan.json": files["redacted-plan.json"],
                         **{r["name"]: proof_files[r["name"]] for r in proof["reports"]}}
-        c.public_safe(index)
+        c.public_safe(index, governance)
         for name, data in public_files.items():
             (public / name).write_bytes(data)
         artifact = _upload(public, f"cnesdata-{status}-{run_id}-{attempt}", watchdog, temp)

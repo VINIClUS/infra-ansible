@@ -668,7 +668,7 @@ def test_current_deploy_proof_cannot_bind_another_published_plan(monkeypatch, tm
     members["proof.json"] = runtime.c.canonical(proof)
     chain.gov["admission_reference"] = chain.add_artifact(reference["run_id"], members, reference["workflow_path"],
         repository=reference["repository"], source=reference["source_sha"])
-    monkeypatch.setenv("CNESDATA_DELIVERY_GOVERNANCE", runtime.c.canonical(chain.gov).decode())
+    monkeypatch.setenv("CNESDATA_DELIVERY_GOVERNANCE", runtime.c.canonical(chain.public_governance()).decode())
     with pytest.raises(ValueError, match="historical/current proof binding"):
         runtime.admission("deploy")
 

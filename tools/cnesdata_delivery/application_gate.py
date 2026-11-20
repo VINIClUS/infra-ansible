@@ -368,7 +368,7 @@ def publish_terminal(aws, api, governance, files, guard, temp):
              "run_attempt": owner["run_attempt"], "step": "terminal", "owner_sha256": owner["owner_sha256"],
              "generation": owner["generation"], "files": entries, **lc.application_identity(owner)}
     raw_index = c.canonical(index)
-    c.public_safe(index)
+    c.public_safe(index, governance)
     directory = temp / "terminal-public"
     directory.mkdir()
     (directory / "index.json").write_bytes(raw_index)
@@ -417,7 +417,7 @@ def published_terminal(api, governance, previous):
         c.closed(entry, "name sha256 size")
         c.digest(entry["sha256"])
         c.integer(entry["size"], 1, 262144)
-    c.public_safe(index)
+    c.public_safe(index, governance)
     return run, reference, public
 
 
