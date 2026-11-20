@@ -1139,7 +1139,8 @@ def test_execute_preserves_readback_time_through_post_release_latency(monkeypatc
     attrs = state["resources"][0]["instances"][0]["attributes"]
     address = "aws_acm_certificate.static_web"
     plan = c.loads(chain.plan_files["plan.json"], state=True)
-    plan["resource_changes"][0]["change"]["after"] = attrs
+    plan["resource_changes"][0]["change"]["after"] = {k: v for k, v in attrs.items() if k != "arn"}
+    plan["resource_changes"][0]["change"]["after_unknown"] = {"arn": True}
     chain.plan_files["plan.json"] = c.canonical(plan)
     chain.gov["readbacks"] = {"before": [], "after": [
         {"service": "acm", "operation": "describe_certificate", "address": address}]}

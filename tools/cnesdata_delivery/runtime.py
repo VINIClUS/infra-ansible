@@ -152,14 +152,10 @@ def _readbacks(aws, calls, watchdog, iam=None):
     if raw_state is not None:
         from tools.cnesdata_delivery.iam_boundary import bind_state
         resources = bind_state(resolver, c.loads(raw_state, state=True))
-    allowed = {"iam": {"get_role", "get_role_policy", "get_policy", "get_policy_version"},
-               "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule"},
-               "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
-               "dynamodb": {"describe_table"}, "acm": {"describe_certificate"}}
     reports = []
     for spec in calls:
         watchdog.check()
-        c.require(spec["operation"] in allowed.get(spec["service"], set()), "read-only API boundary")
+        drift_catalog.require_read_only(spec["service"], spec["operation"])
         value = aws.call(spec["service"], spec["operation"], **spec["parameters"])
         value.pop("ResponseMetadata", None)
         # SDK dates are normalized explicitly; no stringify of arbitrary objects.

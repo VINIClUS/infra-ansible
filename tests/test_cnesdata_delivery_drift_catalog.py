@@ -189,7 +189,9 @@ TRACKED = "module.processing.aws_iam_role_policy.step_functions_ecs[0]"
 
 def admission_case():
     plan_ = plan(change(FENCE_ROLE, {"name": "f"}, {"name": "f"}), change(FENCE_POLICY, {"role": "f", "name": "p"},
-                 {"role": "f", "name": "p"}), change(TRACKED, {"role": "r", "name": "t"}, {"role": "r", "name": "t"}))
+                 {"role": "f", "name": "p"}), change(TRACKED, {"role": "r", "name": "t"}, {"role": "r", "name": "t"}),
+                 change(ROLE, {"name": "fence"}, {"name": "fence"}),
+                 change(FENCE_ROLE.replace("fence_operator", "outro"), {"name": "o"}, {"name": "o"}))
     after = [spec(FENCE_ROLE), spec(FENCE_POLICY, "get_role_policy"), spec(TRACKED, "get_role_policy")]
     rows = [{"address": s["address"], "attribute": "name", "readback": i, "path": ["x"], "encoding": "identity"}
             for i, s in enumerate(after)]
@@ -275,13 +277,15 @@ def test_criacao_recusa_identidade_ausente_do_plano_e_valor_vazio_no_state(name)
     mapa = catalog()
     plan_, state, one, _ = create_case(name)
     change_ = plan_["resource_changes"][0]["change"]
+    rows = {"before": [], "after": [{"address": one["address"], "attribute": "id", "readback": 0, "path": ["x"],
+                                     "encoding": "identity"}]}
     change_["after_unknown"] = {"id": True}
     with pytest.raises(ValueError, match="readback identity"):
-        mapa.readback_calls(plan_, [one], "after", state)
+        mapa.admit_stages(plan_, {"before": [], "after": [one]}, rows, set())
     change_["after_unknown"] = CREATES[name][4]
     attributes = state["resources"][0]["instances"][0]["attributes"]
     attributes[next(k for k in CREATES[name][4] if k != "id")] = ""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="readback identity value"):
         mapa.readback_calls(plan_, [one], "after", state)
 
 

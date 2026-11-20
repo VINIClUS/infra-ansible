@@ -194,7 +194,8 @@ class CheckpointChain(OwnerChain):
         self.final_state, _, self.certificate, _, _ = fixture()
         attrs = self.final_state["resources"][0]["instances"][0]["attributes"]
         plan = c.loads(self.plan_files["plan.json"], state=True)
-        plan["resource_changes"][0]["change"]["after"] = attrs
+        plan["resource_changes"][0]["change"]["after"] = {k: v for k, v in attrs.items() if k != "arn"}
+        plan["resource_changes"][0]["change"]["after_unknown"] = {"arn": True}
         plan.update(saved() if established else saved({"recovery": None, "audit": None}))
         self.plan_files["plan.json"] = c.canonical(plan)
         self.attrs = attrs

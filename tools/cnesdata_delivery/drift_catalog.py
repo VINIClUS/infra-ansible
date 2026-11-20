@@ -18,6 +18,10 @@ IDENTITY = {
 }
 FENCE_READS = {"module.runtime_iam.aws_iam_role.promotion_fence_operator[0]": "get_role",
                "module.runtime_iam.aws_iam_role_policy.promotion_fence_operator[0]": "get_role_policy"}
+READ_ONLY = {"iam": {"get_role", "get_role_policy", "get_policy", "get_policy_version"},
+             "ecs": {"describe_task_definition", "describe_clusters"}, "scheduler": {"get_schedule"},
+             "s3": {"get_bucket_policy", "get_bucket_versioning", "get_object_lock_configuration"},
+             "dynamodb": {"describe_table"}, "acm": {"describe_certificate"}}
 LIST_PARAMETERS = {"clusters"}
 CREATE_DELETE = {"create", "delete"}
 
@@ -25,6 +29,10 @@ CREATE_DELETE = {"create", "delete"}
 def resource_type(address):
     parts = re.sub(r"\[[^\]]*\]", "", address).split(".")
     return parts[-2] if len(parts) > 1 else ""
+
+
+def require_read_only(service, operation):
+    c.require(operation in READ_ONLY.get(service, set()), "read-only API boundary")
 
 
 def _identity(tipo):
@@ -47,13 +55,23 @@ def _changes(plan):
             if item.get("mode") == "managed"}
 
 
+def _masked(change, attribute):
+    unknown = change.get("after_unknown")
+    return unknown is True or (type(unknown) is dict and unknown.get(attribute) not in (None, False))
+
+
 def _known(change, tipo):
-    after, unknown = change.get("after"), change.get("after_unknown")
+    after = change.get("after")
     if after is None:
         return
     for attribute, _ in _identity(tipo):
-        masked = unknown is True or (type(unknown) is dict and unknown.get(attribute) not in (None, False))
-        c.require(not masked and attribute in after, "readback identity unknown")
+        c.require(not _masked(change, attribute) and attribute in after, "readback identity unknown")
+
+
+def _declared(change, tipo):
+    after = change.get("after") or {}
+    for attribute, _ in _identity(tipo):
+        c.require(attribute in after or _masked(change, attribute), "readback identity unknown")
 
 
 def _stable(change, tipo):
@@ -64,16 +82,26 @@ def _stable(change, tipo):
         c.require(before.get(attribute) == after.get(attribute), "readback identity changed")
 
 
-def _call(spec, changes, expected):
+def check_spec(spec, changes):
+    """Args: spec, plan changes by address. Returns: resource type. Raises: ValueError."""
     c.closed(spec, "service operation address")
-    address = spec["address"]
-    c.require(address in changes, "readback address")
-    tipo = resource_type(address)
+    require_read_only(spec["service"], spec["operation"])
+    c.require(spec["address"] in changes, "readback address")
+    tipo = resource_type(spec["address"])
     _identity(tipo)
-    _known(changes[address], tipo)
-    _stable(changes[address], tipo)
-    c.require(address in expected, "readback absent before")
-    return spec | {"parameters": parameters(tipo, expected[address])}
+    change = changes[spec["address"]]
+    if "create" in change["actions"]:
+        _declared(change, tipo)
+    else:
+        _known(change, tipo)
+        _stable(change, tipo)
+    return tipo
+
+
+def _call(spec, changes, expected):
+    tipo = check_spec(spec, changes)
+    c.require(spec["address"] in expected, "readback absent before")
+    return spec | {"parameters": parameters(tipo, expected[spec["address"]])}
 
 
 def readback_calls(plan, specs, stage, state=None):
@@ -112,8 +140,11 @@ def _count(specs, address, operation):
 def admit_stages(plan, readbacks, matrix, tracked):
     """Args: plan, readbacks, matrix, tracked policy addresses. Raises: ValueError before acquire."""
     c.closed(readbacks, "before after")
+    changes = _changes(plan)
     for stage in ("before", "after"):
         c.require(type(readbacks[stage]) is list and type(matrix.get(stage)) is list, "readback specs")
+        for spec in readbacks[stage]:
+            check_spec(spec, changes)
         bind_rows(readbacks[stage], matrix[stage])
     after = readbacks["after"]
     for address in sorted(tracked):
