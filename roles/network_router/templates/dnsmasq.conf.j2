@@ -17,6 +17,9 @@ cache-size=1000
 {% if network_router_dns_domain | length > 0 %}
 domain={{ network_router_dns_domain }}
 {% endif %}
+{% for record in network_router_dns_host_records %}
+host-record={{ record.name }},{{ record.address }}
+{% endfor %}
 {% for name, zone in network_router_zones.items() if zone.dhcp is defined %}
 {% set gateway = zone.address | regex_replace('/.*$', '') %}
 
