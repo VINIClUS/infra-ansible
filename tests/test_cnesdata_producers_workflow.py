@@ -1,6 +1,8 @@
 """Reusable do observador: identidade, permissoes, busca em X_R e lista de modulos (P18)."""
 import ast
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,31 +81,53 @@ def listed(text):
     return [ast.literal_eval(value) for value in found]
 
 
-def imports_of(path, seen):
-    tree = ast.parse(path.read_text())
-    for node in ast.iter_child_nodes(tree):
-        names = []
-        if isinstance(node, ast.ImportFrom) and node.module:
-            base = node.module
-            names = [base] + [base + "." + alias.name for alias in node.names]
-        elif isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        for name in names:
-            if name.startswith("tools.cnesdata_delivery"):
-                relative = name.removeprefix("tools.cnesdata_delivery.").replace(".", "/") + ".py"
-                target = TOOLS / relative
-                if target.is_file() and relative not in seen:
+def closure(entry):
+    seen, pending = {entry}, [entry]
+    while pending:
+        tree = ast.parse((TOOLS / pending.pop()).read_text())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module] + [node.module + "." + alias.name for alias in node.names]
+            elif isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            for name in names:
+                relative = name.removeprefix("tools.cnesdata_delivery").lstrip(".").replace(".", "/") + ".py"
+                if name.startswith("tools.cnesdata_delivery.") and (TOOLS / relative).is_file() and relative not in seen:
                     seen.add(relative)
-                    imports_of(target, seen)
+                    pending.append(relative)
     return seen
 
 
-def test_lista_do_reusable_cobre_os_imports_transitivos_do_observador_e_do_montador(text):
+def test_lista_do_reusable_e_igual_a_closure_ast_com_imports_de_funcao_do_observador_e_do_montador(text):
     observe_list, assemble_list = listed(text)
     for modules, entry in ((observe_list, ENTRIES[0]), (assemble_list, ENTRIES[1])):
-        needed = imports_of(TOOLS / entry, {entry})
-        assert needed <= set(modules), sorted(needed - set(modules))
+        fetched = {name for name in modules if name.endswith(".py")}
+        assert fetched == closure(entry), sorted(fetched ^ closure(entry))
         assert len(modules) == len(set(modules)) and "producers/__init__.py" not in modules
+
+
+def test_montagem_com_exatamente_a_lista_do_assemble_le_pelo_github_sem_modulo_ausente(text, tmp_path):
+    for name in listed(text)[1]:
+        target = tmp_path / "tools/cnesdata_delivery" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((TOOLS / name).read_bytes())
+    script = (
+        "import sys; sys.path.insert(0, '.')\n"
+        "import email.utils, time, urllib.request\n"
+        "class Response:\n"
+        "    headers = {'Date': email.utils.formatdate(time.time(), usegmt=True)}\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *a): return False\n"
+        "    def read(self, n): return b'{\"ok\": true}'\n"
+        "class Opener:\n"
+        "    def open(self, request, timeout): return Response()\n"
+        "urllib.request.build_opener = lambda *a: Opener()\n"
+        "from tools.cnesdata_delivery import provenance\n"
+        "assert provenance.GitHub(token='x').read('repos/a/b') == {'ok': True}\n"
+    )
+    done = subprocess.run([sys.executable, "-I", "-c", script], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
 
 
 def test_lista_so_cobre_arquivos_que_existem_no_repositorio(text):
@@ -134,3 +158,32 @@ def test_entrypoints_rodam_como_modulo(text):
 
 def test_nenhuma_lista_files_para_nao_confundir_a_guarda_dos_reusables_do_gate(text):
     assert not re.search(r"files = \[", text)
+
+
+def test_observe_mascara_cada_valor_da_configuracao_antes_de_qualquer_chamada_aws(text):
+    observe = text.partition("  assemble:")[0]
+    assert "::add-mask::" in observe and "OBSERVER_CONFIG" in observe
+    assert observe.index("::add-mask::") < observe.index("producers.observer")
+
+
+def test_segredos_ficam_no_env_do_passo_observe_e_nao_no_job(document):
+    observe = document["jobs"]["observe"]
+    assert not {"REPORT_HMAC_KEY", "OBSERVER_CONFIG", "OBSERVER_ROLE_ARN"} & set(observe.get("env", {}))
+    holders = [step for step in observe["steps"] if "REPORT_HMAC_KEY" in step.get("env", {})]
+    assert [step["name"] for step in holders] == ["Observe with the read-only role"]
+    assert {"REPORT_HMAC_KEY", "OBSERVER_CONFIG", "OBSERVER_ROLE_ARN"} <= set(holders[0]["env"])
+    masks = [step for step in observe["steps"] if "OBSERVER_CONFIG" in step.get("env", {}) and step is not holders[0]]
+    assert masks and all("REPORT_HMAC_KEY" not in step["env"] for step in masks)
+
+
+def test_observe_so_roda_no_role_plan_e_o_assemble_aceita_observe_pulado(document):
+    jobs = document["jobs"]
+    assert "inputs.role" in jobs["observe"]["if"] and "plan" in jobs["observe"]["if"]
+    condition = jobs["assemble"]["if"]
+    assert "skipped" in condition and "success" in condition and "cancelled" in condition
+
+
+def test_assemble_do_deploy_nao_baixa_o_artefato_de_observacao_do_proprio_run(document):
+    steps = document["jobs"]["assemble"]["steps"]
+    download = next(step for step in steps if step["name"].startswith("Download the observations"))
+    assert "inputs.role" in download["if"]

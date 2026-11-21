@@ -49,6 +49,7 @@ env:
 
 jobs:
   observe:
+    if: ${{ inputs.role == 'plan' }}
     runs-on: ubuntu-latest
     environment: cnesdata-observer
     timeout-minutes: 20
@@ -56,14 +57,23 @@ jobs:
       actions: read
       contents: read
       id-token: write
-    env:
-      REPORT_HMAC_KEY: ${{ secrets.report_hmac_key }}
-      OBSERVER_CONFIG: ${{ secrets.observer_config }}
-      OBSERVER_ROLE_ARN: ${{ secrets.observer_role_arn }}
     outputs:
       drift_artifact_id: ${{ steps.drift.outputs.artifact-id }}
       drift_artifact_digest: ${{ steps.drift.outputs.artifact-digest }}
     steps:
+      - name: Mask every value of the private observer configuration
+        shell: bash
+        env:
+          OBSERVER_CONFIG: ${{ secrets.observer_config }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          value = json.loads(os.environ["OBSERVER_CONFIG"])
+          values = [item for item in value.values() if isinstance(item, str)] + list(value["roles"].values())
+          for item in values:
+              print("::add-mask::" + item)
+          PY
       - name: Fetch the pinned producer modules from the authenticated reusable sha
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -82,19 +92,32 @@ jobs:
                 refs[0].path !== path + "@" + refs[0].sha ||
                 refs[0].sha !== process.env.X_STAR) throw new Error("Producer pin");
             const modules = [
+              "application_gate.py",
+              "aws_boundary.py",
               "contract.py",
               "coordination_lease.py",
               "drift_catalog.py",
               "drift_handoff.py",
-              "provenance.py",
-              "session_owner.py",
-              "session_policy.py",
-              "runtime-requirements.txt",
+              "evidence.py",
+              "ext2_transport.py",
+              "iam_boundary.py",
+              "iam_expression.py",
+              "iam_source.py",
+              "lifecycle_contract.py",
+              "lifecycle_runtime.py",
+              "outputs.py",
               "producers/aws_reader.py",
               "producers/chain.py",
               "producers/drift_handoff.py",
               "producers/observer.py",
-              "producers/phase_inputs.py"
+              "producers/phase_inputs.py",
+              "provenance.py",
+              "runtime.py",
+              "session_grouping.py",
+              "session_owner.py",
+              "session_policy.py",
+              "signing_gate.py",
+              "runtime-requirements.txt"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
             for (const name of modules) {
@@ -125,6 +148,10 @@ jobs:
           open(os.path.join(os.environ["RUNNER_TEMP"], "request.json"), "w").write(json.dumps(value))
           PY
       - name: Observe with the read-only role
+        env:
+          REPORT_HMAC_KEY: ${{ secrets.report_hmac_key }}
+          OBSERVER_CONFIG: ${{ secrets.observer_config }}
+          OBSERVER_ROLE_ARN: ${{ secrets.observer_role_arn }}
         run: >-
           python3 -m tools.cnesdata_delivery.producers.observer
           --request "${RUNNER_TEMP}/request.json" --out "${RUNNER_TEMP}/observed"
@@ -149,6 +176,7 @@ jobs:
 
   assemble:
     needs: observe
+    if: ${{ !cancelled() && (needs.observe.result == 'success' || needs.observe.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -177,10 +205,20 @@ jobs:
                 refs[0].path !== path + "@" + refs[0].sha ||
                 refs[0].sha !== process.env.X_STAR) throw new Error("Producer pin");
             const modules = [
+              "application_gate.py",
+              "aws_boundary.py",
               "contract.py",
+              "coordination_lease.py",
               "drift_catalog.py",
+              "drift_handoff.py",
+              "evidence.py",
+              "ext2_transport.py",
+              "iam_boundary.py",
+              "iam_expression.py",
+              "iam_source.py",
               "lifecycle_contract.py",
-              "provenance.py",
+              "lifecycle_runtime.py",
+              "outputs.py",
               "producers/assembler.py",
               "producers/baseline_commitments.py",
               "producers/chain.py",
@@ -188,7 +226,13 @@ jobs:
               "producers/cost_ledger.py",
               "producers/inputs.py",
               "producers/measurements.py",
-              "producers/pins.py"
+              "producers/pins.py",
+              "provenance.py",
+              "runtime.py",
+              "session_grouping.py",
+              "session_owner.py",
+              "session_policy.py",
+              "signing_gate.py"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
             for (const name of modules) {
@@ -199,6 +243,7 @@ jobs:
               fs.writeFileSync("tools/cnesdata_delivery/" + name, Buffer.from(item.content, "base64"), {mode: 0o600});
             }
       - name: Download the observations of this run
+        if: ${{ inputs.role == 'plan' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: delivery-observed-${{ github.run_id }}-${{ github.run_attempt }}
