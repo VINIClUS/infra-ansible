@@ -572,7 +572,13 @@ def _closed_ready_child(world, journal, ready, timeout):
     journal._observation_bytes[c.sha(raw)] = raw
     journal._pending = [{"kind": "sdk-call", "reference_sha256": "f" * 64}] if ready["pending"] else []
     world.ready_raw = raw
-    world.clock.value += timeout + 7 if ready["child_seconds"] == "timeout" else ready["child_seconds"]
+    if ready["child_seconds"] != "timeout":
+        world.clock.value += ready["child_seconds"]
+        return
+    for _ in range(timeout // 5):
+        world.clock.value += 5
+        journal.guard()
+    world.clock.value += timeout % 5 + 7
 
 
 def _api_stage_fakes(monkeypatch, world, ready, probe):
@@ -1171,8 +1177,8 @@ def test_phase_b_handler_recusa_sem_capacidade_depois_da_capability_e_nunca_roda
 
 
 def test_phase_b_handler_admite_o_upload_quando_o_child_usa_todo_o_timeout(monkeypatch):
-    """The child runs its whole timeout plus the 7 s adapter exit and the probe-inventory read takes its 20 s: the 20 s
-    DD-2 upload is still admitted by phase_capacity inside the API stage."""
+    """The child runs its whole timeout, guarding every 5 s like _adapter_exchange, plus the 7 s adapter exit, and the
+    probe-inventory read takes its 20 s: the 20 s DD-2 upload is still admitted by phase_capacity inside the API stage."""
     world = _prepared_world(monkeypatch, ready={"child_seconds": "timeout"})
     read = world.github.read
 
