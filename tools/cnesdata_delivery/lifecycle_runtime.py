@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import drift_catalog as dc
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Watchdog
@@ -24,7 +25,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
     c.digest(source, 40)
     c.integer(run_id)
     c.integer(attempt)
-    c.require(role in {"plan", "deploy", "application"} and source == governance["source_sha"], "governed source/role")
+    c.require(role in {"plan", "deploy", "audit", "application"} and source == governance["source_sha"], "governed source/role")
     c.require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and os.environ.get("GITHUB_REF") == "refs/heads/main"
               and os.environ.get("GITHUB_REPOSITORY") == c.REPOSITORY, "manual production caller")
     purpose = governance["application_purpose"]
@@ -84,6 +85,7 @@ def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
+    c.require("application_product_source_manifest" not in governance, "inline product source manifest")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
     request_raw = os.environ["REQUEST_DESCRIPTOR"].encode()
@@ -98,12 +100,13 @@ def admission(role):
     c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
     api = ArtifactDigests(GitHub()) if role == "application" else GitHub()
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
-    from tools.cnesdata_delivery.provenance import application_caller
+    from tools.cnesdata_delivery.provenance import application_caller, product_source_manifest
+    governance = governance | {"application_product_source_manifest": product_source_manifest(api, governance, time.time())}
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
     c.require(request["application_purpose"] == caller["application_purpose"]
               and request["caller_binding_sha256"] == c.sha(c.canonical(caller)), "original requested application caller")
     governance = governance | {"authenticated_application_caller": caller, "authenticated_application_job": original_job}
-    if caller["application_purpose"] == "mode-readiness-drill" and role in {"plan", "deploy"}:
+    if caller["application_purpose"] == "mode-readiness-drill" and role in {"plan", "deploy", "audit"}:
         c.require(step["purpose"] == "application-prepare" and step["mode"] == "mode-canary"
                   and step["direction"] == "advance", "readiness infra only mode-canary prepare")
     if role == "application":
@@ -910,7 +913,7 @@ def readbacks(aws, specifications, guard):
     reports = []
     for spec in specifications:
         grouped = spec.get("service") == "scheduler" and spec.get("operation") == "list_schedules"
-        c.closed(spec, "service operation parameters absent" + (" members" if grouped else ""))
+        c.closed({k: v for k, v in spec.items() if k != "address"}, "service operation parameters absent" + (" members" if grouped else ""))
         c.require(spec["operation"] in allowed.get(spec["service"], set()), "lifecycle readback API")
         c.require(type(spec["parameters"]) is dict and type(spec["absent"]) is bool, "readback parameters")
         if grouped:
@@ -1267,15 +1270,19 @@ def execute(role):
     historical = lc.phase_a_originals(carrier)
     c.require(historical["envelope"]["plan"]["phase_a_inputs"]["canary_trusted_principal_arn"] ==
               application_authority.application_fragment["application_role_arn"], "original Phase A/current application principal")
-    payload, plan_indexes = {}, []
+    payload, plan_indexes, origins = {}, [], {}
     for input_name, public_files in public.items():
         index, files = private_payload(aws, governance, request, run, public_files, guard=guard)
         c.require(index["step"] == step["input_jobs"][input_name]["step"], "private original producer step")
         c.require(index["owner_sha256"] == owner["owner_sha256"] and index["generation"] == owner["generation"], "payload original owner")
         c.require(not set(files) & set(payload), "ambiguous private payload")
         payload.update(files)
+        origins.update(dict.fromkeys(files, index["step"]))
         if "plan.json" in files:
             plan_indexes.append(index)
+    admit_approval_origin(governance, role, origins)
+    if role != "deploy":
+        payload.pop("approval.json", None)
     product = Path.cwd() / "product"
     source = subprocess.run(["git", "rev-parse", "HEAD"], cwd=product, capture_output=True, text=True, check=True, timeout=5).stdout.strip()
     c.require(source == request["source_sha"], "immutable product checkout")
@@ -1310,7 +1317,7 @@ def execute(role):
     c.require(checkpoint_state == before and checkpoint["state_object"] == before_object
               and c.sha(payload["checkpoint.json"]) == guard.window["checkpoint_sha256"], "real predecessor checkpoint")
     terraform_raw, activation_sha256 = payload["inputs.json"], None
-    if role == "deploy" and step["purpose"] == "application-prepare" and step["mode"] == "operational":
+    if role in {"deploy", "audit"} and step["purpose"] == "application-prepare" and step["mode"] == "operational":
         unwrapped = operational_inputs(terraform_raw, governance=governance, owner=owner, window=guard.window)
         terraform_raw, activation_sha256 = unwrapped["terraform"], unwrapped["activation_sha256"]
     inputs = c.loads(terraform_raw, canonical=True)
@@ -1346,6 +1353,15 @@ def execute(role):
             # can authorize its digest for a subsequent deploy invocation.
             c._secrets(c.loads(result_files["plan.json"], state=True))
             status = "planned"
+        elif role == "audit":
+            (temp / "plan.bin").write_bytes(payload["plan.bin"])
+            guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "saved.json",
+                      timeout=20, mutating=False)
+            c.require(c.loads((temp / "saved.json").read_bytes(), state=True) == c.loads(payload["plan.json"], state=True),
+                      "binary/json exact plan")
+            approval = build_approval(governance=governance, step=step, owner=owner, payload=payload, before_raw=before_raw)
+            result_files = {"approval.json": c.canonical(approval)}
+            status = "audited"
         else:
             approval = c.loads(payload["approval.json"], canonical=True)
             c.closed(approval, "version owner purpose direction plan_sha256 inputs_sha256 checkpoint_sha256 delta drift_matrix readbacks")
@@ -1361,7 +1377,8 @@ def execute(role):
             c.require(approval["delta"]["before"] == lc.state_resources(c.loads(before_raw, state=True)), "audit actual full state")
             lc.validate_delta(plan, approval["delta"])
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
-            before_reports = readbacks(aws, approval["readbacks"]["before"], guard)
+            before_calls = readback_calls(plan, approval["readbacks"]["before"], "before")
+            before_reports = readbacks(aws, before_calls, guard)
             c.drift_coverage(plan, before_reports, approval["drift_matrix"], source, step["purpose"], "before")
             (temp / "plan.bin").write_bytes(payload["plan.bin"])
             guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "saved.json", timeout=20, mutating=False)
@@ -1377,7 +1394,8 @@ def execute(role):
             if resolver:
                 from tools.cnesdata_delivery.iam_boundary import bind_state
                 bind_state(resolver, state)
-            reports = readbacks(aws, approval["readbacks"]["after"], guard)
+            after_calls = readback_calls(plan, approval["readbacks"]["after"], "after", state)
+            reports = readbacks(aws, after_calls, guard)
             c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
@@ -1395,6 +1413,77 @@ def execute(role):
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)
+
+
+def admit_approval_origin(governance, role, origins):
+    if role != "deploy":
+        return
+    steps = governance["lifecycle_steps"]
+    c.require("approval.json" in origins, "independent audit approval absent")
+    c.require(origins["approval.json"] in steps and steps[origins["approval.json"]]["role"] == "audit",
+              "approval producer is not the independent audit")
+
+
+def _spec_fields(spec):
+    c.require(type(spec) is dict, "readback spec fields")
+    grouped = spec.get("service") == "scheduler" and spec.get("operation") == "list_schedules"
+    c.closed(spec, "service operation address absent" + (" members" if grouped else ""))
+    c.require(type(spec["address"]) is str and type(spec["absent"]) is bool, "readback spec fields")
+    c.require(not grouped or (type(spec["members"]) is list and len(spec["members"]) <= 32
+                              and all(type(name) is str for name in spec["members"])), "readback spec members")
+    return grouped
+
+
+def _absent_call(spec, changes, stage):
+    change = changes.get(spec["address"])
+    c.require(stage == "after" and change is not None and change["actions"] == ["delete"], "absent readback")
+    dc.require_read_only(spec["service"], spec["operation"])
+    return spec | {"parameters": dc.parameters(dc.resource_type(spec["address"]), change["before"])}
+
+
+def _live_call(spec, derived, grouped):
+    parameters = {"GroupName": derived["parameters"]["GroupName"]} if grouped else derived["parameters"]
+    return spec | {"parameters": parameters}
+
+
+def readback_calls(plan, specs, stage, state=None):
+    """Args: plan, approval specs, stage, state. Returns: specs plus derived parameters. Raises: ValueError."""
+    c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"}, "readback specs")
+    grouped = [_spec_fields(spec) for spec in specs]
+    changes = {row["address"]: row["change"] for row in plan.get("resource_changes", []) if row.get("mode") == "managed"}
+    live = [index for index, spec in enumerate(specs) if not spec["absent"]]
+    cores = [{"service": "scheduler", "operation": "get_schedule", "address": specs[index]["address"]} if grouped[index]
+             else {key: specs[index][key] for key in ("service", "operation", "address")} for index in live]
+    derived = dict(zip(live, dc.readback_calls(plan, cores, stage, state))) if live else {}
+    return [_live_call(spec, derived[index], grouped[index]) if index in derived else _absent_call(spec, changes, stage)
+            for index, spec in enumerate(specs)]
+
+
+def build_approval(*, governance, step, owner, payload, before_raw):
+    """Args: governance, step, owner, payload, before_raw. Returns: approval for the exact saved plan. Raises: ValueError."""
+    c.require(step["direction"] == "advance", "audit converge custody unavailable")
+    plan = c.loads(payload["plan.json"], state=True)
+    changes = [row for row in plan.get("resource_changes", []) if row.get("mode") == "managed"
+               and row["change"]["actions"] not in (["no-op"], ["read"])]
+    delta = {"purpose": step["purpose"], "direction": step["direction"], "mode": step["mode"],
+             "before": lc.state_resources(c.loads(before_raw, state=True)), "original": {}, "created": {},
+             "expected_changes_sha256": c.sha(c.canonical(changes))}
+    lc.validate_delta(plan, delta)
+    readbacks_, matrix = governance["readbacks"], governance["drift_matrix"]
+    c.closed(readbacks_, "before after")
+    c.require(type(matrix) is dict and matrix.get("source_sha") == governance["source_sha"]
+              and matrix.get("purpose") == step["purpose"], "governed drift matrix identity")
+    for stage in ("before", "after"):
+        specs = readback_calls(plan, readbacks_[stage], "before") if stage == "before" else readbacks_[stage]
+        c.require(type(matrix.get(stage)) is list, "readback specs")
+        if stage == "after":
+            for spec in specs:
+                _spec_fields(spec)
+        dc.bind_rows(specs, matrix[stage])
+    return {"version": 1, "owner": owner, "purpose": step["purpose"], "direction": step["direction"],
+            "plan_sha256": c.sha(payload["plan.bin"]), "inputs_sha256": c.sha(payload["inputs.json"]),
+            "checkpoint_sha256": c.sha(payload["checkpoint.json"]), "delta": delta,
+            "drift_matrix": matrix, "readbacks": readbacks_}
 
 
 def publish(aws, governance, request, run, owner, files, api, guard, temp, status):
@@ -1491,7 +1580,7 @@ def export_credentials(value):
 
 
 def main(role, operation):
-    c.require(role in {"plan", "deploy"} and operation in {"preflight", "credentials", "execute"}, "closed lifecycle command")
+    c.require(role in {"plan", "deploy", "audit"} and operation in {"preflight", "credentials", "execute"}, "closed lifecycle command")
     if operation == "preflight":
         admission(role)
     elif operation == "credentials":

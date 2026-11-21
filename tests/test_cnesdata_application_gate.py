@@ -3030,6 +3030,10 @@ def _application_entry_case(monkeypatch, tmp_path):
     current, current_api, run, step, job, _ = _application_caller_fixture(monkeypatch)
     from test_cnesdata_application_closure import ROOT as CLOSURE_ROOT, WORKFLOW, expected_closure, workflow_contents
     gov = chain.gov | current
+    from test_cnesdata_product_source_manifest import manifest_world
+    inline = gov.pop("application_product_source_manifest")
+    manifest_governance, manifest_api, _ = manifest_world(inline, source=run["head_sha"])
+    gov["application_product_source_manifest_artifact"] = manifest_governance["application_product_source_manifest_artifact"]
     gov["gate_shas"] = chain.gov["gate_shas"] | current["gate_shas"]
     gov["application_source_closure_sha256"] = expected_closure(lambda path: (CLOSURE_ROOT / path).read_bytes())
     workflow_url = "repos/VINIClUS/infra-ansible/contents/" + WORKFLOW + "?ref=" + gov["gate_shas"]["application"]
@@ -3067,11 +3071,15 @@ def _application_entry_case(monkeypatch, tmp_path):
                 return workflow_contents(served["workflow"])
             if "/contents/docs/cnesdata-delivery-application-lifecycle.md?ref=" in path:
                 return {"encoding": "base64", "content": base64.b64encode(contract_raw).decode()}
+            if f"/actions/artifacts/{manifest_governance['application_product_source_manifest_artifact']['artifact_id']}" in path:
+                return manifest_api.read(path, **kwargs)
             if "/actions/runs/44/" in path or "/compare/" in path or "/commits/" in path or "/contents/.github/" in path:
                 return current_api.read(path, **kwargs)
             return history_api.read(path, **kwargs)
-        def artifact(self, *args, **kwargs):
-            return history_api.artifact(*args, **kwargs)
+        def artifact(self, reference, *args, **kwargs):
+            if reference["artifact_id"] == manifest_governance["application_product_source_manifest_artifact"]["artifact_id"]:
+                return manifest_api.artifact(reference, *args, **kwargs)
+            return history_api.artifact(reference, *args, **kwargs)
     monkeypatch.setattr(lr, "GitHub", API)
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("public preflight must not construct AWS"))
     def configure():
@@ -3087,7 +3095,7 @@ def _application_entry_case(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("mutation", [None, "disabled", "null-fragment", "null-configuration", "old-fragment", "expired-fragment",
-    "mixed-source", "mixed-attempt", "wrong-job", "caller-hash", "missing-history", "job-id-bool", "schema-bool", "closure"])
+    "mixed-source", "mixed-attempt", "wrong-job", "caller-hash", "missing-history", "job-id-bool", "schema-bool", "closure", "manifest-inline", "manifest-hash", "manifest-other-run"])
 def test_application_cli_preflight_uses_real_public_admission(monkeypatch, tmp_path, mutation):
     from tools.cnesdata_delivery import application_gate as ag
     gov, request, run, job, configure, store, reads = _application_entry_case(monkeypatch, tmp_path)
@@ -3104,6 +3112,9 @@ def test_application_cli_preflight_uses_real_public_admission(monkeypatch, tmp_p
     if mutation == "missing-history": gov.pop("lifecycle_predecessor")
     if mutation == "job-id-bool": job["id"] = True
     if mutation == "closure": configure.served["workflow"] += b"# edited after the pin\n"
+    if mutation == "manifest-inline": gov["application_product_source_manifest"] = {"version": 1, "source_sha": "b" * 40, "files": {}}
+    if mutation == "manifest-hash": gov["application_product_source_closure_sha256"] = "0" * 64
+    if mutation == "manifest-other-run": gov["application_product_source_manifest_artifact"]["run_attempt"] = 9
     configure()
     before = store.get()
     if mutation:
@@ -3117,6 +3128,9 @@ def test_application_cli_preflight_uses_real_public_admission(monkeypatch, tmp_p
             "repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 2}
         assert any("/actions/runs/44/attempts/2/jobs" in path for path in reads)
         assert any("/actions/jobs/91" in path for path in reads)
+        assert "application_product_source_manifest_artifact" in admitted[0]
+        assert admitted[0]["application_product_source_manifest"]["source_sha"] == "b" * 40
+        assert any("/actions/artifacts/7001" in path for path in reads)
         assert reads.count("repos/VINIClUS/infra-ansible/contents/.github/workflows/reusable-cnesdata-application-gate.yml?ref="
                            + gov["gate_shas"]["application"]) == 1
     assert store.get() == before

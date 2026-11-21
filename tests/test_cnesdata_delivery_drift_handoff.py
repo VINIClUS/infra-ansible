@@ -181,7 +181,8 @@ def test_listas_dos_reusables_cobrem_os_modulos_do_pyboot():
     from tools.cnesdata_delivery import lifecycle_contract as lc
     assert "drift_handoff.py" in lc.APPLICATION_PYBOOT
     lists = reusable_lists()
-    assert {len(values) for values in lists.values()} <= {1, 2} and len(lists) == 3
+    assert {len(values) for values in lists.values()} <= {1, 2} and len(lists) == 4
+    assert "reusable-cnesdata-infra-audit-gate.yml" in lists and len(lists["reusable-cnesdata-infra-audit-gate.yml"]) == 1
     for name, values in lists.items():
         for files in values:
             assert "drift_handoff.py" in files and len(files) == len(set(files)), name
