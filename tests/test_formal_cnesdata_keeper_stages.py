@@ -40,7 +40,6 @@ ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-
 TERMINAL_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)">>,?$')
 STAGE_ROW = re.compile(r'^ {4}"([a-z-]+)",?$')
 EXPECTED_DIFFERENCE = {
-    ("api", "host", "external", "static"),
     ("static", "publish-static", "internal", "unit"),
     ("unit", "unit", "internal", "phase-c-recovery"),
     ("phase-c-recovery", "phase-c-recovery", "external", "phase-c-audit"),

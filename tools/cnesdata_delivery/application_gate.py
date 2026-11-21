@@ -579,6 +579,9 @@ def _adapter_message(frame, journal):
     raise ValueError("adapter SDK broker unavailable or unknown frame")
 
 
+ADAPTER_EXIT_SECONDS = 7
+
+
 def invoke_adapter(*, product, source, manifest, manifest_sha256, journal, timeout):
     """Fixed authenticated child with bounded IPC and no inherited credentials.
 
@@ -594,7 +597,7 @@ def invoke_adapter(*, product, source, manifest, manifest_sha256, journal, timeo
     c.integer(timeout, 1, 900)
     c.require(journal._request["source_sha"] == source, "adapter original source request")
     authenticate_adapter_closure(product, source, manifest, manifest_sha256)
-    journal._guard.check(timeout + 7)
+    journal._guard.check(timeout + ADAPTER_EXIT_SECONDS)
     journal.guard()
     with tempfile.TemporaryDirectory(prefix="cnesdata-adapter-") as home:
         env = {"PATH": os.defpath, "HOME": home, "LANG": "C.UTF-8", "AWS_CONFIG_FILE": "/dev/null",
@@ -1215,9 +1218,12 @@ def _phase_b_step(governance):
     return steps[0]
 
 
+SAME_RUN_READ_SECONDS = 20
+
+
 def _same_run_job(api, run, *, kind, job_name, guard):
     """The unique same-run job with the catalogue name; None while it does not exist."""
-    guard.check(20)
+    guard.check(SAME_RUN_READ_SECONDS)
     jobs = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
     guard.check()
     c.require(jobs["total_count"] == len(jobs["jobs"]) <= 100, f"complete {kind} publication inventory")
@@ -2005,15 +2011,19 @@ def _close_drain_seconds(window, credential_limit, now):
 
 
 CLOSED_READY_PUBLICATION_SECONDS = 20
+CLOSED_READY_RESERVE_SECONDS = ADAPTER_EXIT_SECONDS + SAME_RUN_READ_SECONDS + CLOSED_READY_PUBLICATION_SECONDS
 
 
 def _closed_ready_seconds(window, credential_limit, now):
-    """Largest API-stage child timeout that still leaves the DD-2 publication slot admitted by phase_capacity."""
-    seconds = int(min(window["deadline"] - now - 38, credential_limit - now - 121)) - CLOSED_READY_PUBLICATION_SECONDS
+    """Largest API-stage child timeout that leaves the adapter exit, the probe read and the DD-2 upload admitted.
+
+    The reserve is the declared bound of each step after the child; _closed_ready_observation is in-memory only.
+    """
+    seconds = int(min(window["deadline"] - now - 38, credential_limit - now - 121)) - CLOSED_READY_RESERVE_SECONDS
     c.require(seconds >= 1, "closed-ready capacity")
     lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
-    lc.phase_capacity(window, now=now + seconds, credential_deadline=credential_limit,
-                      operation_seconds=CLOSED_READY_PUBLICATION_SECONDS)
+    lc.phase_capacity(window, now=now + seconds + ADAPTER_EXIT_SECONDS + SAME_RUN_READ_SECONDS,
+                      credential_deadline=credential_limit, operation_seconds=CLOSED_READY_PUBLICATION_SECONDS)
     return seconds
 
 
@@ -2036,6 +2046,8 @@ def _phase_b_approval(published):
     mode = delta.get("mode") if type(delta) is dict else None
     c.require(mode != "established", "phase_b=established_mode_unsupported")
     c.require(mode == "initial", "phase_b=mode")
+    c.require(type(delta.get("before")) is dict and lc.STATE_MACHINE not in delta["before"],
+              "phase_b=initial_requires_absent_state_machine")
     return approval
 
 
