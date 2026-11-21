@@ -4,11 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from tools.cnesdata_delivery.contract import REPOSITORY as CNESDATA
+
 ROOT = Path(__file__).resolve().parents[1]
 MODELO = ROOT / "formal/cnesdata_delivery/pins.als"
 RAIZ_TOFU = ROOT / "opentofu/cnesdata-delivery"
 RAIZ_DO_TRUST = "TrustPin"
-SO_NO_MODELO = {"observer_workflow_sha": "X_R, trust do reusable do observador, entra no P22"}
+SO_NO_MODELO = {}
+REFS_FORA_DO_X = {CNESDATA + "/.github/workflows/phase-a-prepare.yml@refs/heads/main"}
 MUTANTES_EXIGIDOS = {
     "mutant_sem_ancestralidade",
     "mutant_k_igual_x",
@@ -77,6 +80,8 @@ def _variaveis_de_trust(textos):
     variaveis = set()
     for texto in textos:
         for ref in JOB_WORKFLOW_REF.finditer(texto):
+            if ref.group(1) in REFS_FORA_DO_X:
+                continue
             pin = ref.group(1).rpartition("@")[2]
             expressoes = INTERPOLACAO.findall(pin)
             if len(expressoes) != 1 or pin != f"${{{expressoes[0]}}}":
@@ -110,6 +115,12 @@ def test_diferenca_esperada_some_quando_a_raiz_tofu_ganha_o_trust():
     assert set(SO_NO_MODELO) & _trusts_da_raiz_tofu() == set()
 
 
+def test_unico_trust_por_ref_fora_do_x_e_o_escritor_de_phase_inputs():
+    textos = [arquivo.read_text(encoding="utf-8") for arquivo in sorted(RAIZ_TOFU.glob("*.tf"))]
+    refs = [ref.group(1) for texto in textos for ref in JOB_WORKFLOW_REF.finditer(texto)]
+    assert sorted(ref for ref in refs if "${" not in ref) == sorted(REFS_FORA_DO_X)
+
+
 def test_modelo_declara_os_mutantes_exigidos_e_runs_sat():
     texto = _modelo()
     assert MUTANTES_EXIGIDOS <= set(re.findall(r"^check\s+(mutant_\w+)", texto, re.MULTILINE))
@@ -126,7 +137,8 @@ def test_resolve_each_value_pelo_local_do_for_each():
     assert _variaveis_de_trust([texto]) == {"var.x.a_sha", "var.x.b_sha"}
 
 
-@pytest.mark.parametrize("pin", ["${local.sha}", "${each.key}", "literal", "${var.a.sha}${var.b.sha}", "x${var.a.sha}"])
+@pytest.mark.parametrize("pin", ["${local.sha}", "${each.key}", "literal", "refs/heads/main",
+                                 "${var.a.sha}${var.b.sha}", "x${var.a.sha}"])
 def test_recusa_pin_de_trust_que_nao_resolve_para_variavel(pin):
     texto = f'resource "r" "t" {{\n  "token.actions.githubusercontent.com:job_workflow_ref" = "o/r/w.yml@{pin}"\n}}\n'
     with pytest.raises(AssertionError):

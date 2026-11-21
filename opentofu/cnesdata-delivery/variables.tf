@@ -24,6 +24,10 @@ variable "application_promotion" {
     error_message = "Application source_closure_sha256 cannot be the 64-zero sentinel; use the value computed on the approved head."
   }
   validation {
+    condition     = var.application_promotion == null ? true : try(!can(regex("^0{40}$", var.application_promotion.workflow_sha)), false)
+    error_message = "Application workflow_sha cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
+  validation {
     condition = try(var.application_promotion.predecessor_read, null) == null ? true : try(
       toset(keys(var.application_promotion.predecessor_read)) == toset(["protocol", "source_sha", "run_id", "run_attempt", "status", "purpose"]) &&
       can(regex("^[1-9][0-9]*$", jsonencode(var.application_promotion.predecessor_read.run_id))) &&
@@ -123,6 +127,17 @@ variable "github_delivery" {
         length(regexall("[?*]", key)) == 0 && !contains(local.delivery_state_keys, key) &&
     !startswith(key, "${var.github_delivery.evidence_prefix}lifecycle/")]), false)
     error_message = "Activation read ceiling needs one exact bucket and cipher key and three distinct wildcard-free keys disjoint from state, lease and lifecycle evidence."
+  }
+  validation {
+    condition     = var.github_delivery == null ? true : try(!anytrue([for value in [var.github_delivery.plan_workflow_sha, var.github_delivery.deploy_workflow_sha] : can(regex("^0{40}$", value))]), false)
+    error_message = "Delivery plan/deploy workflow_sha cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
+  validation {
+    condition = var.github_delivery == null ? true : try(alltrue([
+      for arn in concat(flatten([for statement in var.github_delivery.product_permissions : statement.resources]), [for role in var.github_delivery.pass_roles : role.arn]) :
+      !contains([for name in [local.observer_role_name, local.phase_inputs_writer_role_name] : "arn:aws:iam::${var.account_id}:role/${name}"], arn)
+    ]), false)
+    error_message = "Product permissions and pass roles never reach the observer or phase-inputs writer roles."
   }
 }
 
@@ -284,6 +299,10 @@ variable "ext2" {
     alltrue([for arn in concat(var.ext2.current_object_arns, var.ext2.history_object_arns) : length(regexall("[?*]", arn)) == 0 && !strcontains(arn, "..") && !endswith(arn, "/")]), false)
     error_message = "EXT2 requires finite exact private object ARNs, a full same-account regional cipher CMK, immutable reusable SHA, absolute owner dates and named owner administrators (roles or the exact account principal)."
   }
+  validation {
+    condition     = var.ext2 == null ? true : try(!can(regex("^0{40}$", var.ext2.workflow_sha)), false)
+    error_message = "EXT2 workflow_sha cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
 }
 variable "host_gate" {
   description = "EXT3 exact read-only host input capability. Null leaves the existing seed unchanged; live claims/readbacks remain a Ready gate."
@@ -317,6 +336,10 @@ variable "host_gate" {
     )
     error_message = "EXT3 requires an immutable workflow, exact versioned CnesData objects, three deployment SSM leaves, and exact KMS encryption contexts."
   }
+  validation {
+    condition     = var.host_gate == null ? true : try(!can(regex("^0{40}$", var.host_gate.workflow_sha)), false)
+    error_message = "Host gate workflow_sha cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
 }
 
 variable "local_controller_root_apply" {
@@ -324,4 +347,43 @@ variable "local_controller_root_apply" {
   type        = bool
   default     = false
   nullable    = false
+}
+
+variable "observer" {
+  description = "X_R read-only observer role for the cnesdata-observer environment; null creates no role. Named product resources only."
+  type = object({
+    workflow_sha   = string
+    cluster_arn    = string
+    repository_arn = string
+    table_arns     = list(string)
+    bucket_arns    = list(string)
+  })
+  default = null
+  validation {
+    condition = var.observer == null ? true : try(
+      var.github_delivery != null &&
+      can(regex("^[0-9a-f]{40}$", var.observer.workflow_sha)) &&
+      can(regex("^arn:aws:ecs:us-east-2:${var.account_id}:cluster/[A-Za-z0-9_-]{1,255}$", var.observer.cluster_arn)) &&
+      can(regex("^arn:aws:ecr:us-east-2:${var.account_id}:repository/[a-z0-9][a-z0-9._/-]{0,255}$", var.observer.repository_arn)) &&
+      length(var.observer.table_arns) > 0 && length(distinct(var.observer.table_arns)) == length(var.observer.table_arns) &&
+      alltrue([for arn in var.observer.table_arns : can(regex("^arn:aws:dynamodb:us-east-2:${var.account_id}:table/[A-Za-z0-9_.-]{3,255}$", arn))]) &&
+      length(var.observer.bucket_arns) > 0 && length(distinct(var.observer.bucket_arns)) == length(var.observer.bucket_arns) &&
+    alltrue([for arn in var.observer.bucket_arns : can(regex("^arn:aws:s3:::cnesdata-[a-z0-9.-]{1,54}$", arn))]), false)
+    error_message = "Observer requires the shared provider, an immutable X_R commit and exact same-account cluster, repository, tables and cnesdata buckets."
+  }
+  validation {
+    condition     = var.observer == null ? true : try(!can(regex("^0{40}$", var.observer.workflow_sha)), false)
+    error_message = "Observer workflow_sha (X_R) cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
+}
+
+variable "phase_inputs_writer_enabled" {
+  description = "Creates the phase-inputs writer for phase-a-prepare.yml on CnesData main. Defaults closed."
+  type        = bool
+  default     = false
+  nullable    = false
+  validation {
+    condition     = !var.phase_inputs_writer_enabled || var.github_delivery != null
+    error_message = "The phase-inputs writer reuses the shared GitHub provider and evidence prefix."
+  }
 }
