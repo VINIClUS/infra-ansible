@@ -4688,7 +4688,7 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
         "phase_a_originals": carrier}
     b_approval = {"version": 1, "owner": owner, "purpose": "phase-b", "direction": "advance", "plan_sha256": "9" * 64,
         "inputs_sha256": "8" * 64, "checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"]),
-        "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial"}, "drift_matrix": {},
+        "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial", "before": {}}, "drift_matrix": {},
         "readbacks": {"before": [], "after": []}}
     b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
     members = scope["members"]
@@ -4876,7 +4876,7 @@ def _phase_b_material(**changes):
     after = checkpoint(4, "after-version", purpose="phase-b", plan_sha256="5" * 64, readbacks=[
         {"service": "stepfunctions", "operation": "describe_state_machine", "observed": {"stateMachineArn": machine, "status": "ACTIVE"}}])
     approval = {"checkpoint_sha256": c.sha(c.canonical(prepared)), "plan_sha256": "5" * 64,
-                "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial"}}
+                "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial", "before": {}}}
     world = SimpleNamespace(g=g, gov=gov, close=close, ready=ready, release=release, prepared=prepared, after=after,
                             approval=approval, moments={"artifact_created_at": c.utc(940), "job_completed_at": c.utc(950)},
                             admitted_at=960, revisions={mode: release[mode + "_revision"] for mode in ag.ROUTE_REVISIONS})
@@ -4886,6 +4886,14 @@ def _phase_b_material(**changes):
                        "published": {"checkpoint.json": c.canonical(world.after), "approval.json": c.canonical(world.approval)},
                        "moments": world.moments, "admitted_at": world.admitted_at, "revisions": world.revisions}
     return world
+
+
+PRODUCT_CLOSED_READY_ORIGIN = {
+    "commit": "b52bece9a3f1756acb148c57dbb02842a67813ec",
+    "scripts/promotion/promote_ready.py": "9ad21a169af0c4654985e78e9631d05c12f2219e7842b7e95bab57697751960b",
+    "scripts/promotion/_closed_ready.py": "d36d6d48b226b3157bd1ec45ccca2ff96a2b6b263c634c7cde372497d60311af",
+    "scripts/promotion/_adapter_abi.py": "f14d7becdaff7c00d7d2bdbb1fb9f6b2f27f8702380e22d6e046fb3b8aa112bc"}
+VENDORED_CLOSED_READY_SHA256 = "5df000fa1fe97ccdfd173a3ef5c82e33b6e5e12759ff6ba2083451f5d5cdbcf0"
 
 
 def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadline):
@@ -4944,6 +4952,14 @@ def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadlin
     if not (after <= admitted < deadline <= min(fixed, admitted + 180) and fixed - admitted >= 1440):
         raise ValueError("closed_ready=stage_deadline")
     return phase
+
+
+def test_copia_vendorizada_do_closed_ready_do_produto_so_muda_junto_com_a_origem_registrada():
+    """infra-ansible CI cannot import CnesData: a refresh of the vendored check updates its origin and this digest together."""
+    import inspect
+    assert set(PRODUCT_CLOSED_READY_ORIGIN) == {"commit", "scripts/promotion/promote_ready.py", "scripts/promotion/_closed_ready.py",
+                                                "scripts/promotion/_adapter_abi.py"}
+    assert c.sha(inspect.getsource(_product_closed_ready_fields).encode()) == VENDORED_CLOSED_READY_SHA256
 
 
 def _product_inputs(world, phase_raw):
@@ -5026,6 +5042,10 @@ _BUILDER_REFUSALS = {
                      "phase_b=state_machine_readback"),
     "revisions-missing": ({"m": lambda w: w.revisions.pop("audit")}, "phase_b=revisions"),
     "revisions-form": ({"m": _set(("revisions", "unit"), "arn:aws:ecs:us-east-2:1:task-definition/x:1")}, "phase_b=revisions"),
+    "initial-updates-machine": ({"m": _set(("approval", "delta", "before"),
+                                           {"module.processing.aws_sfn_state_machine.processor[0]": {"definition": "{}"}})},
+                                "phase_b=initial_requires_absent_state_machine"),
+    "initial-before-absent": ({"m": lambda w: w.approval["delta"].pop("before")}, "phase_b=initial_requires_absent_state_machine"),
 }
 
 

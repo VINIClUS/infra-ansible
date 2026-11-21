@@ -556,7 +556,7 @@ def _holds(root, *, clients, secrets):
     return found
 
 
-def _closed_ready_child(world, journal, ready):
+def _closed_ready_child(world, journal, ready, timeout):
     inputs, stage = journal._inputs, journal._request["stage"]
     close = c.loads(inputs["close-drain"], canonical=True)
     value = {"version": 1, "kind": "closed-ready", "common": close["common"], "close_drain_sha256": c.sha(inputs["close-drain"]),
@@ -572,7 +572,7 @@ def _closed_ready_child(world, journal, ready):
     journal._observation_bytes[c.sha(raw)] = raw
     journal._pending = [{"kind": "sdk-call", "reference_sha256": "f" * 64}] if ready["pending"] else []
     world.ready_raw = raw
-    world.clock.value += ready["child_seconds"]
+    world.clock.value += timeout + 7 if ready["child_seconds"] == "timeout" else ready["child_seconds"]
 
 
 def _api_stage_fakes(monkeypatch, world, ready, probe):
@@ -707,7 +707,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
         world.invoke.append(kwargs)
         journal = kwargs["journal"]
         if journal._request["operation"] == "closed-ready":
-            return _closed_ready_child(world, journal, ready)
+            return _closed_ready_child(world, journal, ready, kwargs["timeout"])
         if real_broker:
             from test_cnesdata_application_gate import CLOSE_SCOPE
             broker = journal._broker
@@ -749,7 +749,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
                               {"service": "stepfunctions", "operation": "describe_state_machine",
                                "observed": {"stateMachineArn": MACHINE_ARN, "status": "ACTIVE"}}]}
     world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64,
-                        "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial"}}
+                        "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial", "before": {}}}
     world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
     world.b_moments = {"artifact_created_at": c.utc(1115), "job_completed_at": c.utc(1125)}
     _api_stage_fakes(monkeypatch, world, ready, probe)
@@ -1059,7 +1059,7 @@ def test_phase_b_handler_roda_o_closed_ready_no_estagio_api_com_os_insumos_que_o
     assert capability["journal"] is journal and capability["keeper"] is world.keeper and type(capability["guard"]) is ag.KeeperGuard
     (invoked,) = [item for item in world.invoke if item["journal"] is journal]
     assert invoked == {"product": "product", "source": world.owner["source_sha"], "manifest": {"fixture": "manifest"},
-                       "manifest_sha256": "0" * 64, "journal": journal, "timeout": 1310 - 1135 - 38 - 20}
+                       "manifest_sha256": "0" * 64, "journal": journal, "timeout": 1310 - 1135 - 38 - 7 - 20 - 20}
     assert world.keeper.uncertainty() == [] and world.store.get()[0]["status"] == "held"
 
 
@@ -1069,6 +1069,17 @@ def test_phase_b_handler_recusa_o_modo_established_sem_capability_nem_child(monk
     world.b_approval["delta"]["mode"] = "established"
     world.b_files["approval.json"] = c.canonical(world.b_approval)
     with pytest.raises(ValueError, match="^phase_b=established_mode_unsupported$"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert world.events[3:] == [] and world.ready_capability == [] and world.uploads == []
+    assert _lifecycle(world)["stage"] == "api" and world.store.get()[0]["status"] == "held"
+
+
+def test_phase_b_handler_recusa_b_initial_que_atualiza_uma_state_machine_existente(monkeypatch):
+    """Initial means B creates the machine (product phase_b): an initial B over an existing machine never reaches the child."""
+    world = _prepared_world(monkeypatch)
+    world.b_approval["delta"]["before"] = {"module.processing.aws_sfn_state_machine.processor[0]": {"definition": "{}"}}
+    world.b_files["approval.json"] = c.canonical(world.b_approval)
+    with pytest.raises(ValueError, match="^phase_b=initial_requires_absent_state_machine$"):
         world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
     assert world.events[3:] == [] and world.ready_capability == [] and world.uploads == []
     assert _lifecycle(world)["stage"] == "api" and world.store.get()[0]["status"] == "held"
@@ -1127,9 +1138,11 @@ def test_phase_b_handler_solta_os_clientes_da_operacao_quando_o_closed_ready_ter
 
 
 @pytest.mark.parametrize("now, credential_limit, expected", [
-    (1135, 6000, 1310 - 1135 - 38 - 20), (1135, 1135 + 121 + 20 + 30, 30), (1251, 6000, 1), (1135, 1135 + 121 + 20 + 1, 1)])
+    (1135, 6000, 1310 - 1135 - 38 - 7 - 20 - 20), (1135, 1135 + 121 + 7 + 20 + 20 + 30, 30), (1224, 6000, 1),
+    (1135, 1135 + 121 + 7 + 20 + 20 + 1, 1)])
 def test_closed_ready_seconds_e_o_maior_tempo_que_a_regra_real_de_admissao_do_api_admite(monkeypatch, now, credential_limit, expected):
-    """180 s of the API (LC STAGES): the child and the 20 s publication slot are both admitted by phase_capacity."""
+    """180 s of the API (LC STAGES): phase_capacity admits the child and, after the 7 s adapter exit and the 20 s probe
+    read, the 20 s publication slot."""
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
     world = _prepared_world(monkeypatch)
     world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
@@ -1137,10 +1150,10 @@ def test_closed_ready_seconds_e_o_maior_tempo_que_a_regra_real_de_admissao_do_ap
     seconds = ag._closed_ready_seconds(window, credential_limit, now)
     assert seconds == expected
     lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
-    lc.phase_capacity(window, now=now + seconds, credential_deadline=credential_limit, operation_seconds=20)
+    lc.phase_capacity(window, now=now + seconds + 7 + 20, credential_deadline=credential_limit, operation_seconds=20)
 
 
-@pytest.mark.parametrize("now, credential_limit", [(1252, 6000), (1135, 1135 + 121 + 20), (1400, 6000)])
+@pytest.mark.parametrize("now, credential_limit", [(1225, 6000), (1135, 1135 + 121 + 7 + 20 + 20), (1400, 6000)])
 def test_closed_ready_seconds_recusa_sem_capacidade_no_estagio_api(monkeypatch, now, credential_limit):
     from tools.cnesdata_delivery import application_gate as ag
     world = _prepared_world(monkeypatch)
@@ -1150,11 +1163,43 @@ def test_closed_ready_seconds_recusa_sem_capacidade_no_estagio_api(monkeypatch, 
 
 
 def test_phase_b_handler_recusa_sem_capacidade_depois_da_capability_e_nunca_roda_o_child(monkeypatch):
-    world = _prepared_world(monkeypatch, ready={"capability_seconds": 1310 - 1130 - 58})
+    world = _prepared_world(monkeypatch, ready={"capability_seconds": 1310 - 1130 - 85})
     with pytest.raises(ValueError, match="closed-ready capacity"):
         world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
     assert [item for item in world.invoke if item["journal"]._request["operation"] == "closed-ready"] == []
     assert world.uploads == [] and world.store.get()[0]["status"] == "held"
+
+
+def test_phase_b_handler_admite_o_upload_quando_o_child_usa_todo_o_timeout(monkeypatch):
+    """The child runs its whole timeout plus the 7 s adapter exit and the probe-inventory read takes its 20 s: the 20 s
+    DD-2 upload is still admitted by phase_capacity inside the API stage."""
+    world = _prepared_world(monkeypatch, ready={"child_seconds": "timeout"})
+    read = world.github.read
+
+    def probe_read(path, **kwargs):
+        world.clock.value += 20 if path == JOBS and world.ready_raw is not None else 0
+        return read(path, **kwargs)
+    world.github.read = probe_read
+    world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    (invoked,) = [item for item in world.invoke if item["journal"]._request["operation"] == "closed-ready"]
+    assert invoked["timeout"] == 1310 - 1135 - 38 - 7 - 20 - 20 and world.clock.value == 1310 - 38 - 20
+    assert [name for name, _ in world.uploads] == ["cnesdata-closed-ready-4242-1"] and world.store.get()[0]["status"] == "held"
+
+
+def test_slot_de_publicacao_do_closed_ready_e_o_timeout_que_o_upload_do_runtime_declara(monkeypatch, tmp_path):
+    from tools.cnesdata_delivery import application_gate as ag, runtime
+    seen = []
+
+    class Watchdog:
+        finalizing = False
+
+        def run(self, command, *, cwd, env, output, timeout, mutating):
+            seen.append((timeout, mutating))
+            raise RuntimeError("upload_stopped")
+    monkeypatch.setattr(runtime, "_publisher_ready", lambda: tmp_path / "publisher.js")
+    with pytest.raises(RuntimeError, match="^upload_stopped$"):
+        runtime._upload(tmp_path, "cnesdata-closed-ready-4242-1", Watchdog(), tmp_path)
+    assert seen == [(ag.CLOSED_READY_PUBLICATION_SECONDS, False)]
 
 
 def _api_world(monkeypatch, **flags):
