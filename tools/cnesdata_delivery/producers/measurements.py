@@ -52,17 +52,31 @@ def cost_ledger(evidence):
     return evidence["measurement"]
 
 
+def _ruleset_contexts(api, base):
+    rules = api.read(f"{base}/rules/branches/main?per_page=100")
+    c.require(type(rules) is list and len(rules) < 100, "product ruleset rules")
+    found = {check["context"] for rule in rules if rule["type"] == "required_status_checks"
+             for check in rule["parameters"]["required_status_checks"]}
+    c.require(bool(found) and all(type(name) is str and name for name in found), "product ruleset contexts")
+    return sorted(found)
+
+
 def source_checks(api, source, names):
     base = f"repos/{c.REPOSITORY}"
     status = api.read(f"{base}/compare/{source}...main")["status"]
     c.require(status in {"ahead", "identical"}, "source not contained in main")
-    runs = api.read(f"{base}/commits/{source}/check-runs?per_page=100")["check_runs"]
+    runs = [run for run in api.read(f"{base}/commits/{source}/check-runs?per_page=100")["check_runs"]
+            if run["head_sha"] == source]
+    contexts = _ruleset_contexts(api, base)
+    ran = {run["name"] for run in runs}
+    absent = [name for name in contexts if name not in ran and name not in names]
     required = []
-    for name in sorted(set(names)):
-        c.require(any(run["name"] == name and run["conclusion"] == "success" and run["head_sha"] == source
-                      for run in runs), "required source check")
+    for name in sorted(set(names) | set(contexts) - set(absent)):
+        ok = any(run["name"] == name and run["conclusion"] == "success" for run in runs)
+        c.require(ok, f"required source check name={name}")
         required.append({"name": name, "conclusion": "success", "head_sha": source})
-    return {"branch": "main", "compare_status": status, "required": required}
+    return {"branch": "main", "compare_status": status, "required": required, "ruleset_contexts": contexts,
+            "absent_on_source": absent}
 
 
 def artifact_origin(api, entries):

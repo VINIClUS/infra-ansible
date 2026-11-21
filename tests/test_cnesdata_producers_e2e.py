@@ -62,6 +62,8 @@ class REST:
             return {"status": "identical"}
         if "/check-runs" in path:
             return {"check_runs": [{"name": "ci", "conclusion": "success", "head_sha": SOURCE}]}
+        if "/rules/branches/main" in path:
+            return [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci"}]}}]
         parts = path.split("/")
         repository = parts[1] + "/" + parts[2]
         assert raw == path.endswith("/zip")

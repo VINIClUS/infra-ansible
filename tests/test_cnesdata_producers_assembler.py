@@ -265,26 +265,70 @@ def test_policy_evaluation_junta_fatos_namespace_e_hashes_do_p_b():
 
 
 class FakeAPI:
-    def __init__(self, checks, status="ahead"):
-        self.checks, self.status = checks, status
+    def __init__(self, checks, status="ahead", contexts=("ci",)):
+        self.checks, self.status, self.contexts, self.paths = checks, status, contexts, []
 
     def read(self, path):
+        self.paths.append(path)
         if "/compare/" in path:
             return {"status": self.status}
+        if "/rules/branches/" in path:
+            return [{"type": "pull_request", "parameters": {}},
+                    {"type": "required_status_checks", "parameters": {"required_status_checks": [
+                        {"context": name, "integration_id": None} for name in self.contexts]}}]
         return {"check_runs": self.checks}
+
+
+def check(name, conclusion="success", head=SOURCE):
+    return {"name": name, "conclusion": conclusion, "head_sha": head}
 
 
 def test_source_develop_checks_espelha_a_api_e_recusa_check_ausente_ou_vermelho():
     checks = [{"name": "ci", "conclusion": "success", "head_sha": SOURCE}, {"name": "lint", "conclusion": "success", "head_sha": SOURCE}]
     value = measurements.source_checks(FakeAPI(checks), SOURCE, ["lint", "ci", "ci"])
     assert value == {"branch": "main", "compare_status": "ahead", "required": [
-        {"name": "ci", "conclusion": "success", "head_sha": SOURCE}, {"name": "lint", "conclusion": "success", "head_sha": SOURCE}]}
+        {"name": "ci", "conclusion": "success", "head_sha": SOURCE}, {"name": "lint", "conclusion": "success", "head_sha": SOURCE}],
+        "ruleset_contexts": ["ci"], "absent_on_source": []}
     with pytest.raises(ValueError):
         measurements.source_checks(FakeAPI(checks[:1]), SOURCE, ["ci", "lint"])
     with pytest.raises(ValueError):
         measurements.source_checks(FakeAPI([dict(checks[0], conclusion="failure")]), SOURCE, ["ci"])
     with pytest.raises(ValueError):
         measurements.source_checks(FakeAPI(checks, "diverged"), SOURCE, ["ci"])
+
+
+def test_source_develop_checks_le_os_contextos_do_ruleset_do_produto_ao_vivo():
+    api = FakeAPI([check("ci"), check("lint"), check("image (central_api)")], contexts=("lint", "image (central_api)", "sonar"))
+    value = measurements.source_checks(api, SOURCE, ["ci"])
+    assert [item["name"] for item in value["required"]] == ["ci", "image (central_api)", "lint"]
+    assert value["ruleset_contexts"] == ["image (central_api)", "lint", "sonar"]
+    assert value["absent_on_source"] == ["sonar"]
+    assert f"repos/{c.REPOSITORY}/rules/branches/main?per_page=100" in api.paths
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", None])
+def test_source_develop_checks_recusa_contexto_do_ruleset_que_rodou_e_nao_passou_no_source(conclusion):
+    api = FakeAPI([check("ci"), check("lint", conclusion)], contexts=("lint",))
+    with pytest.raises(ValueError, match="required source check name=lint"):
+        measurements.source_checks(api, SOURCE, ["ci"])
+
+
+def test_source_develop_checks_nunca_aceita_ausencia_de_nome_pedido_mesmo_listado_no_ruleset():
+    api = FakeAPI([check("ci")], contexts=("ci", "sonar"))
+    with pytest.raises(ValueError, match="required source check name=sonar"):
+        measurements.source_checks(api, SOURCE, ["ci", "sonar"])
+
+
+def test_source_develop_checks_ignora_check_de_outro_sha_para_contexto_do_ruleset():
+    api = FakeAPI([check("ci"), check("lint", head="0" * 40)], contexts=("lint",))
+    value = measurements.source_checks(api, SOURCE, ["ci"])
+    assert value["absent_on_source"] == ["lint"] and [item["name"] for item in value["required"]] == ["ci"]
+
+
+@pytest.mark.parametrize("contexts", [(), ("",)])
+def test_source_develop_checks_recusa_ruleset_sem_contexto_obrigatorio(contexts):
+    with pytest.raises(ValueError, match="product ruleset contexts"):
+        measurements.source_checks(FakeAPI([check("ci")], contexts=contexts), SOURCE, ["ci"])
 
 
 class OriginAPI:

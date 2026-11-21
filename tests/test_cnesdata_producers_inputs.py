@@ -46,6 +46,8 @@ class API:
             return {"status": "identical"}
         if "/check-runs" in path:
             return {"check_runs": [{"name": "ci", "conclusion": "success", "head_sha": SOURCE}]}
+        if "/rules/branches/main" in path:
+            return [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci"}]}}]
         if "/artifacts/" in path:
             return {"created_at": at(0), "expires_at": at(86400)}
         return {"run_started_at": at(-60), "updated_at": at(60)}
