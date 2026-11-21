@@ -1,13 +1,13 @@
 """Owner CLI guard: X* strict ancestor of K, caller pinned to X*, no pinned surface drift in X*..K."""
-import re
 import subprocess
+
+import yaml
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.producers.pins import PINNED_SURFACE, on_surface
 
 CALLER = ".github/workflows/cnesdata-producers.yml"
 OBSERVER = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml"
-USES = re.compile(r"^\s*uses:\s*([^\s#]+)", re.MULTILINE)
 
 
 def _git(repo, *args):
@@ -27,10 +27,21 @@ def _surface(repo, x_star, k):
     c.require(not touched, f"diff touches the pinned surface count={len(touched)} globs={len(PINNED_SURFACE)}")
 
 
+def _job_uses(text):
+    failed = False
+    try:
+        jobs = (yaml.safe_load(text) or {}).get("jobs", {})
+    except yaml.YAMLError:
+        failed = True
+    c.require(not failed and type(jobs) is dict, "caller yaml")
+    found = [job.get("uses") for job in jobs.values() if type(job) is dict]
+    return [value for value in found if type(value) is str and "reusable-cnesdata-observer.yml" in value]
+
+
 def _uses(repo, x_star, k):
     done = _git(repo, "cat-file", "blob", f"{k}:{CALLER}")
     c.require(done.returncode == 0, "caller absent at K")
-    values = [value for value in USES.findall(done.stdout.decode()) if "reusable-cnesdata-observer.yml" in value]
+    values = _job_uses(done.stdout.decode())
     c.require(bool(values) and all(value == f"{OBSERVER}@{x_star}" for value in values),
               "caller uses pin differs from X*")
 

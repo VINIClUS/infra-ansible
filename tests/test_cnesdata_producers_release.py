@@ -243,3 +243,23 @@ def test_cli_release_check_sai_com_erro_em_diff_proibido(repo, capsys):
     status = governance_assembly.main(["release-check", "--repo", str(repo), "--x-star", x_star, "--k", k])
     assert status == 1 and "pinned surface" in capsys.readouterr().err
     assert json.dumps(x_star) not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("text", [
+    f'jobs:\n  observe:\n    "uses": {OBSERVER}@' + "c" * 40 + "\n",
+    f"jobs:\n  observe: {{uses: {OBSERVER}@" + "c" * 40 + "}\n",
+    f"jobs:\n  observe:\n    uses: '{OBSERVER}@" + "c" * 40 + "'\n",
+])
+def test_guarda_le_o_yaml_do_caller_e_recusa_pin_diferente_em_qualquer_forma(repo, text):
+    x_star = commit(repo, {"tools/cnesdata_delivery/a.py": "x = 1\n"})
+    k = commit(repo, {CALLER: text})
+    with pytest.raises(ValueError, match="uses"):
+        release_guard.check(repo, x_star, k)
+
+
+def test_guarda_aceita_pin_citado_igual_a_x_e_ignora_texto_de_script(repo):
+    x_star = commit(repo, {"tools/cnesdata_delivery/a.py": "x = 1\n"})
+    text = (f"jobs:\n  observe:\n    uses: '{OBSERVER}@{x_star}'\n  other:\n    runs-on: x\n    steps:\n"
+            f"      - run: |\n          uses: {OBSERVER}@{'c' * 40}\n")
+    k = commit(repo, {CALLER: text})
+    release_guard.check(repo, x_star, k)
