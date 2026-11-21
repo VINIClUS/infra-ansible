@@ -1228,7 +1228,7 @@ STAGES = {"phase-b": (360, 1020), "api": (180, 840), "static": (180, 660),
           "final": (60, 0)}
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
-STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api")}
+STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static")}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision")
 CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})
@@ -1542,6 +1542,15 @@ def api_window(previous, *, checkpoint_sha256, now):
                        "checkpoint_sha256": c.digest(checkpoint_sha256)}
 
 
+def static_window(previous, *, now):
+    """DD-3, API -> static: admitted on the accepted host handoff; the host changes no state checkpoint."""
+    admitted = int(now)
+    c.require(previous["stage"] == "api" and previous["close"] is not None and previous["decision"] is None
+              and previous["admitted_at"] <= admitted, "static follows the closed API stage")
+    return previous | {"sequence": previous["sequence"] + 1, "stage": "static", "admitted_at": admitted,
+                       "deadline": min(previous["fixed_deadline"], admitted + STAGES["static"][0])}
+
+
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):
     """Wall-clock samples are conservative; each admission spends existing time."""
     c.require(type(operation_seconds) in (int, float) and 0 < operation_seconds <= 1800,
@@ -1644,7 +1653,7 @@ def inputs_envelope(raw, *, owner, window):
     """Decode the closed version2 inputs.json carrier of the operational preparation plan.
 
     Args: canonical bytes, original owner, original keeper preparation window.
-    Returns: Terraform bytes, raw activation members, sha256 of the raw payload, carrier hash.
+    Returns: Terraform bytes, raw activation members, sha256 of the raw payload, carrier hash, rendered targets.
     Raises: ValueError on any deviation; no legacy fallback exists.
     """
     from tools.cnesdata_delivery.ext2_transport import validate_reference
@@ -1674,4 +1683,4 @@ def inputs_envelope(raw, *, owner, window):
               and all(type(item) is str and 0 < len(item) <= 2048 for item in singles + retained), "envelope rendered targets")
     return {"terraform": terraform, "activation": raws, "objects": activation["objects"],
             "activation_sha256": c.sha(raws["payload"]),
-            "activation_carrier_sha256": c.sha(c.canonical(activation))}
+            "activation_carrier_sha256": c.sha(c.canonical(activation)), "rendered_targets": dict(targets)}
