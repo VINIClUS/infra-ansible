@@ -131,3 +131,16 @@ def test_recusa_pin_de_trust_que_nao_resolve_para_variavel(pin):
     texto = f'resource "r" "t" {{\n  "token.actions.githubusercontent.com:job_workflow_ref" = "o/r/w.yml@{pin}"\n}}\n'
     with pytest.raises(AssertionError):
         _variaveis_de_trust([texto])
+
+
+def test_modelo_particiona_arquivos_como_a_superficie_pinada_do_cli():
+    from tools.cnesdata_delivery.producers.pins import PINNED_SURFACE, on_surface
+
+    texto = _modelo()
+    assert re.search(r"^sig Superficie extends Arquivo", texto, re.MULTILINE)
+    assert re.search(r"^one sig CallerProdutores extends Arquivo", texto, re.MULTILINE)
+    assert re.search(r"^sig ForaDaSuperficie extends Arquivo", texto, re.MULTILINE)
+    assert on_surface("tools/cnesdata_delivery/producers/pins.py")
+    assert on_surface(".github/workflows/reusable-cnesdata-observer.yml")
+    assert not on_surface(".github/workflows/cnesdata-producers.yml")
+    assert len(PINNED_SURFACE) == 2
