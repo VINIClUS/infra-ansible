@@ -1047,9 +1047,12 @@ def test_phase_b_handler_roda_o_closed_ready_no_estagio_api_com_os_insumos_que_o
     assert phase["audit_sha256"] == c.sha(world.b_files["approval.json"])
     assert inputs["phase-b"] != world.b_files["checkpoint.json"]
     (capability,) = world.ready_capability
+    targets = c.loads(world.raw_carrier, canonical=True)["activation"]["rendered_targets"]
     assert {key: capability[key] for key in capability if key not in {"journal", "keeper", "guard"}} == {
         "aws": world.aws, "api": world.api, "governance": world.governance, "request": world.request, "run": RUN,
-        "prepared": world.prepared, "credential_limit": 6000, "operation_session": world.operation_session, "clock": world.clock}
+        "prepared": world.prepared, "credential_limit": 6000, "operation_session": world.operation_session, "clock": world.clock,
+        "revisions": {mode: targets[name] for mode, name in (("unit", "processor_active_unit_task_definition_arn"),
+                      ("recovery", "scheduler_recovery_task_definition_arn"), ("audit", "scheduler_audit_task_definition_arn"))}}
     assert capability["journal"] is journal and capability["keeper"] is world.keeper and type(capability["guard"]) is ag.KeeperGuard
     (invoked,) = [item for item in world.invoke if item["journal"] is journal]
     assert invoked == {"product": "product", "source": world.owner["source_sha"], "manifest": {"fixture": "manifest"},

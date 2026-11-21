@@ -2531,7 +2531,7 @@ def test_close_drain_journal_builds_the_request_the_real_capability_admits(monke
 def test_fence_capabilities_refuse_the_other_operation_before_any_io(monkeypatch, capability):
     ag, args, sts_calls, keeper, journal, events = _close_drain_capability_case(monkeypatch)
     if capability == "closed_ready_capability":
-        args.update(request={}, run={}, guard=None)
+        args.update(request={}, run={}, guard=None, revisions={})
         args.pop("authority")
     else:
         journal._request = dict(journal._request, operation="closed-ready")
@@ -4702,8 +4702,9 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     admitted = prepared_at if mutation == "admitted" else 1300
     revisions = {mode: f"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-{mode}:1"
                  for mode in ("unit", "recovery", "audit")}
+    given = dict(revisions, unit=revisions["unit"][:-1] + "2") if mutation == "foreign-revision" else revisions
     evidence = ag.api_phase_b_evidence(close_raw=close_raw, prepared=prepared, published=b_files, admitted_at=admitted,
-                                                revisions=revisions)
+                                       revisions=given)
     inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": close_raw,
               "phase-b": b_files["checkpoint.json"] if mutation == "lifecycle-phase-b" else evidence,
               "membership": c.canonical(membership)}
@@ -4758,7 +4759,7 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     keeper._contexts, keeper.lease = [_journal_with(observations=[("close-drain", drained)])], SimpleNamespace(check=lambda: {"held": True})
     args = dict(aws=Store(), api=API(), governance=governance, request=req, run=run, journal=journal, keeper=keeper,
                 prepared=prepared, credential_limit=3000, guard=Guard(), operation_session=sts_args["operation_session"],
-                clock=lambda: 1300)
+                revisions=revisions, clock=lambda: 1300)
     return ag, args, sts_calls, keeper, journal
 
 
@@ -4843,6 +4844,38 @@ def test_closed_ready_capability_recusa_close_drain_que_nao_e_a_observacao_do_ke
     assert sts_calls == [] and journal._failed is True
 
 
+def test_closed_ready_capability_recusa_revisao_de_rota_fora_do_carrier_do_plano(monkeypatch):
+    """A well-formed foreign task revision in phase-b is refused: revisions bind to the authenticated plan carrier."""
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, "foreign-revision")
+    with pytest.raises(ValueError, match="API phase-b evidence"):
+        ag.closed_ready_capability(**args)
+    assert sts_calls == [] and journal._failed is True
+
+
+def test_evidencia_phase_b_do_keeper_passa_no_validate_closed_ready_do_host_gate():
+    """The keeper-built phase-b.json is accepted by the real host gate ClosedReady verifier, value by value."""
+    from test_personal_platform_dispatcher import closed_ready_fixture
+    from tools.cnesdata_delivery import application_gate as ag
+    g, _, gov, _, _, close, phase, ready, _ = closed_ready_fixture()
+    release, machine = gov["binding"]["release"], phase["routes"]["state_machine_arn"]
+
+    def checkpoint(serial, version, **extra):
+        return c.canonical({"state": {"lineage": "original-lineage", "serial": serial, "state_sha256": c.sha(b"%d" % serial)},
+                            "state_object": {"status": "present", "version_id": version, "etag_sha256": "4" * 64}} | extra)
+    readback = {"service": "stepfunctions", "operation": "describe_state_machine",
+                "observed": {"stateMachineArn": machine, "status": "ACTIVE"}}
+    published = {"checkpoint.json": checkpoint(4, "after-version", plan_sha256="5" * 64, readbacks=[readback]),
+                 "approval.json": c.canonical({"delta": {"mode": "initial"}})}
+    close_raw = g.canonical(close)
+    raw = ag.api_phase_b_evidence(close_raw=close_raw, prepared={"checkpoint.json": checkpoint(3, "before-version")},
+                                  published=published, admitted_at=950,
+                                  revisions={mode: release[mode + "_revision"] for mode in ag.ROUTE_REVISIONS})
+    ready["close_drain_sha256"], ready["phase_b_sha256"] = g.sha(close_raw), g.sha(raw)
+    files = {"close-drain.json": close_raw, "phase-b.json": raw, "closed-ready.json": g.canonical(ready)}
+    _, accepted, _ = g.validate_closed_ready(files, gov["binding"], 1000)
+    assert g.canonical(accepted) == raw and accepted["routes"]["unit_revision"] == release["unit_revision"]
+
+
 def test_arquivo_do_closure_cabe_no_teto_de_256kib():
     """N16 guard (P14-P17): every APPLICATION_CLOSURE_PATHS file stays within the application_source_closure limit."""
     from pathlib import Path
@@ -4866,7 +4899,8 @@ def test_closed_ready_capability_rejects_every_other_operation(monkeypatch, oper
     keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {})
     with pytest.raises(ValueError, match="closed-ready only"):
         ag.closed_ready_capability(aws=None, api=None, governance={}, request={}, run={}, journal=journal, keeper=keeper,
-                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard(), operation_session=None)
+                                   prepared=lr.PreparedFence(), credential_limit=3000, guard=Guard(), operation_session=None,
+                                   revisions={})
 
 
 @pytest.mark.parametrize("mutation", ["empty", "missing-one", "unknown-type", "duplicate", "unlabelled", "extra-fact",
@@ -5506,7 +5540,7 @@ def test_shared_session_guard_is_bounded_by_the_proof_and_by_the_fragment_enable
         guard.check(seconds)
 
 
-def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
+def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_main_execute():
     """Static proof: the only production path to the keeper is main -> execute(admitted); every other site is internal."""
     import ast
     from pathlib import Path

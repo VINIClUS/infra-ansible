@@ -1337,13 +1337,14 @@ def application_release_sha256(governance):
 
 
 def closed_ready_capability(*, aws, api, governance, request, run, journal, keeper, prepared, credential_limit,
-                            guard, operation_session, clock=time.time):
+                            guard, operation_session, revisions, clock=time.time):
     """The only connected capability factory (amendment 2026-11-13 item 7).
 
     Composes the authenticated PreparedFence, fence role, effective scope (item 2),
     membership, the finite STS boundary and ClosedReadyBroker, attached to the
     keeper. Every check precedes STS; any failure poisons the journal, keeps the
     lease held and mints no credential. Other operations/modes stay rejected.
+    revisions are the route revisions of the authenticated plan carrier.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     c.require(type(journal) is AdapterJournal and type(keeper) is Keeper and type(prepared) is lr.PreparedFence,
@@ -1376,9 +1377,6 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         drained = [found._observation_bytes.get(entry["sha256"]) for found in {id(item): item for item in journals}.values()
                    for entry in found._observations if entry["kind"] == "close-drain"]
         c.require(drained == [journal._inputs["close-drain"]], "closed-ready close-drain is the keeper observation")
-        given = c.loads(journal._inputs["phase-b"], canonical=True, limit=1024**2)
-        routes = given.get("routes") if type(given) is dict else None
-        revisions = {mode: routes.get(mode + "_revision") for mode in ROUTE_REVISIONS} if type(routes) is dict else {}
         c.require(journal._inputs["phase-b"] == api_phase_b_evidence(close_raw=drained[0], prepared=prepared, published=files,
                                                                      admitted_at=stage["admitted_at"], revisions=revisions),
                   "API phase-b evidence")
@@ -2184,7 +2182,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         def capability(*, journal, keeper, guard):
             return closed_ready_capability(aws=aws, api=api, governance=governance, request=request, run=run, journal=journal,
                                            keeper=keeper, prepared=files, credential_limit=credential_limit, guard=guard,
-                                           operation_session=operation_session, clock=clock)
+                                           operation_session=operation_session, revisions=state["revisions"], clock=clock)
         try:
             run_closed_ready(keeper=current, request_raw=_operation_request("closed-ready", owner=owner, window=window, inputs=inputs),
                              owner=owner, window=window, inputs=inputs, activation_sha256=c.sha(inputs["activation"]),
