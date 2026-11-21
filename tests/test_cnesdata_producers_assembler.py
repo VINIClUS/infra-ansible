@@ -266,7 +266,7 @@ def test_policy_evaluation_junta_fatos_namespace_e_hashes_do_p_b():
 
 PR_HEAD = "a" * 40
 MERGED = "2026-11-19T18:41:36Z"
-APP = 15368
+APP = 7
 
 
 def head_check(name, conclusion="success", **extra):
