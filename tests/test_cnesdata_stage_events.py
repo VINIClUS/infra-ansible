@@ -477,9 +477,10 @@ def test_phase_b_publication_reads_only_the_b_checkpoint_and_approval():
         def get(self, bucket, key, maximum=None):
             reads.append(key)
             return files[key.removeprefix(prefix)], None
-    result = ag._phase_b_publication(_GitHub("phase-b / execute", "phase-b-advance", index=index), Store(), governance, request,
-                                     dict(RUN), dict(OWNER), _Guard(), 1300)
+    result, moments = ag._phase_b_publication(_GitHub("phase-b / execute", "phase-b-advance", index=index), Store(), governance,
+                                              request, dict(RUN), dict(OWNER), _Guard(), 1300)
     assert result == {name: files[name] for name in ("checkpoint.json", "approval.json")}
+    assert moments == {"artifact_created_at": c.utc(1200), "job_completed_at": c.utc(1250)}
     assert reads == [prefix + "approval.json", prefix + "checkpoint.json"]
 
 
@@ -739,7 +740,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
             clock.value += step
             remaining -= step
             args[6].check()
-        return world.b_files
+        return world.b_files, world.b_moments
     monkeypatch.setattr(ag, "_phase_b_publication", phase_b_publication)
     world.b_publication_seconds = 0
     world.b_checkpoint = {"state": {"lineage": "original-lineage", "serial": 4, "state_sha256": "6" * 64},
@@ -750,6 +751,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64,
                         "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial"}}
     world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
+    world.b_moments = {"artifact_created_at": c.utc(1115), "job_completed_at": c.utc(1125)}
     _api_stage_fakes(monkeypatch, world, ready, probe)
     world.operation_session = lambda operation, role, stage: pytest.fail("the capability fake never mints the operation session")
     world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
@@ -1043,7 +1045,8 @@ def test_phase_b_handler_roda_o_closed_ready_no_estagio_api_com_os_insumos_que_o
     phase = c.loads(inputs["phase-b"], canonical=True)
     assert set(phase) == PRODUCT_PHASE_B_FIELDS and (phase["version"], phase["kind"]) == (1, "phase-b")
     assert phase["common"] == close["common"] == CLOSE_COMMON and phase["close_drain_sha256"] == c.sha(inputs["close-drain"])
-    assert phase["plan_sha256"] == world.b_checkpoint["plan_sha256"]
+    assert phase["plan_sha256"] == world.b_checkpoint["plan_sha256"] and phase["observed_at"] == c.utc(1125)
+    assert phase["apply_sha256"] == c.sha(world.b_files["checkpoint.json"])
     assert phase["audit_sha256"] == c.sha(world.b_files["approval.json"])
     assert inputs["phase-b"] != world.b_files["checkpoint.json"]
     (capability,) = world.ready_capability
@@ -1058,6 +1061,17 @@ def test_phase_b_handler_roda_o_closed_ready_no_estagio_api_com_os_insumos_que_o
     assert invoked == {"product": "product", "source": world.owner["source_sha"], "manifest": {"fixture": "manifest"},
                        "manifest_sha256": "0" * 64, "journal": journal, "timeout": 1310 - 1135 - 38 - 20}
     assert world.keeper.uncertainty() == [] and world.store.get()[0]["status"] == "held"
+
+
+def test_phase_b_handler_recusa_o_modo_established_sem_capability_nem_child(monkeypatch):
+    """Established Phase B fails closed before any closed-ready input exists; the keeper holds the lease in the API stage."""
+    world = _prepared_world(monkeypatch)
+    world.b_approval["delta"]["mode"] = "established"
+    world.b_files["approval.json"] = c.canonical(world.b_approval)
+    with pytest.raises(ValueError, match="^phase_b=established_mode_unsupported$"):
+        world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    assert world.events[3:] == [] and world.ready_capability == [] and world.uploads == []
+    assert _lifecycle(world)["stage"] == "api" and world.store.get()[0]["status"] == "held"
 
 
 def test_phase_b_handler_publica_o_artefato_closed_ready_com_os_tres_membros_originais(monkeypatch):

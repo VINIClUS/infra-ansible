@@ -1244,16 +1244,17 @@ def _same_run_publication(api, run, owner, job, *, kind, step, guard, now):
     c.require(type(index) is dict and index.get("step") == step and index.get("owner_sha256") == owner["owner_sha256"]
               and type(index.get("generation")) is int and index.get("generation") == owner["generation"],
               f"{kind} original owner")
-    return reference, public
+    return reference, public, candidates[0]
 
 
 def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
-    """Completed same-run phase-b advance deploy publication (checkpoint + approval)."""
+    """Completed same-run phase-b advance deploy publication (checkpoint + approval) and its authenticated moments."""
     from tools.cnesdata_delivery.lifecycle_runtime import private_payload
     name, step = _phase_b_step(governance)
     job = _same_run_job(api, run, kind="phase-b", job_name=step["job_name"], guard=guard)
-    _, public = _same_run_publication(api, run, owner, job, kind="phase-b", step=name, guard=guard, now=now)
-    return private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+    _, public, artifact = _same_run_publication(api, run, owner, job, kind="phase-b", step=name, guard=guard, now=now)
+    files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+    return files, {"artifact_created_at": artifact["created_at"], "job_completed_at": job["completed_at"]}
 
 
 def _trigger_producer(governance, kind):
@@ -1285,7 +1286,7 @@ def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
             return None
         if kind == "host":
             return {"kind": kind, "reference": {"job_id": job["id"]}}
-        reference, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
+        reference, _, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
         return {"kind": kind, "reference": reference}
     return next_event
 
@@ -1365,7 +1366,7 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
                   and manifest["preparation"]["admitted_at"] < stage["admitted_at"], "original preparation before API stage")
         c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
         c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
-        files = _phase_b_publication(api, aws, governance, request, run, owner, guard, clock())
+        files, moments = _phase_b_publication(api, aws, governance, request, run, owner, guard, clock())
         b_checkpoint = c.loads(files["checkpoint.json"], canonical=True)
         b_approval = c.loads(files["approval.json"], canonical=True)
         c.require(b_approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"])
@@ -1378,8 +1379,8 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
                    for entry in found._observations if entry["kind"] == "close-drain"]
         c.require(drained == [journal._inputs["close-drain"]], "closed-ready close-drain is the keeper observation")
         c.require(journal._inputs["phase-b"] == api_phase_b_evidence(close_raw=drained[0], prepared=prepared, published=files,
-                                                                     admitted_at=stage["admitted_at"], revisions=revisions),
-                  "API phase-b evidence")
+                                                                     moments=moments, admitted_at=stage["admitted_at"],
+                                                                     revisions=revisions), "API phase-b evidence")
         cases = {case["case_id"]: case for case in evaluation["cases"]}
         derived = lr.fence_policy_scope(governance, role["policy"])  # The same symbol the prepared evaluation used.
         table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
@@ -1982,7 +1983,7 @@ def _plan_activation(*, aws, api, governance, request, run, prepared, owner, win
               and step.get("mode") == "operational" and type(step.get("job_name")) is str, "activation plan step")
     tap = _ArtifactTap(api)
     job = _same_run_job(tap, run, kind="plan", job_name=step["job_name"], guard=guard)
-    reference, public = _same_run_publication(tap, run, owner, job, kind="plan", step=name, guard=guard, now=now)
+    reference, public, _ = _same_run_publication(tap, run, owner, job, kind="plan", step=name, guard=guard, now=now)
     key = (c.REPOSITORY, reference["artifact_id"])
     api.expiries[key] = c.instant(tap.metadata[reference["artifact_id"]]["expires_at"])
     api.digests[key] = c.digest(reference["artifact_digest"].removeprefix("sha256:"))
@@ -2025,28 +2026,56 @@ def _state_point(checkpoint):
                 object_version=checkpoint["state_object"]["version_id"])
 
 
-def api_phase_b_evidence(*, close_raw, prepared, published, admitted_at, revisions):
-    """The product Phase B evidence that closed-ready and the host gate read (P13 decision 1), from keeper originals.
+STATE_MACHINE_REVISION = re.compile(r"arn:aws:states:[a-z0-9-]+:\d{12}:stateMachine:[A-Za-z0-9_-]+")
+B_MOMENTS = ("artifact_created_at", "job_completed_at")
 
-    Args: close-drain observation bytes, prepared fence package, authenticated B publication, API admission, revisions.
-    Returns: canonical phase-b bytes. Raises: ValueError outside the initial-mode derivation.
+
+def _phase_b_approval(published):
+    approval = c.loads(published["approval.json"], canonical=True)
+    delta = approval.get("delta") if type(approval) is dict else None
+    mode = delta.get("mode") if type(delta) is dict else None
+    c.require(mode != "established", "phase_b=established_mode_unsupported")
+    c.require(mode == "initial", "phase_b=mode")
+    return approval
+
+
+def _phase_b_observed_at(close, moments, admitted_at):
+    """The latest authenticated B publication moment inside drain <= observed_at <= API admission."""
+    drain = c.instant(close["drain_observed_at"])
+    c.closed(moments, " ".join(B_MOMENTS))
+    inside = [moment for moment in (c.instant(moments[name]) for name in B_MOMENTS) if drain <= moment <= admitted_at]
+    c.require(bool(inside), "phase_b=observed_at_bounds")
+    return c.utc(max(inside))
+
+
+def api_phase_b_evidence(*, close_raw, prepared, published, moments, admitted_at, revisions):
+    """The product Phase B evidence that closed-ready and the host gate read, checked against B and the close-drain.
+
+    Args: close-drain observation bytes, prepared fence package, authenticated B publication and its job/artifact
+    moments, API admission, plan-carrier revisions. Returns: canonical phase-b bytes.
+    Raises: ValueError phase_b=<reason>; established mode refuses before anything is built.
     """
+    approval = _phase_b_approval(published)
     close = c.closed(c.loads(close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
     before = c.loads(prepared["checkpoint.json"], canonical=True)
     after = c.loads(published["checkpoint.json"], canonical=True)
-    approval = c.loads(published["approval.json"], canonical=True)
+    c.require(approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"]) and approval["plan_sha256"] == after["plan_sha256"]
+              and after["purpose"] == "phase-b", "phase_b=ancestry")
+    first, last = _state_point(before), _state_point(after)
+    c.require(first["lineage"] == last["lineage"] and first["serial"] < last["serial"]
+              and first["object_version"] != last["object_version"], "phase_b=checkpoint_not_advanced")
     machines = [row["observed"].get("stateMachineArn") for row in after["readbacks"]
                 if row["service"] == "stepfunctions" and row["operation"] == "describe_state_machine"]
-    c.require(len(machines) == 1 and type(machines[0]) is str and approval["delta"]["mode"] == "initial"
-              and set(revisions) == set(ROUTE_REVISIONS)
-              and all(type(value) is str and TASK_REVISION.fullmatch(value) for value in revisions.values()),
-              "API phase-b evidence derivation")
+    c.require(len(machines) == 1 and type(machines[0]) is str and STATE_MACHINE_REVISION.fullmatch(machines[0]) is not None,
+              "phase_b=state_machine_readback")
+    c.require(set(revisions) == set(ROUTE_REVISIONS)
+              and all(type(value) is str and TASK_REVISION.fullmatch(value) for value in revisions.values()), "phase_b=revisions")
     routes = {"mode": "initial", "state_machine_arn": machines[0], "unit_environment_state_machine_arn": machines[0],
               "recovery_environment_state_machine_arn": machines[0]} | {mode + "_revision": revisions[mode] for mode in ROUTE_REVISIONS}
     return c.canonical({"version": 1, "kind": "phase-b", "common": close["common"], "close_drain_sha256": c.sha(close_raw),
-                        "before": _state_point(before), "after": _state_point(after), "plan_sha256": after["plan_sha256"],
+                        "before": first, "after": last, "plan_sha256": after["plan_sha256"],
                         "audit_sha256": c.sha(published["approval.json"]), "apply_sha256": c.sha(published["checkpoint.json"]),
-                        "routes": routes, "observed_at": c.utc(admitted_at)})
+                        "routes": routes, "observed_at": _phase_b_observed_at(close, moments, admitted_at)})
 
 
 def _drop_operation_clients(broker):
@@ -2158,7 +2187,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         files = state.get("prepared")
         c.require(files is not None, "phase-b follows the prepared stage handled by this keeper")
         owner = lc.owner_binding(current.lease.check())
-        published = _phase_b_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock())
+        published, moments = _phase_b_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock())
         b_checkpoint = c.loads(published["checkpoint.json"], canonical=True)
         b_approval = c.loads(published["approval.json"], canonical=True)
         c.require(b_approval["checkpoint_sha256"] == c.sha(files["checkpoint.json"])
@@ -2169,15 +2198,15 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
         current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
                                                now=admitted))
-        closed_ready(current, published)
+        closed_ready(current, published, moments)
 
-    def closed_ready(current, published):
+    def closed_ready(current, published, moments):
         files, close = state["prepared"], state["close-drain"]
         record = current.lease.check()
         window, owner = record["lifecycle"], lc.owner_binding(record)
-        inputs = {"activation": state["activation"], "close-drain": close, "membership": _frozen_membership(close),
-                  "phase-b": api_phase_b_evidence(close_raw=close, prepared=files, published=published,
-                                                  admitted_at=window["admitted_at"], revisions=state["revisions"])}
+        phase = api_phase_b_evidence(close_raw=close, prepared=files, published=published, moments=moments,
+                                     admitted_at=window["admitted_at"], revisions=state["revisions"])
+        inputs = {"activation": state["activation"], "close-drain": close, "membership": _frozen_membership(close), "phase-b": phase}
 
         def capability(*, journal, keeper, guard):
             return closed_ready_capability(aws=aws, api=api, governance=governance, request=request, run=run, journal=journal,
