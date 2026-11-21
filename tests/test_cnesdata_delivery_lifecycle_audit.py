@@ -117,6 +117,49 @@ def test_spec_agrupada_exige_endereco_do_grupo_e_nao_do_schedule():
         lr.readback_calls(schedule_plan(), [grouped], "before")
 
 
+@pytest.mark.parametrize("operation", ["delete_role", "update_role"])
+def test_approval_recusa_spec_com_operacao_que_nao_e_leitura(operation):
+    with pytest.raises(ValueError, match="^read-only API boundary$"):
+        lr.readback_calls(role_plan(), [spec(operation=operation)], "before")
+
+
+def test_approval_recusa_leitura_que_nao_e_a_operacao_do_catalogo_para_o_tipo_do_endereco():
+    machine = {"arn": MACHINE_ARN, "definition": "{}"}
+    plan = plan_of(change(STATE_MACHINE, machine, machine | {"definition": '{"a":1}'}, ["update"]))
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
+        lr.readback_calls(plan, [spec(STATE_MACHINE, "iam", "get_role")], "before")
+
+
+def sfn_approval_case(stage, service, operation):
+    case = b_case()
+    before = {"definition": '{"TaskDefinition":"unit:1"}', "role_arn": "role", "arn": MACHINE_ARN}
+    after = before | {"definition": '{"TaskDefinition":"unit:2"}'}
+    case["payload"]["plan.json"] = c.canonical(plan_of(change(STATE_MACHINE, before, after, ["update"])))
+    case["before_raw"] = sfn_state(before)
+    case["governance"]["readbacks"][stage] = [spec(STATE_MACHINE, service, operation)]
+    case["governance"]["drift_matrix"][stage] = [{"address": STATE_MACHINE, "attribute": "definition",
+                                                  "readback": 0, "path": ["definition"], "encoding": "json"}]
+    return case
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_aceita_a_leitura_do_catalogo_da_state_machine(stage):
+    case = sfn_approval_case(stage, "stepfunctions", "describe_state_machine")
+    assert lr.build_approval(**case)["readbacks"][stage] == case["governance"]["readbacks"][stage]
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_recusa_spec_mutante_da_state_machine(stage):
+    with pytest.raises(ValueError, match="^read-only API boundary$"):
+        lr.build_approval(**sfn_approval_case(stage, "stepfunctions", "delete_state_machine"))
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_recusa_leitura_de_outro_tipo_no_endereco_da_state_machine(stage):
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
+        lr.build_approval(**sfn_approval_case(stage, "iam", "get_role"))
+
+
 def sfn_state(before):
     return c.canonical({"version": 4, "serial": 1, "resources": [
         {"mode": "managed", "module": "module.processing", "type": "aws_sfn_state_machine", "name": "processor",

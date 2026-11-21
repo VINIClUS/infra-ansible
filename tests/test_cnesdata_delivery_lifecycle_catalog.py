@@ -660,6 +660,86 @@ OPTIONAL_LIFECYCLE = [
 ]
 
 
+REAL_PATHS = {
+    ("aws_sfn_state_machine", "arn"): ("stateMachineArn",),
+    ("aws_sfn_state_machine", "description"): ("description",),
+    ("aws_sfn_state_machine", "name"): ("name",),
+    ("aws_scheduler_schedule", "schedule_expression_timezone"): ("ScheduleExpressionTimezone",),
+    ("aws_cloudwatch_metric_alarm", "evaluation_periods"): ("MetricAlarms", 0, "EvaluationPeriods"),
+    ("aws_cloudfront_response_headers_policy", "name"): (
+        "ResponseHeadersPolicy", "ResponseHeadersPolicyConfig", "Name"),
+    ("aws_scheduler_schedule", "name"): ("Name",),
+    ("aws_scheduler_schedule", "group_name"): ("GroupName",),
+    ("aws_scheduler_schedule", "description"): ("Description",),
+    ("aws_scheduler_schedule", "kms_key_arn"): ("KmsKeyArn",),
+    ("aws_cloudwatch_event_rule", "name"): ("Name",),
+    ("aws_cloudwatch_event_rule", "description"): ("Description",),
+    ("aws_cloudwatch_event_rule", "role_arn"): ("RoleArn",),
+    ("aws_cloudwatch_event_rule", "event_pattern"): ("EventPattern",),
+    ("aws_cloudwatch_event_rule", "schedule_expression"): ("ScheduleExpression",),
+    **{("aws_cloudwatch_metric_alarm", attribute): ("MetricAlarms", 0, member) for attribute, member in {
+        "alarm_name": "AlarmName", "alarm_description": "AlarmDescription", "metric_name": "MetricName",
+        "namespace": "Namespace", "statistic": "Statistic", "extended_statistic": "ExtendedStatistic",
+        "unit": "Unit", "threshold_metric_id": "ThresholdMetricId", "datapoints_to_alarm": "DatapointsToAlarm",
+        "period": "Period", "threshold": "Threshold", "alarm_actions": "AlarmActions", "ok_actions": "OKActions",
+        "insufficient_data_actions": "InsufficientDataActions"}.items()},
+    ("aws_cloudfront_response_headers_policy", "id"): ("ResponseHeadersPolicy", "Id"),
+    ("aws_cloudfront_response_headers_policy", "comment"): (
+        "ResponseHeadersPolicy", "ResponseHeadersPolicyConfig", "Comment"),
+}
+BOTOCORE_MEMBERS = ROOT / "tests/fixtures/cnesdata_delivery_botocore_members.json"
+BOTOCORE_REGENERATE = (
+    "PYTHONPATH=$PWD:$PWD/tests uv run --no-project --python 3.12 --with botocore==1.44.5 --with pytest python -c "
+    "'import test_cnesdata_delivery_lifecycle_catalog as t; t.write_botocore_members()'")
+
+
+def _botocore_level(shape, depth, key, levels):
+    if shape.type_name == "list":
+        _botocore_level(shape.member, depth, key + "[]", levels)
+        return
+    if shape.type_name != "structure" or depth == 0:
+        return
+    levels[key] = {name: [member.type_name, name in shape.required_members]
+                   for name, member in sorted(shape.members.items())}
+    for name, member in shape.members.items():
+        _botocore_level(member, depth - 1, f"{key}.{name}" if key else name, levels)
+
+
+def write_botocore_members():
+    """Regenera BOTOCORE_MEMBERS dos shapes do botocore; do CATALOG so sai a profundidade de cada operacao."""
+    import botocore
+    from botocore.session import get_session
+    session, depths, operations = get_session(), {}, {}
+    for entries in catalog().CATALOG.values():
+        for service, operation, path, _ in entries.values():
+            depth = sum(type(part) is str for part in path)
+            depths[(service, operation)] = max(depths.get((service, operation), 0), depth)
+    for (service, operation), depth in sorted(depths.items()):
+        model = session.get_service_model(service)
+        names = {botocore.xform_name(name): name for name in model.operation_names}
+        levels = {}
+        _botocore_level(model.operation_model(names[operation]).output_shape, depth, "", levels)
+        operations[f"{service} {operation}"] = levels
+    document = {"botocore": botocore.__version__, "regenerate": BOTOCORE_REGENERATE, "operations": operations}
+    BOTOCORE_MEMBERS.write_text(json.dumps(document, indent=1, sort_keys=True) + "\n")
+
+
+def botocore_walk(service, operation, path):
+    levels = json.loads(BOTOCORE_MEMBERS.read_text())["operations"][f"{service} {operation}"]
+    key, kind, required = "", "structure", []
+    for part in path:
+        if type(part) is int:
+            assert kind == "list", (service, operation, path)
+            key, kind = key + "[]", "structure"
+            continue
+        members = levels.get(key, {})
+        assert part in members, (service, operation, path, sorted(members))
+        kind = members[part][0]
+        required.append(members[part][1])
+        key = f"{key}.{part}" if key else part
+    return required
+
+
 def put(target, path, value):
     *parents, leaf = path
     for index, component in enumerate(parents):
@@ -680,11 +760,11 @@ def optional_case(tipo, attribute, planned, live=None):
     attributes = identity | {attribute: planned}
     observed = json.loads(json.dumps(REAL_EXTRA[tipo]))
     for name, value in identity.items():
-        put(observed, entries[name][2], value)
+        put(observed, REAL_PATHS[(tipo, name)], value)
     if live is None:
-        drop(observed, entries[attribute][2])
+        drop(observed, REAL_PATHS[(tipo, attribute)])
     else:
-        put(observed, entries[attribute][2], live)
+        put(observed, REAL_PATHS[(tipo, attribute)], live)
     service, operation = entries[attribute][:2]
     rows = [{"address": address, "attribute": name, "readback": 0, "path": list(entries[name][2]),
              "encoding": entries[name][3]} for name in sorted(attributes)]
@@ -695,6 +775,35 @@ def optional_case(tipo, attribute, planned, live=None):
     plan_ = plan(change(address, attributes, attributes))
     return lambda: contract().drift_coverage(plan_, [report], matrix, SOURCE, "phase-b", "before",
                                              specs=[call], envelope=envelope())
+
+
+CATALOG_PATHS = sorted((tipo, attribute) for tipo, entries in catalog().CATALOG.items() for attribute in entries)
+OMITTED_PATHS = sorted((tipo, attribute) for tipo, entries in catalog().OMITTED.items() for attribute in entries)
+
+
+def test_membros_congelados_do_botocore_registram_versao_e_comando_de_regeneracao():
+    document = json.loads(BOTOCORE_MEMBERS.read_text())
+    assert (document["botocore"], document["regenerate"]) == ("1.44.5", BOTOCORE_REGENERATE)
+    assert {key for key in document["operations"]} == {
+        f"{service} {operation}" for entries in catalog().CATALOG.values() for service, operation, _, _ in entries.values()}
+
+
+@pytest.mark.parametrize("tipo,attribute", CATALOG_PATHS)
+def test_caminho_do_catalogo_existe_nos_membros_de_saida_do_botocore(tipo, attribute):
+    service, operation, path, _ = catalog().CATALOG[tipo][attribute]
+    botocore_walk(service, operation, path)
+
+
+@pytest.mark.parametrize("tipo,attribute", OMITTED_PATHS)
+def test_omissao_declarada_aponta_para_membro_que_a_aws_pode_omitir(tipo, attribute):
+    service, operation, path, _ = catalog().CATALOG[tipo][attribute]
+    assert not all(botocore_walk(service, operation, path))
+
+
+@pytest.mark.parametrize("tipo,attribute", sorted(REAL_PATHS))
+def test_resposta_viva_dos_testes_de_omissao_usa_membros_reais_do_botocore(tipo, attribute):
+    service, operation = catalog().CATALOG[tipo][attribute][:2]
+    botocore_walk(service, operation, REAL_PATHS[(tipo, attribute)])
 
 
 @pytest.mark.parametrize("tipo,attribute,empties,filled", OPTIONAL_LIFECYCLE)
