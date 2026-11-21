@@ -604,3 +604,135 @@ def test_tag_com_valor_vazio_e_tag_real_e_confere_nos_dois_lados():
 def test_recusa_tag_de_valor_vazio_presente_so_em_um_dos_lados(state_tags, live_tags):
     with pytest.raises(ValueError, match="saved-plan live functional drift"):
         tag_case(state_tags, live_tags)
+
+
+OMITTED_IDENTITY = {
+    "aws_sfn_state_machine": (
+        "module.processing.aws_sfn_state_machine.processor[0]", {"arn": MACHINE_ARN}),
+    "aws_scheduler_schedule": (
+        'module.schedulers.aws_scheduler_schedule.mode["recovery"]',
+        {"name": "synthetic-recovery", "group_name": "synthetic-recovery"}),
+    "aws_cloudwatch_event_rule": (
+        'module.schedulers.aws_cloudwatch_event_rule.task_outcome["recovery_failed"]',
+        {"name": "synthetic-recovery-failed"}),
+    "aws_cloudwatch_metric_alarm": (
+        'module.schedulers.aws_cloudwatch_metric_alarm.lost_invocation["recovery"]',
+        {"alarm_name": "synthetic-recovery"}),
+    "aws_cloudfront_response_headers_policy": (
+        "module.static_web.aws_cloudfront_response_headers_policy.this",
+        {"id": "synthetic-policy"}),
+}
+REAL_EXTRA = {
+    "aws_sfn_state_machine": {"status": "ACTIVE", "type": "STANDARD", "roleArn": "synthetic-role",
+                              "definition": "{}", "creationDate": "2026-11-21T00:00:00Z"},
+    "aws_scheduler_schedule": {"State": "ENABLED", "ScheduleExpression": "rate(1 hour)",
+                               "ActionAfterCompletion": "NONE",
+                               "ScheduleExpressionTimezone": "UTC"},
+    "aws_cloudwatch_event_rule": {"State": "ENABLED", "EventBusName": "default"},
+    "aws_cloudwatch_metric_alarm": {"CompositeAlarms": [], "MetricAlarms": [
+        {"ComparisonOperator": "GreaterThanThreshold", "EvaluationPeriods": 1,
+         "ActionsEnabled": True}]},
+    "aws_cloudfront_response_headers_policy": {"ETag": "E1", "ResponseHeadersPolicy": {
+        "ResponseHeadersPolicyConfig": {"Name": "synthetic-policy"}}},
+}
+OPTIONAL_LIFECYCLE = [
+    ("aws_sfn_state_machine", "description", ["", None], "texto"),
+    ("aws_scheduler_schedule", "description", ["", None], "texto"),
+    ("aws_scheduler_schedule", "kms_key_arn", ["", None], "synthetic-key"),
+    ("aws_cloudwatch_event_rule", "description", ["", None], "texto"),
+    ("aws_cloudwatch_event_rule", "role_arn", ["", None], "synthetic-role"),
+    ("aws_cloudwatch_event_rule", "event_pattern", ["", None], '{"source":["x"]}'),
+    ("aws_cloudwatch_event_rule", "schedule_expression", ["", None], "rate(1 hour)"),
+    ("aws_cloudwatch_metric_alarm", "alarm_description", ["", None], "texto"),
+    ("aws_cloudwatch_metric_alarm", "metric_name", ["", None], "ExecutionsFailed"),
+    ("aws_cloudwatch_metric_alarm", "namespace", ["", None], "AWS/States"),
+    ("aws_cloudwatch_metric_alarm", "statistic", ["", None], "Sum"),
+    ("aws_cloudwatch_metric_alarm", "extended_statistic", ["", None], "p99"),
+    ("aws_cloudwatch_metric_alarm", "unit", ["", None], "Count"),
+    ("aws_cloudwatch_metric_alarm", "threshold_metric_id", ["", None], "m1"),
+    ("aws_cloudwatch_metric_alarm", "datapoints_to_alarm", [0, None], 2),
+    ("aws_cloudwatch_metric_alarm", "period", [0, None], 300),
+    ("aws_cloudwatch_metric_alarm", "threshold", [0, None], 1),
+    ("aws_cloudwatch_metric_alarm", "alarm_actions", [[], None], ["synthetic-topic"]),
+    ("aws_cloudwatch_metric_alarm", "ok_actions", [[], None], ["synthetic-topic"]),
+    ("aws_cloudwatch_metric_alarm", "insufficient_data_actions", [[], None], ["synthetic-topic"]),
+    ("aws_cloudfront_response_headers_policy", "comment", ["", None], "texto"),
+]
+
+
+def put(target, path, value):
+    *parents, leaf = path
+    for index, component in enumerate(parents):
+        child = [{}] if type(path[index + 1]) is int else {}
+        target = target.setdefault(component, child) if type(target) is dict else target[component]
+    target[leaf] = value
+
+
+def drop(target, path):
+    for component in path[:-1]:
+        target = target[component]
+    target.pop(path[-1], None)
+
+
+def optional_case(tipo, attribute, planned, live=None):
+    entries = catalog().CATALOG[tipo]
+    address, identity = OMITTED_IDENTITY[tipo]
+    attributes = identity | {attribute: planned}
+    observed = json.loads(json.dumps(REAL_EXTRA[tipo]))
+    for name, value in identity.items():
+        put(observed, entries[name][2], value)
+    if live is None:
+        drop(observed, entries[attribute][2])
+    else:
+        put(observed, entries[attribute][2], live)
+    service, operation = entries[attribute][:2]
+    rows = [{"address": address, "attribute": name, "readback": 0, "path": list(entries[name][2]),
+             "encoding": entries[name][3]} for name in sorted(attributes)]
+    matrix = {"matrix_version": 2, "source_sha": SOURCE, "purpose": "phase-b", "before": rows,
+              "after": [], "absent": []}
+    report = {"service": service, "operation": operation, "observed": observed}
+    call = spec(service, operation, address, parameters={"X": "y"})
+    plan_ = plan(change(address, attributes, attributes))
+    return lambda: contract().drift_coverage(plan_, [report], matrix, SOURCE, "phase-b", "before",
+                                             specs=[call], envelope=envelope())
+
+
+@pytest.mark.parametrize("tipo,attribute,empties,filled", OPTIONAL_LIFECYCLE)
+def test_leitura_real_sem_campo_opcional_casa_com_o_vazio_declarado(
+        tipo, attribute, empties, filled):
+    for empty in empties:
+        assert optional_case(tipo, attribute, empty)() is None
+
+
+@pytest.mark.parametrize("tipo,attribute,empties,filled", OPTIONAL_LIFECYCLE)
+def test_campo_opcional_presente_e_diferente_continua_recusado(tipo, attribute, empties, filled):
+    planned = None if catalog().CATALOG[tipo][attribute][3] == "json" else empties[0]
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        optional_case(tipo, attribute, planned, filled)()
+
+
+@pytest.mark.parametrize("tipo,attribute,empties,filled", OPTIONAL_LIFECYCLE)
+def test_campo_opcional_omitido_com_valor_planejado_nao_vazio_e_recusado(
+        tipo, attribute, empties, filled):
+    with pytest.raises(ValueError, match="drift response field"):
+        optional_case(tipo, attribute, filled)()
+
+
+@pytest.mark.parametrize("tipo,attribute", [
+    ("aws_sfn_state_machine", "name"), ("aws_scheduler_schedule", "schedule_expression_timezone"),
+    ("aws_cloudwatch_metric_alarm", "evaluation_periods"),
+    ("aws_cloudfront_response_headers_policy", "name")])
+def test_campo_sem_omissao_declarada_ausente_na_leitura_continua_recusado(tipo, attribute):
+    with pytest.raises(ValueError, match="drift response field"):
+        optional_case(tipo, attribute, "")()
+
+
+def test_container_de_topo_do_lifecycle_ausente_nao_vale_como_omissao():
+    mapa, c = catalog(), contract()
+    for tipo, attribute in (("aws_cloudfront_response_headers_policy", "comment"),
+                            ("aws_cloudwatch_metric_alarm", "metric_name")):
+        _, _, path, encoding = mapa.CATALOG[tipo][attribute]
+        row = {"address": "x", "attribute": attribute, "readback": 0, "path": list(path),
+               "encoding": encoding}
+        with pytest.raises(ValueError, match="drift response field"):
+            c._projection(row, {}, "", c.ENCODINGS, mapa.OMITTED[tipo][attribute])

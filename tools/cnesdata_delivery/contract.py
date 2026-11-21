@@ -358,7 +358,7 @@ def _projection(row, observed, value, encodings, omitted=None):
         if type(observed) is dict:
             require(type(component) is str, "drift response field")
             if component not in observed:
-                require(depth > 0, "drift response field")
+                require(depth > 0 or len(row["path"]) == 1, "drift response field")
                 return _omitted(value, omitted)
         else:
             require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")

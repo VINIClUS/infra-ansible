@@ -324,6 +324,19 @@ OMITTED = {
     "aws_dynamodb_table": {
         "billing_mode": ("PROVISIONED",), "table_class": ("STANDARD",), "stream_enabled": (False, None),
         "stream_view_type": ("", None), "stream_arn": ("", None), "stream_label": ("", None)},
+    "aws_sfn_state_machine": {"description": ("", None)},
+    "aws_scheduler_schedule": {"description": ("", None), "kms_key_arn": ("", None)},
+    "aws_cloudwatch_event_rule": {
+        "description": ("", None), "event_pattern": ("", None), "role_arn": ("", None),
+        "schedule_expression": ("", None)},
+    "aws_cloudwatch_metric_alarm": {
+        "alarm_actions": ([], None), "alarm_description": ("", None),
+        "datapoints_to_alarm": (0, None), "extended_statistic": ("", None),
+        "insufficient_data_actions": ([], None),
+        "metric_name": ("", None), "namespace": ("", None), "ok_actions": ([], None),
+        "period": (0, None), "statistic": ("", None), "threshold": (0, None),
+        "threshold_metric_id": ("", None), "unit": ("", None)},
+    "aws_cloudfront_response_headers_policy": {"comment": ("", None)},
 }
 NO_CHANGE = (["no-op"], ["read"])
 
