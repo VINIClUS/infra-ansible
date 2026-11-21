@@ -386,3 +386,49 @@ def test_guarda_recusa_yaml_do_caller_com_raiz_que_nao_e_mapa(repo, capsys):
         release_guard.check(repo, x_star, k)
     assert governance_assembly.main(["release-check", "--repo", str(repo), "--x-star", x_star, "--k", k]) == 1
     assert capsys.readouterr().err == "refused reason=caller yaml\n"
+
+
+NO_YAML = """
+import io, json, sys
+sys.path.insert(0, sys.argv[1])
+sys.modules["yaml"] = None
+from tools.cnesdata_delivery.producers import governance_assembly, hmac_key
+calls = []
+class Custody:
+    def __init__(self, run=None):
+        pass
+    def lookup(self):
+        return "5a" * 32
+    def store(self, key):
+        calls.append("store")
+    def deliver(self, key, repository, environment):
+        calls.append("deliver")
+hmac_key.Custody = Custody
+out = io.BytesIO()
+sys.stdout = type("W", (), {"buffer": out, "write": lambda self, text: None, "flush": lambda self: None})()
+status = [governance_assembly.main(["render", "--document", sys.argv[2], "--commitments", sys.argv[3]]),
+          governance_assembly.main(["key", "generate", "--repo", "VINIClUS/infra-ansible", "--environment", "x"]),
+          governance_assembly.main(["baseline-inputs", "--private", sys.argv[4]])]
+sys.stderr.write(json.dumps({"status": status, "calls": calls, "yaml": sys.modules["yaml"] is None,
+                             "size": len(out.getvalue())}))
+"""
+
+
+def test_cli_do_dono_renderiza_gera_chave_e_emite_baseline_sem_pyyaml(tmp_path):
+    import sys
+    from test_cnesdata_producers_baseline import private
+    paths = {name: tmp_path / f"{name}.json" for name in ("document", "commitments", "private")}
+    paths["document"].write_bytes(c.canonical(document_with()))
+    paths["commitments"].write_bytes(c.canonical(COMMITMENTS))
+    paths["private"].write_text(json.dumps(private()))
+    done = subprocess.run([sys.executable, "-I", "-c", NO_YAML, str(ROOT), *(str(paths[n]) for n in paths)],
+                          capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    report = json.loads(done.stderr)
+    assert report["status"] == [0, 0, 0] and report["calls"] == ["store", "deliver"] and report["yaml"] is True
+    assert report["size"] > len(c.canonical(document_with()))
+
+
+def test_guarda_de_release_continua_lendo_o_caller_com_pyyaml(repo):
+    x_star, k = release(repo)
+    release_guard.check(repo, x_star, k)
