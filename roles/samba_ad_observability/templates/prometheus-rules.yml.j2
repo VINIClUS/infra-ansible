@@ -1,0 +1,79 @@
+groups:
+  - name: samba-ad-health
+    rules:
+      - alert: SambaADBackendUnavailable
+        expr: up{project="samba-ad",job="ad_backend"} == 0
+        for: 2m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "Dedicated AD backend or gateway metrics unavailable"}
+      - alert: SambaADSourceFailed
+        expr: samba_ad_source_up{project="samba-ad"} == 0
+        for: 2m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD source unreadable, malformed or unavailable"}
+      - alert: SambaADStateUnhealthy
+        expr: samba_ad_healthy{project="samba-ad"} == 0
+        for: 2m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD PKI, timer, SYSVOL or DRS failed its native contract"}
+      - alert: SambaADCertificateExpiry
+        expr: samba_ad_expires_seconds{project="samba-ad"} - time() < 86400
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD certificate expired or expires within one day"}
+      - alert: SambaADCertificateRotationOverdue
+        expr: samba_ad_rotate_by_seconds{project="samba-ad"} < time()
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD certificate rotation deadline passed"}
+      - alert: SambaADSYSVOLRetentionSaturated
+        expr: samba_ad_retention_saturated{project="samba-ad"} == 1
+        labels: {severity: warning, project: samba-ad}
+        annotations: {summary: "SYSVOL producer retention requires directed review"}
+      - alert: SambaADQueueBacklog
+        expr: samba_ad_queue_oldest_age_seconds{project="samba-ad"} > 180
+        for: 1m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "Durable AD queue is not draining"}
+      - alert: SambaADQueueCapacity
+        expr: samba_ad_queue_bytes{project="samba-ad"} > 400000000
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD durable queue approaches its hard 512 MiB acceptance cap"}
+      - alert: SambaADQueueRejected
+        expr: increase(samba_ad_queue_rejected_total{project="samba-ad"}[5m]) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "Local queue rejected data; preserve input logs and reconcile receipts"}
+      - alert: SambaADTransportDropped
+        expr: >-
+          sum by (node) (increase(loki_write_dropped_entries_total{project="samba-ad"}[5m])) > 0
+          or sum by (node) (increase(prometheus_remote_storage_samples_failed_total{project="samba-ad"}[5m])) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD transport dropped data; reconcile sequence receipts"}
+      - alert: SambaADTransportBacklog
+        expr: >-
+          time() - prometheus_remote_storage_queue_highest_sent_timestamp_seconds{project="samba-ad"} > 300
+        for: 2m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD remote-write queue is not advancing"}
+      - alert: SambaADSpoolCapacity
+        expr: >-
+          node_filesystem_avail_bytes{project="samba-ad",fstype!~"tmpfs|overlay"}
+          / node_filesystem_size_bytes{project="samba-ad",fstype!~"tmpfs|overlay"} < 0.15
+        for: 5m
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD queue filesystem capacity below 15 percent"}
+{% for node in samba_ad_observability_parameters.expected_nodes %}
+      - alert: SambaADCollectorMissing_{{ node.name }}
+        expr: >-
+          absent_over_time(samba_ad_exporter_last_run_seconds{project="samba-ad",node="{{ node.name }}"}[5m])
+          or time() - samba_ad_exporter_last_run_seconds{project="samba-ad",node="{{ node.name }}"} > 180
+        for: 1m
+        labels: {severity: critical, project: samba-ad, node: "{{ node.name }}"}
+        annotations: {summary: "AD node collection or transport heartbeat missing/stale"}
+{% for source in node.sources %}
+      - alert: SambaADExpectedSourceMissing_{{ node.name }}_{{ source }}
+        expr: >-
+          absent_over_time(samba_ad_source_up{project="samba-ad",node="{{ node.name }}",source="{{ source }}"}[5m])
+        for: 1m
+        labels: {severity: critical, project: samba-ad, node: "{{ node.name }}"}
+        annotations: {summary: "Expected AD source is absent; absence is not zero failures"}
+{% endfor %}
+{% endfor %}

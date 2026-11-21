@@ -1,0 +1,6 @@
+---
+samba_ad_observability_enabled: false
+samba_ad_observability_apply: false
+samba_ad_observability_activate: false
+samba_ad_observability_config: {}
+samba_ad_observability_assets: {}

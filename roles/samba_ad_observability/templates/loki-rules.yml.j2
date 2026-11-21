@@ -1,0 +1,45 @@
+groups:
+  - name: samba-ad-audit
+    interval: 30s
+    rules:
+      - alert: SambaADPrivilegedGroupChange
+        expr: >-
+          sum by (node) (count_over_time({project="samba-ad",source="samba_json"}
+          | json kind="type", target="groupChange.group"
+          | kind="groupChange" | target=~{{ samba_ad_observability_parameters.privileged_group_pattern | to_json }} [5m])) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "Privileged AD group changed; review protected audit record"}
+      - alert: SambaADPolicyChange
+        expr: >-
+          sum by (node) (count_over_time({project="samba-ad",source="samba_json"}
+          | json kind="type", target="dsdbChange.dn"
+          | kind="dsdbChange" | target=~{{ samba_ad_observability_parameters.policy_dn_pattern | to_json }} [5m])) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD policy object or domain policy changed"}
+      - alert: SambaADSYSVOLWrite
+        expr: >-
+          sum by (node) (count_over_time({project="samba-ad",source="audit"}
+          |= "samba_ad_sysvol" [5m])) > 0
+        labels: {severity: warning, project: samba-ad}
+        annotations: {summary: "SYSVOL filesystem was written; correlate with approved policy changes"}
+      - alert: SambaADWindowsSecurityChange
+        expr: >-
+          sum by (node) (count_over_time({project="samba-ad",source="windows_event",channel="Security"}
+          | json | event_id=~"4728|4729|4732|4733|4756|4757|4719|4739|5136|1102" [5m])) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "Windows group, policy, directory or audit-log security change"}
+      - alert: SambaADAuditMalformed
+        expr: >-
+          sum by (node) (count_over_time({project="samba-ad",source=~"samba_json|windows_event"}
+          | json | __error__!="" | drop __error__, __error_details__ [5m])) > 0
+        labels: {severity: critical, project: samba-ad}
+        annotations: {summary: "AD audit format no longer matches the parser"}
+{% for node in samba_ad_observability_parameters.expected_nodes %}
+      - alert: SambaADLogHeartbeatMissing_{{ node.name }}
+        expr: >-
+          absent_over_time({project="samba-ad",node="{{ node.name }}",source="canary"}
+          | json | kind="samba_ad_canary" [5m])
+        for: 1m
+        labels: {severity: critical, project: samba-ad, node: "{{ node.name }}"}
+        annotations: {summary: "AD log path stopped independently of metrics"}
+{% endfor %}

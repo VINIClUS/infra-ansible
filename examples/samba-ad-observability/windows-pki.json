@@ -1,0 +1,18 @@
+{
+  "schema": "samba-ad-windows-pki/v1",
+  "profile": "telemetry_windows_pilot",
+  "domain": "example.test",
+  "fqdn": "pilot.example.test",
+  "machine_guid": "11111111-2222-3333-4444-555555555555",
+  "issuer_url": "https://ca.example.test/1.0/sign",
+  "collector_url": "https://collector.example.test",
+  "root_file": "C:/ProgramData/SambaADPKI/root.pem",
+  "issuer_file": "C:/ProgramData/SambaADPKI/issuer.pem",
+  "root_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issuer_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "auth_jwe": "C:\\ProgramData\\SambaADPKI\\telemetry_windows_pilot\\auth.jwe",
+  "passphrase_ref": "C:\\ProgramData\\SambaADPKICredentials\\telemetry_windows_pilot\\passphrase",
+  "step_binary": "C:/Program Files/SambaADTelemetry/step.exe",
+  "step_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "public_jwk": null
+}

@@ -1,0 +1,9 @@
+---
+- name: Manual dedicated Samba AD observability
+  hosts: samba_ad_hosts
+  become: true
+  gather_facts: false
+  serial: 1
+  roles:
+    - role: samba_ad_observability
+      tags: [samba_ad_observability]
