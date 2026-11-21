@@ -4688,16 +4688,27 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
         "phase_a_originals": carrier}
     b_approval = {"version": 1, "owner": owner, "purpose": "phase-b", "direction": "advance", "plan_sha256": "9" * 64,
         "inputs_sha256": "8" * 64, "checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"]),
-        "delta": {}, "drift_matrix": {}, "readbacks": {"before": [], "after": []}}
+        "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial"}, "drift_matrix": {},
+        "readbacks": {"before": [], "after": []}}
     b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
     members = scope["members"]
     membership = {"frozen_membership_sha256": c.sha(c.canonical(members)), "members": members}
+    close_raw = c.canonical({"version": 1, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
+                             "close_confirmed_at": c.utc(1000), "drain_observed_at": c.utc(1010), "members": members,
+                             "frozen_membership_sha256": membership["frozen_membership_sha256"], "proofs": [], "permit": None,
+                             "input_expirations": [], "fixed_deadline": c.utc(2800), "decision": None})
     if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
-    inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": c.canonical({"fixture_only": "close"}),
-              "phase-b": b_files["checkpoint.json"], "membership": c.canonical(membership)}
     prepared_at = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]["admitted_at"]
+    admitted = prepared_at if mutation == "admitted" else 1300
+    revisions = {mode: f"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-{mode}:1"
+                 for mode in ("unit", "recovery", "audit")}
+    evidence = ag.api_phase_b_evidence(close_raw=close_raw, prepared=prepared, published=b_files, admitted_at=admitted,
+                                                revisions=revisions)
+    inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": close_raw,
+              "phase-b": b_files["checkpoint.json"] if mutation == "lifecycle-phase-b" else evidence,
+              "membership": c.canonical(membership)}
     window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api",
-              "admitted_at": prepared_at if mutation == "admitted" else 1300, "deadline": 1480,
+              "admitted_at": admitted, "deadline": 1480,
               "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
               "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
     request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
@@ -4743,7 +4754,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
         def get(self, bucket, key, **kw): return objects[key], None
         def call(self, *args, **kw): raise AssertionError("the keeper client never reaches STS or the fence evidence")
     keeper = ag.Keeper.__new__(ag.Keeper)
-    keeper._contexts, keeper.lease = [], SimpleNamespace(check=lambda: {"held": True})
+    drained = c.canonical(c.loads(close_raw, canonical=True) | {"drain_observed_at": c.utc(1011)}) if mutation == "foreign-close" else close_raw
+    keeper._contexts, keeper.lease = [_journal_with(observations=[("close-drain", drained)])], SimpleNamespace(check=lambda: {"held": True})
     args = dict(aws=Store(), api=API(), governance=governance, request=req, run=run, journal=journal, keeper=keeper,
                 prepared=prepared, credential_limit=3000, guard=Guard(), operation_session=sts_args["operation_session"],
                 clock=lambda: 1300)
@@ -4767,7 +4779,7 @@ def test_closed_ready_capability_checks_everything_before_sts(monkeypatch, mutat
         assert keeper.uncertainty() == [{"kind": "context-failed"}]
         return
     broker = ag.closed_ready_capability(**args)
-    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts == [broker]
+    assert type(broker) is ag.ClosedReadyBroker and keeper._contexts[1:] == [broker]
     assert len(sts_calls) == 1 and sts_calls[0][2]["RoleSessionName"] == "promotion-fence-r1"
     assert args["operation_session"].calls == [("closed-ready", "promotion-fence-r1", journal._request["stage"])]
     assert broker.aws is args["operation_session"].client is broker.session.evidence and broker.aws is not args["aws"]
@@ -4813,6 +4825,32 @@ def test_fence_scope_has_one_derivation_shared_by_prepare_and_capability(monkeyp
     cases = {case["case_id"]: case["resource"] for case in c.loads(args["prepared"]["fence-evaluation.json"], canonical=True)["cases"]}
     assert cases["get-fence"] == derived["control_table_arn"] and cases["probe-own"] == derived["execution_prefix"] + "0" * 16
     assert derived["machine_arn"] == derived["execution_prefix"].replace(":execution:", ":stateMachine:")[:-1]
+
+
+def test_closed_ready_capability_recusa_o_checkpoint_do_lifecycle_como_evidencia_phase_b(monkeypatch):
+    """P13 decision 1: the adapter input phase-b is the product Phase B evidence, never the lifecycle checkpoint.json."""
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, "lifecycle-phase-b")
+    assert journal._inputs["phase-b"] == c.canonical(c.loads(journal._inputs["phase-b"], canonical=True))
+    with pytest.raises(ValueError, match="API phase-b evidence"):
+        ag.closed_ready_capability(**args)
+    assert sts_calls == [] and journal._failed is True
+
+
+def test_closed_ready_capability_recusa_close_drain_que_nao_e_a_observacao_do_keeper(monkeypatch):
+    ag, args, sts_calls, keeper, journal = _closed_ready_capability_case(monkeypatch, "foreign-close")
+    with pytest.raises(ValueError, match="closed-ready close-drain is the keeper observation"):
+        ag.closed_ready_capability(**args)
+    assert sts_calls == [] and journal._failed is True
+
+
+def test_arquivo_do_closure_cabe_no_teto_de_256kib():
+    """N16 guard (P14-P17): every APPLICATION_CLOSURE_PATHS file stays within the application_source_closure limit."""
+    from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    root = Path(__file__).resolve().parents[1]
+    sizes = {path: len((root / path).read_bytes()) for path in lc.APPLICATION_CLOSURE_PATHS}
+    assert {path: size for path, size in sizes.items() if size > 256 * 1024} == {}
+    lc.application_source_closure(lambda path: (root / path).read_bytes())
 
 
 @pytest.mark.parametrize("operation", ["inventory"])
@@ -4966,38 +5004,43 @@ def _keeper_loop_case():
     def phase_b(current, reference):
         handled.append(("phase-b", reference))
         advance(current, stage="api", admitted_at=1000, deadline=1180, checkpoint_sha256="f" * 64)
+    def host(current, reference):
+        handled.append(("host", reference))
+        advance(current, stage="static", admitted_at=1010, deadline=1190)
     events = {"application-prepare": [None, {"kind": "prepared", "reference": {"fixture": "prepared"}}],
-              "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}]}
+              "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}],
+              "api": [None, {"kind": "host", "reference": {"fixture": "host"}}]}
     def next_event(window):
         seen.append(window["stage"])
         if window["stage"] not in lc.STAGE_TRIGGERS:
             raise ValueError(f"stage trigger not connected stage={window['stage']}")
         return events[window["stage"]].pop(0)
-    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b},
+    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b, "host": host},
                                                       "sleep": slept.append} | changes))
     return ag, keeper, store, run, seen, handled, slept
 
 
-def test_keeper_loop_dispatches_each_stage_trigger_and_stops_at_the_api_stage():
+def test_keeper_loop_despacha_cada_gatilho_e_para_no_estagio_static():
     ag, keeper, store, run, seen, handled, slept = _keeper_loop_case()
-    with pytest.raises(ValueError, match="^stage trigger not connected stage=api$"):
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=static$"):
         run()
-    assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"})] and slept == [5]
-    assert seen == ["application-prepare", "application-prepare", "phase-b", "api"]
+    assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"}),
+                       ("host", {"fixture": "host"})] and slept == [5, 5]
+    assert seen == ["application-prepare", "application-prepare", "phase-b", "api", "api", "static"]
     record = store.get()[0]
-    assert record["status"] == "held" and record["lifecycle"]["stage"] == "api" and keeper.uncertainty() == []
+    assert record["status"] == "held" and record["lifecycle"]["stage"] == "static" and keeper.uncertainty() == []
 
 
 def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
     import inspect
     from tools.cnesdata_delivery import application_gate as ag
     assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
-    assert ag.KEEPER_EVENTS == ("prepared", "phase-b")
+    assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host")
 
 
-@pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b", "closed-ready"),
-                                   ("prepared", "phase-b", "terminal")])
-def test_keeper_loop_connects_only_the_two_stage_triggers(names):
+@pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b"), ("prepared", "host"),
+                                   ("prepared", "phase-b", "host", "closed-ready"), ("prepared", "phase-b", "host", "terminal")])
+def test_keeper_loop_conecta_so_os_tres_gatilhos_de_estagio(names):
     ag, keeper, store, run, _, _, _ = _keeper_loop_case()
     with pytest.raises(ValueError, match="closed keeper handlers"):
         run(handlers={name: None for name in names}, next_event=lambda window: pytest.fail("no event before handler check"))
@@ -5006,6 +5049,7 @@ def test_keeper_loop_connects_only_the_two_stage_triggers(names):
 
 @pytest.mark.parametrize("event, message", [({"kind": "closed-ready", "reference": {}}, "closed keeper event"),
                                             ({"kind": "terminal", "reference": {}}, "closed keeper event"),
+                                            ({"kind": "static", "reference": {}}, "closed keeper event"),
                                             ({"kind": "advance", "reference": {}}, "closed keeper event"),
                                             ({"kind": "prepared"}, "closed object fields"),
                                             ({"kind": "prepared", "reference": {}, "extra": 1}, "closed object fields")])
@@ -5013,7 +5057,8 @@ def test_keeper_loop_refuses_events_outside_the_stage_triggers(event, message):
     ag, keeper, store, run, _, handled, _ = _keeper_loop_case()
     with pytest.raises(ValueError, match=message):
         run(next_event=lambda window: event, handlers={"prepared": lambda *a: pytest.fail("no dispatch"),
-                                                       "phase-b": lambda *a: pytest.fail("no dispatch")})
+                                                       "phase-b": lambda *a: pytest.fail("no dispatch"),
+                                                       "host": lambda *a: pytest.fail("no dispatch")})
     assert store.get()[0]["status"] == "held" and handled == []
 
 
@@ -5025,7 +5070,7 @@ def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty()
         journal._failed = True
         raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        run(handlers={"prepared": failing, "phase-b": failing})
+        run(handlers={"prepared": failing, "phase-b": failing, "host": failing})
     assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
     assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
@@ -5052,7 +5097,7 @@ def test_keeper_guard_renews_lease_during_quiet_adapter_run():
         guard.check(908)
 
 
-def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch):
+def test_run_closed_ready_admite_a_capability_e_so_entao_mede_o_tempo_do_child(monkeypatch):
     from tools.cnesdata_delivery import application_gate as ag
     ag_mod, args, sts_calls, _, journal = _closed_ready_capability_case(monkeypatch)
     keeper, _ = _accepted_terminal_case()
@@ -5061,12 +5106,14 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
         assert type(guard) is ag.KeeperGuard and journal._guard is guard and any(item is journal for item in keeper._contexts)
         order.append("capability")
         journal._broker = ag.ClosedReadyBroker.__new__(ag.ClosedReadyBroker)
-    monkeypatch.setattr(ag, "invoke_adapter", lambda **kwargs: order.append("adapter") or kwargs["journal"])
+    seen = {}
+    monkeypatch.setattr(ag, "invoke_adapter", lambda **kwargs: order.append("adapter") or seen.update(kwargs) or kwargs["journal"])
     request_raw = c.canonical(journal._request)
     result = ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
         window=journal._request["stage"] | journal._identity, inputs=journal._inputs, activation_sha256=journal._request["activation_sha256"],
-        capability=capability, product="product", source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
-    assert order == ["capability", "adapter"] and type(result) is ag.AdapterJournal
+        capability=capability, product="product", source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64,
+        seconds=lambda: order.append("seconds") or 117)
+    assert order == ["capability", "seconds", "adapter"] and type(result) is ag.AdapterJournal and seen["timeout"] == 117
     def refusing(*, journal, keeper, guard):
         journal._failed = True
         raise ValueError("capability refused")
@@ -5075,7 +5122,8 @@ def test_run_closed_ready_admits_capability_before_any_adapter_child(monkeypatch
         ag.run_closed_ready(keeper=keeper, request_raw=request_raw, owner=journal._request["owner"] | journal._identity,
             window=journal._request["stage"] | journal._identity, inputs=journal._inputs,
             activation_sha256=journal._request["activation_sha256"], capability=refusing, product="product",
-            source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64, timeout=120)
+            source=journal._request["source_sha"], manifest={}, manifest_sha256="0" * 64,
+            seconds=lambda: pytest.fail("no capacity sample before the capability"))
     assert order == [] and {"kind": "context-failed"} in keeper.uncertainty()
 
 
@@ -5151,7 +5199,7 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
             return {"owner": "acquired"}
     monkeypatch.setattr(ag, "Keeper", FakeKeeper)
     monkeypatch.setattr(ag, "register_terminal_validators", record("register"))
-    monkeypatch.setattr(ag, "stage_handlers", record("handlers", {"prepared": "h1", "phase-b": "h2"}))
+    monkeypatch.setattr(ag, "stage_handlers", record("handlers", {"prepared": "h1", "phase-b": "h2", "host": "h3"}))
     monkeypatch.setattr(ag, "keeper_loop", record("loop", _Stop("loop reached")))
     return ag, (governance, request, {}, api, run, {}), calls, SimpleNamespace(authority=authority, aws=fake_aws, now=now, api=api,
                                                                               run=run, request=request)
@@ -5193,7 +5241,7 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert callable(handler_kwargs["operation_session"]) and handler_kwargs["operation_session"] is not world.aws
     assert handler_kwargs["authority"] is world.authority and handler_kwargs["product"] == "product"
     assert handler_kwargs["credential_limit"] == world.now + 5000 and handler_kwargs["clock"]() == 1000.4
-    assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2"}}
+    assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2", "host": "h3"}}
     assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
 
 
@@ -5470,7 +5518,7 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
-               "validate_static_call", "stage_handlers"}
+               "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5494,8 +5542,8 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         visit(tree, "<module>")
     gate = "tools/cnesdata_delivery/application_gate.py"
     assert sites == {
-        (gate, "run_closed_ready", "KeeperGuard"),              # run_closed_ready itself has no production caller
-        (gate, "closed_ready_capability", "_assume_fence_session"),  # closed_ready_capability has no production caller
+        (gate, "run_closed_ready", "KeeperGuard"),
+        (gate, "closed_ready_capability", "_assume_fence_session"),
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller
         (gate, "close_drain_capability", "close_expirations"),      # close_drain_capability has no production caller
@@ -5517,6 +5565,12 @@ def test_keeper_loop_capability_and_dispatch_have_no_production_call_site():
         (gate, "prepared", "close_window"),
         (gate, "phase_b", "KeeperGuard"),
         (gate, "phase_b", "api_window"),
+        (gate, "closed_ready", "run_closed_ready"),
+        (gate, "capability", "closed_ready_capability"),
+        (gate, "closed_ready", "publish_closed_ready"),
+        (gate, "publish_closed_ready", "KeeperGuard"),
+        (gate, "host", "KeeperGuard"),
+        (gate, "host", "static_window"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call

@@ -1,9 +1,10 @@
 """Protected application admission, own-role bootstrap, keeper and finite IPC.
 
-Operational execution composes the original keeper and stops at the API stage
-with the lease held (R18); finish, publication and the closed-ready dispatch are
-not connected. Defaults grant no access.
+Operational execution composes the original keeper and stops at the static stage
+with the lease held (R18); finish and the terminal publication are not connected.
+Defaults grant no access.
 """
+import re
 import time
 
 from tools.cnesdata_delivery import contract as c
@@ -1258,6 +1259,8 @@ def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
 def _trigger_producer(governance, kind):
     if kind == "prepared":
         return lc.FENCE_PREPARE_PRODUCER["job_name"], lc.FENCE_PREPARE_PRODUCER["step"]
+    if kind == "host":
+        return HOST_JOB, None
     name, step = _phase_b_step(governance)
     return step["job_name"], name
 
@@ -1266,7 +1269,8 @@ def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
     """Decision 3 event producer over the closed STAGE_TRIGGERS; no dispatch, no reusable output.
 
     A producer not yet completed-success is no event (the keeper keeps ticking, bounded
-    by the stage deadline); a publication that can never be the trigger refuses.
+    by the stage deadline); a publication that can never be the trigger refuses. The host
+    event carries only the job: its handler authenticates the public host handoff (DD-3).
     """
     def next_event(window):
         stage = window["stage"]
@@ -1279,6 +1283,8 @@ def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
         job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard)
         if job is None or job["status"] != "completed" or job["conclusion"] != "success":
             return None
+        if kind == "host":
+            return {"kind": kind, "reference": {"job_id": job["id"]}}
         reference, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
         return {"kind": kind, "reference": reference}
     return next_event
@@ -1364,8 +1370,18 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         c.require(b_approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"])
                   and b_approval["plan_sha256"] == b_checkpoint["plan_sha256"] and b_checkpoint["purpose"] == "phase-b"
                   and c.canonical(b_checkpoint["owner"]) == c.canonical(owner)
-                  and c.sha(files["checkpoint.json"]) == stage["checkpoint_sha256"] == journal._request["checkpoint_sha256"]
-                  and journal._inputs["phase-b"] == files["checkpoint.json"], "preparation -> B -> API checkpoint ancestry")
+                  and c.sha(files["checkpoint.json"]) == stage["checkpoint_sha256"] == journal._request["checkpoint_sha256"],
+                  "preparation -> B -> API checkpoint ancestry")
+        journals = [item.journal if type(item) is ClosedReadyBroker else item for item in keeper._contexts]
+        drained = [found._observation_bytes.get(entry["sha256"]) for found in {id(item): item for item in journals}.values()
+                   for entry in found._observations if entry["kind"] == "close-drain"]
+        c.require(drained == [journal._inputs["close-drain"]], "closed-ready close-drain is the keeper observation")
+        given = c.loads(journal._inputs["phase-b"], canonical=True, limit=1024**2)
+        routes = given.get("routes") if type(given) is dict else None
+        revisions = {mode: routes.get(mode + "_revision") for mode in ROUTE_REVISIONS} if type(routes) is dict else {}
+        c.require(journal._inputs["phase-b"] == api_phase_b_evidence(close_raw=drained[0], prepared=prepared, published=files,
+                                                                     admitted_at=stage["admitted_at"], revisions=revisions),
+                  "API phase-b evidence")
         cases = {case["case_id"]: case for case in evaluation["cases"]}
         derived = lr.fence_policy_scope(governance, role["policy"])  # The same symbol the prepared evaluation used.
         table, prefix, machine = derived["control_table_arn"], derived["execution_prefix"], derived["machine_arn"]
@@ -1387,6 +1403,7 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         c.closed(membership, "frozen_membership_sha256 members")
         c.require(type(membership["members"]) is list and membership["frozen_membership_sha256"] == c.sha(c.canonical(membership["members"])),
                   "frozen membership commitment")
+        c.require(journal._inputs["membership"] == _frozen_membership(drained[0]), "closed-ready membership is the close-drain frozen set")
         scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine, "members": membership["members"]}
         for member in scope["members"]:
             lc.validate_closed_ready_call(request=journal._request, role="fence_operator", service="stepfunctions",
@@ -1909,14 +1926,18 @@ class KeeperGuard:
 
 
 def run_closed_ready(*, keeper, request_raw, owner, window, inputs, activation_sha256, capability, product, source,
-                     manifest, manifest_sha256, timeout):
-    """Closed-ready dispatch: journal under the keeper guard, capability before any child, then the fixed adapter."""
+                     manifest, manifest_sha256, seconds):
+    """Closed-ready dispatch: journal under the keeper guard, capability before any child, then the fixed adapter.
+
+    seconds() samples the child timeout after the capability, right before the child starts.
+    """
     guard = KeeperGuard(keeper)
     journal = AdapterJournal(request_raw, operation="closed-ready", owner=owner, window=window, inputs=inputs,
                              activation_sha256=activation_sha256, guard=guard)
     keeper.attach(journal)
     capability(journal=journal, keeper=keeper, guard=guard)  # Poisons the journal and holds the lease on failure.
     c.require(type(getattr(journal, "_broker", None)) is ClosedReadyBroker, "closed-ready broker admitted before adapter")
+    timeout = seconds()
     return invoke_adapter(product=product, source=source, manifest=manifest, manifest_sha256=manifest_sha256,
                           journal=journal, timeout=timeout)
 
@@ -1934,20 +1955,24 @@ class _ArtifactTap:
         return value
 
 
+def _operation_request(operation, *, owner, window, inputs):
+    """The ABI2 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts."""
+    return c.canonical({"abi_version": 2, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+                        "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+                        "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(inputs["activation"]),
+                        "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
+                        "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}})
+
+
 def _close_drain_journal(*, guard, owner, window, activation, expirations):
     """The close-drain ABI2 request, bound to the keeper window exactly as it is at the prepared event."""
     inputs = {"activation": activation, "expirations": expirations}
-    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
-               "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
-               "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(activation),
-               "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
-               "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
-    return AdapterJournal(c.canonical(request), operation="close-drain", owner=owner, window=window, inputs=inputs,
-                          activation_sha256=request["activation_sha256"], guard=guard)
+    return AdapterJournal(_operation_request("close-drain", owner=owner, window=window, inputs=inputs), operation="close-drain",
+                          owner=owner, window=window, inputs=inputs, activation_sha256=c.sha(activation), guard=guard)
 
 
 def _plan_activation(*, aws, api, governance, request, run, prepared, owner, window, guard, now):
-    """Ratification 6974253889 section 3: the activation bytes of the authenticated same-run plan carrier.
+    """Ratification 6974253889 section 3: the activation bytes and rendered targets of the authenticated plan carrier.
 
     The plan download joins api.expiries/api.digests, so close_expirations binds it as one more artifact.
     """
@@ -1969,7 +1994,7 @@ def _plan_activation(*, aws, api, governance, request, run, prepared, owner, win
     decoded = lc.inputs_envelope(inputs, owner=owner, window=window)
     c.require(decoded["activation_sha256"] == c.loads(prepared["fence-prepared.json"], canonical=True)["activation_sha256"],
               "activation bytes")
-    return decoded["activation"]["payload"]
+    return decoded["activation"]["payload"], decoded["rendered_targets"]
 
 
 def _close_drain_seconds(window, credential_limit, now):
@@ -1980,12 +2005,122 @@ def _close_drain_seconds(window, credential_limit, now):
     return seconds
 
 
+CLOSED_READY_PUBLICATION_SECONDS = 20
+
+
+def _closed_ready_seconds(window, credential_limit, now):
+    """Largest API-stage child timeout that still leaves the DD-2 publication slot admitted by phase_capacity."""
+    seconds = int(min(window["deadline"] - now - 38, credential_limit - now - 121)) - CLOSED_READY_PUBLICATION_SECONDS
+    c.require(seconds >= 1, "closed-ready capacity")
+    lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
+    lc.phase_capacity(window, now=now + seconds, credential_deadline=credential_limit,
+                      operation_seconds=CLOSED_READY_PUBLICATION_SECONDS)
+    return seconds
+
+
+ROUTE_REVISIONS = ("unit", "recovery", "audit")
+TASK_REVISION = re.compile(r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}")
+
+
+def _state_point(checkpoint):
+    return dict(c.closed(dict(checkpoint["state"]), "lineage serial state_sha256"),
+                object_version=checkpoint["state_object"]["version_id"])
+
+
+def api_phase_b_evidence(*, close_raw, prepared, published, admitted_at, revisions):
+    """The product Phase B evidence that closed-ready and the host gate read (P13 decision 1), from keeper originals.
+
+    Args: close-drain observation bytes, prepared fence package, authenticated B publication, API admission, revisions.
+    Returns: canonical phase-b bytes. Raises: ValueError outside the initial-mode derivation.
+    """
+    close = c.closed(c.loads(close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
+    before = c.loads(prepared["checkpoint.json"], canonical=True)
+    after = c.loads(published["checkpoint.json"], canonical=True)
+    approval = c.loads(published["approval.json"], canonical=True)
+    machines = [row["observed"].get("stateMachineArn") for row in after["readbacks"]
+                if row["service"] == "stepfunctions" and row["operation"] == "describe_state_machine"]
+    c.require(len(machines) == 1 and type(machines[0]) is str and approval["delta"]["mode"] == "initial"
+              and set(revisions) == set(ROUTE_REVISIONS)
+              and all(type(value) is str and TASK_REVISION.fullmatch(value) for value in revisions.values()),
+              "API phase-b evidence derivation")
+    routes = {"mode": "initial", "state_machine_arn": machines[0], "unit_environment_state_machine_arn": machines[0],
+              "recovery_environment_state_machine_arn": machines[0]} | {mode + "_revision": revisions[mode] for mode in ROUTE_REVISIONS}
+    return c.canonical({"version": 1, "kind": "phase-b", "common": close["common"], "close_drain_sha256": c.sha(close_raw),
+                        "before": _state_point(before), "after": _state_point(after), "plan_sha256": after["plan_sha256"],
+                        "audit_sha256": c.sha(published["approval.json"]), "apply_sha256": c.sha(published["checkpoint.json"]),
+                        "routes": routes, "observed_at": c.utc(admitted_at)})
+
+
+def _drop_operation_clients(broker):
+    """The keeper retains the broker: drop the operation and fence clients, ledgers included, and keep the journal."""
+    if broker is None:
+        return
+    for ledger in broker.evidence:
+        ledger._aws = None
+    broker.aws = broker.session.evidence = broker.session.client = None
+
+
+def _frozen_membership(close_raw):
+    """The closed-ready membership input: the frozen members and commitment of the keeper close-drain observation."""
+    close = c.closed(c.loads(close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
+    return c.canonical({"frozen_membership_sha256": close["frozen_membership_sha256"], "members": close["members"]})
+
+
+def _closed_ready_observation(keeper, journal, inputs):
+    """The single closed-ready journal observation, bound to the close-drain and phase-b inputs, with no uncertainty."""
+    observed = [entry for entry in journal._observations if entry["kind"] == "closed-ready"]
+    raw = journal._observation_bytes.get(observed[0]["sha256"]) if len(observed) == len(journal._observations) == 1 else None
+    value = c.loads(raw, canonical=True, limit=1024**2) if type(raw) is bytes else None
+    c.require(type(value) is dict and set(value) == set(CLOSED_READY_FIELDS.split()) and type(value["version"]) is int
+              and value["version"] == 1 and value["kind"] == "closed-ready"
+              and value["close_drain_sha256"] == c.sha(inputs["close-drain"]) and value["phase_b_sha256"] == c.sha(inputs["phase-b"])
+              and not keeper.uncertainty(), "closed-ready single observation bound to its inputs without uncertainty")
+    return raw
+
+
+CLOSED_READY_PROBE = "closed-ready"
+CLOSED_READY_MEMBERS = frozenset({"close-drain.json", "phase-b.json", "closed-ready.json"})
+
+
+def publish_closed_ready(*, keeper, api, run, owner, files, credential_limit, clock=time.time):
+    """DD-2 (2b): upload cnesdata-closed-ready-<run>-<attempt> from the keeper job while the caller probe job runs.
+
+    The host gate binds the artifact to the probe job only by name and interval (HG validate_closed_ready).
+    Args: original keeper, GitHub reader, run, owner binding, the three member bytes, credential limit.
+    Returns: the verified upload receipt. Raises: ValueError before upload without a running probe.
+    """
+    import tempfile
+    from pathlib import Path
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, runtime
+    c.require(set(files) == CLOSED_READY_MEMBERS and all(type(raw) is bytes and raw for raw in files.values())
+              and sum(len(raw) for raw in files.values()) <= 1024**2, "closed-ready artifact members")
+    guard = KeeperGuard(keeper)
+    probe = _same_run_job(api, run, kind="closed-ready", job_name=CLOSED_READY_PROBE, guard=guard)
+    c.require(probe is not None and probe["status"] == "in_progress", "closed-ready probe in progress before publication")
+    window = keeper.lease.check()["lifecycle"]
+    watchdog = lr.LifecycleWatchdog(keeper.lease, window, credential_limit, clock=clock, monotonic=keeper.monotonic)
+    with tempfile.TemporaryDirectory(prefix="cnesdata-closed-ready-") as directory:
+        temp = Path(directory)
+        temp.chmod(0o700)
+        public = temp / "public"
+        public.mkdir()
+        for name, raw in sorted(files.items()):
+            (public / name).write_bytes(raw)
+        receipt = runtime._upload(public, f"cnesdata-closed-ready-{owner['run_id']}-{owner['run_attempt']}", watchdog, temp)
+    guard.check(20)
+    runtime._verify_current_artifact(api, receipt, dict(files), run["id"])
+    guard.check()
+    return receipt
+
+
 def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
                    clock=time.time):
-    """Handlers of the two ratified stage triggers (amendment 6886977054 decision 3, ratification 6974253889).
+    """Handlers of the three ratified stage triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3).
 
     prepared: authenticated fence package, activation from the plan carrier, close-drain, close window.
-    phase-b: B checkpoint ancestry from the prepared checkpoint, API window. The API stage ends this slice.
+    phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
+    and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window. The static
+    stage ends this slice.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     state = {}
@@ -1996,8 +2131,8 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window, owner = record["lifecycle"], lc.owner_binding(record)
         files = lr.fence_prepared_payload(api, aws, governance, request, run, reference, owner=owner, now=clock(),
             predecessor_raw=current.predecessor["raw"], predecessor_reference=current.predecessor_reference, guard=guard)
-        activation = _plan_activation(aws=aws, api=api, governance=governance, request=request, run=run, prepared=files,
-                                      owner=owner, window=window, guard=guard, now=clock())
+        activation, targets = _plan_activation(aws=aws, api=api, governance=governance, request=request, run=run,
+                                               prepared=files, owner=owner, window=window, guard=guard, now=clock())
         journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
                                        expirations=close_expirations(authority, api))
         current.attach(journal)
@@ -2008,10 +2143,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
                            manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal, timeout=seconds)
         finally:
-            # The keeper retains the broker: drop the operation and fence clients, ledgers included, and keep the journal.
-            for ledger in broker.evidence:
-                ledger._aws = None
-            broker.aws = broker.session.evidence = broker.session.client = None
+            _drop_operation_clients(broker)
         observed = [entry for entry in journal._observations if entry["kind"] == "close-drain"]
         c.require(len(journal._observations) == len(observed) == 1 and not current.uncertainty(),
                   "close-drain single observation without uncertainty")
@@ -2019,7 +2151,10 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  checkpoint_sha256=c.sha(files["checkpoint.json"]),
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
-        state["prepared"] = files
+        state.update({"prepared": files, "activation": activation, "close-drain": journal._observation_bytes[observed[0]["sha256"]],
+                      "revisions": {"unit": targets["processor_active_unit_task_definition_arn"],
+                                    "recovery": targets["scheduler_recovery_task_definition_arn"],
+                                    "audit": targets["scheduler_audit_task_definition_arn"]}})
 
     def phase_b(current, reference):
         files = state.get("prepared")
@@ -2036,19 +2171,65 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
         current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
                                                now=admitted))
+        closed_ready(current, published)
 
-    return {"prepared": prepared, "phase-b": phase_b}
+    def closed_ready(current, published):
+        files, close = state["prepared"], state["close-drain"]
+        record = current.lease.check()
+        window, owner = record["lifecycle"], lc.owner_binding(record)
+        inputs = {"activation": state["activation"], "close-drain": close, "membership": _frozen_membership(close),
+                  "phase-b": api_phase_b_evidence(close_raw=close, prepared=files, published=published,
+                                                  admitted_at=window["admitted_at"], revisions=state["revisions"])}
+
+        def capability(*, journal, keeper, guard):
+            return closed_ready_capability(aws=aws, api=api, governance=governance, request=request, run=run, journal=journal,
+                                           keeper=keeper, prepared=files, credential_limit=credential_limit, guard=guard,
+                                           operation_session=operation_session, clock=clock)
+        try:
+            run_closed_ready(keeper=current, request_raw=_operation_request("closed-ready", owner=owner, window=window, inputs=inputs),
+                             owner=owner, window=window, inputs=inputs, activation_sha256=c.sha(inputs["activation"]),
+                             capability=capability, product=product, source=owner["source_sha"],
+                             manifest=governance["application_product_source_manifest"],
+                             manifest_sha256=governance["application_product_source_closure_sha256"],
+                             seconds=lambda: _closed_ready_seconds(window, credential_limit, clock()))
+        finally:
+            for item in current._contexts:
+                if type(item) is AdapterJournal and item._request["operation"] == "closed-ready":
+                    _drop_operation_clients(getattr(item, "_broker", None))
+        (journal,) = [item for item in current._contexts
+                      if type(item) is AdapterJournal and item._request["operation"] == "closed-ready"]
+        raw = _closed_ready_observation(current, journal, inputs)
+        publish_closed_ready(keeper=current, api=api, run=run, owner=owner, credential_limit=credential_limit, clock=clock,
+                             files={"close-drain.json": close, "phase-b.json": inputs["phase-b"], "closed-ready.json": raw})
+        state["closed-ready"] = c.sha(raw)
+
+    def host(current, reference):
+        c.closed(reference, "job_id")
+        ready = state.get("closed-ready")
+        c.require(ready is not None, "host follows the closed-ready run of this keeper")
+        owner = lc.owner_binding(current.lease.check())
+        raw = authenticate_host_handoff(api, owner, guard=KeeperGuard(current))
+        handoff = _versioned(c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT), "host-handoff", HOST_HANDOFF_FIELDS)
+        c.require(handoff["status"] == "accepted" and handoff["closed_ready_sha256"] == ready,
+                  "host handoff accepted for the keeper closed-ready")
+        c.require(not current.uncertainty(), "host handoff with unresolved keeper uncertainty")
+        admitted = clock()
+        window = current.lease.check()["lifecycle"]
+        c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
+        current.lease.checkpoint(lc.static_window(window, now=admitted))
+
+    return {"prepared": prepared, "phase-b": phase_b, "host": host}
 
 
-KEEPER_EVENTS = ("prepared", "phase-b")
+KEEPER_EVENTS = ("prepared", "phase-b", "host")
 
 
 def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over the two ratified stage triggers; it never returns.
+    """The single keeper polling loop over the three ratified stage triggers; it never returns.
 
-    next_event is the authenticated event producer and handlers holds exactly the two stage
-    handlers. After the API stage the producer refuses and the lease stays held (R18): there
-    is no finish, publish or dispatch here. Any exception leaves the lease held.
+    next_event is the authenticated event producer and handlers holds exactly the three stage
+    handlers. After the static stage the producer refuses and the lease stays held (R18): there
+    is no finish, terminal publication or dispatch here. Any exception leaves the lease held.
     """
     c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
@@ -2080,7 +2261,7 @@ def _verify_session(client, governance, authority, run, expires):
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry: compose the original keeper and run the stage loop to the API stage.
+    """Operational keeper entry: compose the original keeper and run the stage loop to the static stage.
 
     The order is the contract: release, adapter closure, owner authority, credential window, AWS and
     session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
