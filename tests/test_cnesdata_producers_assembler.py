@@ -264,9 +264,27 @@ def test_policy_evaluation_junta_fatos_namespace_e_hashes_do_p_b():
     assert "phase_input_namespace" not in measurements.policy_evaluation(facts, None, {"policy_sha256": "d" * 64, "conftest_sha256": "e" * 64})
 
 
+PR_HEAD = "a" * 40
+MERGED = "2026-11-19T18:41:36Z"
+APP = 15368
+
+
+def head_check(name, conclusion="success", **extra):
+    return {"id": 10, "name": name, "head_sha": PR_HEAD, "status": "completed", "conclusion": conclusion,
+            "started_at": "2026-11-19T17:35:56Z", "completed_at": "2026-11-19T17:50:49Z", "app": {"id": APP}} | extra
+
+
+def merged_pull(**extra):
+    return {"number": 7, "merged_at": MERGED, "merge_commit_sha": SOURCE, "head": {"sha": PR_HEAD},
+            "base": {"ref": "main", "repo": {"full_name": c.REPOSITORY}}} | extra
+
+
 class FakeAPI:
-    def __init__(self, checks, status="ahead", contexts=("ci",)):
-        self.checks, self.status, self.contexts, self.paths = checks, status, contexts, []
+    def __init__(self, checks, status="ahead", contexts=("ci",), head=None, pulls=None):
+        self.checks, self.status, self.paths = checks, status, []
+        self.contexts = contexts if type(contexts) is dict else dict.fromkeys(contexts)
+        self.head = [head_check(name, id=index) for index, name in enumerate(self.contexts)] if head is None else head
+        self.pulls = [merged_pull()] if pulls is None else pulls
 
     def read(self, path):
         self.paths.append(path)
@@ -275,7 +293,14 @@ class FakeAPI:
         if "/rules/branches/" in path:
             return [{"type": "pull_request", "parameters": {}},
                     {"type": "required_status_checks", "parameters": {"required_status_checks": [
-                        {"context": name, "integration_id": None} for name in self.contexts]}}]
+                        {"context": name, "integration_id": app} for name, app in self.contexts.items()]}}]
+        if f"/commits/{SOURCE}/pulls?" in path:
+            return self.pulls
+        if "/pulls/" in path:
+            return next(item for item in self.pulls if item["number"] == int(path.rsplit("/", 1)[1]))
+        if f"/commits/{PR_HEAD}/check-runs?filter=all" in path:
+            return {"check_runs": self.head}
+        assert f"/commits/{SOURCE}/check-runs?" in path
         return {"check_runs": self.checks}
 
 
@@ -288,7 +313,8 @@ def test_source_develop_checks_espelha_a_api_e_recusa_check_ausente_ou_vermelho(
     value = measurements.source_checks(FakeAPI(checks), SOURCE, ["lint", "ci", "ci"])
     assert value == {"branch": "main", "compare_status": "ahead", "required": [
         {"name": "ci", "conclusion": "success", "head_sha": SOURCE}, {"name": "lint", "conclusion": "success", "head_sha": SOURCE}],
-        "ruleset_contexts": ["ci"], "absent_on_source": []}
+        "pull": {"number": 7, "head_sha": PR_HEAD, "merged_at": MERGED,
+                 "checks": {"ci": {"id": 0, "completed_at": "2026-11-19T17:50:49Z"}}}}
     with pytest.raises(ValueError):
         measurements.source_checks(FakeAPI(checks[:1]), SOURCE, ["ci", "lint"])
     with pytest.raises(ValueError):
@@ -297,20 +323,63 @@ def test_source_develop_checks_espelha_a_api_e_recusa_check_ausente_ou_vermelho(
         measurements.source_checks(FakeAPI(checks, "diverged"), SOURCE, ["ci"])
 
 
-def test_source_develop_checks_le_os_contextos_do_ruleset_do_produto_ao_vivo():
-    api = FakeAPI([check("ci"), check("lint"), check("image (central_api)")], contexts=("lint", "image (central_api)", "sonar"))
+def test_source_develop_checks_cobre_os_contextos_do_ruleset_no_head_do_pr_mergeado():
+    contexts = {"lint-test-coverage": None, "sonar": None, "opentofu-native": APP}
+    api = FakeAPI([check("ci")], contexts=contexts)
     value = measurements.source_checks(api, SOURCE, ["ci"])
-    assert [item["name"] for item in value["required"]] == ["ci", "image (central_api)", "lint"]
-    assert value["ruleset_contexts"] == ["image (central_api)", "lint", "sonar"]
-    assert value["absent_on_source"] == ["sonar"]
+    assert [item["name"] for item in value["required"]] == ["ci"]
+    assert sorted(value["pull"]["checks"]) == ["lint-test-coverage", "opentofu-native", "sonar"]
     assert f"repos/{c.REPOSITORY}/rules/branches/main?per_page=100" in api.paths
+    assert f"repos/{c.REPOSITORY}/pulls/7" in api.paths
 
 
-@pytest.mark.parametrize("conclusion", ["failure", "cancelled", None])
-def test_source_develop_checks_recusa_contexto_do_ruleset_que_rodou_e_nao_passou_no_source(conclusion):
-    api = FakeAPI([check("ci"), check("lint", conclusion)], contexts=("lint",))
-    with pytest.raises(ValueError, match="required source check name=lint"):
+def without(name):
+    return lambda head: [item for item in head if item["name"] != name]
+
+
+def replaced(name, **extra):
+    return lambda head: [item | extra if item["name"] == name else item for item in head]
+
+
+@pytest.mark.parametrize("mutate", [
+    without("sonar"),
+    replaced("sonar", conclusion="failure"),
+    replaced("sonar", conclusion="cancelled"),
+    replaced("sonar", conclusion=None),
+    replaced("sonar", status="in_progress"),
+    replaced("sonar", completed_at="2026-11-19T18:41:37Z"),
+    replaced("sonar", completed_at=None),
+    replaced("sonar", started_at="2026-11-19T18:41:37Z"),
+    replaced("sonar", head_sha=SOURCE),
+    replaced("opentofu-native", app={"id": 1}),
+    lambda head: head + [head_check("sonar", "failure", id=99)],
+], ids=["ausente", "failure", "cancelled", "sem-conclusao", "em-andamento", "concluido-apos-o-merge",
+        "sem-conclusao-datada", "iniciado-apos-o-merge", "outro-sha", "outro-app", "o-mais-recente-vermelho"])
+def test_source_develop_checks_recusa_contexto_do_ruleset_sem_verde_no_head_do_pr(mutate):
+    contexts = {"sonar": None, "opentofu-native": APP}
+    head = mutate([head_check("sonar", id=1), head_check("opentofu-native", id=2)])
+    api = FakeAPI([check("ci"), check("sonar")], contexts=contexts, head=head)
+    with pytest.raises(ValueError, match="required pull check name="):
         measurements.source_checks(api, SOURCE, ["ci"])
+
+
+def test_source_develop_checks_check_so_no_source_nao_satisfaz_contexto_do_ruleset():
+    api = FakeAPI([check("ci"), check("sonar")], contexts=("sonar",), head=[])
+    with pytest.raises(ValueError, match="required pull check name=sonar"):
+        measurements.source_checks(api, SOURCE, ["ci"])
+
+
+@pytest.mark.parametrize("pulls", [
+    [],
+    [merged_pull(), merged_pull(number=8)],
+    [merged_pull(merged_at=None)],
+    [merged_pull(merge_commit_sha="0" * 40)],
+    [merged_pull(base={"ref": "develop", "repo": {"full_name": c.REPOSITORY}})],
+    [merged_pull(base={"ref": "main", "repo": {"full_name": "other/CnesData"}})],
+], ids=["nenhum", "dois", "nao-mergeado", "outro-merge", "outra-base", "outro-repositorio"])
+def test_source_develop_checks_exige_exatamente_um_pr_mergeado_no_main_com_o_source(pulls):
+    with pytest.raises(ValueError, match="source merged pull"):
+        measurements.source_checks(FakeAPI([check("ci")], pulls=pulls), SOURCE, ["ci"])
 
 
 def test_source_develop_checks_nunca_aceita_ausencia_de_nome_pedido_mesmo_listado_no_ruleset():
@@ -319,16 +388,22 @@ def test_source_develop_checks_nunca_aceita_ausencia_de_nome_pedido_mesmo_listad
         measurements.source_checks(api, SOURCE, ["ci", "sonar"])
 
 
-def test_source_develop_checks_ignora_check_de_outro_sha_para_contexto_do_ruleset():
-    api = FakeAPI([check("ci"), check("lint", head="0" * 40)], contexts=("lint",))
-    value = measurements.source_checks(api, SOURCE, ["ci"])
-    assert value["absent_on_source"] == ["lint"] and [item["name"] for item in value["required"]] == ["ci"]
+def test_source_develop_checks_ignora_check_de_outro_sha_no_source():
+    api = FakeAPI([check("ci"), check("lint", head="0" * 40)])
+    with pytest.raises(ValueError, match="required source check name=lint"):
+        measurements.source_checks(api, SOURCE, ["ci", "lint"])
 
 
 @pytest.mark.parametrize("contexts", [(), ("",)])
 def test_source_develop_checks_recusa_ruleset_sem_contexto_obrigatorio(contexts):
     with pytest.raises(ValueError, match="product ruleset contexts"):
         measurements.source_checks(FakeAPI([check("ci")], contexts=contexts), SOURCE, ["ci"])
+
+
+def test_source_develop_checks_recusa_pagina_cheia_de_check_runs_do_head():
+    head = [head_check("ci", id=index) for index in range(100)]
+    with pytest.raises(ValueError, match="pull check runs page"):
+        measurements.source_checks(FakeAPI([check("ci")], head=head), SOURCE, ["ci"])
 
 
 class OriginAPI:

@@ -55,10 +55,43 @@ def cost_ledger(evidence):
 def _ruleset_contexts(api, base):
     rules = api.read(f"{base}/rules/branches/main?per_page=100")
     c.require(type(rules) is list and len(rules) < 100, "product ruleset rules")
-    found = {check["context"] for rule in rules if rule["type"] == "required_status_checks"
-             for check in rule["parameters"]["required_status_checks"]}
+    found = {check["context"]: check.get("integration_id") for rule in rules
+             if rule["type"] == "required_status_checks" for check in rule["parameters"]["required_status_checks"]}
     c.require(bool(found) and all(type(name) is str and name for name in found), "product ruleset contexts")
-    return sorted(found)
+    return found
+
+
+def _merged_pull(api, base, source):
+    pulls = api.read(f"{base}/commits/{source}/pulls?per_page=100")
+    c.require(type(pulls) is list and len(pulls) < 100, "source pulls page")
+    matching = [item for item in pulls if item.get("merge_commit_sha") == source and item.get("merged_at")
+                and item["base"]["ref"] == "main"]
+    c.require(len(matching) == 1, f"source merged pull count={len(matching)}")
+    pull = api.read(f"{base}/pulls/{matching[0]['number']}")
+    c.require(bool(pull.get("merged_at")) and pull.get("merge_commit_sha") == source and pull["base"]["ref"] == "main"
+              and pull["base"]["repo"]["full_name"].lower() == c.REPOSITORY.lower(), "source merged pull identity")
+    return pull
+
+
+def _eligible(run, merged, contexts):
+    started = run.get("started_at")
+    app = contexts.get(run["name"])
+    return (not started or c.instant(started) <= merged) and (app is None or run.get("app", {}).get("id") == app)
+
+
+def _pull_checks(api, base, pull, contexts):
+    head, merged = pull["head"]["sha"], c.instant(pull["merged_at"])
+    runs = api.read(f"{base}/commits/{head}/check-runs?filter=all&per_page=100")["check_runs"]
+    c.require(len(runs) < 100, "pull check runs page")
+    latest = {run["name"]: run for run in sorted(runs, key=lambda run: run["id"]) if _eligible(run, merged, contexts)}
+    checks = {}
+    for name in sorted(contexts):
+        run = latest.get(name, {})
+        ok = (run.get("head_sha") == head and run.get("status") == "completed" and run.get("conclusion") == "success"
+              and bool(run.get("completed_at")) and c.instant(run.get("completed_at")) <= merged)
+        c.require(ok, f"required pull check name={name}")
+        checks[name] = {"id": run["id"], "completed_at": run["completed_at"]}
+    return {"number": pull["number"], "head_sha": head, "merged_at": pull["merged_at"], "checks": checks}
 
 
 def source_checks(api, source, names):
@@ -67,16 +100,13 @@ def source_checks(api, source, names):
     c.require(status in {"ahead", "identical"}, "source not contained in main")
     runs = [run for run in api.read(f"{base}/commits/{source}/check-runs?per_page=100")["check_runs"]
             if run["head_sha"] == source]
-    contexts = _ruleset_contexts(api, base)
-    ran = {run["name"] for run in runs}
-    absent = [name for name in contexts if name not in ran and name not in names]
     required = []
-    for name in sorted(set(names) | set(contexts) - set(absent)):
+    for name in sorted(set(names)):
         ok = any(run["name"] == name and run["conclusion"] == "success" for run in runs)
         c.require(ok, f"required source check name={name}")
         required.append({"name": name, "conclusion": "success", "head_sha": source})
-    return {"branch": "main", "compare_status": status, "required": required, "ruleset_contexts": contexts,
-            "absent_on_source": absent}
+    pull = _pull_checks(api, base, _merged_pull(api, base, source), _ruleset_contexts(api, base))
+    return {"branch": "main", "compare_status": status, "required": required, "pull": pull}
 
 
 def artifact_origin(api, entries):

@@ -21,6 +21,20 @@ T = "2026-11-20T12:00:00Z"
 PRODUCER = {"repository": "VINIClUS/infra-ansible", "workflow_path": ".github/workflows/cnesdata-producers.yml",
             "workflow_sha": "9" * 40, "run_id": 7001, "run_attempt": 1}
 X_STAR = "b" * 40
+PR_HEAD = "c" * 40
+
+
+def merged_pull_route(path):
+    pull = {"number": 7, "merged_at": at(-60), "merge_commit_sha": SOURCE, "head": {"sha": PR_HEAD},
+            "base": {"ref": "main", "repo": {"full_name": c.REPOSITORY}}}
+    if f"/commits/{SOURCE}/pulls?" in path:
+        return [pull]
+    if path.endswith("/pulls/7"):
+        return pull
+    if f"/commits/{PR_HEAD}/check-runs?" in path:
+        return {"check_runs": [{"id": 1, "name": "ci", "head_sha": PR_HEAD, "status": "completed",
+                                "conclusion": "success", "completed_at": at(-120)}]}
+    return None
 
 
 def at(seconds):
@@ -44,6 +58,8 @@ class API:
             return {"type": "file", "encoding": "base64", "content": base64.b64encode(item.read_bytes()).decode()}
         if "/compare/" in path:
             return {"status": "identical"}
+        if merged_pull_route(path) is not None:
+            return merged_pull_route(path)
         if "/check-runs" in path:
             return {"check_runs": [{"name": "ci", "conclusion": "success", "head_sha": SOURCE}]}
         if "/rules/branches/main" in path:

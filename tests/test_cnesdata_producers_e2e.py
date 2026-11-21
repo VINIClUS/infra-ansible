@@ -11,7 +11,7 @@ import yaml
 
 from fixtures.cnesdata_producers import KEY_HEX, SOURCE, config
 from test_cnesdata_producers_inputs import (PRODUCER, ROOT, T, WORKFLOW, X_STAR, assemble_receives, at, drift_upload,
-                                            setup)
+                                            merged_pull_route, setup)
 from tools.cnesdata_delivery import contract as c, drift_handoff, provenance
 from tools.cnesdata_delivery.producers import assembler, inputs
 
@@ -60,6 +60,8 @@ class REST:
             return {"type": "file", "encoding": "base64", "content": base64.b64encode(item.read_bytes()).decode()}
         if "/compare/" in path:
             return {"status": "identical"}
+        if merged_pull_route(path) is not None:
+            return merged_pull_route(path)
         if "/check-runs" in path:
             return {"check_runs": [{"name": "ci", "conclusion": "success", "head_sha": SOURCE}]}
         if "/rules/branches/main" in path:
