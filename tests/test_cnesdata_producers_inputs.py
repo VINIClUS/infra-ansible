@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from fixtures.cnesdata_phase_a_replay import ReplayChain
 from fixtures.cnesdata_producers import KEY_HEX, PAYLOAD_REFERENCE, SOURCE, config, public_objects, request, world
@@ -13,6 +14,7 @@ from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.producers import assembler, aws_reader, baseline_commitments, inputs, observer, pins
 
 ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW = ROOT / ".github/workflows/reusable-cnesdata-observer.yml"
 T = "2026-11-20T12:00:00Z"
 PRODUCER = {"repository": "VINIClUS/infra-ansible", "workflow_path": ".github/workflows/cnesdata-producers.yml",
             "workflow_sha": "9" * 40, "run_id": 7001, "run_attempt": 1}
@@ -146,6 +148,39 @@ def test_request_from_acrescenta_a_referencia_do_drift_do_proprio_run():
     drift = merged["references"]["drift"]
     assert drift["artifact_id"] == 55 and drift["run_attempt"] == 2 and drift["source_sha"] == "9" * 40
     assert drift["workflow_path"] == ".github/workflows/cnesdata-producers.yml" and merged["x_star"] == X_STAR
+
+
+def uploads(job):
+    found = {}
+    for step in job["steps"]:
+        if step.get("uses", "").startswith("actions/upload-artifact"):
+            paths = [line.strip() for line in step["with"]["path"].splitlines() if line.strip()]
+            found[step["with"]["name"]] = {Path(item).name for item in paths}
+    return found
+
+
+def assemble_receives():
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    sent = uploads(jobs["observe"])
+    downloads = [step["with"] for step in jobs["assemble"]["steps"]
+                 if step.get("uses", "").startswith("actions/download-artifact")]
+    run = next(step["run"] for step in jobs["assemble"]["steps"] if "producers.assembler" in step.get("run", ""))
+    assert downloads and all(item["path"] == "${{ runner.temp }}/observed" for item in downloads)
+    assert '--observed "${RUNNER_TEMP}/observed"' in run
+    return set().union(*(sent[item["name"]] for item in downloads))
+
+
+def drift_upload():
+    jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+    return next(names for name, names in uploads(jobs["observe"]).items() if name.startswith("delivery-drift-"))
+
+
+def test_montagem_do_plan_recebe_do_workflow_exatamente_os_arquivos_que_inputs_le(setup):
+    api, value, observed = setup
+    received = assemble_receives()
+    built = assembler.assemble(inputs.build(api, value, {name: observed[name] for name in received})[0])
+    assert [item["check_id"] for item in built.proof["checks"]] == assembler.required_checks("phase-a", "plan")
+    assert received <= set(observed)
 
 
 def with_r2(api, value):
