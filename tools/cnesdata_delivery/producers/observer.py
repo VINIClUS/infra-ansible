@@ -13,6 +13,7 @@ from tools.cnesdata_delivery.session_policy import managed_arn
 STATE_KEY = "cnesdata/prod/opentofu.tfstate"
 REHEARSAL = "phase-inputs/rehearsal/plan.json"
 ROLES = ("plan", "deploy")
+CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository"
 Observed = namedtuple("Observed", "files pins")
 
 
@@ -76,11 +77,19 @@ def _pin(reader, config, role, asked):
     return pin
 
 
+def _private_values(config):
+    values = [config[name] for name in CONFIG_KEYS.split() if type(config[name]) is str]
+    return [value for value in values + list(config["roles"].values()) if value]
+
+
 def _sanitize(files, config, key_hex, pins):
     governance = config | {"report_hmac_key": key_hex, "session_policy_pins": pins}
+    private = _private_values(config)
     for raw in files.values():
         c.public_safe(c.loads(raw, canonical=True), config)
         c.refuse_account_derived(raw, governance)
+        text = raw.decode()
+        c.require(not any(value in text for value in private), "configuration value in a public file")
 
 
 def observe(reader, config, asked, key_hex):
@@ -111,13 +120,15 @@ def _session(asked):
     return aws_reader.web_identity_session(os.environ["OBSERVER_ROLE_ARN"])
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="CnesData delivery observer")
-    parser.add_argument("--request", required=True)
-    parser.add_argument("--out", required=True)
-    parser.add_argument("--private-out")
-    args = parser.parse_args(argv)
+def _config():
     config = c.loads(os.environ["OBSERVER_CONFIG"].encode())
+    c.closed(config, CONFIG_KEYS)
+    c.closed(config["roles"], " ".join(ROLES))
+    return config
+
+
+def _run(args):
+    config = _config()
     asked = c.loads(Path(args.request).read_bytes())
     session = _session(asked)
     result = observe(aws_reader.Reader(session, config["account_id"]), config, asked, os.environ["REPORT_HMAC_KEY"])
@@ -129,6 +140,19 @@ def main(argv=None):
         private = Path(args.private_out)
         private.write_bytes(c.canonical(result.pins))
         private.chmod(0o600)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="CnesData delivery observer")
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--private-out")
+    args = parser.parse_args(argv)
+    try:
+        _run(args)
+    except Exception as error:
+        sys.stderr.write(f"refused reason={type(error).__name__}\n")
+        return 1
     return 0
 
 

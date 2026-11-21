@@ -21,7 +21,7 @@ def config():
     account = ACCOUNT
     roles = {role: f"arn:aws:iam::{account}:role/cnesdata-infra-{role}" for role in ("plan", "deploy")}
     return {"account_id": account, "roles": roles, "state_bucket": "cnesdata-state-4f6e21",
-            "evidence_bucket": "cnesdata-evid-4f6e21", "evidence_prefix": EVIDENCE, "ecr_repository": "fixture"}
+            "evidence_bucket": "cnesdata-evid-4f6e21", "evidence_prefix": EVIDENCE, "ecr_repository": "cnesdata-ecr-9b2d71"}
 
 
 class FakeReader:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from fixtures.cnesdata_phase_a_replay import ReplayChain
+from fixtures.cnesdata_phase_a_replay import ACCOUNT, ReplayChain
 from fixtures.cnesdata_producers import (EVIDENCE, KEY_HEX, SOURCE, config, namespace_prefix, public_objects,
                                          request, world)
 from tools.cnesdata_delivery import contract as c, drift_catalog, session_owner
@@ -233,3 +233,60 @@ def test_observador_nao_muta_a_configuracao_nem_o_pedido(chain):
     reader, names, _ = world(chain, settings)
     observer.observe(reader, settings, asked | {"public_objects": public_objects(names)}, KEY_HEX)
     assert (settings, asked) == snapshot and json.dumps(settings)
+
+
+ARN_LEAK = f"AccessDenied: arn:aws:sts::{ACCOUNT}:assumed-role/cnesdata-infra-plan/s on bucket cnesdata-state-4f6e21"
+
+
+class ClientError(Exception):
+    pass
+
+
+@pytest.fixture
+def cli(monkeypatch, tmp_path):
+    asked = tmp_path / "request.json"
+    asked.write_text(json.dumps(request(mode="local")))
+    monkeypatch.setenv("OBSERVER_CONFIG", json.dumps(config()))
+    monkeypatch.setenv("REPORT_HMAC_KEY", KEY_HEX)
+    monkeypatch.setattr(observer, "_session", lambda asked_: object())
+    return ["--request", str(asked), "--out", str(tmp_path / "out")]
+
+
+def test_main_nao_deixa_arn_conta_nem_bucket_de_um_erro_do_sdk_chegar_a_saida(cli, monkeypatch, capsys):
+    class Failing:
+        def __init__(self, *args):
+            pass
+
+        def read(self, *args, **kwargs):
+            raise ClientError(ARN_LEAK)
+
+        call = list = blob = read
+
+    monkeypatch.setattr(aws_reader, "Reader", Failing)
+    assert observer.main(cli) != 0
+    seen = capsys.readouterr()
+    for text in (seen.out, seen.err):
+        assert ACCOUNT not in text and "arn:" not in text and "cnesdata-state" not in text
+    assert "refused reason=ClientError" in seen.err
+
+
+def test_main_recusa_recusas_do_contrato_so_com_a_classe(cli, monkeypatch, capsys):
+    monkeypatch.setattr(observer, "observe", lambda *args: (_ for _ in ()).throw(ValueError("bucket cnesdata-evid-4f6e21")))
+    assert observer.main(cli) != 0
+    seen = capsys.readouterr()
+    assert "cnesdata-evid" not in seen.err + seen.out and "refused reason=ValueError" in seen.err
+
+
+@pytest.mark.parametrize("change", [lambda v: v | {"extra": "x"}, lambda v: {k: x for k, x in v.items() if k != "ecr_repository"}])
+def test_main_recusa_configuracao_com_chaves_diferentes_das_seis(cli, monkeypatch, capsys, change):
+    monkeypatch.setenv("OBSERVER_CONFIG", json.dumps(change(config())))
+    assert observer.main(cli) != 0
+    assert "refused reason=ValueError" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("field", ["ecr_repository", "evidence_prefix", "state_bucket", "evidence_bucket"])
+def test_varredura_de_vazamento_cobre_os_seis_valores_da_configuracao(field):
+    settings = config() | {"ecr_repository": "cnesdata-ecr-9b2d71"}
+    leaked = {"drift-handoff.json": c.canonical({"note": "x " + settings[field] + " y"}), "observations.json": c.canonical({})}
+    with pytest.raises(ValueError):
+        observer._sanitize(leaked, settings, KEY_HEX, {})
