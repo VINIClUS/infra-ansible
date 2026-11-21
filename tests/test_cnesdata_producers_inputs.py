@@ -247,8 +247,11 @@ def plan_run(artifact_id):
 @pytest.fixture
 def deploy(setup):
     api, value, observed = setup
-    api.members[9] = {"drift-handoff.json": observed["drift-handoff.json"]}
-    api.members[10] = {"observations.json": observed["observations.json"]}
+    sent = uploads(yaml.safe_load(WORKFLOW.read_text())["jobs"]["observe"])
+    names = {prefix: next(files for name, files in sent.items() if name.startswith(prefix))
+             for prefix in ("delivery-drift-", "delivery-observed-")}
+    api.members[9] = {name: observed[name] for name in names["delivery-drift-"]}
+    api.members[10] = {name: observed[name] for name in names["delivery-observed-"]}
     api.members[12] = {"index.json": c.canonical(plan_index()), "redacted-plan.json": b"{}\n"}
     references = value["references"] | {"planned": reference(12)}
     value = value | {"role": "deploy", "references": references, "plan_binding_sha256": None,

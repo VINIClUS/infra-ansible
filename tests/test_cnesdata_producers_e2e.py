@@ -100,27 +100,31 @@ def world(setup, monkeypatch):
     return rest, request, received, sent
 
 
+def listed_drift(rest):
+    meta = rest.artifacts[PRODUCER["repository"], DRIFT_ID]["meta"]
+    return {"repository": PRODUCER["repository"], "run_id": meta["workflow_run"]["id"],
+            "run_attempt": PRODUCER["run_attempt"], "artifact_id": meta["id"], "artifact_digest": meta["digest"],
+            "workflow_path": PRODUCER["workflow_path"], "workflow_sha": PRODUCER["workflow_sha"],
+            "source_sha": meta["workflow_run"]["head_sha"]}
+
+
 def test_referencia_do_drift_montada_por_inputs_autentica_no_github_e_e_a_que_o_dono_copia(world):
     rest, request, _, sent = world
     reference = request["references"]["drift"]
     assert provenance.GitHub(token="x").artifact(reference, NOW) == sent
-    meta = rest.artifacts[reference["repository"], reference["artifact_id"]]["meta"]
-    listed = {"repository": PRODUCER["repository"], "run_id": meta["workflow_run"]["id"],
-              "run_attempt": PRODUCER["run_attempt"], "artifact_id": meta["id"], "artifact_digest": meta["digest"],
-              "workflow_path": PRODUCER["workflow_path"], "workflow_sha": PRODUCER["workflow_sha"],
-              "source_sha": meta["workflow_run"]["head_sha"]}
-    assert reference == listed
+    assert reference == listed_drift(rest)
 
 
 def test_plan_ponta_a_ponta_do_observador_ao_proof_conferido_pelo_gate(world):
-    _, request, received, sent = world
+    rest, request, received, sent = world
     values, _ = inputs.build(provenance.GitHub(token="x"), request, received)
     built = assembler.assemble(values)
     proof = c.loads(built.files["proof.json"], canonical=True)
     settings = config()
     governance = {"proof_producers": [{key: PRODUCER[key] for key in OWN}],
                   "artifact_purposes": sorted(request["references"]),
-                  "artifact_references": copy.deepcopy(request["references"]), "report_hmac_key": KEY_HEX,
+                  "artifact_references": copy.deepcopy(request["references"]) | {"drift": listed_drift(rest)},
+                  "report_hmac_key": KEY_HEX,
                   "account_id": settings["account_id"], "roles": settings["roles"],
                   "state_bucket": settings["state_bucket"], "evidence_bucket": settings["evidence_bucket"],
                   "drift_handoff": {"member": "drift-handoff.json", "sha256": c.sha(sent["drift-handoff.json"])}}
@@ -149,6 +153,8 @@ def read_keys(name):
 
 
 def test_campos_do_pedido_publico_sao_os_que_o_observe_e_o_assemble_leem():
+    observe = read_keys("observer.py") | read_keys("phase_inputs.py")
+    assemble = set().union(*(read_keys(name) for name in READERS[2:]))
     env = {"GITHUB_WORKFLOW_REF": f"{PRODUCER['repository']}/{PRODUCER['workflow_path']}@refs/heads/main",
            "GITHUB_SHA": PRODUCER["workflow_sha"], "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1",
            "PURPOSE": "phase-a", "ROLE": "deploy", "SOURCE_SHA": SOURCE, "X_STAR": X_STAR,
@@ -157,5 +163,4 @@ def test_campos_do_pedido_publico_sao_os_que_o_observe_e_o_assemble_leem():
     compose = next(step["run"] for step in yaml.safe_load(WORKFLOW.read_text())["jobs"]["observe"]["steps"]
                    if step.get("name") == "Compose the observation request")
     assert all(f'"{key}"' in compose for key in COMPOSED)
-    read = set().union(*(read_keys(name) for name in READERS))
-    assert read - injected - set(COMPOSED) == REQUEST_FIELDS
+    assert (observe - set(COMPOSED)) | (assemble - injected) == REQUEST_FIELDS
