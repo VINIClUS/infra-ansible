@@ -530,7 +530,9 @@ def _secrets(value):
             _secrets(child)
 
 
-ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|[0-9]{4}[-_ ][0-9]{4}[-_ ][0-9]{4})(?![0-9A-Za-z])")
+ACCOUNT_SEPARATOR = r"[-_ ./:\u200b\u200c\u200d\u2060\ufeff]"
+ACCOUNT_GROUPS = r"([0-9]{4})%s([0-9]{4})%s([0-9]{4})" % (ACCOUNT_SEPARATOR, ACCOUNT_SEPARATOR)
+ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|%s)(?![0-9A-Za-z])" % ACCOUNT_GROUPS)
 PRIVATE_KEYS = {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}
 PRIVATE_TEXT = re.compile(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b")
 
@@ -591,10 +593,12 @@ def _account_derived_values(governance):
 
 
 GROUP_SEPARATOR = re.compile(r"(?<=[0-9])[-_ ](?=[0-9])")
+GROUPED_ACCOUNT = re.compile(r"(?<![0-9])%s(?![0-9])" % ACCOUNT_GROUPS)
 
 
 def _comparable(text):
-    return GROUP_SEPARATOR.sub("", unicodedata.normalize("NFKC", text).casefold())
+    text = GROUPED_ACCOUNT.sub(r"\1\2\3", unicodedata.normalize("NFKC", text).casefold())
+    return GROUP_SEPARATOR.sub("", text)
 
 
 def refuse_account_derived(raw, governance):
