@@ -105,4 +105,3 @@ def web_identity_session(role_arn, environment=None):
                                                WebIdentityToken=token, DurationSeconds=900)["Credentials"]
     return boto3.Session(aws_access_key_id=issued["AccessKeyId"], aws_secret_access_key=issued["SecretAccessKey"],
                          aws_session_token=issued["SessionToken"], region_name=REGION)
-
