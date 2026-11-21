@@ -2,8 +2,10 @@
 EXTENDS Naturals, Sequences
 
 CONSTANTS FixedWindow, AdmitMargin, InitTimeout, ShowTimeout, PlanTimeout, ApplyTimeout,
-          ReadbackFloor, InitActual, ShowActual, ApplyActual, JobActual, Over, ReviewPause,
-          AllowEarly, CheckCompletion, ModeCeiling, InfeasibleStages, StageDur, StageVar
+          ReadbackFloor, InitActual, ShowActual, ApplyActual, JobActual, PubActual, Over,
+          ReviewPause, AllowEarly, CheckCompletion, ModeCeiling, InfeasibleStages, FirstStage,
+          AdapterFloor, ReadbackPostGuards, PublishGuardsPerFile, TrailingGuards, PlanFiles,
+          AuditFiles, DeployFiles, StageDur, StageVar
 
 Never == 10000
 FinalReserve == 420
@@ -12,7 +14,7 @@ PauseStages == {5, 6}
 CodeDur == <<360, 180, 180, 120, 240, 240, 60>>
 E2Dur == <<360, 180, 180, 180, 330, 330, 90>>
 CodeVar == <<
-    [plan |-> 49, aread |-> 48, pread |-> 60],
+    [plan |-> 37, aread |-> 37, pread |-> 37],
     [api_effect |-> 71, api_observe |-> 71],
     [static_effect |-> 71, static_observe |-> 71],
     [unit_seed |-> 28, unit_start |-> 27, unit_observe |-> 27],
@@ -22,21 +24,27 @@ CodeVar == <<
 >>
 
 E2Var == <<
-    [plan |-> 49, aread |-> 48, pread |-> 60],
+    [plan |-> 37, aread |-> 37, pread |-> 37],
     [api_effect |-> 71, api_observe |-> 71],
     [static_effect |-> 71, static_observe |-> 71],
     [unit_seed |-> 48, unit_start |-> 47, unit_observe |-> 47],
-    [plan |-> 22, aread |-> 21, pread |-> 21, recovery_seed |-> 21, recovery_start |-> 21, recovery_observe |-> 21],
-    [plan |-> 26, aread |-> 26, pread |-> 25, audit_start |-> 25, audit_observe |-> 25],
+    [plan |-> 17, aread |-> 17, pread |-> 17, recovery_seed |-> 16, recovery_start |-> 16, recovery_observe |-> 16],
+    [plan |-> 20, aread |-> 20, pread |-> 20, audit_start |-> 20, audit_observe |-> 19],
     [reopen |-> 26, terminal_readback |-> 26]
 >>
 
 UnitModeOps == <<"unit_seed", "unit_start", "unit_observe">>
 RecoveryModeOps == <<"recovery_seed", "recovery_start", "recovery_observe">>
 AuditModeOps == <<"audit_start", "audit_observe">>
-Job1 == <<"job1", "init1", "plan", "show1">>
-Job2 == <<"job2", "init2", "show2", "aread">>
-Job3 == <<"job3", "init3", "show3", "apply", "pread">>
+RECURSIVE Rep(_, _)
+Rep(seq, n) == IF n = 0 THEN <<>> ELSE seq \o Rep(seq, n - 1)
+Trail == Rep(<<"tail">>, TrailingGuards)
+Publish(files) == Rep(<<"pub">>, PublishGuardsPerFile * files)
+Read(op, guard) == <<op>> \o Rep(<<guard>>, ReadbackPostGuards)
+Job1 == <<"job1", "init1", "plan", "show1">> \o Trail \o Publish(PlanFiles)
+Job2 == <<"job2", "init2", "show2">> \o Trail \o Publish(AuditFiles)
+Job3 == <<"job3", "init3">> \o Read("aread", "aread_g") \o <<"show3", "apply">> \o Read("pread", "pread_g")
+        \o Trail \o Publish(DeployFiles)
 DeployOps == Job1 \o Job2 \o Job3
 
 Ops(s) ==
@@ -51,6 +59,8 @@ Ops(s) ==
 RECURSIVE SumLen(_)
 SumLen(s) == IF s > 7 THEN 0 ELSE Len(Ops(s)) + SumLen(s + 1)
 TotalOps == SumLen(1)
+RECURSIVE OpsBefore(_)
+OpsBefore(s) == IF s <= 1 THEN 0 ELSE Len(Ops(s - 1)) + OpsBefore(s - 1)
 
 Min(a, b) == IF a < b THEN a ELSE b
 Max(a, b) == IF a > b THEN a ELSE b
@@ -62,12 +72,15 @@ Later(s) == SumFrom(s + 1, 7)
 IsJob(op) == op \in {"job1", "job2", "job3"}
 IsInit(op) == op \in {"init1", "init2", "init3"}
 IsShow(op) == op \in {"show1", "show2", "show3"}
-IsFixed(op) == IsJob(op) \/ IsInit(op) \/ IsShow(op) \/ op = "apply"
+IsGuard(op) == op \in {"tail", "aread_g", "pread_g"}
+IsFixed(op) == IsJob(op) \/ IsInit(op) \/ IsShow(op) \/ IsGuard(op) \/ op \in {"apply", "pub"}
 Bound(s, op) ==
     CASE IsJob(op) -> JobActual
       [] IsInit(op) -> InitActual
       [] IsShow(op) -> ShowActual
       [] op = "apply" -> ApplyActual
+      [] op = "pub" -> PubActual
+      [] IsGuard(op) -> 0
       [] OTHER -> StageVar[s][op]
 Declared(s, op) ==
     CASE IsJob(op) -> ReadbackFloor
@@ -76,7 +89,8 @@ Declared(s, op) ==
       [] op = "plan" -> PlanTimeout
       [] op = "apply" -> ApplyTimeout
       [] op \in {"aread", "pread"} -> Max(ReadbackFloor, Bound(s, op))
-      [] OTHER -> Bound(s, op)
+      [] op \in {"pub", "tail", "aread_g", "pread_g"} -> ReadbackFloor
+      [] OTHER -> Max(AdapterFloor, Bound(s, op))
 
 VARIABLES stage, step, now, opened, ctxOpen, term, missed, lateOp, last, count
 
@@ -90,7 +104,7 @@ Durations(s, op) ==
     ELSE {1, Bound(s, op)} \cup (IF Over > 0 THEN {Bound(s, op) + Over} ELSE {})
 
 Init ==
-    /\ stage = 1
+    /\ stage = FirstStage
     /\ step = 1
     /\ now = 0
     /\ opened = 0
@@ -99,7 +113,7 @@ Init ==
     /\ missed = FALSE
     /\ lateOp = FALSE
     /\ last = NoEffect
-    /\ count = 0
+    /\ count = OpsBefore(FirstStage)
 
 Admitted(s, op, start) ==
     /\ start + Declared(s, op) + AdmitMargin < Deadline(s)
@@ -156,7 +170,7 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Run)
 
 TypeOK ==
     /\ stage \in 1..8
-    /\ step \in 1..16
+    /\ step \in 1..40
     /\ now \in Nat
     /\ opened \in Nat
     /\ ctxOpen \in Nat

@@ -14,7 +14,8 @@ MODEL = (FORMAL / "StageWindows.tla").read_text(encoding="utf-8")
 CONTRACT = (CODE / "lifecycle_contract.py").read_text(encoding="utf-8")
 RUNTIME = (CODE / "lifecycle_runtime.py").read_text(encoding="utf-8")
 CONFIGS = {name: (FORMAL / f"{name}.cfg").read_text(encoding="utf-8")
-           for name in ("StageWindows", "StageWindowsE2", "StageWindowsOverrun")}
+           for name in ("StageWindows", "StageWindowsE2", "StageWindowsOverrun", "StageWindowsCodeAudit",
+                        "StageWindowsCodeFinal")}
 MUTANTS = {
     "StageWindowsMutantPause": ("StageWindowsE2", "ReviewPause", "60", "InBoundsAccepts"),
     "StageWindowsMutantMargin": ("StageWindowsOverrun", "AdmitMargin", "0", "EffectsInsideStage"),
@@ -103,26 +104,64 @@ def guard_checks():
     return set(re.findall(r"guard\.check\((\d+)\)", readbacks))
 
 
-def stage_ops(stage, bounds, cfg):
+def readback_post_guards():
+    source = function_source(RUNTIME, "readbacks")
+    start = source.index("aws.call(spec")
+    segment = source[start:source.index("reports.append", start)]
+    return len(re.findall(r"guard\.check\(\)", segment))
+
+
+def publish_guards_per_file():
+    source = function_source(RUNTIME, "publish")
+    loop = source[source.index("for name, raw in"):source.index("entries.append")]
+    return len(re.findall(r"guard\.check\(20\)", loop))
+
+
+def trailing_guards():
+    source = function_source(RUNTIME, "execute")
+    return len(re.findall(r"guard\.check\(\)\n\s+publish\(", source))
+
+
+def published_files():
+    source = function_source(RUNTIME, "execute")
+    plan = re.search(r'result_files = \{"plan\.bin".*?"checkpoint\.json": [^}]*\}', source, re.S).group(0)
+    audit = re.search(r'result_files = \{"approval\.json": [^}]*\}', source).group(0)
+    deploy = re.search(r'result_files = \{"checkpoint\.json": c\.canonical\(checkpoint\), '
+                       r'"approval\.json": [^}]*\}', source).group(0)
+    return {name: len(re.findall(r'"[\w.]+": ', body)) for name, body in
+            (("plan", plan), ("audit", audit), ("deploy", deploy))}
+
+
+def deploy_ops(bounds, cfg):
     tofu = {"init": int(cfg["InitTimeout"]), "show": int(cfg["ShowTimeout"]),
             "plan": int(cfg["PlanTimeout"]), "apply": int(cfg["ApplyTimeout"])}
-    floor = int(cfg["ReadbackFloor"])
-    actual = {"init": int(cfg["InitActual"]), "show": int(cfg["ShowActual"]),
-              "apply": int(cfg["ApplyActual"]), "job": int(cfg["JobActual"])}
-    ops = []
-    if stage in (1, 5, 6):
-        job = ("job", floor, actual["job"])
-        init, show = ("init", tofu["init"], actual["init"]), ("show", tofu["show"], actual["show"])
-        ops += [job, init, ("plan", tofu["plan"], bounds["plan"]), show, job, init, show,
-                ("aread", max(floor, bounds["aread"]), bounds["aread"]), job, init, show,
-                ("apply", tofu["apply"], actual["apply"]),
-                ("pread", max(floor, bounds["pread"]), bounds["pread"])]
+    floor, pub = int(cfg["ReadbackFloor"]), int(cfg["PubActual"])
+    act = {"init": int(cfg["InitActual"]), "show": int(cfg["ShowActual"]),
+           "apply": int(cfg["ApplyActual"]), "job": int(cfg["JobActual"])}
+    job, init, show = ("job", floor, act["job"]), ("init", tofu["init"], act["init"]), (
+        "show", tofu["show"], act["show"])
+    files = published_files()
+
+    def publish(count):
+        return [("pub", floor, pub)] * (publish_guards_per_file() * count)
+
+    tail = [("tail", floor, 0)] * trailing_guards()
+    read = lambda key: [(key, max(floor, bounds[key]), bounds[key])] + (
+        [(key + "_g", floor, 0)] * readback_post_guards())
+    return ([job, init, ("plan", tofu["plan"], bounds["plan"]), show] + tail + publish(files["plan"])
+            + [job, init, show] + tail + publish(files["audit"])
+            + [job, init] + read("aread") + [show, ("apply", tofu["apply"], act["apply"])]
+            + read("pread") + tail + publish(files["deploy"]))
+
+
+def stage_ops(stage, bounds, cfg):
+    floor = int(cfg["AdapterFloor"])
+    ops = deploy_ops(bounds, cfg) if stage in (1, 5, 6) else []
     if stage in MODE_PHASE:
         names = underscored(code_modes()[MODE_PHASE[stage]])
-        ops += [(name, bounds[name], bounds[name]) for name in names]
-    elif stage != 1:
-        ops += [(name, bounds[name], bounds[name]) for name in tail_names(stage)]
-    return ops
+    else:
+        names = tail_names(stage) if stage != 1 else []
+    return ops + [(name, max(floor, bounds[name]), bounds[name]) for name in names]
 
 
 def tail_names(stage):
@@ -176,6 +215,23 @@ def test_margem_da_fase_fechada_liga_a_linha_propria_com_operador_e_termo():
     assert "start + Declared(s, op) + AdmitMargin < Deadline(s)" in MODEL
 
 
+def test_margem_do_ramo_de_recuperacao_tambem_e_ligada():
+    capacity = function_source(CONTRACT, "phase_capacity")
+    recovery = capacity[:capacity.index("duration, later = STAGES")]
+    found = re.findall(r"now \+ operation_seconds \+ (\d+) (<=?) window\[\"deadline\"\]", recovery)
+    assert found == [(cfg_values(CONFIGS["StageWindows"])["AdmitMargin"], "<")]
+
+
+def test_guardas_pos_chamada_e_de_publicacao_do_codigo_estao_no_modelo():
+    cfg = cfg_values(CONFIGS["StageWindows"])
+    assert readback_post_guards() == int(cfg["ReadbackPostGuards"]) == 1
+    assert publish_guards_per_file() == int(cfg["PublishGuardsPerFile"]) == 2
+    assert trailing_guards() == int(cfg["TrailingGuards"]) == 1
+    files = published_files()
+    assert (files["plan"], files["audit"], files["deploy"]) == (
+        int(cfg["PlanFiles"]), int(cfg["AuditFiles"]), int(cfg["DeployFiles"]))
+
+
 def test_piso_do_watchdog_e_reserva_das_leituras_do_codigo_estao_no_modelo():
     cfg = cfg_values(CONFIGS["StageWindows"])
     assert watchdog_floor() == {cfg["ReadbackFloor"]}
@@ -219,6 +275,14 @@ def test_estouro_difere_do_e2_so_no_excesso_de_duracao():
     assert {key for key in e2 if e2[key] != overrun[key]} == {"Over"}
 
 
+def test_configuracoes_de_cauda_do_codigo_comecam_em_c_audit_e_no_final():
+    audit, final = cfg_values(CONFIGS["StageWindowsCodeAudit"]), cfg_values(CONFIGS["StageWindowsCodeFinal"])
+    main = cfg_values(CONFIGS["StageWindows"])
+    for tail, first, infeasible in ((audit, "6", "{6}"), (final, "7", "{}")):
+        assert {key for key in main if main[key] != tail[key]} == {"FirstStage", "InfeasibleStages"}
+        assert (tail["FirstStage"], tail["InfeasibleStages"]) == (first, infeasible)
+
+
 def test_configuracao_e2_usa_as_janelas_governadas_e_prazo_fixo_da_soma_mais_reserva():
     cfg = cfg_values(CONFIGS["StageWindowsE2"])
     durations = model_tuple("E2Dur")
@@ -230,6 +294,7 @@ def test_configuracao_principal_usa_o_codigo_atual_e_sem_pausa_antecipacao_ou_es
     values = cfg_values(CONFIGS["StageWindows"])
     assert (values["Over"], values["ReviewPause"], values["AllowEarly"], values["CheckCompletion"]) == (
         "0", "0", "FALSE", "TRUE")
+    assert (values["FirstStage"], values["AdapterFloor"]) == ("1", "0")
     assert "AcceptBeforeDeadline" in CONFIGS["StageWindows"]
     assert "AcceptBeforeDeadline" in CONFIGS["StageWindowsE2"]
     assert "AcceptBeforeDeadline" in CONFIGS["StageWindowsOverrun"]
