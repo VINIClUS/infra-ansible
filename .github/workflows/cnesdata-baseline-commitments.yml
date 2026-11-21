@@ -1,0 +1,88 @@
+---
+name: CnesData baseline commitments
+
+"on":
+  workflow_dispatch:
+    inputs:
+      identity_sha256:
+        description: Backend identity hash
+        required: true
+        type: string
+      key:
+        description: Backend state key
+        required: true
+        type: string
+      workspace:
+        description: Backend workspace, default only
+        required: true
+        type: string
+      region:
+        description: Backend region
+        required: true
+        type: string
+      encrypt:
+        description: Backend encryption flag
+        required: true
+        type: boolean
+      use_lockfile:
+        description: Backend lockfile flag
+        required: true
+        type: boolean
+      bucket_hmac:
+        description: Keyed hash of the state bucket
+        required: true
+        type: string
+      kms_key_id_sha256:
+        description: Hash of the state key identifier
+        required: true
+        type: string
+      schema_sha256:
+        description: Hash of the shared outputs schema
+        required: true
+        type: string
+      shared_outputs_sha256:
+        description: Hash of the shared outputs value
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  commitments:
+    if: github.repository == 'VINIClUS/infra-ansible' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the frozen main
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Validate the public commitments and write the baselines
+        env:
+          IDENTITY_SHA256: ${{ inputs.identity_sha256 }}
+          KEY: ${{ inputs.key }}
+          WORKSPACE: ${{ inputs.workspace }}
+          REGION: ${{ inputs.region }}
+          ENCRYPT: ${{ inputs.encrypt }}
+          USE_LOCKFILE: ${{ inputs.use_lockfile }}
+          BUCKET_HMAC: ${{ inputs.bucket_hmac }}
+          KMS_KEY_ID_SHA256: ${{ inputs.kms_key_id_sha256 }}
+          SCHEMA_SHA256: ${{ inputs.schema_sha256 }}
+          SHARED_OUTPUTS_SHA256: ${{ inputs.shared_outputs_sha256 }}
+        run: python3 -m tools.cnesdata_delivery.producers.baseline_commitments "${RUNNER_TEMP}/baseline"
+      - name: Upload the backend baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-baseline-backend
+          path: ${{ runner.temp }}/baseline/backend.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the shared outputs baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-baseline-shared-outputs
+          path: ${{ runner.temp }}/baseline/shared-outputs.json
+          retention-days: 30
+          if-no-files-found: error
