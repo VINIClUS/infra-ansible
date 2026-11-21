@@ -705,6 +705,7 @@ def _account_derived_values(governance):
 
 GROUP_SEPARATOR = re.compile(r"(?<=[0-9])[-_ ](?=[0-9])")
 GROUPED_ACCOUNT = re.compile(r"(?<![0-9])%s(?![0-9])" % ACCOUNT_GROUPS)
+GROUPED_WINDOW = re.compile(r"(?<![0-9])(?=%s(?![0-9]))" % ACCOUNT_GROUPS)
 
 
 def _comparable(text):
@@ -715,7 +716,8 @@ def _comparable(text):
 def refuse_account_derived(raw, governance):
     """Public reports carry no account, no key and no plain hash or ARN of known values."""
     report_key(governance)
-    text = _comparable(raw.decode())
+    folded = unicodedata.normalize("NFKC", raw.decode()).casefold()
+    text = "\n".join([_comparable(folded)] + ["".join(match.groups()) for match in GROUPED_WINDOW.finditer(folded)])
     require(not any(type(v) is str and v and _comparable(v) in text for v in _account_derived_values(governance)),
             "account-derived value in public report")
 
