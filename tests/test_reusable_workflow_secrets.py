@@ -12,6 +12,7 @@ GOVERNED = (
     "reusable-cnesdata-application-gate.yml",
     "reusable-cnesdata-infra-plan-gate.yml",
     "reusable-cnesdata-infra-deploy-gate.yml",
+    "reusable-cnesdata-infra-audit-gate.yml",
     "reusable-cnesdata-signing-gate.yml",
 )
 
