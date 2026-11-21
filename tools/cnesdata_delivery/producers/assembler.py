@@ -32,7 +32,7 @@ def artifact_names(source, role, run, attempt):
 def cost_baseline(purpose, derived, checkpoint):
     """Args: purpose, derived ledger, cost stage. Returns: the governance baseline cost fields and cost."""
     c.require(checkpoint["stage"] == cost_context.stage_name(purpose), "cost stage differs from purpose")
-    c.require(checkpoint["stage"] == "active", "pre-activation cost not derived")
+    c.require(checkpoint["stage"] == "active", f"pre-activation cost not derived stage={checkpoint['stage']}")
     cost, evidence = cost_context.cost_objects(derived, checkpoint)
     return {"cost_context": checkpoint, "cost_evidence": evidence, "cost_manifest": derived["manifest"],
             "source_manifest_sha256": derived["source_manifest_sha256"], "cost": cost}
@@ -95,6 +95,12 @@ def assemble(inputs):
     return Assembled(files | {"proof.json": c.canonical(proof)}, proof)
 
 
+def read_observed(directory):
+    """Args: directory of observer files. Returns: name to bytes; empty when the deploy role has no observer job."""
+    path = Path(directory)
+    return {item.name: item.read_bytes() for item in path.iterdir()} if path.is_dir() else {}
+
+
 def main(argv=None):
     from tools.cnesdata_delivery.producers import inputs
     from tools.cnesdata_delivery.provenance import GitHub
@@ -102,7 +108,7 @@ def main(argv=None):
     parser.add_argument("--observed", required=True)
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
-    observed = {path.name: path.read_bytes() for path in Path(args.observed).iterdir()}
+    observed = read_observed(args.observed)
     values, extra = inputs.build(GitHub(), inputs.request_from(os.environ), observed)
     built = assemble(values)
     out = Path(args.out)

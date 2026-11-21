@@ -182,6 +182,7 @@ jobs:
               "lifecycle_contract.py",
               "provenance.py",
               "producers/assembler.py",
+              "producers/baseline_commitments.py",
               "producers/chain.py",
               "producers/cost_context.py",
               "producers/cost_ledger.py",

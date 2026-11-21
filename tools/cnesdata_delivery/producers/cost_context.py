@@ -24,6 +24,7 @@ def stage(purpose, source_sha, context, cloudfront):
     """Args: purpose, source sha, P-B cost context, owner CloudFront block. Returns: the cost_context stage."""
     c.digest(source_sha, 40)
     c.require(type(context) is dict, "cost context")
+    c.require(context.get("source_sha") == source_sha, "cost context source_sha")
     digests = {name: c.digest(context.get(name)) for name in ("checkpoint_sha256", "target_sha256")}
     pre = stage_name(purpose) == "pre-activation"
     c.require(not pre or cloudfront is None, "cloudfront block in pre-activation")
@@ -34,7 +35,8 @@ def stage(purpose, source_sha, context, cloudfront):
 
 def cost_objects(derived, checkpoint):
     """Args: derived ledger, active stage. Returns: (cost, evidence) bound to the derived manifest."""
-    c.require(checkpoint["stage"] == "active", "pre-activation cost not derived")
+    c.require(checkpoint["stage"] == "active", f"pre-activation cost not derived stage={checkpoint['stage']}")
+    c.require(checkpoint["checkpoint_sha256"] == derived["source_manifest_sha256"], "cost context checkpoint")
     manifest = derived["manifest"]
     block = checkpoint["cloudfront"]
     c.require(c.instant(manifest["expires_at"]) <= c.instant(block["expires_at"]),

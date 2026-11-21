@@ -10,11 +10,10 @@ from fixtures.cnesdata_phase_a_replay import ReplayChain
 from fixtures.cnesdata_producers import KEY_HEX, PAYLOAD_REFERENCE, SOURCE, config, public_objects, request, world
 from test_cnesdata_producers_cost import NOW, owner_block
 from tools.cnesdata_delivery import contract as c
-from tools.cnesdata_delivery.producers import assembler, inputs, observer, pins
+from tools.cnesdata_delivery.producers import assembler, aws_reader, baseline_commitments, inputs, observer, pins
 
 ROOT = Path(__file__).resolve().parents[1]
 T = "2026-11-20T12:00:00Z"
-CONTEXT = {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}
 PRODUCER = {"repository": "VINIClUS/infra-ansible", "workflow_path": ".github/workflows/cnesdata-producers.yml",
             "workflow_sha": "9" * 40, "run_id": 7001, "run_attempt": 1}
 X_STAR = "b" * 40
@@ -33,6 +32,7 @@ def reference(index):
 class API:
     def __init__(self, members):
         self.members = members
+        self.kwargs = {}
 
     def read(self, path):
         if "/contents/" in path:
@@ -47,6 +47,7 @@ class API:
         return {"run_started_at": at(-60), "updated_at": at(60)}
 
     def artifact(self, reference_, now, **kwargs):
+        self.kwargs[reference_["artifact_id"]] = kwargs
         return self.members[reference_["artifact_id"]]
 
 
@@ -60,16 +61,18 @@ def setup(monkeypatch, tmp_path):
     source = Path(__file__).parent / "fixtures/cnesdata_cost_source_manifest.json"
     toolchain = {"opentofu": {"version": "1.13.2", "binary_sha256": "d" * 64}, "lock_sha256": "e" * 64,
                  "providers": [{"source": "registry.opentofu.org/hashicorp/aws", "version": "6.54.0", "package_sha256": "f" * 64}]}
-    backend = {"identity_sha256": "a" * 64, "key": "cnesdata/prod/opentofu.tfstate", "workspace": "default",
-               "region": "us-east-2", "encrypt": True, "use_lockfile": True, "bucket_hmac": "b" * 64,
-               "kms_key_id_sha256": "c" * 64}
+    committed = baseline_commitments.build({
+        "identity_sha256": "a" * 64, "key": "cnesdata/prod/opentofu.tfstate", "workspace": "default",
+        "region": "us-east-2", "encrypt": True, "use_lockfile": True, "bucket_hmac": "b" * 64,
+        "kms_key_id_sha256": "c" * 64, "schema_sha256": "d" * 64, "shared_outputs_sha256": "e" * 64})
+    context = {"source_sha": SOURCE, "checkpoint_sha256": c.sha(source.read_bytes()), "target_sha256": "e" * 64}
     names_ = ("backend", "cost", "policy", "shared-outputs", "toolchain", "phase-inputs")
     references = {name: reference(index) for index, name in enumerate(names_, 1)}
     members = {
-        2: {"cost-manifest-source.json": source.read_bytes(), "cost-context.json": json.dumps(CONTEXT).encode()},
-        1: {"backend.json": json.dumps(backend).encode()}, 3: {"policy.json": json.dumps(
+        2: {"cost-manifest-source.json": source.read_bytes(), "cost-context.json": json.dumps(context).encode()},
+        1: {"backend.json": committed["backend.json"]}, 3: {"policy.json": json.dumps(
             {"policy_sha256": "1" * 64, "conftest_sha256": "2" * 64}).encode()},
-        4: {"shared-outputs.json": b"{}\n"}, 5: {"toolchain.json": json.dumps(toolchain).encode()},
+        4: {"shared-outputs.json": committed["shared-outputs.json"]}, 5: {"toolchain.json": json.dumps(toolchain).encode()},
         6: {"inputs.json": b"{}\n"}}
     pin = pins.producer_pins(pins.api_reader(API({})), X_STAR)
     value = {"purpose": "phase-a", "role": "plan", "source_sha": SOURCE, "x_star": X_STAR, "producer": PRODUCER,
@@ -143,3 +146,157 @@ def test_request_from_acrescenta_a_referencia_do_drift_do_proprio_run():
     drift = merged["references"]["drift"]
     assert drift["artifact_id"] == 55 and drift["run_attempt"] == 2 and drift["source_sha"] == "9" * 40
     assert drift["workflow_path"] == ".github/workflows/cnesdata-producers.yml" and merged["x_star"] == X_STAR
+
+
+def with_r2(api, value):
+    value = copy.deepcopy(value)
+    value["references"]["r2-candidate"] = reference(7)
+    api.members[7] = {"candidate.json": b"{}\n"}
+    return value
+
+
+def test_entradas_autenticam_o_r2_candidate_com_a_excecao_do_criador_e_so_ele(setup):
+    api, value, observed = setup
+    inputs.build(api, with_r2(api, value), observed)
+    assert api.kwargs[7] == {"r2": True}
+    assert all(api.kwargs[index] == {"r2": False} for index in (1, 2, 3, 4, 5, 6))
+
+
+def test_entradas_recusam_dependencia_com_source_sha_ou_repositorio_fora_de_x_star(setup):
+    api, value, observed = setup
+    for change in ({"source_sha": "0" * 40}, {"repository": "VINIClUS/other"}):
+        wrong = [value["dependencies"][0] | change]
+        with pytest.raises(ValueError, match="pin"):
+            inputs.build(api, value | {"dependencies": wrong}, observed)
+
+
+def test_entradas_recusam_contexto_de_custo_com_source_sha_ou_checkpoint_fora_da_fonte(setup):
+    api, value, observed = setup
+    context = json.loads(api.members[2]["cost-context.json"])
+    for change in ({"source_sha": "0" * 40}, {"checkpoint_sha256": "0" * 64}):
+        api.members[2]["cost-context.json"] = json.dumps(context | change).encode()
+        with pytest.raises(ValueError, match="cost context"):
+            inputs.build(api, value, observed)
+
+
+def plan_index(**changes):
+    return {"index_version": 1, "kind": "cnesdata-private-plan-transport", "status": "planned",
+            "repository": c.REPOSITORY, "source_sha": SOURCE,
+            "producer": {"workflow_path": ".github/workflows/p12.yml", "workflow_sha": SOURCE, "run_id": 112,
+                         "run_attempt": 1},
+            "purpose": "phase-a", "created_at": at(600), "expires_at": at(7200), "plan_binding_sha256": "a" * 64,
+            "envelope_sha256": "b" * 64, "package_aggregate_sha256": "c" * 64,
+            "private_locator": {"scope": "cnesdata-prod", "source_sha": SOURCE, "run_id": 112, "run_attempt": 1,
+                                "status": "planned"},
+            "policy": {"verdict": "pass", "evidence_sha256": "1" * 64}, "cost": {}, "drift": {"verdict": "pass",
+            "evidence_sha256": "2" * 64}, "admission_proof": {}} | changes
+
+
+def plan_run(artifact_id):
+    return reference(9) | {"artifact_id": artifact_id, "artifact_digest": "sha256:" + f"{artifact_id:x}" * 32}
+
+
+@pytest.fixture
+def deploy(setup):
+    api, value, observed = setup
+    api.members[9] = {"drift-handoff.json": observed["drift-handoff.json"]}
+    api.members[10] = {"observations.json": observed["observations.json"]}
+    api.members[12] = {"index.json": c.canonical(plan_index()), "redacted-plan.json": b"{}\n"}
+    references = value["references"] | {"planned": reference(12)}
+    value = value | {"role": "deploy", "references": references, "plan_binding_sha256": None,
+                     "observed_reference": plan_run(10)}
+    return api, value
+
+
+def test_deploy_monta_so_com_os_artefatos_do_ciclo_do_plan_sem_observacao_local(deploy):
+    api, value = deploy
+    values, extra = inputs.build(api, value, {})
+    built = assembler.assemble(values)
+    assert [item["check_id"] for item in built.proof["checks"]] == assembler.required_checks("phase-a", "deploy")
+    assert built.proof["plan_binding_sha256"] == plan_index()["plan_binding_sha256"]
+    assert [item["purpose"] for item in built.proof["artifacts"]] == sorted(value["references"])
+    assert set(extra) == {"cost-baseline.json", "cost-sources.json"}
+
+
+def test_deploy_le_o_indice_publico_do_artefato_planned_e_leva_o_digest_dele(deploy):
+    api, value = deploy
+    built = assembler.assemble(inputs.build(api, value, {})[0])
+    texts = {item["check_id"]: c.loads(built.files[item["name"]], canonical=True)["measurement"]
+             for item in built.proof["reports"]}
+    package = texts["exact-saved-plan-package"]
+    index = plan_index()
+    assert package == {"plan_binding_sha256": index["plan_binding_sha256"], "envelope_sha256": index["envelope_sha256"],
+                       "package_aggregate_sha256": index["package_aggregate_sha256"],
+                       "index_artifact_digest": value["references"]["planned"]["artifact_digest"]}
+    binding = texts["planned-source-input-binding"]
+    assert binding["source_sha"] == SOURCE and binding["purpose"] == "phase-a"
+    assert binding["planned_reference_sha256"] == c.sha(c.canonical(value["references"]["planned"]))
+    assert binding["phase_inputs_reference_sha256"] == c.sha(c.canonical(value["references"]["phase-inputs"]))
+    assert binding["release_candidate_sha256"] == value["candidate_sha256"]
+
+
+@pytest.mark.parametrize("changes", [{"status": "applied"}, {"source_sha": "0" * 40}, {"purpose": "bootstrap"},
+                                     {"extra": 1}, {"plan_binding_sha256": "xyz"}])
+def test_deploy_recusa_indice_do_planned_fora_do_status_da_fonte_do_proposito_ou_da_forma(deploy, changes):
+    api, value = deploy
+    api.members[12] = {"index.json": c.canonical(plan_index(**changes))}
+    with pytest.raises(ValueError):
+        inputs.build(api, value, {})
+
+
+def test_deploy_recusa_observacao_de_um_run_diferente_do_drift_do_plan(deploy):
+    api, value = deploy
+    for change in ({"run_id": 999}, {"run_attempt": 2}, {"workflow_sha": "7" * 40}):
+        with pytest.raises(ValueError, match="plan cycle"):
+            inputs.build(api, value | {"observed_reference": plan_run(10) | change}, {})
+
+
+def test_deploy_nao_faz_nenhuma_chamada_aws(deploy, monkeypatch):
+    api, value = deploy
+    calls = []
+    monkeypatch.setattr(aws_reader, "Reader", lambda *args, **kwargs: calls.append("reader"))
+    monkeypatch.setattr(aws_reader, "web_identity_session", lambda *args: calls.append("session"))
+    monkeypatch.setattr(observer, "observe", lambda *args: calls.append("observe"))
+    assembler.assemble(inputs.build(api, value, {})[0])
+    assert calls == []
+
+
+def test_deploy_recusa_pedido_sem_planned_ou_sem_observacao_do_ciclo(deploy):
+    api, value = deploy
+    with pytest.raises(ValueError, match="plan cycle observation reference"):
+        inputs.build(api, {k: v for k, v in value.items() if k != "observed_reference"}, {})
+    references = {k: v for k, v in value["references"].items() if k != "planned"}
+    with pytest.raises(ValueError, match="planned"):
+        inputs.build(api, value | {"references": references}, {})
+
+
+def test_request_from_do_deploy_nao_inventa_a_referencia_do_drift_do_proprio_run():
+    env = {"GITHUB_WORKFLOW_REF": "VINIClUS/infra-ansible/.github/workflows/cnesdata-producers.yml@refs/heads/main",
+           "GITHUB_SHA": "9" * 40, "GITHUB_RUN_ID": "7001", "GITHUB_RUN_ATTEMPT": "1", "PURPOSE": "phase-a",
+           "ROLE": "deploy", "SOURCE_SHA": SOURCE, "X_STAR": X_STAR,
+           "REQUEST": json.dumps({"references": {"drift": {"artifact_id": 55}}})}
+    assert inputs.request_from(env)["references"]["drift"] == {"artifact_id": 55}
+
+
+def test_entradas_recusam_membro_de_saidas_compartilhadas_fora_do_contrato(setup):
+    api, value, observed = setup
+    api.members[4] = {"shared-outputs.json": b"{}\n"}
+    with pytest.raises(ValueError):
+        inputs.build(api, value, observed)
+
+
+def test_entradas_recusam_backend_com_workspace_que_nao_e_default(setup):
+    api, value, observed = setup
+    backend = json.loads(api.members[1]["backend.json"]) | {"workspace": "prod"}
+    api.members[1] = {"backend.json": json.dumps(backend).encode()}
+    with pytest.raises(ValueError, match="workspace"):
+        inputs.build(api, value, observed)
+
+
+def test_membros_extras_publicos_passam_pela_varredura_public_safe(setup):
+    api, value, observed = setup
+    raw = api.members[2]["cost-manifest-source.json"].replace(b'"https://', b'"https://111122223333.example.invalid/', 1)
+    context = json.loads(api.members[2]["cost-context.json"]) | {"checkpoint_sha256": c.sha(raw)}
+    api.members[2] = {"cost-manifest-source.json": raw, "cost-context.json": json.dumps(context).encode()}
+    with pytest.raises(ValueError, match="private material"):
+        inputs.build(api, value, observed)

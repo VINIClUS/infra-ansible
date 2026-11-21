@@ -3,11 +3,14 @@ import copy
 import re
 
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery.producers.pins import REPOSITORY
 
 DRIFT = ("handoff_sha256 rehearsal_plan_sha256 catalog_sha256 matrix_version source_sha purpose state_identity "
          "rows_before rows_after absent_rows readbacks_before readbacks_after")
 BACKEND = "identity_sha256 key workspace region encrypt use_lockfile bucket_hmac kms_key_id_sha256"
 PLAN_INDEX = "plan_binding_sha256 envelope_sha256 package_aggregate_sha256"
+TRANSPORT_INDEX = ("index_version kind status repository source_sha producer purpose created_at expires_at "
+                   + PLAN_INDEX + " private_locator policy cost drift admission_proof")
 PRODUCER = "repository workflow_path workflow_sha run_id run_attempt"
 
 
@@ -18,7 +21,9 @@ def drift_baseline(observation):
     return copy.deepcopy(observation)
 
 
-def dependency_pins(pins, closure):
+def dependency_pins(pins, closure, x_star):
+    c.require(all(pin["source_sha"] == c.digest(x_star, 40) and pin["repository"] == REPOSITORY for pin in pins),
+              "dependency pin source or repository")
     c.require(all(pin["content_sha256"] == c.digest(closure) for pin in pins), "recomputed closure differs from pins")
     return {"pins": copy.deepcopy(pins), "closure_recomputed_sha256": closure}
 
@@ -83,7 +88,7 @@ def promotion_origin(promotion_sha256, producer, artifact_digest):
 
 
 def exact_plan_package(index, artifact_digest):
-    c.closed(index, PLAN_INDEX)
+    c.closed(index, TRANSPORT_INDEX)
     return {key: c.digest(index[key]) for key in PLAN_INDEX.split()} | {"index_artifact_digest": artifact_digest}
 
 

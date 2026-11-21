@@ -31,6 +31,10 @@ def document(mutate=None):
     return encoded(value)
 
 
+def context(**changes):
+    return {"source_sha": SHA, "checkpoint_sha256": c.sha(SOURCE), "target_sha256": "e" * 64} | changes
+
+
 def owner_block(**changes):
     return {"plan": "FREE", "status": "ACTIVE", "subscription_sha256": "1" * 64,
             "distribution_sha256": "2" * 64, "waf_binding_sha256": "3" * 64,
@@ -38,7 +42,7 @@ def owner_block(**changes):
 
 
 def active_stage(**changes):
-    return cost_context.stage("phase-a", SHA, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64},
+    return cost_context.stage("phase-a", SHA, context(),
                               owner_block(**changes))
 
 
@@ -168,14 +172,14 @@ def test_validade_do_manifesto_acompanha_as_datas_do_ciclo():
 
 @pytest.mark.parametrize("purpose", ["acm-certificate", "bootstrap"])
 def test_cost_context_pre_ativacao_nao_leva_o_bloco_do_cloudfront(purpose):
-    stage = cost_context.stage(purpose, SHA, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, None)
-    assert stage == {"stage": "pre-activation", "source_sha": SHA, "checkpoint_sha256": "d" * 64,
+    stage = cost_context.stage(purpose, SHA, context(), None)
+    assert stage == {"stage": "pre-activation", "source_sha": SHA, "checkpoint_sha256": c.sha(SOURCE),
                      "target_sha256": "e" * 64, "cloudfront": None, "unbound_required": True}
 
 
 def test_cost_context_pre_ativacao_recusa_bloco_do_cloudfront():
     with pytest.raises(ValueError, match="cloudfront"):
-        cost_context.stage("bootstrap", SHA, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, owner_block())
+        cost_context.stage("bootstrap", SHA, context(), owner_block())
 
 
 def test_cost_context_active_leva_o_bloco_do_dono_sem_alteracao():
@@ -188,9 +192,9 @@ def test_active_sem_digest_do_dono_e_recusado(missing):
     block = owner_block()
     block.pop(missing)
     with pytest.raises(ValueError):
-        cost_context.stage("phase-a", SHA, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, block)
+        cost_context.stage("phase-a", SHA, context(), block)
     with pytest.raises(ValueError):
-        cost_context.stage("phase-a", SHA, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, None)
+        cost_context.stage("phase-a", SHA, context(), None)
 
 
 @pytest.mark.parametrize("changes", [{"plan": "PRO"}, {"status": "PENDING"}, {"subscription_sha256": "xyz"}])
@@ -200,9 +204,9 @@ def test_active_recusa_bloco_que_o_gate_recusaria(changes):
 
 
 def test_cost_context_recusa_digest_de_checkpoint_ausente_ou_malformado():
-    for context in ({}, {"checkpoint_sha256": "d" * 64}, {"checkpoint_sha256": "q", "target_sha256": "e" * 64}):
+    for bad in ({}, {"checkpoint_sha256": "d" * 64}, {"checkpoint_sha256": "q", "target_sha256": "e" * 64}):
         with pytest.raises(ValueError):
-            cost_context.stage("phase-a", SHA, context, owner_block())
+            cost_context.stage("phase-a", SHA, bad, owner_block())
 
 
 def test_cost_objects_exige_cloudfront_valido_ate_o_fim_do_custo():
@@ -216,3 +220,23 @@ def test_cost_objects_e_deterministico_e_nao_muta_a_entrada():
     snapshot = copy.deepcopy(derived)
     first = cost_context.cost_objects(derived, active_stage())
     assert first == cost_context.cost_objects(derived, active_stage()) and derived == snapshot
+
+
+def test_stage_recusa_contexto_cujo_source_sha_difere_do_source():
+    for bad in (context(source_sha="0" * 40), {k: v for k, v in context().items() if k != "source_sha"}):
+        with pytest.raises(ValueError, match="cost context source_sha"):
+            cost_context.stage("phase-a", SHA, bad, owner_block())
+
+
+def test_cost_objects_recusa_checkpoint_diferente_do_sha_do_manifesto_fonte():
+    derived = derive()
+    stage = cost_context.stage("phase-a", SHA, context(checkpoint_sha256="0" * 64), owner_block())
+    with pytest.raises(ValueError, match="cost context checkpoint"):
+        cost_context.cost_objects(derived, stage)
+
+
+def test_derivacao_pre_ativacao_e_recusada_com_razao_chave_valor():
+    derived = derive()
+    stage = cost_context.stage("bootstrap", SHA, context(), None)
+    with pytest.raises(ValueError, match="stage=pre-activation"):
+        cost_context.cost_objects(derived, stage)

@@ -200,7 +200,7 @@ def test_cost_baseline_da_phase_a_leva_o_bloco_o6_so_no_estagio_active():
     baseline = assembler.cost_baseline("phase-a", derived, stage)
     assert baseline["cost_context"]["stage"] == "active" and baseline["cost_context"]["cloudfront"] == stage["cloudfront"]
     assert set(baseline) == {"cost_context", "cost_evidence", "cost_manifest", "source_manifest_sha256", "cost"}
-    pre = cost_context.stage("bootstrap", SOURCE, {"checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, None)
+    pre = cost_context.stage("bootstrap", SOURCE, {"source_sha": SOURCE, "checkpoint_sha256": "d" * 64, "target_sha256": "e" * 64}, None)
     assert pre["cloudfront"] is None
     with pytest.raises(ValueError, match="pre-activation"):
         assembler.cost_baseline("bootstrap", derived, pre)
@@ -224,9 +224,16 @@ def test_estagio_active_exige_proposito_diferente_de_pre_ativacao():
 
 def test_dependency_pins_recalcula_a_closure_e_recusa_pin_diferente():
     pins = [{"repository": "VINIClUS/infra-ansible", "source_sha": "b" * 40, "content_sha256": "c" * 64}]
-    assert measurements.dependency_pins(pins, "c" * 64) == {"pins": pins, "closure_recomputed_sha256": "c" * 64}
+    assert measurements.dependency_pins(pins, "c" * 64, "b" * 40) == {"pins": pins, "closure_recomputed_sha256": "c" * 64}
     with pytest.raises(ValueError, match="closure"):
-        measurements.dependency_pins(pins, "d" * 64)
+        measurements.dependency_pins(pins, "d" * 64, "b" * 40)
+
+
+@pytest.mark.parametrize("change", [{"source_sha": "0" * 40}, {"repository": "VINIClUS/other"}])
+def test_dependency_pins_exige_source_sha_igual_a_x_star_e_o_repositorio_da_entrega(change):
+    pins = [{"repository": "VINIClUS/infra-ansible", "source_sha": "b" * 40, "content_sha256": "c" * 64} | change]
+    with pytest.raises(ValueError, match="dependency pin"):
+        measurements.dependency_pins(pins, "c" * 64, "b" * 40)
 
 
 def test_toolchain_exige_lock_providers_iguais_aos_da_medicao():
@@ -309,10 +316,12 @@ def test_montador_nao_importa_boto3_nem_usa_chave_nem_id_token():
 
 
 def test_medicoes_do_deploy_e_da_origem_da_promocao_tem_forma_fechada():
-    index = {"plan_binding_sha256": "a" * 64, "envelope_sha256": "b" * 64, "package_aggregate_sha256": "c" * 64}
-    assert measurements.exact_plan_package(index, "sha256:" + "d" * 64) == index | {"index_artifact_digest": "sha256:" + "d" * 64}
-    with pytest.raises(ValueError):
-        measurements.exact_plan_package({"plan_binding_sha256": "a" * 64}, "sha256:" + "d" * 64)
+    digests = {"plan_binding_sha256": "a" * 64, "envelope_sha256": "b" * 64, "package_aggregate_sha256": "c" * 64}
+    index = dict.fromkeys(measurements.TRANSPORT_INDEX.split(), "x") | digests
+    assert measurements.exact_plan_package(index, "sha256:" + "d" * 64) == digests | {"index_artifact_digest": "sha256:" + "d" * 64}
+    for wrong in (digests, index | {"extra": 1}, index | {"envelope_sha256": "q"}):
+        with pytest.raises(ValueError):
+            measurements.exact_plan_package(wrong, "sha256:" + "d" * 64)
     bound = measurements.planned_binding(SOURCE, "phase-a", {"phase_inputs": "1" * 64, "planned": "2" * 64}, "3" * 64)
     assert bound == {"source_sha": SOURCE, "purpose": "phase-a", "phase_inputs_reference_sha256": "1" * 64,
                      "planned_reference_sha256": "2" * 64, "release_candidate_sha256": "3" * 64}
@@ -322,3 +331,9 @@ def test_medicoes_do_deploy_e_da_origem_da_promocao_tem_forma_fechada():
     assert origin == {"promotion_sha256": "4" * 64, "producer": producer, "artifact_digest": "sha256:" + "5" * 64}
     with pytest.raises(ValueError):
         measurements.promotion_origin("zz", producer, "sha256:" + "5" * 64)
+
+
+def test_diretorio_de_observacao_ausente_no_deploy_vira_mapa_vazio(tmp_path):
+    assert assembler.read_observed(tmp_path / "absent") == {}
+    (tmp_path / "observations.json").write_bytes(b"{}\n")
+    assert assembler.read_observed(tmp_path) == {"observations.json": b"{}\n"}

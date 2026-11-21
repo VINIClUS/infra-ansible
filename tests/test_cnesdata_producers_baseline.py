@@ -134,3 +134,8 @@ def test_workflow_roda_o_produtor_como_modulo_sobre_o_checkout_sem_credencial(do
     checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout"))
     assert checkout["with"]["persist-credentials"] is False
     assert any("-m tools.cnesdata_delivery.producers.baseline_commitments" in step.get("run", "") for step in steps)
+
+
+def test_montador_le_exatamente_os_membros_emitidos_pelo_validador():
+    from tools.cnesdata_delivery.producers import inputs as assembler_inputs
+    assert assembler_inputs.BACKEND_MEMBER == "backend.json" and assembler_inputs.SHARED_MEMBER == "shared-outputs.json"
