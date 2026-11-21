@@ -2,6 +2,8 @@
 import base64
 import copy
 import json
+import socket
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ from fixtures.cnesdata_phase_a_replay import ReplayChain
 from fixtures.cnesdata_producers import KEY_HEX, PAYLOAD_REFERENCE, SOURCE, config, public_objects, request, world
 from test_cnesdata_producers_cost import NOW, owner_block
 from tools.cnesdata_delivery import contract as c
-from tools.cnesdata_delivery.producers import assembler, aws_reader, baseline_commitments, inputs, observer, pins
+from tools.cnesdata_delivery.producers import assembler, baseline_commitments, inputs, observer, pins
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/reusable-cnesdata-observer.yml"
@@ -299,12 +301,17 @@ def test_deploy_recusa_observacao_de_um_run_diferente_do_drift_do_plan(deploy):
 
 def test_deploy_nao_faz_nenhuma_chamada_aws(deploy, monkeypatch):
     api, value = deploy
-    calls = []
-    monkeypatch.setattr(aws_reader, "Reader", lambda *args, **kwargs: calls.append("reader"))
-    monkeypatch.setattr(aws_reader, "web_identity_session", lambda *args: calls.append("session"))
-    monkeypatch.setattr(observer, "observe", lambda *args: calls.append("observe"))
-    assembler.assemble(inputs.build(api, value, {})[0])
-    assert calls == []
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("network")
+
+    for name in ("boto3", "botocore", "botocore.config", "botocore.exceptions"):
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setattr(socket, "socket", blocked)
+    monkeypatch.setattr(socket, "create_connection", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    built = assembler.assemble(inputs.build(api, value, {})[0])
+    assert [item["check_id"] for item in built.proof["checks"]] == assembler.required_checks("phase-a", "deploy")
 
 
 def test_deploy_recusa_pedido_sem_planned_ou_sem_observacao_do_ciclo(deploy):
