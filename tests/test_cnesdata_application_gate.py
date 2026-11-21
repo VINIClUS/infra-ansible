@@ -470,7 +470,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
     from tools.cnesdata_delivery.application_gate import ReleasedPublicationGuard, publish_terminal
     store, files = _terminal_fixture(failed=failed, current_caller=current_caller)
     record, etag = store.get()
-    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence",
+    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"], "evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence",
                   "gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "promotion / keeper"}
     run = {"id": 44, "run_attempt": 1, "head_sha": "b" * 40, "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
@@ -1249,7 +1249,7 @@ def test_adapter_result_cannot_erase_uncertainty_or_invent_observations(mutation
     observations = [{"kind": "inventory", "sha256": c.sha(observation), "size": len(observation)}]
     receipts = [{"fixture_only": "original shared SDK receipt"}]
     pending, unknown = [{"kind": "call", "reference_sha256": "3" * 64}], [{"kind": "call", "reference_sha256": "4" * 64}]
-    result = {"abi_version": 2, "operation": "inventory", "owner_sha256": request["owner"]["owner_sha256"],
+    result = {"abi_version": 3, "operation": "inventory", "owner_sha256": request["owner"]["owner_sha256"],
               "generation": request["owner"]["generation"], "checkpoint_sha256": request["checkpoint_sha256"],
               "observations": copy.deepcopy(observations), "call_receipts_sha256": c.sha(c.canonical(receipts)),
               "pending": copy.deepcopy(pending), "unknown": copy.deepcopy(unknown)}
@@ -1304,7 +1304,7 @@ def test_adapter_journal_freezes_inputs_and_only_returns_registered_originals(mu
         return
     digest = journal.observe("inventory", observed)
     assert journal.observation_bytes[digest] == observed
-    result = {"abi_version": 2, "operation": "inventory", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
+    result = {"abi_version": 3, "operation": "inventory", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
               "checkpoint_sha256": window["checkpoint_sha256"], "observations": journal.observations,
               "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
     if mutation == "invent-result":
@@ -1424,7 +1424,7 @@ def test_shared_sdk_journal_cannot_accept_result_while_native_call_is_unresolved
                                 activation_sha256=request["activation_sha256"], guard=Guard())
     raw = c.canonical({"role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": {}})
     ticket = journal.begin_sdk_call(raw, role_session_sha256="2" * 64)
-    result = {"abi_version": 2, "operation": "closed-ready", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
+    result = {"abi_version": 3, "operation": "closed-ready", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
               "checkpoint_sha256": window["checkpoint_sha256"], "observations": [], "call_receipts_sha256": c.sha(c.canonical([])),
               "pending": journal.pending, "unknown": []}
     with pytest.raises(ValueError):
@@ -1733,7 +1733,7 @@ def execute_shared_operation(operation, request, context):
     observed = canonical({'fixture_only': True, 'input_sha256': hashlib.sha256(original).hexdigest(),
                           'credentials_absent': all(name not in os.environ for name in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'GITHUB_TOKEN'))})
     digest = context.observe('inventory', observed)
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
             'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
             'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
             'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
@@ -2404,8 +2404,8 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
               "admitted_at": preparation["admitted_at"] - (mutation == "admitted") + (mutation == "admitted-later"),
               "deadline": preparation["deadline"] - (mutation == "preparation"),
               "decision": None, "preparation_deadline": preparation["deadline"] - (mutation == "preparation"),
-              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), **lc.application_identity(owner)}
-    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), "windows": MINIMUM_WINDOWS, **lc.application_identity(owner)}
+    request = {"abi_version": 3, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
                "activation_sha256": c.sha(inputs["activation"]),
                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
@@ -2565,7 +2565,7 @@ def execute_shared_operation(operation, request, context):
     observed = canonical({'value': VALUE, 'stub_file': getattr(sys.modules.get('cnes_infra'), '__file__', None),
                           'domain_path': list(getattr(sys.modules['cnes_domain'], '__path__', []))})
     digest = context.observe('inventory', observed)
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
             'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
             'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
             'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
@@ -3172,7 +3172,7 @@ def test_artifact_digests_retain_only_the_authenticated_download_digest():
 @pytest.mark.parametrize("role", ["application", "plan"])
 def test_admission_retains_artifact_digests_only_for_the_application_role(monkeypatch, role):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    governance = {"activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
+    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"], "activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
                   "lifecycle_steps": {"keeper": {"role": role, "purpose": "application-prepare", "input_jobs": {}}}}
     request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
                            "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
@@ -4051,7 +4051,7 @@ def execute_shared_operation(operation, request, context):
     digest = context.observe('closed-ready', raw)
     snapshot = context.evidence_snapshot()
     MUTATION
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
         'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
         'observations': [{'kind': 'closed-ready', 'sha256': digest, 'size': len(raw)}], **snapshot}
 '''
@@ -4706,8 +4706,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api",
               "admitted_at": prepared_at if mutation == "admitted" else 1300, "deadline": 1480,
               "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
-              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
-    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), "windows": MINIMUM_WINDOWS, **lc.application_identity(owner)}
+    request = {"abi_version": 3, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
                "activation_sha256": c.sha(inputs["activation"]),
                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
@@ -6461,7 +6461,7 @@ def test_retire_static_result_takes_only_the_retirement_observation(kind):
     request = _adapter_case("retire-static")[0]
     raw = c.canonical({"fixture_only": "retirement"})
     observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
-    result = {"abi_version": 2, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
+    result = {"abi_version": 3, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
               "generation": request["owner"]["generation"], "checkpoint_sha256": request["checkpoint_sha256"],
               "observations": observations, "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
     args = {"request": request, "observations": observations, "call_receipts": [], "pending": [], "unknown": []}
