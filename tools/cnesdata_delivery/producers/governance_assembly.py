@@ -4,10 +4,28 @@ import sys
 from pathlib import Path
 
 from tools.cnesdata_delivery import contract as c, drift_handoff
-from tools.cnesdata_delivery.producers import hmac_key, release_guard
+from tools.cnesdata_delivery.producers import baseline_commitments, hmac_key, release_guard
+from tools.cnesdata_delivery.producers.chain import expiry_chain
 
 CLI_CEILING = 40960
 SECRET_CEILING = 47952
+SESSION_ROLES = ("plan", "deploy", "application")
+GOVERNANCE_KEYS = frozenset("""
+    account_id activation_enabled activation_read admission_reference application_configuration
+    application_coordination_policy application_delegations application_fragment
+    application_product_source_closure_sha256 application_product_source_manifest
+    application_product_source_manifest_artifact application_purpose application_source_closure_sha256
+    artifact_purposes artifact_references authenticated_application_caller authority authorization baseline
+    baseline_artifacts bootstrap_checkpoint caller_allowlist consumer contract_sha256 cost cost_handoff
+    context_kind credentials crypto dependencies drift_handoff drift_matrix ecr_repository evidence_bucket
+    evidence_kms_key_arn evidence_prefix ext2 gate_shas history host images lifecycle_authority
+    lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps lifecycle_terminal_job
+    phase_a_inputs phase_input_objects plan_run_id policy_evaluator_sha256 policy_sha256 predecessor_read
+    principal_sha256 product_inputs promotion_sha256 proof_producers provenance readbacks region release
+    report_hmac_key required_checks role roles runner runtime_contract_sha256 runtime_probes runtime_sha256
+    session_duration_seconds session_owner_references session_policy_pins signing signing_spki_pem_sha256
+    source_closure source_files source_sha state_bucket state_kms_key_arn storage workflows
+""".split())
 
 
 def render(document, ceiling=CLI_CEILING):
@@ -24,8 +42,38 @@ def _cost_stage(document):
         c.require(cost["scope"] == baseline["cost_context"]["stage"], "cost scope differs from cost context stage")
 
 
+def _closed_keys(document):
+    for key in document:
+        c.require(key in GOVERNANCE_KEYS, f"governance key={key}")
+
+
+def _pin_chain(role, pin, start):
+    c.require(type(pin) is dict and {"observed_at", "expires_at", "frozen_until"} <= set(pin),
+              f"session pin fields role={role}")
+    chain = expiry_chain(start)
+    ok = (pin["observed_at"] == start and c.instant(pin["expires_at"]) >= c.instant(chain["proof_expires_at"])
+          and c.instant(pin["frozen_until"]) >= c.instant(chain["frozen_until"]))
+    c.require(ok, f"expiry chain violated element=pin role={role}")
+
+
+def _expiry_chain(document):
+    pins = document.get("session_policy_pins") or {}
+    c.require(type(pins) is dict, "session pins shape")
+    for role in pins:
+        c.require(role in SESSION_ROLES, f"session pin role={role}")
+    for role, pin in pins.items():
+        start = pins["plan"]["observed_at"] if role == "deploy" and "plan" in pins else pin["observed_at"]
+        _pin_chain(role, pin, start)
+    cost = document.get("cost")
+    if cost and cost.get("cloudfront"):
+        ok = c.instant(cost["cloudfront"]["expires_at"]) >= c.instant(cost["expires_at"])
+        c.require(ok, "expiry chain violated element=cloudfront")
+
+
 def crosscheck(document, commitments):
     """Args: governance document, public commitments. Raises: ValueError on any hash or format mismatch."""
+    _closed_keys(document)
+    _expiry_chain(document)
     c.report_key(document)
     value = document["product_inputs"]["shared_outputs"]
     c.require(c.sha(c.canonical(value)) == c.digest(commitments["shared_outputs_sha256"]), "shared outputs hash")
@@ -48,6 +96,13 @@ def _render(args):
     sys.stdout.buffer.write(render(document))
 
 
+def _baseline_inputs(args):
+    private = c.loads(Path(args.private).read_bytes())
+    key = hmac_key.Custody().lookup()
+    c.require(key is not None, "report hmac key absent from custody")
+    sys.stdout.buffer.write(c.canonical(baseline_commitments.dispatch_inputs(private, key)))
+
+
 def _key(args):
     custody = hmac_key.Custody()
     key = hmac_key.rotate(custody, custody.lookup()) if args.action == "rotate" else hmac_key.new_key()
@@ -67,6 +122,9 @@ def parser():
     for name in ("--document", "--commitments"):
         document.add_argument(name, required=True)
     document.set_defaults(run=_render)
+    inputs = commands.add_parser("baseline-inputs")
+    inputs.add_argument("--private", required=True)
+    inputs.set_defaults(run=_baseline_inputs)
     key = commands.add_parser("key")
     key.add_argument("action", choices=("generate", "rotate"))
     key.add_argument("--repo", required=True)

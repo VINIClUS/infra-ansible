@@ -9,7 +9,7 @@ import yaml
 from fixtures.cnesdata_phase_a_replay import ACCOUNT
 from fixtures.cnesdata_producers import KEY_HEX
 from tools.cnesdata_delivery import contract as c
-from tools.cnesdata_delivery.producers import baseline_commitments
+from tools.cnesdata_delivery.producers import baseline_commitments, governance_assembly, hmac_key
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/cnesdata-baseline-commitments.yml"
@@ -75,6 +75,23 @@ def test_entradas_do_dispatch_trazem_so_hashes_e_o_hmac_do_bucket_com_a_chave_do
     text = json.dumps(dispatch)
     assert STATE_BUCKET not in text and ACCOUNT not in text and KEY_HEX not in text
     baseline_commitments.build(dispatch)
+
+
+def test_cli_emite_o_dispatch_sem_a_chave_em_argv_stdout_ou_stderr(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "private.json"
+    path.write_text(json.dumps(private()))
+    monkeypatch.setattr(hmac_key.Custody, "lookup", lambda self: KEY_HEX)
+    assert governance_assembly.main(["baseline-inputs", "--private", str(path)]) == 0
+    seen = capsys.readouterr()
+    assert set(json.loads(seen.out)) == set(INPUTS) and KEY_HEX not in seen.out + seen.err
+
+
+def test_cli_recusa_sem_a_chave_do_ciclo_no_secret_service(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "private.json"
+    path.write_text(json.dumps(private()))
+    monkeypatch.setattr(hmac_key.Custody, "lookup", lambda self: None)
+    assert governance_assembly.main(["baseline-inputs", "--private", str(path)]) == 1
+    assert "refused reason=" in capsys.readouterr().err
 
 
 @pytest.fixture(scope="module")

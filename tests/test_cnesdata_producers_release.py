@@ -1,6 +1,7 @@
 """Superficie pinada, closure do pin, guarda X*..K, tetos de governanca e chave HMAC (P18)."""
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -263,3 +264,90 @@ def test_guarda_aceita_pin_citado_igual_a_x_e_ignora_texto_de_script(repo):
             f"      - run: |\n          uses: {OBSERVER}@{'c' * 40}\n")
     k = commit(repo, {CALLER: text})
     release_guard.check(repo, x_star, k)
+
+
+def document_with(**changes):
+    value = {"product_inputs": {"shared_outputs": {"a": 1}}, "report_hmac_key": "5a" * 32}
+    return value | changes
+
+
+COMMITMENTS = {"shared_outputs_sha256": c.sha(c.canonical({"a": 1}))}
+T0 = "2026-11-20T12:00:00Z"
+
+
+def pin_at(**changes):
+    return {"observed_at": T0, "expires_at": "2026-11-20T15:00:00Z", "frozen_until": "2026-11-20T16:00:00Z"} | changes
+
+
+def test_cruzamento_recusa_chave_fora_do_conjunto_fechado_da_governanca():
+    governance_assembly.crosscheck(document_with(), COMMITMENTS)
+    with pytest.raises(ValueError, match="governance key=surprise"):
+        governance_assembly.crosscheck(document_with(surprise=1), COMMITMENTS)
+
+
+def test_conjunto_fechado_cobre_toda_chave_de_uma_governanca_valida_do_gate(monkeypatch, tmp_path):
+    from fixtures.cnesdata_phase_a_replay import ReplayChain
+    chain = ReplayChain(monkeypatch, tmp_path)
+    assert set(chain.gov) <= governance_assembly.GOVERNANCE_KEYS
+
+
+@pytest.mark.parametrize("pins", [
+    {"plan": pin_at(), "deploy": pin_at(expires_at="2026-11-20T14:59:59Z")},
+    {"plan": pin_at(frozen_until="2026-11-20T15:59:59Z"), "deploy": pin_at()},
+    {"plan": pin_at(), "deploy": pin_at(observed_at="2026-11-20T12:00:01Z")},
+])
+def test_cruzamento_recusa_pins_fora_da_cadeia_de_expiracao(pins):
+    with pytest.raises(ValueError, match="expiry chain"):
+        governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
+
+
+def test_cruzamento_aceita_pins_na_cadeia_e_recusa_cloudfront_que_vence_antes_do_custo():
+    pins = {"plan": pin_at(), "deploy": pin_at()}
+    governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
+    cost = {"scope": "active", "expires_at": "2026-11-20T17:00:00Z",
+            "cloudfront": {"expires_at": "2026-11-20T16:00:00Z"}}
+    with pytest.raises(ValueError, match="expiry chain"):
+        governance_assembly.crosscheck(document_with(session_policy_pins=pins, cost=cost), COMMITMENTS)
+
+
+APPLICATION_PIN = {"observed_at": "2026-11-21T09:00:00Z", "expires_at": "2026-11-21T12:00:00Z",
+                   "frozen_until": "2026-11-21T13:00:00Z"}
+
+
+def test_cruzamento_aceita_documento_3_com_context_kind_e_pin_do_application_na_propria_cadeia():
+    pins_ = {"plan": pin_at(), "deploy": pin_at(), "application": APPLICATION_PIN}
+    governance_assembly.crosscheck(document_with(context_kind="promotion", session_policy_pins=pins_), COMMITMENTS)
+    only = {"application": APPLICATION_PIN}
+    governance_assembly.crosscheck(document_with(context_kind="promotion", session_policy_pins=only), COMMITMENTS)
+
+
+def test_cruzamento_recusa_pin_de_role_fora_de_plan_deploy_e_application():
+    with pytest.raises(ValueError, match="session pin role=other"):
+        governance_assembly.crosscheck(document_with(session_policy_pins={"other": pin_at()}), COMMITMENTS)
+
+
+@pytest.mark.parametrize("changes", [{"expires_at": "2026-11-21T11:59:59Z"}, {"frozen_until": "2026-11-21T12:59:59Z"}])
+def test_cruzamento_recusa_pin_do_application_fora_da_propria_cadeia(changes):
+    pins_ = {"application": APPLICATION_PIN | changes}
+    with pytest.raises(ValueError, match="expiry chain violated element=pin role=application"):
+        governance_assembly.crosscheck(document_with(session_policy_pins=pins_), COMMITMENTS)
+
+
+def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem():
+    pattern = re.compile(r'\bgovernance(?:\[\s*"(\w+)"\s*\]|\.get\(\s*"(\w+)")')
+    read = set()
+    for path in (ROOT / "tools/cnesdata_delivery").glob("*.py"):
+        if path.name not in {"host_gate.py", "signing_gate.py"}:
+            read |= {first or second for first, second in pattern.findall(path.read_text())}
+    assert "account_id" in read and read <= governance_assembly.GOVERNANCE_KEYS, sorted(
+        read - governance_assembly.GOVERNANCE_KEYS)
+
+
+def test_render_do_cli_valida_antes_de_emitir(tmp_path, capsys):
+    document = tmp_path / "governance.json"
+    commitments = tmp_path / "commitments.json"
+    document.write_bytes(c.canonical(document_with(surprise=1)))
+    commitments.write_bytes(c.canonical(COMMITMENTS))
+    assert governance_assembly.main(["render", "--document", str(document), "--commitments", str(commitments)]) == 1
+    seen = capsys.readouterr()
+    assert seen.out == "" and "refused reason=governance key=surprise" in seen.err
