@@ -478,3 +478,67 @@ def test_guest_nic_forget_drops_only_the_named_stanza(tmp_path):
     assert again.returncode == 0 and again.stdout == ""
     refused = subprocess.run(["sh", script, "eth0"], env=env, capture_output=True, text=True)
     assert refused.returncode == 2
+
+
+
+def test_dns_host_records_render_exact_names_and_keep_empty_default(tmp_path):
+    baseline = render("network_router", "dnsmasq.conf.j2", **ROUTER)
+    assert "host-record=" not in baseline
+    assert render("network_router", "dnsmasq.conf.j2", **ROUTER,
+                  network_router_dns_host_records=[]) == baseline
+    records = [{"name": "app.example.internal", "address": "192.0.2.139"},
+               {"name": "stg-app.example.internal", "address": "192.0.2.139"}]
+    current = render("network_router", "dnsmasq.conf.j2", **ROUTER,
+                     network_router_dns_host_records=records)
+    lines = ["host-record=app.example.internal,192.0.2.139\n",
+             "host-record=stg-app.example.internal,192.0.2.139\n"]
+    assert current == baseline.replace("domain=example.internal\n", "domain=example.internal\n" + "".join(lines))
+    if shutil.which("dnsmasq"):
+        candidate = tmp_path / "dnsmasq.conf"
+        candidate.write_text(current)
+        result = subprocess.run(["dnsmasq", "--test", "--conf-file=" + str(candidate)],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+
+
+def test_dns_host_record_contract_rejects_malformed_input_before_render(tmp_path):
+    """Exercise the role's real assertion tasks with only a local Ansible controller."""
+    tasks = yaml.safe_load(read("roles/network_router/tasks/main.yml"))
+    validation = [task for task in tasks if task["name"] in
+                  ["Validate DNS host record list", "Validate every DNS host record"]]
+    assert len(validation) == 2, "DNS records must be validated before rendering"
+    assert tasks.index(validation[-1]) < next(i for i, task in enumerate(tasks)
+                                              if task["name"] == "Disable IPv6 and enable IPv4 forwarding")
+    valid = {"name": "app.example.internal", "address": "192.0.2.139"}
+    cases = [([], True), ([valid], True),
+             ([{"name": "a.b", "address": "0.0.0.0"}], True),
+             ([{"name": "xn--caf-dma.example", "address": "255.255.255.255"}], True),
+             ([{"name": "a" * 63 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 61,
+                "address": "10.0.0.1"}], True)]
+    cases += [(bad, False) for bad in [None, "", {}, valid, True, [None], ["app.example.internal"],
+                                      [{}], [{"name": "a.b"}], [{"address": "10.0.0.1"}],
+                                      [dict(valid, unexpected="value")],
+                                      [dict(valid, name=123)], [dict(valid, address=123)]]]
+    cases += [([dict(valid, name=name)], False) for name in
+              ["localhost", "App.example", ".example", "a..example", "a.example.", "-a.example", "a-.example",
+               "a_b.example", "*.example", "a.example\n", "a.example\r", "a.example\nhost-record=x.y,10.0.0.1",
+               "a" * 64 + ".example", "a" * 63 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 62]]
+    cases += [([dict(valid, address=address)], False) for address in
+              ["256.1.2.3", "1.999.2.3", "1.2.3.256", "01.2.3.4", "1.2.3", "1.2.3.4.5", "-1.2.3.4",
+               "1.2.3.4/32", "::1", "1.2.3.4\n", "1.2.3.4\r", "1.2.3.4,5.6.7.8", "1.2.3.4\nserver=evil"]]
+    plays = []
+    for index, (value, accepted) in enumerate(cases):
+        plays.append({"name": f"DNS record case {index}", "hosts": "localhost", "connection": "local",
+                      "gather_facts": False, "vars": {"network_router_dns_host_records": value},
+                      "tasks": [{"ansible.builtin.set_fact": {"record_rejected": False}},
+                                {"block": validation, "rescue": [
+                                    {"ansible.builtin.set_fact": {"record_rejected": True}}]},
+                                {"ansible.builtin.assert": {"that": ["record_rejected == " + str(not accepted)]}}]})
+    playbook = tmp_path / "dns-record-contract.yml"
+    playbook.write_text(yaml.safe_dump(plays, sort_keys=False))
+    binary = shutil.which("ansible-playbook")
+    if not binary:
+        pytest.skip("ansible-playbook required for real role assertion tests")
+    result = subprocess.run([binary, "-i", "localhost,", str(playbook)], capture_output=True, text=True,
+                            env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path / "ansible-tmp")}, timeout=180)
+    assert result.returncode == 0, result.stdout + result.stderr

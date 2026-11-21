@@ -34,6 +34,28 @@
       inventory, an exact --limit, --tags network_router, a LAN CIDR, at least
       one zone and one DNS forwarder.
 
+- name: Validate DNS host record list
+  ansible.builtin.assert:
+    that:
+      - network_router_dns_host_records | type_debug == 'list'
+    fail_msg: "network_router_dns_host_records must be a list."
+
+- name: Validate every DNS host record
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.keys() | list | sort == ['address', 'name']
+      - item.name is string and item.address is string
+      - item.name | length <= 253
+      - item.name is match('^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z')
+      - item.address is match('^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}\Z')
+      - item.address.split('.') | map('int') | max <= 255
+    fail_msg: >-
+      Each DNS host record needs exactly name (lowercase FQDN, labels up to 63
+      characters, total up to 253) and address (one canonical IPv4 address).
+    quiet: true
+  loop: "{{ network_router_dns_host_records }}"
+
 - name: Validate every zone
   ansible.builtin.assert:
     that:
