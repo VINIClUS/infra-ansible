@@ -346,6 +346,13 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({}, {}, True),
     ({"after_apply": True}, {}, True),
     ({"plan_operational": True}, {}, True),
+    ({"approval_absent": True}, {}, False),
+    ({"approval_from_plan": True}, {}, False),
+    ({"approval_parameters": True}, {}, False),
+    ({"approval_other": "plan_sha256"}, {}, False),
+    ({"approval_other": "inputs_sha256"}, {}, False),
+    ({"approval_other": "checkpoint_sha256"}, {}, False),
+    ({"approval_other": "owner"}, {}, False),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
     """Unit regression for execute's step/delta checks, not operational admission.
@@ -372,7 +379,12 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     sources["infra/opentofu/modules/runtime-iam/static-promotion.tf"] = sources.pop(
         "infra/opentofu/modules/runtime-iam/mode-canary.tf").replace(b"mode_seed", b"static_normal")
     step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance",
-            "input_jobs": {"prepared": {"step": "prepared"}}, **step_change}
+            "input_jobs": {"prepared": {"step": "prepared"}, "audit": {"step": "audited"}}, **step_change}
+    approval_flag = next((key for key in ("approval_absent", "approval_from_plan", "approval_parameters",
+                                          "approval_other") if key in step), None)
+    approval_flag_value = step.pop(approval_flag, None) if approval_flag else None
+    if approval_flag == "approval_absent":
+        step["input_jobs"].pop("audit")
     store, _, _ = held()
     purpose = "mode-readiness-drill" if step["mode"] == "mode-canary" else "promotion"
     store.value.update(application_purpose=purpose, context_kind=lc.APPLICATION_CONTEXTS[purpose], caller_binding_sha256="e" * 64)
@@ -395,7 +407,15 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                 "checkpoint_sha256": c.sha(payload["checkpoint.json"]), "readbacks": {"before": [], "after": []}, "drift_matrix": {},
                 "delta": {"purpose": "application-prepare", "direction": "advance", "mode": "operational", "before": {},
                           "original": {}, "created": {}, "expected_changes_sha256": c.sha(c.canonical(plan["resource_changes"])), **delta_change}}
-    payload["approval.json"] = c.canonical(approval)
+    if approval_flag == "approval_parameters":
+        approval["readbacks"]["before"] = [{"service": "iam", "operation": "get_role", "address": "x",
+                                            "parameters": {"RoleName": "x"}, "absent": False}]
+    if approval_flag == "approval_other":
+        approval[approval_flag_value] = (dict(owner, generation=owner["generation"] + 1)
+                                         if approval_flag_value == "owner" else "f" * 64)
+    approval_raw = c.canonical(approval)
+    if approval_flag != "approval_absent":
+        payload["approval.json"] = approval_raw
     store.value["lifecycle"] = {"checkpoint_sha256": c.sha(payload["checkpoint.json"]), **window,
                                 "predecessor_sha256": c.sha(c.canonical(carrier["origin"]))}
     monkeypatch.chdir(tmp_path)
@@ -406,6 +426,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     tofu = tmp_path / "fixture-tofu"
     tofu.write_bytes(b"never-executed")
     governance = {**(_activation_governance(envelope) if wrapped else {}),
+                  "lifecycle_steps": {"prepared": {"role": "plan", "job_name": "plan"},
+                                      "audited": {"role": "audit", "job_name": "audit"}},
                   "context_kind": owner["context_kind"], "account_id": "111122223333", "source_closure": {}, "cost": {},
                   "baseline": {"toolchain": {"opentofu": {"binary_sha256": c.sha(tofu.read_bytes())},
                                              "lock_sha256": c.sha((root / ".terraform.lock.hcl").read_bytes())},
@@ -413,7 +435,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                                "backend": {"configuration": {"type": "s3", "workspace": "default"}}}}
     request = {"source_sha": owner["source_sha"], "application_purpose": purpose, "caller_binding_sha256": owner["caller_binding_sha256"]}
     monkeypatch.setattr(lr, "admission", lambda role: (governance, request, step, None,
-        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]}, {"prepared": {}}))
+        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]},
+        {name: {"index.json": name.encode()} for name in step["input_jobs"]}))
     monkeypatch.setattr(lr, "AWS", lambda _: SimpleNamespace(get_state=lambda: (raw_state, state_object)))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda _: store)
     monkeypatch.setattr(session_owner, "authenticate_lifecycle", lambda *args: SimpleNamespace(
@@ -426,8 +449,19 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         {"phase_a_originals": copy.deepcopy(carrier)}) or returned["transport"][-1])
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
-    monkeypatch.setattr(lr, "private_payload", lambda *args, **kwargs: returned["index"].append({"step": "prepared",
-        "owner_sha256": owner["owner_sha256"], "generation": owner["generation"]}) or (returned["index"][-1], payload))
+    def private_payload(*args, **kwargs):
+        audit = args[4]["index.json"] == b"audit"
+        approval_here = audit != (approval_flag == "approval_from_plan")
+        files = {name: raw for name, raw in payload.items() if name != "approval.json"}
+        if audit:
+            files = {}
+        if approval_here and "approval.json" in payload:
+            files["approval.json"] = payload["approval.json"]
+        index = {"step": "audited" if audit else "prepared", "owner_sha256": owner["owner_sha256"],
+                 "generation": owner["generation"]}
+        returned["index"].append(index)
+        return index, files
+    monkeypatch.setattr(lr, "private_payload", private_payload)
     monkeypatch.setattr(lr.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=owner["source_sha"]))
     monkeypatch.setattr(lr, "authenticate_infrastructure_closure", lambda *args: None)
     monkeypatch.setattr(iam_boundary, "authenticate_sources", lambda *args: sources)
@@ -488,7 +522,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
         assert published[0][5] == {"fence-prepared.json": b"{}\n"}
         # Item 6: exactly the objects private_payload, authenticate_predecessor and keeper_transport returned.
-        assert len(returned["predecessor"]) == len(returned["transport"]) == len(returned["index"]) == 1
+        assert len(returned["predecessor"]) == len(returned["transport"]) == 1 and len(returned["index"]) == 2
         assert kwargs["plan_index"] is returned["index"][0] and kwargs["predecessor"] is returned["predecessor"][0]
         assert kwargs["carrier"] is returned["transport"][0]["phase_a_originals"]
     elif allowed:
@@ -499,6 +533,14 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         with pytest.raises(ValueError, match="closed object fields"):
             lr.execute("deploy")
         assert commands == []
+    elif approval_flag:
+        expected_error = {"approval_absent": "independent audit approval absent",
+                          "approval_from_plan": "approval producer is not the independent audit",
+                          "approval_parameters": "closed object fields",
+                          "approval_other": "independent exact plan audit"}[approval_flag]
+        with pytest.raises(ValueError, match=expected_error):
+            lr.execute("deploy")
+        assert "apply" not in commands
     else:
         expected_error = ("mode-canary executable oracle unavailable" if step["mode"] == approval["delta"]["mode"]
                           else "independent protected step discriminants")

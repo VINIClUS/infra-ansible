@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import PurePosixPath
@@ -211,9 +212,15 @@ def _named(items):
     return sorted(items, key=lambda item: item["name"])
 
 
+CONTAINER_DEFAULTS = {"cpu": 0}
+
+
 def _containers(value):
     containers = _named(_compact(_json(value)))
     for container in containers:
+        for key, default in CONTAINER_DEFAULTS.items():
+            if key in container and type(container[key]) is type(default) and container[key] == default:
+                del container[key]
         for key in ("environment", "secrets"):
             if key in container:
                 container[key] = _named(container[key])
@@ -340,15 +347,22 @@ def _encoded(encoding, value, observed):
     return value, observed
 
 
-def _projection(row, observed, value, encodings):
+def _omitted(value, omitted):
+    require(omitted is not None and canonical(value) in {canonical(item) for item in omitted}, "drift response field")
+
+
+def _projection(row, observed, value, encodings, omitted=None):
     require(type(row["path"]) is list and len(row["path"]) <= 32, "drift response path")
-    for component in row["path"]:
+    require(row["encoding"] in encodings, "unknown drift projection encoding")
+    for depth, component in enumerate(row["path"]):
         if type(observed) is dict:
-            require(type(component) is str and component in observed, "drift response field")
+            require(type(component) is str, "drift response field")
+            if component not in observed:
+                require(depth > 0, "drift response field")
+                return _omitted(value, omitted)
         else:
             require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
         observed = observed[component]
-    require(row["encoding"] in encodings, "unknown drift projection encoding")
     value, observed = _encoded(row["encoding"], value, observed)
     require(canonical(value) == canonical(observed), "saved-plan live functional drift")
 
@@ -389,7 +403,8 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
         if envelope is not None:
             envelope.bind(specs[index], row)
         _projection(row, reports[index]["observed"], expected[row["address"]][row["attribute"]],
-                    STRICT_ENCODINGS if envelope is None else ENCODINGS)
+                    STRICT_ENCODINGS if envelope is None else ENCODINGS,
+                    None if envelope is None else envelope.omitted(row))
     require(seen == required, "incomplete governed drift coverage; Production blocked")
     if envelope is not None:
         envelope.absent(plan, matrix["absent"], (specs, reports, used), stage)
@@ -624,17 +639,39 @@ def _secrets(value):
             _secrets(child)
 
 
-def public_safe(value):
+ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|[0-9]{4}[-_ ][0-9]{4}[-_ ][0-9]{4})(?![0-9A-Za-z])")
+PRIVATE_KEYS = {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}
+PRIVATE_TEXT = re.compile(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b")
+
+
+def _bucket_pattern(governance):
+    names = [governance.get(key) for key in ("state_bucket", "evidence_bucket")] if type(governance) is dict else []
+    names = [name for name in names if type(name) is str and name]
+    return re.compile("|".join(r"(?<![a-z0-9.-])" + re.escape(name) + r"(?![a-z0-9-])" for name in names), re.I) if names else None
+
+
+def public_safe(value, governance=None):
     """Defense in depth on the already authenticated sanitized producer reports."""
+    _public_safe(value, _bucket_pattern(governance))
+
+
+def _public_text(text, buckets):
+    text = unicodedata.normalize("NFKC", text)
+    require(len(text) <= 4096 and PRIVATE_TEXT.search(text) is None and ACCOUNT_LIKE.search(text) is None
+            and (buckets is None or buckets.search(text) is None), "private material in public transport")
+
+
+def _public_safe(value, buckets):
     if type(value) is dict:
         for key, child in value.items():
-            require(key.lower() not in {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}, "private field in public transport")
-            public_safe(child)
+            require(key.lower() not in PRIVATE_KEYS, "private field in public transport")
+            _public_text(key, buckets)
+            _public_safe(child, buckets)
     elif type(value) is list:
         for child in value:
-            public_safe(child)
+            _public_safe(child, buckets)
     elif type(value) is str:
-        require(len(value) <= 4096 and not re.search(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b", value), "private material in public transport")
+        _public_text(value, buckets)
 
 
 def report_key(governance):

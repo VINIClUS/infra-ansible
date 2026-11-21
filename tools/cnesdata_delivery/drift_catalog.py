@@ -152,7 +152,8 @@ def bind_rows(calls, rows):
         c.require(type(index) is int and 0 <= index < len(calls), "drift readback reference")
         c.require(calls[index]["address"] == row.get("address"), "readback address binding")
         used.add(index)
-    c.require(used == set(range(len(calls))), "orphan readback")
+    inventories = {index for index, call in enumerate(calls) if "members" in call}
+    c.require(used | inventories == set(range(len(calls))), "orphan readback")
 
 
 def absence(plan, address, observed, table=IDENTITY):
@@ -318,6 +319,12 @@ NOT_OBSERVABLE = {
         "custom_headers_config": "other-encoding", "remove_headers_config": "other-encoding",
         "security_headers_config": "other-encoding", "server_timing_headers_config": "other-encoding"},
 }
+OMITTED = {
+    "aws_iam_role": {"description": ("", None), "permissions_boundary": ("", None), "tags_all": ({}, None)},
+    "aws_dynamodb_table": {
+        "billing_mode": ("PROVISIONED",), "table_class": ("STANDARD",), "stream_enabled": (False, None),
+        "stream_view_type": ("", None), "stream_arn": ("", None), "stream_label": ("", None)},
+}
 NO_CHANGE = (["no-op"], ["read"])
 
 
@@ -353,6 +360,10 @@ class Envelope:
     def observable(row):
         c.require(row["attribute"] not in NOT_OBSERVABLE.get(resource_type(row["address"]), {}),
                   "not observable drift row")
+
+    @staticmethod
+    def omitted(row):
+        return OMITTED.get(resource_type(row["address"]), {}).get(row["attribute"])
 
     @staticmethod
     def bind(spec, row):
@@ -404,7 +415,7 @@ ABSENT_CODES = {
     ("events", "describe_rule"): frozenset({"ResourceNotFoundException"}),
 }
 DELETING_FIELD = {("stepfunctions", "describe_state_machine"): "status", ("scheduler", "get_schedule_group"): "State"}
-LIFECYCLE_SPEC_FIELDS = {"service", "operation", "address", "absent", "members", "parameters"}
+LIFECYCLE_SPEC_FIELDS = {"service", "operation", "address", "absent", "members"}
 
 
 def absent_by_error(service, operation, code):
@@ -456,14 +467,15 @@ def _lifecycle_call(spec, changes, expected):
     if grouped:
         c.require(tipo == "aws_scheduler_schedule_group", "readback spec fields")
         derived = {"GroupName": derived["Name"]}
-    c.require(spec.get("parameters", derived) == derived, "readback parameters")
     return spec | {"parameters": derived}
 
 
 def lifecycle_calls(plan, specs, stage, state=None):
     """Args: plan, specs, stage, state. Returns: specs plus identity-derived parameters. Raises: ValueError."""
     c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"}, "readback specs")
-    changes, expected = _changes(plan), c.stage_expectation(plan, stage, state)
+    changes = _changes(plan)
+    live = any(type(spec) is not dict or spec.get("absent") is not True for spec in specs)
+    expected = c.stage_expectation(plan, stage, state) if live else {}
     return [_lifecycle_call(spec, changes, expected) for spec in specs]
 
 
@@ -475,7 +487,10 @@ def catalog_document():
             "envelopes": {name: {"covered": sorted(envelope.covered), "supported": sorted(envelope.supported)}
                           for name, envelope in ENVELOPES.items()},
             "identity": {tipo: [list(pair) for pair in pairs] for tipo, pairs in LIFECYCLE_ONLY.items()},
-            "not_observable": NOT_OBSERVABLE}
+            "not_observable": NOT_OBSERVABLE,
+            "omitted": {tipo: {name: list(values) for name, values in entries.items()}
+                        for tipo, entries in OMITTED.items()},
+            "container_defaults": c.CONTAINER_DEFAULTS}
 
 
 CATALOG_SHA256 = c.sha(c.canonical(catalog_document()))

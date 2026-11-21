@@ -325,7 +325,7 @@ def test_lifecycle_calls_derivam_parametros_do_atributo_de_identidade():
 
 
 @pytest.mark.parametrize("mutation", ["endereco-ausente", "parametro-divergente", "absent-sem-delete",
-                                      "campo-extra"])
+                                      "campo-extra", "parametro-igual"])
 def test_lifecycle_calls_recusam_spec_fora_da_forma_ou_do_plano(mutation):
     address = "module.schedulers.aws_scheduler_schedule.mode[\"recovery\"]"
     attributes = {"name": "synthetic-recovery", "group_name": "synthetic-group"}
@@ -339,6 +339,8 @@ def test_lifecycle_calls_recusam_spec_fora_da_forma_ou_do_plano(mutation):
         call |= {"absent": True}
     if mutation == "campo-extra":
         call |= {"expected_sha256": "0" * 64}
+    if mutation == "parametro-igual":
+        call |= {"parameters": {"Name": "synthetic-recovery", "GroupName": "synthetic-group"}}
     with pytest.raises(ValueError):
         catalog().lifecycle_calls(plan_, [call], "before")
 

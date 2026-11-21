@@ -17,10 +17,18 @@ name: Validate and deploy
 permissions:
   contents: read
 
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request'
+    && format('pipeline-pr-{0}', github.event.pull_request.number)
+    || format('pipeline-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate:
     name: Validate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out the validated revision
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -38,10 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check \
-            pytest \
-            ansible-core \
-            ansible-lint \
-            yamllint
+            --require-hashes --only-binary=:all: -r tools/ci/requirements-ci.txt
           ansible-galaxy collection install --requirements-file requirements.yml
 
       - name: Permit isolated native user namespaces on hosted validation
@@ -56,11 +61,65 @@ jobs:
           --github-env "${GITHUB_ENV}"
           --github-path "${GITHUB_PATH}"
 
+      - name: Check the CnesData delivery formal models
+        shell: bash
+        timeout-minutes: 30
+        env:
+          TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          TLA_TOOLS_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+          ALLOY_URL: >-
+            https://github.com/AlloyTools/org.alloytools.alloy/releases/download/v6.2.0/org.alloytools.alloy.dist.jar
+          ALLOY_SHA256: 6b8c1cb5bc93bedfc7c61435c4e1ab6e688a242dc702a394628d9a9801edb78d
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/formal-tools"
+          mkdir -p "${tools}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --output "${tools}/tla2tools.jar" "${TLA_TOOLS_URL}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --output "${tools}/alloy.jar" "${ALLOY_URL}"
+          printf '%s  %s\n' \
+            "${TLA_TOOLS_SHA256}" "${tools}/tla2tools.jar" \
+            "${ALLOY_SHA256}" "${tools}/alloy.jar" | sha256sum --check --strict
+          java -version
+          python3 formal/cnesdata_delivery/check.py \
+            --tla-jar "${tools}/tla2tools.jar" --alloy-jar "${tools}/alloy.jar"
+          printf 'FORMAL_TLA_JAR=%s\n' "${tools}/tla2tools.jar" >> "${GITHUB_ENV}"
+          printf 'FORMAL_ALLOY_JAR=%s\n' "${tools}/alloy.jar" >> "${GITHUB_ENV}"
+
       - name: Run Python tests (public context; external targets reported)
         shell: bash
         env:
           CNESDATA_NATIVE_CONTEXT: public-ci
-        run: python -m pytest -q -ra
+        run: >-
+          python -m pytest -q -ra --durations=0 -n 4 --dist loadgroup
+          --junitxml "${RUNNER_TEMP}/ci-report/junit.xml"
+          -p tools.ci.pytest_ci --ci-report-dir "${RUNNER_TEMP}/ci-report"
+          --ci-quarantine exclude
+
+      - name: Run quarantined tests (fails if one now passes)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          CNESDATA_NATIVE_CONTEXT: public-ci
+        run: |
+          status=0
+          python -m pytest -q -ra -p tools.ci.pytest_ci --ci-quarantine only \
+            --ci-report-dir "${RUNNER_TEMP}/ci-quarantine" || status=$?
+          if [ "${status}" -eq 5 ]; then status=0; fi
+          exit "${status}"
+
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-report-validate
+          path: |
+            ${{ runner.temp }}/ci-report
+            ${{ runner.temp }}/ci-quarantine
+          if-no-files-found: warn
+          overwrite: true
 
       - name: Validate repository scaffolds
         shell: bash
