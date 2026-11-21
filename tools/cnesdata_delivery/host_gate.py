@@ -86,6 +86,17 @@ EFFECTS = {
     "external-product-dispatch",
 }
 ACTIONS = {"validate", "deploy", "rollback-previous"}
+STAGE_WINDOW_BOUNDS = {
+    "phase-b": (360, 720),
+    "api": (180, 360),
+    "static": (180, 360),
+    "unit": (120, 360),
+    "phase-c-recovery": (240, 660),
+    "phase-c-audit": (240, 660),
+    "final": (60, 180),
+}
+STAGE_SUM_CEILING = 1830
+FINAL_RESERVE = 420
 
 
 def require(condition, reason):
@@ -106,6 +117,36 @@ def closed(value, fields):
 def integer(value, minimum=0, maximum=2**53 - 1):
     require(type(value) is int and minimum <= value <= maximum, "integer range")
     return value
+
+
+def governed_windows(value):
+    closed(value, "stages fixed_deadline_seconds")
+    stages, fixed = value["stages"], value["fixed_deadline_seconds"]
+    require(
+        type(stages) is dict and set(stages) == set(STAGE_WINDOW_BOUNDS),
+        "stage_windows keys",
+    )
+    for name, (low, high) in STAGE_WINDOW_BOUNDS.items():
+        seconds = stages[name]
+        require(
+            type(seconds) is int and low <= seconds <= high,
+            f"stage window stage={name} value={seconds} min={low} max={high}",
+        )
+    total = sum(stages.values())
+    require(
+        total <= STAGE_SUM_CEILING,
+        f"stage windows sum={total} ceiling={STAGE_SUM_CEILING}",
+    )
+    require(
+        type(fixed) is int and fixed == total + FINAL_RESERVE,
+        f"fixed_deadline_seconds value={fixed} expected={total + FINAL_RESERVE}",
+    )
+    return value
+
+
+def later_seconds(windows, stage):
+    order = list(STAGE_WINDOW_BOUNDS)
+    return sum(windows["stages"][name] for name in order[order.index(stage) + 1 :])
 
 
 def digest(value, length=64):
@@ -457,12 +498,28 @@ class Window:
     """Fixed original-input fence budget AND independent last-observed lease guard."""
 
     def __init__(
-        self, clock, *, close_confirmed_at=None, input_deadlines, host_started_at=None
+        self,
+        clock,
+        *,
+        close_confirmed_at=None,
+        input_deadlines,
+        host_started_at=None,
+        fixed_seconds=None,
     ):
         require(bool(input_deadlines), "original input deadlines")
         require(
             (close_confirmed_at is None) != (host_started_at is None),
             "one actual clock anchor",
+        )
+        minimum = sum(low for low, _ in STAGE_WINDOW_BOUNDS.values()) + FINAL_RESERVE
+        require(
+            (fixed_seconds is None) == (close_confirmed_at is None)
+            and (
+                fixed_seconds is None
+                or type(fixed_seconds) is int
+                and minimum <= fixed_seconds <= STAGE_SUM_CEILING + FINAL_RESERVE
+            ),
+            f"promotion fixed_deadline_seconds value={fixed_seconds}",
         )
         self.clock = clock
         self.start_wall, self.start_mono = clock.wall(), clock.mono()
@@ -472,7 +529,10 @@ class Window:
         anchor = close_confirmed_at if self.promotion_window else host_started_at
         if anchor is None:
             raise ValueError("missing observed clock anchor")
-        self.fixed_deadline = min(anchor + 1800, *input_deadlines)
+        self.fixed_deadline = min(
+            anchor + (1800 if fixed_seconds is None else fixed_seconds),
+            *input_deadlines,
+        )
         self.stage_deadline = self.fixed_deadline
         self.failure = None
         self.decision = None
@@ -510,7 +570,9 @@ class Window:
         require(self.decision is None, "irreversible recovery decision")
         require(budget > 0 and later >= 0, "stage budget")
         now = self.now()
-        require(self.fixed_deadline - now >= budget + later + 420, "fixed budget")
+        require(
+            self.fixed_deadline - now >= budget + later + FINAL_RESERVE, "fixed budget"
+        )
         self.stage_deadline = min(self.fixed_deadline, now + budget)
 
     def guard(self, *, lease_expires_at, request=20, termination=15, tick=1):
@@ -535,7 +597,7 @@ class Window:
                     self.fixed_deadline, instant(self.decision["recovery_deadline"])
                 )
             )
-            reserve = 420 if self.decision is None else 0
+            reserve = FINAL_RESERVE if self.decision is None else 0
             require(
                 ceiling - now
                 >= max(0, self.stage_deadline - now) + self.later_seconds + reserve,
@@ -1363,10 +1425,7 @@ class Operation:
             readback(self.record)
             observed = self.lease.clock.wall()
             window.guard(lease_expires_at=instant(self.snapshot["lease"]["expires_at"]))
-            require(
-                observed <= instant(self.record["close_confirmed_at"]) + 1800,
-                "reopen outside fence window",
-            )
+            require(observed <= window.fixed_deadline, "reopen outside fence window")
             r = copy.deepcopy(self.record)
             r["fence_phase"] = "OPEN_VERIFIED"
             r["reopen_verified_at"] = utc(observed)
@@ -2522,7 +2581,7 @@ def accept_response(raw, *, binding, channel_nonce, now, fixed_deadline):
             <= instant(e["open_requested_at"])
             <= instant(e["open_responded_at"])
             <= instant(e["reopen_verified_at"])
-            <= instant(e["close_confirmed_at"]) + 1800,
+            <= fixed_deadline,
             "actual reopen window",
         )
     return value
@@ -4528,6 +4587,7 @@ class ClosedReady:
         result = Window(
             clock,
             close_confirmed_at=instant(self.close["close_confirmed_at"]),
+            fixed_seconds=self.close["windows"]["fixed_deadline_seconds"],
             input_deadlines=[
                 instant(self.close["fixed_deadline"]),
                 *(instant(e["expires_at"]) for e in self.binding["expires"]),
@@ -4618,14 +4678,15 @@ def validate_closed_ready(files: dict, binding: dict, now):
         require(
             canonical(obj) == files[name + ".json"]
             and type(obj["version"]) is int
-            and obj["version"] == 1
+            and obj["version"] == (2 if name == "close-drain" else 1)
             and obj["kind"] == name,
             "canonical original ClosedReady",
         )
     closed(
         close,
-        "version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs permit input_expirations fixed_deadline decision",
+        "version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs permit input_expirations fixed_deadline decision windows",
     )
+    windows = governed_windows(close["windows"])
     closed(
         phase,
         "version kind common close_drain_sha256 before after plan_sha256 audit_sha256 apply_sha256 routes observed_at",
@@ -4810,18 +4871,22 @@ def validate_closed_ready(files: dict, binding: dict, now):
         ),
         "original expiry coverage",
     )
-    fixed = min(t0 + 1800, *(instant(e["expires_at"]) for e in expirations))
+    fixed = min(
+        t0 + windows["fixed_deadline_seconds"],
+        *(instant(e["expires_at"]) for e in expirations),
+    )
     require(instant(close["fixed_deadline"]) == fixed, "original fixed deadline")
     stage = closed(ready["stage"], "name admitted_at deadline later_seconds")
     start, deadline = instant(stage["admitted_at"]), instant(stage["deadline"])
     require(start == observed and start < deadline <= fixed, "original stage deadline")
     if binding["requested_action"] == "deploy":
+        api, later = windows["stages"]["api"], later_seconds(windows, "api")
         require(
             ready["decision"] is None
             and stage["name"] == "api"
-            and stage["later_seconds"] == 840
-            and deadline <= start + 180
-            and fixed - start >= 180 + 840 + 420,
+            and stage["later_seconds"] == later
+            and deadline <= start + api
+            and fixed - start >= api + later + FINAL_RESERVE,
             "original API admission budget",
         )
     else:

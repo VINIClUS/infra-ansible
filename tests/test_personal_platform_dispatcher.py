@@ -308,7 +308,7 @@ def test_host_response_rejects_nonce_mix_late_arrival_and_digest_tamper(tmp_path
     op.transition("ACCEPTED")
     raw = op.seal(
         H,
-        g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600]),
+        g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600]),
         lambda: {"checked_processes": [], "all_absent_or_send_disabled": True},
     )
     g.accept_response(
@@ -780,7 +780,7 @@ def closed_ready_fixture():
         {"sha256": g.sha(proof), "bytes_base64": base64.b64encode(proof).decode()}
     ]
     close = {
-        "version": 1,
+        "version": 2,
         "kind": "close-drain",
         "common": copy.deepcopy(common),
         "fence": copy.deepcopy(fence),
@@ -798,8 +798,20 @@ def closed_ready_fixture():
             }
             for e in b["expires"]
         ],
-        "fixed_deadline": g.utc(2460),
+        "fixed_deadline": g.utc(2730),
         "decision": None,
+        "windows": {
+            "stages": {
+                "phase-b": 360,
+                "api": 180,
+                "static": 180,
+                "unit": 180,
+                "phase-c-recovery": 330,
+                "phase-c-audit": 330,
+                "final": 90,
+            },
+            "fixed_deadline_seconds": 2070,
+        },
     }
     checkpoint = {
         "lineage": "original-lineage",
@@ -851,7 +863,7 @@ def closed_ready_fixture():
             "name": "api",
             "admitted_at": g.utc(960),
             "deadline": g.utc(1140),
-            "later_seconds": 840,
+            "later_seconds": 1110,
         },
         "decision": None,
     }
@@ -970,7 +982,7 @@ def test_original_closed_ready_admits_host_without_future_open(tmp_path):
     g, clock, gov, api, _, _, _, ready, _ = closed_ready_fixture()
     admission = g.admit_physical_action(gov["binding"], gov, api, clock)
     window = admission.window(clock)
-    assert window.fixed_deadline == 2460
+    assert window.fixed_deadline == 2730
     assert window.stage_deadline == 1140
     lease = g.HostLease(tmp_path, clock)
     token, snapshot = lease.acquire(owner(), H)

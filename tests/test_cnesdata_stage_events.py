@@ -9,9 +9,11 @@ import pytest
 from tools.cnesdata_delivery import contract as c
 
 IDENTITY = {"application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": "c" * 64}
+MINIMUM_WINDOWS = {"stages": {"phase-b": 360, "api": 180, "static": 180, "unit": 120, "phase-c-recovery": 240,
+                              "phase-c-audit": 240, "final": 60}, "fixed_deadline_seconds": 1800}
 PREVIOUS = {"sequence": 0, "preparation_deadline": 1900, "close": None, "fixed_deadline": None, "input_deadline": None,
             "stage": "application-prepare", "admitted_at": 900, "deadline": 1900, "decision": None,
-            "checkpoint_sha256": "a" * 64, "predecessor_sha256": "e" * 64, **IDENTITY}
+            "checkpoint_sha256": "a" * 64, "predecessor_sha256": "e" * 64, "windows": MINIMUM_WINDOWS, **IDENTITY}
 OWNER = {"source_sha": "b" * 40, "run_id": 4242, "run_attempt": 1, "owner_sha256": "4" * 64, "generation": 7}
 RUN = {"id": 4242, "run_attempt": 1, "head_sha": "b" * 40}
 ROOT = f"repos/{c.REPOSITORY}/actions"
@@ -24,12 +26,12 @@ GOVERNANCE = {"lifecycle_steps": {"phase-b-advance": PHASE_B,
 
 
 def _close_drain(**changes):
-    value = {"version": 1, "kind": "close-drain", "common": {}, "fence": {}, "close_confirmed_at": c.utc(1000),
+    value = {"version": 2, "kind": "close-drain", "common": {}, "fence": {}, "close_confirmed_at": c.utc(1000),
              "drain_observed_at": c.utc(1010), "frozen_membership_sha256": "7" * 64, "members": [], "proofs": [],
              "permit": None, "input_expirations": [
                  {"kind": "activation", "object_sha256": "1" * 64, "expires_at": c.utc(4000)},
                  {"kind": "plan", "object_sha256": "2" * 64, "expires_at": c.utc(5000)}],
-             "fixed_deadline": c.utc(2800), "decision": None}
+             "fixed_deadline": c.utc(2800), "decision": None, "windows": MINIMUM_WINDOWS}
     return value | changes
 
 
@@ -40,16 +42,14 @@ def _close(value=None, previous=PREVIOUS, *, infra_bound=4000, now=1005):
 
 
 def test_stage_constants_are_the_ratified_ones():
-    """6755178450:140: F=min(close+1800, expirations); API180; later840; recovery reserve420."""
+    """6755178450:140 under E2: F=min(close+fixed_deadline_seconds, expirations); later from the windows; reserve420."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    assert lc.STAGES == {"phase-b": (360, 1020), "api": (180, 840), "static": (180, 660), "unit": (120, 540),
-                         "phase-c-recovery": (240, 300), "phase-c-audit": (240, 60), "final": (60, 0)}
-    names = list(lc.STAGES)
-    for index, name in enumerate(names):
-        assert lc.STAGES[name][1] == sum(lc.STAGES[later][0] for later in names[index + 1:]), name
-    assert lc.STAGES["api"][1] == 180 + 120 + 240 + 240 + 60
+    assert list(lc.STAGES) == ["phase-b", "api", "static", "unit", "phase-c-recovery", "phase-c-audit", "final"]
+    assert {name: low for name, (low, _) in lc.STAGES.items()} == MINIMUM_WINDOWS["stages"]
+    assert [lc.later_seconds(MINIMUM_WINDOWS, name) for name in lc.STAGES] == [1020, 840, 660, 540, 300, 60, 0]
+    assert lc.later_seconds(MINIMUM_WINDOWS, "api") == 180 + 120 + 240 + 240 + 60
     window = {"close": 940, "fixed_deadline": 2740, "input_deadline": 4000, "stage": "api", "admitted_at": 1300,
-              "deadline": 1480, "decision": None, "preparation_deadline": 1900}
+              "deadline": 1480, "decision": None, "preparation_deadline": 1900, "windows": MINIMUM_WINDOWS}
     lc.phase_capacity(window, now=1300, credential_deadline=9000, operation_seconds=20)
     assert window["fixed_deadline"] - 1300 == (window["deadline"] - 1300) + 840 + 420
     with pytest.raises(ValueError, match="phase remaining capacity"):
@@ -107,7 +107,7 @@ _CLOSE_REFUSALS = {
     "expiry-time": ({"input_expirations": [_close_drain()["input_expirations"][0] | {"expires_at": 4000}]}, {}, "UTC timestamp"),
     "permit": ({"permit": {"holder": "other"}}, {}, "original idle permit/decision"),
     "decision": ({"decision": {"choice": "rollback"}}, {}, "original idle permit/decision"),
-    "version": ({"version": 2}, {}, "close-drain observation version/kind"),
+    "version": ({"version": 1}, {}, "close-drain observation version/kind"),
     "version-type": ({"version": True}, {}, "close-drain observation version/kind"),
     "doc-kind": ({"kind": "closed-ready"}, {}, "close-drain observation version/kind"),
     "early": ({"close_confirmed_at": c.utc(899), "fixed_deadline": c.utc(2699)}, {}, "close inside the preparation stage"),
@@ -127,7 +127,7 @@ def test_close_window_refuses_extra_fields_and_non_canonical_bytes():
     from tools.cnesdata_delivery import lifecycle_contract as lc
     with pytest.raises(ValueError, match="closed object fields"):
         _close(_close_drain(extra=1))
-    raw = c.canonical(_close_drain()).replace(b'"version":1', b'"version": 1')
+    raw = c.canonical(_close_drain()).replace(b'"version":2', b'"version": 2')
     with pytest.raises(ValueError):
         lc.close_window(dict(PREVIOUS), raw, checkpoint_sha256="f" * 64, infra_bound=4000, now=1005)
     with pytest.raises(ValueError):
@@ -897,7 +897,7 @@ def test_keeper_stops_at_the_api_stage_with_the_lease_held_the_fence_closed_and_
     assert window["checkpoint_sha256"] == c.sha(world.b_files["checkpoint.json"]) and window["close"] == 1050
     assert window["sequence"] == 2 and window["admitted_at"] == 1115 and window["deadline"] == 1295
     inputs = {name: c.canonical({"fixture_only": name}) for name in ("activation", "close-drain", "phase-b", "membership")}
-    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": world.owner["source_sha"],
+    request = {"abi_version": 3, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": world.owner["source_sha"],
                "owner": {key: world.owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
                "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": "1" * 64,
                "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},

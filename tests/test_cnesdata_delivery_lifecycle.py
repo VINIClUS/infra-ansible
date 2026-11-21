@@ -25,6 +25,10 @@ class Store:
         return self.etag
 
 
+MINIMUM_WINDOWS = {"stages": {"phase-b": 360, "api": 180, "static": 180, "unit": 120, "phase-c-recovery": 240,
+                              "phase-c-audit": 240, "final": 60}, "fixed_deadline_seconds": 1800}
+
+
 def api():
     spec = importlib.util.find_spec("tools.cnesdata_delivery.lifecycle_contract")
     assert spec is not None, "lifecycle contract missing"
@@ -72,7 +76,7 @@ def test_original_phase_deadlines_and_recovery_are_not_rearmed():
     m = api()
     window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 2900,
               "stage": "api", "admitted_at": 1100, "deadline": 1280,
-              "decision": None}
+              "decision": None, "windows": MINIMUM_WINDOWS}
     m.phase_capacity(window, now=1100, credential_deadline=4000, operation_seconds=20)
     with pytest.raises(ValueError):
         m.phase_capacity(window, now=1275, credential_deadline=4000, operation_seconds=20)
@@ -228,7 +232,7 @@ def test_checkpoint_cannot_rearm_same_stage_or_skip_normal_phase():
     m = api()
     window = {"sequence": 1, "preparation_deadline": 1500, "close": 1000, "fixed_deadline": 2800,
               "input_deadline": 3000, "stage": "phase-b", "admitted_at": 1000, "deadline": 1360,
-              "decision": None, "checkpoint_sha256": "a" * 64}
+              "decision": None, "checkpoint_sha256": "a" * 64, "windows": MINIMUM_WINDOWS}
     for changed in ({"admitted_at": 1010, "deadline": 1370}, {"stage": "unit"}, {"stage": "application-prepare"}):
         with pytest.raises(ValueError):
             m.checkpoint_transition(window, window | {"sequence": 2} | changed)
@@ -291,7 +295,7 @@ def test_delegate_admits_full_process_timeout_before_start(monkeypatch, tmp_path
     from tools.cnesdata_delivery.coordination_lease import Watchdog
     window = {"sequence": 1, "preparation_deadline": 1500, "close": 1000, "fixed_deadline": 2800,
               "input_deadline": 3000, "stage": "phase-b", "admitted_at": 1000, "deadline": 1360,
-              "decision": None, "checkpoint_sha256": "a" * 64}
+              "decision": None, "checkpoint_sha256": "a" * 64, "windows": MINIMUM_WINDOWS}
     class View:
         def check(self):
             return {"lifecycle": window}
@@ -1192,7 +1196,7 @@ def test_activation_session_policy_size_is_measured_before_each_sts_call(monkeyp
 
 
 def _close_drain_at(noon, close_offset):
-    return {"version": 1, "kind": "close-drain", "common": {}, "fence": {"changed_at": c.utc(noon)},
+    return {"version": 2, "kind": "close-drain", "windows": MINIMUM_WINDOWS, "common": {}, "fence": {"changed_at": c.utc(noon)},
             "close_confirmed_at": c.utc(noon + close_offset), "drain_observed_at": c.utc(noon + close_offset + 5),
             "frozen_membership_sha256": "7" * 64, "members": [], "proofs": [], "permit": None,
             "input_expirations": [{"kind": "envelope", "object_sha256": "9" * 64, "expires_at": c.utc(noon + 1800)}],
@@ -1206,7 +1210,7 @@ def test_r13_phase_b_is_admissible_only_when_the_product_confirms_the_close_in_t
     previous = {"sequence": 0, "preparation_deadline": noon + 600, "close": None, "fixed_deadline": None, "input_deadline": None,
                 "stage": "application-prepare", "admitted_at": noon - 300, "deadline": noon + 600, "decision": None,
                 "checkpoint_sha256": "a" * 64, "predecessor_sha256": "e" * 64, "application_purpose": "promotion",
-                "context_kind": "promotion", "caller_binding_sha256": "c" * 64}
+                "context_kind": "promotion", "caller_binding_sha256": "c" * 64, "windows": MINIMUM_WINDOWS}
     def phase_b(close_offset):
         return lc.close_window(dict(previous), c.canonical(_close_drain_at(noon, close_offset)), checkpoint_sha256="f" * 64,
                                infra_bound=noon + 1800, now=noon + close_offset)
