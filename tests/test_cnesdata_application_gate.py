@@ -470,7 +470,7 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
     from tools.cnesdata_delivery.application_gate import ReleasedPublicationGuard, publish_terminal
     store, files = _terminal_fixture(failed=failed, current_caller=current_caller)
     record, etag = store.get()
-    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence",
+    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "state_bucket": "synthetic-state", "evidence_bucket": "evidence",
                   "gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "promotion / keeper"}
     run = {"id": 44, "run_attempt": 1, "head_sha": "b" * 40, "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
@@ -2797,7 +2797,7 @@ def test_fence_producer_accepts_only_completed_exact_deploy_before_private_reads
     owner, producer = kwargs["owner"], kwargs["producer"]
     request = {"source_sha": owner["source_sha"], "step": lc.FENCE_PREPARE_PRODUCER["step"],
                "application_purpose": owner["application_purpose"], "caller_binding_sha256": owner["caller_binding_sha256"]}
-    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": owner["context_kind"],
+    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic", "context_kind": owner["context_kind"],
                   "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"],
            "event": "workflow_dispatch", "repository": {"full_name": c.REPOSITORY}, "head_branch": "main",
@@ -3251,10 +3251,9 @@ def test_application_reusable_bootstrap_loads_only_authenticated_pin(monkeypatch
 
 
 @pytest.mark.parametrize("role", ["plan", "deploy"])
-@pytest.mark.parametrize("job", ["validate", "execute"])
 @pytest.mark.parametrize("purpose", ["promotion", "mode-readiness-drill"])
 @pytest.mark.parametrize("mutation", [None, "crossed-context", "disabled", "old-fragment", "ref"])
-def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypatch, tmp_path, role, job, purpose, mutation):
+def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypatch, tmp_path, role, purpose, mutation):
     import base64
     import io
     import json
@@ -3264,7 +3263,7 @@ def test_infra_reusable_bootstrap_selects_protected_application_caller(monkeypat
     from tools.cnesdata_delivery import lifecycle_contract as lc
     root = Path(__file__).resolve().parents[1]
     workflow = yaml.safe_load((root / (".github/workflows/reusable-cnesdata-infra-" + role + "-gate.yml")).read_text())
-    script = workflow["jobs"][job]["steps"][0]["run"]
+    script = workflow["jobs"]["execute"]["steps"][0]["run"]
     source = script.split("<<'PYBOOT'\n", 1)[1].rsplit("\nPYBOOT", 1)[0]
     pin, product = "a" * 40, "b" * 40
     path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-" + role + "-gate.yml"
@@ -3351,7 +3350,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
     owner, producer = kwargs["owner"], kwargs["producer"]
     request = {"source_sha": owner["source_sha"], "step": producer["step"], "application_purpose": "promotion",
         "caller_binding_sha256": owner["caller_binding_sha256"]}
-    gov = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "synthetic", "context_kind": "promotion",
+    gov = {"evidence_prefix": "cnesdata/prod/evidence/", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic", "context_kind": "promotion",
            "gate_shas": {"deploy": producer["workflow_sha"]}, "application_fragment": kwargs["fragment"]}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"], "event": "workflow_dispatch",
         "repository": {"full_name": c.REPOSITORY}, "head_branch": "main", "path": ".github/workflows/promote-production.yml",

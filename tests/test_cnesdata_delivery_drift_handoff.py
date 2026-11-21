@@ -215,8 +215,8 @@ def test_public_safe_recusa_nome_de_bucket_de_governanca_so_com_a_governanca():
     c.public_safe({"campo": "evidence previous synthetic-state-2 evi-x"}, governance)
 
 
-def test_public_safe_com_governanca_exige_chaves_de_bucket():
-    c.public_safe({"campo": "ok"}, {})
+def test_public_safe_com_governanca_completa_aceita_valor_neutro():
+    c.public_safe({"campo": "ok"}, GOVERNANCE)
 
 
 
@@ -238,14 +238,27 @@ def test_public_safe_varre_chaves_de_dicionario(value):
         c.public_safe(value, GOVERNANCE)
 
 
+ZERO_WIDTH = ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff")
+
+
 @pytest.mark.parametrize("value", [
     "１１１１２２２２３３３３",
-    "1111-2222-3333", "1111 2222 3333", "1111_2222_3333", "conta 1111-2222-3333."])
+    "1111-2222-3333", "1111 2222 3333", "1111_2222_3333", "conta 1111-2222-3333.",
+    "1111.2222.3333", "1111/2222/3333", "1111:2222:3333", "1111.2222-3333",
+    *(f"1111{mark}2222{mark}3333" for mark in ZERO_WIDTH)])
 def test_public_safe_recusa_forma_normalizada_e_agrupada_da_conta(value):
     with pytest.raises(ValueError, match="private material in public transport"):
         c.public_safe({"campo": value})
     with pytest.raises(ValueError, match="private material in public transport"):
         c.public_safe({value: 1})
+
+
+@pytest.mark.parametrize("value", [
+    "1111.2222.33", "10:50:00", "192.168.10.200", "v1.7.4", "11111.2222.3333",
+    "1.1112.2223.333", "1111\u200b2222", "runs/1234/5678/90"])
+def test_public_safe_nao_recusa_separadores_fora_da_forma_4_4_4(value):
+    c.public_safe({"campo": value})
+    c.public_safe({value: 1})
 
 
 @pytest.mark.parametrize("value", [
@@ -272,3 +285,49 @@ def test_recusa_handoff_com_valor_derivado_da_conta_de_governanca(chain, mutatio
         return document
     chain.handoff_edit = edit
     refused(chain, "account-derived value in public report|private material in public transport")
+
+
+ACCOUNT_GOVERNANCE = {"report_hmac_key": "5a" * 32, "account_id": "111122223333",
+                      "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence"}
+
+
+@pytest.mark.parametrize("value", [
+    "id１１１１２２２２３３３３",
+    "id1111-2222-3333",
+    "id1111_2222 3333",
+    "id1111.2222.3333",
+    "id1111/2222/3333",
+    "id1111:2222:3333",
+    "id1111.2222-3333",
+    *(f"id1111{mark}2222{mark}3333x" for mark in ZERO_WIDTH),
+    "XSYNTHETIC-STATEY",
+    "abcSynthetic-Stateqrs"])
+def test_recusa_de_valor_derivado_da_conta_normaliza_unicode_caixa_e_separadores(value):
+    raw = ('{"campo":"' + value + '"}').encode()
+    with pytest.raises(ValueError, match="account-derived value in public report"):
+        c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
+
+
+def test_recusa_de_valor_derivado_da_conta_aceita_relatorio_sem_valores_conhecidos():
+    raw = '{"campo":"id1111-2222-33","outro":"ＡＢＣ 1111 2222"}'.encode()
+    c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
+
+
+@pytest.mark.parametrize("value", [
+    "id1111.2222.33", "10:50:00", "2026-11-08T10:50:00Z", "1.1112.2223.333", "111122223:333",
+    "1111/2222/333", "11111.2222.3333"])
+def test_recusa_de_valor_derivado_da_conta_so_colapsa_separadores_novos_na_forma_4_4_4(value):
+    c.refuse_account_derived(('{"campo":"' + value + '"}').encode(), ACCOUNT_GOVERNANCE)
+
+
+@pytest.mark.parametrize("governance", [{}, {"state_bucket": "synthetic-state"},
+                                        {"evidence_bucket": "synthetic-evidence"},
+                                        {"state_bucket": "", "evidence_bucket": "synthetic-evidence"},
+                                        {"state_bucket": 1, "evidence_bucket": "x"}])
+def test_public_safe_com_governanca_sem_bucket_falha_fechado(governance):
+    with pytest.raises(ValueError, match="bucket governance"):
+        c.public_safe({"campo": "ok"}, governance)
+
+
+def test_public_safe_sem_governanca_segue_sem_regra_de_bucket():
+    c.public_safe({"campo": "synthetic-state"})
