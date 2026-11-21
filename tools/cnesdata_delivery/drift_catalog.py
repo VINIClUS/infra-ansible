@@ -268,7 +268,7 @@ CATALOG = {
 CATALOG["aws_cloudwatch_metric_alarm"].update({
     name: ("cloudwatch", "describe_alarms", ("MetricAlarms", 0, field), "json-set")
     for name, field in {"alarm_actions": "AlarmActions", "insufficient_data_actions": "InsufficientDataActions",
-                        "ok_actions": "OkActions"}.items()})
+                        "ok_actions": "OKActions"}.items()})
 NOT_OBSERVABLE = {
     "aws_iam_role": {"force_detach_policies": "state-only", "inline_policy": "other-api",
                      "managed_policy_arns": "other-api", "name_prefix": "state-only", "tags": "state-only"},
@@ -343,6 +343,19 @@ NO_CHANGE = (["no-op"], ["read"])
 
 def _operation(tipo):
     return {entry[:2] for entry in CATALOG[tipo].values()}.pop()
+
+
+def require_catalog_read(spec):
+    """Args: lifecycle readback spec. Raises: ValueError unless it is the catalogue read of the address type."""
+    service, operation = spec["service"], spec["operation"]
+    strings = type(service) is str and type(operation) is str
+    reads = READ_ONLY.get(service, set()) | LIFECYCLE_READ_ONLY.get(service, set()) if strings else set()
+    c.require(strings and (operation in reads or (service, operation) == ("scheduler", "list_schedules")),
+              "read-only API boundary")
+    tipo = resource_type(spec["address"])
+    expected = _operation(tipo) if tipo in CATALOG else None
+    expected = ("scheduler", "list_schedules") if "members" in spec else expected
+    c.require((service, operation) == expected, "readback catalog operation")
 
 
 class Envelope:

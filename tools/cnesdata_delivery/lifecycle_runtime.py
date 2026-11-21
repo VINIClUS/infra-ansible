@@ -1438,6 +1438,7 @@ def _spec_fields(spec):
     c.require(type(spec["address"]) is str and type(spec["absent"]) is bool, "readback spec fields")
     c.require(not grouped or (type(spec["members"]) is list and len(spec["members"]) <= 32
                               and all(type(name) is str for name in spec["members"])), "readback spec members")
+    dc.require_catalog_read(spec)
     return grouped
 
 
