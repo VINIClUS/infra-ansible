@@ -351,3 +351,38 @@ def test_render_do_cli_valida_antes_de_emitir(tmp_path, capsys):
     assert governance_assembly.main(["render", "--document", str(document), "--commitments", str(commitments)]) == 1
     seen = capsys.readouterr()
     assert seen.out == "" and "refused reason=governance key=surprise" in seen.err
+
+
+def render_cli(tmp_path, document):
+    path = tmp_path / "governance.json"
+    commitments = tmp_path / "commitments.json"
+    path.write_bytes(c.canonical(document))
+    commitments.write_bytes(c.canonical(COMMITMENTS))
+    return governance_assembly.main(["render", "--document", str(path), "--commitments", str(commitments)])
+
+
+def test_render_do_cli_recusa_pin_deploy_antes_de_plan_sem_observed_at_com_motivo_chave_valor(tmp_path, capsys):
+    plan = {key: item for key, item in pin_at().items() if key != "observed_at"}
+    assert render_cli(tmp_path, document_with(session_policy_pins={"deploy": pin_at(), "plan": plan})) == 1
+    seen = capsys.readouterr()
+    assert seen.out == "" and seen.err == "refused reason=session pin fields role=plan\n"
+
+
+@pytest.mark.parametrize(("document", "reason"), [
+    ({"report_hmac_key": "5a" * 32}, "missing key=product_inputs"),
+    (document_with(product_inputs=["x"]), "malformed type=TypeError"),
+    (document_with(cost=["x"]), "malformed type=AttributeError"),
+])
+def test_render_do_cli_mapeia_erro_de_chave_ou_tipo_para_motivo_chave_valor(tmp_path, capsys, document, reason):
+    assert render_cli(tmp_path, document) == 1
+    seen = capsys.readouterr()
+    assert seen.out == "" and seen.err == f"refused reason={reason}\n"
+
+
+def test_guarda_recusa_yaml_do_caller_com_raiz_que_nao_e_mapa(repo, capsys):
+    x_star = commit(repo, {"tools/cnesdata_delivery/a.py": "x = 1\n"})
+    k = commit(repo, {CALLER: f"- uses: {OBSERVER}@{x_star}\n"})
+    with pytest.raises(ValueError, match="caller yaml"):
+        release_guard.check(repo, x_star, k)
+    assert governance_assembly.main(["release-check", "--repo", str(repo), "--x-star", x_star, "--k", k]) == 1
+    assert capsys.readouterr().err == "refused reason=caller yaml\n"

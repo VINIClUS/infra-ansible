@@ -28,12 +28,12 @@ def _surface(repo, x_star, k):
 
 
 def _job_uses(text):
-    failed = False
     try:
-        jobs = (yaml.safe_load(text) or {}).get("jobs", {})
+        root = yaml.safe_load(text) or {}
     except yaml.YAMLError:
-        failed = True
-    c.require(not failed and type(jobs) is dict, "caller yaml")
+        root = None
+    jobs = root.get("jobs", {}) if type(root) is dict else None
+    c.require(type(jobs) is dict, "caller yaml")
     found = [job.get("uses") for job in jobs.values() if type(job) is dict]
     return [value for value in found if type(value) is str and "reusable-cnesdata-observer.yml" in value]
 

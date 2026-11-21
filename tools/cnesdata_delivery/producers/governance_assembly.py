@@ -48,8 +48,6 @@ def _closed_keys(document):
 
 
 def _pin_chain(role, pin, start):
-    c.require(type(pin) is dict and {"observed_at", "expires_at", "frozen_until"} <= set(pin),
-              f"session pin fields role={role}")
     chain = expiry_chain(start)
     ok = (pin["observed_at"] == start and c.instant(pin["expires_at"]) >= c.instant(chain["proof_expires_at"])
           and c.instant(pin["frozen_until"]) >= c.instant(chain["frozen_until"]))
@@ -59,8 +57,10 @@ def _pin_chain(role, pin, start):
 def _expiry_chain(document):
     pins = document.get("session_policy_pins") or {}
     c.require(type(pins) is dict, "session pins shape")
-    for role in pins:
+    for role, pin in pins.items():
         c.require(role in SESSION_ROLES, f"session pin role={role}")
+        c.require(type(pin) is dict and {"observed_at", "expires_at", "frozen_until"} <= set(pin),
+                  f"session pin fields role={role}")
     for role, pin in pins.items():
         start = pins["plan"]["observed_at"] if role == "deploy" and "plan" in pins else pin["observed_at"]
         _pin_chain(role, pin, start)
@@ -133,13 +133,21 @@ def parser():
     return root
 
 
+def _refuse(reason):
+    sys.stderr.write(f"refused reason={reason}\n")
+    return 1
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
         args.run(args)
     except ValueError as error:
-        sys.stderr.write(f"refused reason={error}\n")
-        return 1
+        return _refuse(error)
+    except KeyError as error:
+        return _refuse(f"missing key={error.args[0]}")
+    except (AttributeError, TypeError) as error:
+        return _refuse(f"malformed type={type(error).__name__}")
     return 0
 
 
