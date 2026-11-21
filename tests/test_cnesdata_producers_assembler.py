@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from fixtures.cnesdata_phase_a_replay import ACCOUNT
 from test_cnesdata_session_owner import original_owner
 from tools.cnesdata_delivery import contract as c, session_owner
 from tools.cnesdata_delivery.provenance import BASE_CHECKS
@@ -140,7 +141,7 @@ def test_deploy_com_os_dois_checks_adicionais_e_aceito():
 
 
 def test_medicao_com_arn_ou_conta_e_recusada_antes_de_montar():
-    for value in ("arn:aws:iam::111122223333:role/r", "111122223333", "https://x.example.invalid/y"):
+    for value in (f"arn:aws:iam::{ACCOUNT}:role/r", ACCOUNT, "https://x.example.invalid/y"):
         def poison(inputs, value=value):
             inputs["measurements"]["dependency-pins"] = {"leak": value}
 

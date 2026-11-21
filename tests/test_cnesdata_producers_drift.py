@@ -68,7 +68,7 @@ def test_gerador_usa_instancias_do_state_e_recusa_state_divergente_do_plano(chai
 def test_gerador_recusa_endereco_com_arn_no_index_key(chain):
     plan = copy.deepcopy(chain.replay.plan)
     item = next(x for x in plan["resource_changes"] if x["type"] == "aws_iam_role")
-    item["address"] = 'module.runtime_iam.aws_iam_role.x["arn:aws:iam::1:role/r"]'
+    item["address"] = f'module.runtime_iam.aws_iam_role.x["arn:aws:iam::{ACCOUNT}:role/r"]'
     with pytest.raises(ValueError):
         drift_handoff.generate(plan, chain.prior, SOURCE, "phase-a")
 
