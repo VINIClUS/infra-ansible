@@ -1,88 +1,152 @@
 ---------------------------- MODULE StageWindows ----------------------------
 EXTENDS Naturals, Sequences
 
-CONSTANTS AdmitMargin, ApplyTimeout, Over, ReviewPause, AllowEarly
+CONSTANTS FixedWindow, AdmitMargin, InitTimeout, ShowTimeout, PlanTimeout, ApplyTimeout,
+          ReadbackFloor, InitActual, ShowActual, ApplyActual, JobActual, Over, ReviewPause,
+          AllowEarly, CheckCompletion, ModeCeiling, InfeasibleStages, StageDur, StageVar
 
 Never == 10000
-Fixed == 1800
 FinalReserve == 420
-ModeWindow == 900
-StageDur == <<360, 180, 180, 120, 240, 240, 60>>
 Stages == 1..7
-DeployStages == {1, 5, 6}
-Ops(s) == IF s \in DeployStages THEN <<"plan", "audit", "apply", "observe">>
-          ELSE <<"effect", "observe">>
-Bound(s, op) ==
-    CASE op = "apply" -> ApplyTimeout
-      [] op = "observe" -> 10
-      [] s = 1 /\ op = "plan" -> 100
-      [] s = 1 /\ op = "audit" -> 92
-      [] s \in {5, 6} /\ op = "plan" -> 40
-      [] s \in {5, 6} /\ op = "audit" -> 32
-      [] s \in {2, 3} /\ op = "effect" -> 132
-      [] s = 4 /\ op = "effect" -> 72
-      [] s = 7 /\ op = "effect" -> 12
-Rank(op) ==
-    CASE op \in {"plan", "effect"} -> 1 [] op = "audit" -> 2 [] op = "apply" -> 3 [] OTHER -> 4
-TotalOps == 20
+PauseStages == {5, 6}
+CodeDur == <<360, 180, 180, 120, 240, 240, 60>>
+E2Dur == <<360, 180, 180, 180, 330, 330, 90>>
+CodeVar == <<
+    [plan |-> 49, aread |-> 48, pread |-> 60],
+    [api_effect |-> 71, api_observe |-> 71],
+    [static_effect |-> 71, static_observe |-> 71],
+    [unit_seed |-> 28, unit_start |-> 27, unit_observe |-> 27],
+    [plan |-> 1, aread |-> 1, pread |-> 1, recovery_seed |-> 1, recovery_start |-> 1, recovery_observe |-> 1],
+    [plan |-> 1, aread |-> 1, pread |-> 1, audit_start |-> 1, audit_observe |-> 1],
+    [reopen |-> 11, terminal_readback |-> 11]
+>>
+
+E2Var == <<
+    [plan |-> 49, aread |-> 48, pread |-> 60],
+    [api_effect |-> 71, api_observe |-> 71],
+    [static_effect |-> 71, static_observe |-> 71],
+    [unit_seed |-> 48, unit_start |-> 47, unit_observe |-> 47],
+    [plan |-> 22, aread |-> 21, pread |-> 21, recovery_seed |-> 21, recovery_start |-> 21, recovery_observe |-> 21],
+    [plan |-> 26, aread |-> 26, pread |-> 25, audit_start |-> 25, audit_observe |-> 25],
+    [reopen |-> 26, terminal_readback |-> 26]
+>>
+
+UnitModeOps == <<"unit_seed", "unit_start", "unit_observe">>
+RecoveryModeOps == <<"recovery_seed", "recovery_start", "recovery_observe">>
+AuditModeOps == <<"audit_start", "audit_observe">>
+Job1 == <<"job1", "init1", "plan", "show1">>
+Job2 == <<"job2", "init2", "show2", "aread">>
+Job3 == <<"job3", "init3", "show3", "apply", "pread">>
+DeployOps == Job1 \o Job2 \o Job3
+
+Ops(s) ==
+    CASE s = 1 -> DeployOps
+      [] s = 2 -> <<"api_effect", "api_observe">>
+      [] s = 3 -> <<"static_effect", "static_observe">>
+      [] s = 4 -> UnitModeOps
+      [] s = 5 -> DeployOps \o RecoveryModeOps
+      [] s = 6 -> DeployOps \o AuditModeOps
+      [] s = 7 -> <<"reopen", "terminal_readback">>
+
+RECURSIVE SumLen(_)
+SumLen(s) == IF s > 7 THEN 0 ELSE Len(Ops(s)) + SumLen(s + 1)
+TotalOps == SumLen(1)
 
 Min(a, b) == IF a < b THEN a ELSE b
+Max(a, b) == IF a > b THEN a ELSE b
 
 RECURSIVE SumFrom(_, _)
 SumFrom(i, j) == IF i > j THEN 0 ELSE StageDur[i] + SumFrom(i + 1, j)
 Later(s) == SumFrom(s + 1, 7)
 
-VARIABLES stage, step, now, opened, term, missed, last, count
+IsJob(op) == op \in {"job1", "job2", "job3"}
+IsInit(op) == op \in {"init1", "init2", "init3"}
+IsShow(op) == op \in {"show1", "show2", "show3"}
+IsFixed(op) == IsJob(op) \/ IsInit(op) \/ IsShow(op) \/ op = "apply"
+Bound(s, op) ==
+    CASE IsJob(op) -> JobActual
+      [] IsInit(op) -> InitActual
+      [] IsShow(op) -> ShowActual
+      [] op = "apply" -> ApplyActual
+      [] OTHER -> StageVar[s][op]
+Declared(s, op) ==
+    CASE IsJob(op) -> ReadbackFloor
+      [] IsInit(op) -> InitTimeout
+      [] IsShow(op) -> ShowTimeout
+      [] op = "plan" -> PlanTimeout
+      [] op = "apply" -> ApplyTimeout
+      [] op \in {"aread", "pread"} -> Max(ReadbackFloor, Bound(s, op))
+      [] OTHER -> Bound(s, op)
 
-vars == <<stage, step, now, opened, term, missed, last, count>>
+VARIABLES stage, step, now, opened, ctxOpen, term, missed, lateOp, last, count
 
-Deadline(s) == Min(Fixed, opened + StageDur[s])
-NoEffect == [stage |-> 0, op |-> "none", start |-> 0, open |-> 0, secs |-> 0, dl |-> Never]
-Durations(s, op) == {1, Bound(s, op)} \cup (IF Over > 0 THEN {Bound(s, op) + Over} ELSE {})
+vars == <<stage, step, now, opened, ctxOpen, term, missed, lateOp, last, count>>
+
+Deadline(s) == Min(FixedWindow, opened + StageDur[s])
+NoEffect == [stage |-> 0, idx |-> 0, op |-> "none", start |-> 0, open |-> 0, secs |-> 0,
+             dl |-> Never, end |-> 0]
+Durations(s, op) ==
+    IF IsFixed(op) THEN {Bound(s, op)}
+    ELSE {1, Bound(s, op)} \cup (IF Over > 0 THEN {Bound(s, op) + Over} ELSE {})
 
 Init ==
     /\ stage = 1
     /\ step = 1
     /\ now = 0
     /\ opened = 0
+    /\ ctxOpen = Never
     /\ term = "none"
     /\ missed = FALSE
+    /\ lateOp = FALSE
     /\ last = NoEffect
     /\ count = 0
 
 Admitted(s, op, start) ==
-    /\ start + Bound(s, op) + AdmitMargin < Deadline(s)
-    /\ Fixed - start >= (Deadline(s) - start) + Later(s) + FinalReserve
+    /\ start + Declared(s, op) + AdmitMargin < Deadline(s)
+    /\ FixedWindow - start >= (Deadline(s) - start) + Later(s) + FinalReserve
 
-Advance(d, start, record) ==
-    LET isLast == step = Len(Ops(stage)) IN
+Finish(start, d, record) ==
+    LET isLast == step = Len(Ops(stage))
+        late == start + d >= Deadline(stage) IN
     /\ now' = start + d
     /\ last' = record
     /\ count' = count + 1
     /\ step' = IF isLast THEN 1 ELSE step + 1
     /\ stage' = IF isLast THEN stage + 1 ELSE stage
-    /\ term' = IF isLast /\ stage = 7 THEN "accepted-open" ELSE "none"
+    /\ lateOp' = (lateOp \/ late)
+    /\ term' = IF isLast /\ stage = 7 THEN
+                 (IF CheckCompletion /\ (lateOp \/ late) THEN "failed-closed-quiescent"
+                  ELSE "accepted-open")
+               ELSE "none"
+    /\ missed' = (isLast /\ stage = 7 /\ CheckCompletion /\ (lateOp \/ late))
     /\ opened' = IF isLast /\ stage < 7 THEN start + d ELSE opened
-    /\ UNCHANGED missed
+    /\ ctxOpen' = IF isLast /\ stage = 3 THEN start + d ELSE ctxOpen
+
+Refuse(start) ==
+    /\ term' = "failed-closed-quiescent"
+    /\ missed' = TRUE
+    /\ now' = start
+    /\ UNCHANGED <<stage, step, opened, ctxOpen, lateOp, last, count>>
 
 Run ==
     /\ term = "none"
     /\ LET op == Ops(stage)[step]
-           start == now + IF stage \in DeployStages THEN ReviewPause ELSE 0 IN
+           start == now + IF IsJob(op) /\ stage \in PauseStages THEN ReviewPause ELSE 0
+           record(d) == [stage |-> stage, idx |-> step, op |-> op, start |-> start,
+                         open |-> opened, secs |-> Declared(stage, op), dl |-> Deadline(stage),
+                         end |-> start + d] IN
        IF Admitted(stage, op, start)
          THEN \E d \in Durations(stage, op) :
-                Advance(d, start, [stage |-> stage, op |-> op, start |-> start, open |-> opened,
-                                   secs |-> Bound(stage, op), dl |-> Deadline(stage)])
-         ELSE /\ term' = "failed-closed-quiescent"
-              /\ missed' = TRUE
-              /\ now' = start
-              /\ UNCHANGED <<stage, step, opened, last, count>>
+                IF CheckCompletion /\ d > Declared(stage, op)
+                  THEN Refuse(start + Declared(stage, op))
+                  ELSE Finish(start, d, record(d))
+         ELSE Refuse(start)
 
 Early ==
     /\ AllowEarly /\ term = "none" /\ stage < 7
-    /\ last' = [stage |-> stage + 1, op |-> Ops(stage + 1)[1], start |-> now, open |-> Never,
-                secs |-> Bound(stage + 1, Ops(stage + 1)[1]), dl |-> Never]
-    /\ UNCHANGED <<stage, step, now, opened, term, missed, count>>
+    /\ last' = [stage |-> stage + 1, idx |-> 1, op |-> "early", start |-> now, open |-> Never,
+                secs |-> 1, dl |-> Never, end |-> now]
+    /\ UNCHANGED <<stage, step, now, opened, ctxOpen, term, missed, lateOp, count>>
 
 Terminated == term # "none" /\ UNCHANGED vars
 
@@ -92,11 +156,13 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(Run)
 
 TypeOK ==
     /\ stage \in 1..8
-    /\ step \in 1..4
+    /\ step \in 1..16
     /\ now \in Nat
     /\ opened \in Nat
+    /\ ctxOpen \in Nat
     /\ term \in {"none", "accepted-open", "failed-closed-quiescent"}
     /\ missed \in BOOLEAN
+    /\ lateOp \in BOOLEAN
     /\ count \in 0..TotalOps
 
 EffectsInsideStage ==
@@ -104,21 +170,23 @@ EffectsInsideStage ==
     /\ last.start + last.secs + 37 < last.dl
 
 JobOrder ==
-    \/ stage = 8
+    \/ term # "none"
     \/ last.stage = 0
     \/ last.stage < stage
-    \/ last.stage = stage /\ Rank(last.op) < Rank(Ops(stage)[step])
+    \/ last.stage = stage /\ last.idx < step
 
-WindowBound ==
-    /\ stage = 8 \/ Deadline(stage) <= Fixed
-    /\ stage = 8 \/ Deadline(stage) - opened <= Min(StageDur[stage], ModeWindow)
+AcceptBeforeDeadline ==
+    term = "accepted-open" => ~lateOp /\ last.end < last.dl
+
+ModeSpan == ctxOpen = Never \/ now - ctxOpen <= ModeCeiling
 
 FailedNeverAccepted ==
-    /\ term = "accepted-open" => ~missed /\ count = TotalOps
+    /\ term = "accepted-open" => ~missed /\ count = TotalOps /\ InfeasibleStages = {}
     /\ missed => term # "accepted-open"
 
-InBoundsAccepts == term # "failed-closed-quiescent"
+InBoundsAccepts ==
+    term = "failed-closed-quiescent" => stage \in InfeasibleStages
 
 Terminates == <>(term # "none")
-AcceptedWhenInBounds == <>(term = "accepted-open")
+Resolved == <>(term = IF InfeasibleStages = {} THEN "accepted-open" ELSE "failed-closed-quiescent")
 =============================================================================
