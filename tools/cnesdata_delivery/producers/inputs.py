@@ -156,7 +156,8 @@ def build(api, request, observed):
 
 def _own_drift(environment, caller):
     return {"repository": caller["repository"], "run_id": caller["run_id"], "run_attempt": caller["run_attempt"],
-            "artifact_id": int(environment["DRIFT_ARTIFACT_ID"]), "artifact_digest": environment["DRIFT_ARTIFACT_DIGEST"],
+            "artifact_id": int(environment["DRIFT_ARTIFACT_ID"]),
+            "artifact_digest": "sha256:" + c.digest(environment["DRIFT_ARTIFACT_DIGEST"]),
             "workflow_path": caller["workflow_path"], "workflow_sha": caller["workflow_sha"],
             "source_sha": caller["workflow_sha"]}
 

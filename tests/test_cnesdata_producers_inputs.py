@@ -143,11 +143,22 @@ def test_request_from_acrescenta_a_referencia_do_drift_do_proprio_run():
     env = {"GITHUB_WORKFLOW_REF": "VINIClUS/infra-ansible/.github/workflows/cnesdata-producers.yml@refs/heads/main",
            "GITHUB_SHA": "9" * 40, "GITHUB_RUN_ID": "7001", "GITHUB_RUN_ATTEMPT": "2", "PURPOSE": "phase-a",
            "ROLE": "plan", "SOURCE_SHA": SOURCE, "X_STAR": X_STAR, "DRIFT_ARTIFACT_ID": "55",
-           "DRIFT_ARTIFACT_DIGEST": "sha256:" + "a" * 64, "REQUEST": json.dumps({"references": {"cost": {"artifact_id": 2}}})}
+           "DRIFT_ARTIFACT_DIGEST": "a" * 64, "REQUEST": json.dumps({"references": {"cost": {"artifact_id": 2}}})}
     merged = inputs.request_from(env)
     drift = merged["references"]["drift"]
     assert drift["artifact_id"] == 55 and drift["run_attempt"] == 2 and drift["source_sha"] == "9" * 40
     assert drift["workflow_path"] == ".github/workflows/cnesdata-producers.yml" and merged["x_star"] == X_STAR
+    assert drift["artifact_digest"] == "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize("digest", ["sha256:" + "a" * 64, "A" * 64, "a" * 63, ""])
+def test_request_from_recusa_digest_do_drift_ja_prefixado_ou_malformado(digest):
+    env = {"GITHUB_WORKFLOW_REF": "VINIClUS/infra-ansible/.github/workflows/cnesdata-producers.yml@refs/heads/main",
+           "GITHUB_SHA": "9" * 40, "GITHUB_RUN_ID": "7001", "GITHUB_RUN_ATTEMPT": "1", "PURPOSE": "phase-a",
+           "ROLE": "plan", "SOURCE_SHA": SOURCE, "X_STAR": X_STAR, "DRIFT_ARTIFACT_ID": "55",
+           "DRIFT_ARTIFACT_DIGEST": digest, "REQUEST": json.dumps({"references": {}})}
+    with pytest.raises(ValueError, match="digest"):
+        inputs.request_from(env)
 
 
 def uploads(job):
