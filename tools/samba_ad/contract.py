@@ -62,7 +62,7 @@ def dns_name(value):
 def validate_manifest(data):
     """Check declarations only; do not resolve secrets, DNS, SSH or Proxmox."""
     data = mapping(data, "root")
-    require(set(data) == {
+    require(set(data) - {'telemetry_collector'} == {
         "schema", "stage", "enabled", "apply", "owner", "execution", "domain", "network",
         "resources", "software", "secret_refs", "certificate_profiles", "split_dns",
     }, "root fields")
@@ -167,11 +167,21 @@ def validate_manifest(data):
         require(isinstance(ref["variable"], str) and re.fullmatch(r"vault_samba_ad_[a-z0-9_]+", ref["variable"]), "vault variable reference")
     require(len({r["variable"] for r in refs.values()}) == len(refs), "distinct secret profiles")
     profiles = mapping(data["certificate_profiles"], "certificate profiles")
-    require(set(profiles) == {"dc01", "dc02", "ca", "telemetry_dc01", "telemetry_dc02", "telemetry_ca"}, "certificate roles")
+    from tools.samba_ad.pki_profiles import profile_names, resource as profile_resource
+    profile_names(data)
+    if 'telemetry_collector' in data:
+        collector = mapping(data['telemetry_collector'], 'telemetry collector')
+        fields(collector, 'fqdn address mac kind machine_id scope', 'telemetry collector identity')
+        require(dns_name(collector['fqdn']) and collector['kind'] in ['qemu', 'lxc'], 'collector host')
+        ipv4(collector['address'])
+        require(re.fullmatch(r'[0-9a-f]{32}', collector['machine_id'])
+                and re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', collector['mac']), 'collector identity')
+        require(collector['scope'] == 'samba-ad-observability-only', 'collector scope')
+        require(collector['fqdn'] not in {r['fqdn'] for r in resources.values()}, 'distinct collector')
     for role, profile in profiles.items():
         profile = mapping(profile, "certificate profile")
         fields(profile, "sans eku validity_hours rotate_before_fraction", "certificate fields")
-        expected = resources[role.removeprefix("telemetry_")]["fqdn"]
+        expected = profile_resource(data, role)["fqdn"]
         eku = "clientAuth" if role.startswith("telemetry_") else "serverAuth"
         require(profile.get("sans") == [expected] and profile.get("eku") == [eku], "certificate identity")
         require(profile.get("validity_hours") == 168 and profile.get("rotate_before_fraction") == 0.66, "certificate lifecycle")

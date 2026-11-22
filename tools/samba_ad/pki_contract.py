@@ -11,6 +11,7 @@ import uuid
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from tools.samba_ad.pki import PROFILES, require
+from tools.samba_ad.pki_profiles import SUPPORTED, profile_names, resource
 
 
 def fields(data, names):
@@ -30,7 +31,7 @@ def path(value):
 
 
 def credential_ref(profile):
-    require(profile in PROFILES)
+    require(profile in SUPPORTED)
     return "/run/samba-ad-pki-credentials/" + profile + "/passphrase"
 
 
@@ -94,14 +95,15 @@ def _validate(r, manifest):
         return {"state": "disabled"}
     fields(r, "schema enabled apply action profile target state_dir trust credential issuer tools adapter "
               "expected_active provenance")
-    require(r["action"] in ["preflight", "auth_prepare", "stage", "rotate"] and r["profile"] in PROFILES)
+    require(r["action"] in ["preflight", "auth_prepare", "stage", "rotate"] and r["profile"] in SUPPORTED)
     require(manifest["schema"] == 1 and manifest["stage"] == "S0" and manifest["owner"] == "samba-ad"
             and manifest["enabled"] is False and manifest["apply"] is False)
-    require(set(manifest["certificate_profiles"]) == PROFILES)
+    profile_names(manifest)
+    require(r['profile'] in manifest['certificate_profiles'])
     for name, profile in manifest["certificate_profiles"].items():
         fields(profile, "sans eku validity_hours rotate_before_fraction")
         role = name.removeprefix("telemetry_")
-        fqdn = manifest["resources"][role]["fqdn"]
+        fqdn = resource(manifest, name)["fqdn"]
         dns(fqdn)
         require(profile["sans"] == [fqdn] and profile["eku"] == ["clientAuth" if name.startswith("telemetry_") else "serverAuth"]
                 and type(profile["validity_hours"]) is int and profile["validity_hours"] == 168
@@ -110,8 +112,11 @@ def _validate(r, manifest):
     fields(target, "role fqdn address mac kind interface boot_id machine_id spec_sha256")
     role = r["profile"].removeprefix("telemetry_")
     require(target["role"] == role)
-    declared = manifest["resources"][role]
-    require(declared["owner"] == "samba-ad" and declared["state"] == "candidate")
+    declared = resource(manifest, r["profile"])
+    if r["profile"] == 'observability_gateway':
+        require(declared['scope'] == 'samba-ad-observability-only' and declared['machine_id'] == target['machine_id'])
+    else:
+        require(declared["owner"] == "samba-ad" and declared["state"] == "candidate")
     require(all(target[k] == declared[k] for k in ["fqdn", "address", "mac", "kind"]))
     ipaddress.IPv4Address(target["address"])
     require(target["kind"] in ["qemu", "lxc"] and (role != "ca" or target["kind"] == "qemu"))
@@ -138,6 +143,8 @@ def _validate(r, manifest):
     fields(r["adapter"], "kind port")
     adapter = r["adapter"]
     require(adapter == {"kind": "pending", "port": None}
+            or (r["profile"].startswith("telemetry_") and adapter == {"kind": "telemetry", "port": 443})
+            or (r["profile"] == 'observability_gateway' and adapter == {"kind": "observability_gateway", "port": 443})
             or (r["profile"] == "ca" and adapter == {"kind": "nginx", "port": 443})
             or (r["profile"] in ["dc01", "dc02"] and adapter == {"kind": "samba", "port": 636}))
     require(r["expected_active"] is None or isinstance(r["expected_active"], str))

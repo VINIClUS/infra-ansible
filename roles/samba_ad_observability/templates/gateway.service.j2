@@ -1,0 +1,17 @@
+[Unit]
+Description=Dedicated Samba AD mutual TLS write gateway
+After=network-online.target samba-ad-observability-prometheus.service samba-ad-observability-loki.service
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 -B /opt/samba-ad-observability/telemetry_gateway.py
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+[Install]
+WantedBy=multi-user.target

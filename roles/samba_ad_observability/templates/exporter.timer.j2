@@ -1,0 +1,8 @@
+[Unit]
+Description=Read-only Samba AD telemetry interval
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

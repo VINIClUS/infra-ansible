@@ -1,0 +1,210 @@
+---
+- name: Validate explicit observability opt-in
+  ansible.builtin.assert:
+    that:
+      - samba_ad_observability_enabled is boolean
+      - samba_ad_observability_apply is boolean
+      - samba_ad_observability_activate is boolean
+
+- name: End disabled observability before transport
+  ansible.builtin.meta: end_role
+  when: not samba_ad_observability_enabled
+
+- name: Require exactly one owned host and the dedicated manual tag
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_observability']
+      - samba_ad_observability_config is mapping
+      - samba_ad_observability_assets is mapping
+      - not samba_ad_observability_activate or samba_ad_observability_apply
+
+- name: Validate the public reference-only contract on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - "{{ role_path }}/../../tools/samba_ad/telemetry_setup.py"
+      - validate
+    stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Verify identity and owned paths before writing anything
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/telemetry_setup.py') }}"
+      - preflight
+    stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Prepare the scoped telemetry stack only after readonly guards
+  when:
+    - samba_ad_observability_apply
+    - not ansible_check_mode
+  vars:
+    samba_ad_observability_units: >-
+      {{ ['exporter.service', 'exporter.timer', 'forwarder.service', 'agent.service']
+         if samba_ad_observability_parameters.mode == 'agent'
+         else ['prometheus.service', 'loki.service', 'gateway.service'] }}
+
+  block:
+    - name: Create only dedicated public and protected directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+      loop:
+        - {path: /opt/samba-ad-observability, mode: "0755"}
+        - {path: /opt/samba-ad-observability/bin, mode: "0755"}
+        - {path: /etc/samba-ad-observability, mode: "0755"}
+        - {path: /var/lib/samba-ad-observability, mode: "0700"}
+        - {path: /var/lib/samba-ad-observability/textfile, mode: "0700"}
+        - {path: /etc/samba-ad-observability/loki-rules, mode: "0755"}
+        - {path: /etc/samba-ad-observability/loki-rules/samba-ad, mode: "0755"}
+
+    - name: Record ownership without adopting shared resources
+      ansible.builtin.copy:
+        content: >-
+          {{ {'schema': 'samba-ad-observability/v1',
+              'machine_id': samba_ad_observability_parameters.machine_id,
+              'mode': samba_ad_observability_parameters.mode} | to_json }}
+        dest: /etc/samba-ad-observability/owner.json
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Install verified public binary assets without package scripts or autostart
+      ansible.builtin.copy:
+        src: "{{ item.value.path }}"
+        dest: "/opt/samba-ad-observability/bin/{{ item.key }}"
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ samba_ad_observability_assets | dict2items }}"
+
+    - name: Verify destination binary digests and native identities
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -B
+          - -c
+          - "{{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/telemetry_setup.py') }}"
+          - assets
+        stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+      changed_when: false
+      no_log: true
+
+    - name: Install public read-only exporter and constrained gateway
+      ansible.builtin.copy:
+        src: "{{ role_path }}/../../tools/samba_ad/{{ item }}.py"
+        dest: "/opt/samba-ad-observability/{{ item }}.py"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: [telemetry, telemetry_gateway, telemetry_spool]
+
+    - name: Generate only a host-local queue credential without returning its value
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -B
+          - -c
+          - "{{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/telemetry_setup.py') }}"
+          - token
+        stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+      changed_when: true
+      no_log: true
+      when: samba_ad_observability_parameters.mode == 'agent'
+
+    - name: Install protected local configuration containing references only
+      ansible.builtin.copy:
+        content: "{{ samba_ad_observability_parameters | to_nice_json }}"
+        dest: >-
+          /etc/samba-ad-observability/{{ 'agent'
+          if samba_ad_observability_parameters.mode == 'agent' else 'gateway' }}.json
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Render dedicated service configuration and rules
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/samba-ad-observability/{{ item }}"
+        owner: root
+        group: root
+        mode: "{{ '0600' if samba_ad_observability_parameters.mode == 'agent' else '0644' }}"
+      loop: >-
+        {{ ['agent.alloy'] if samba_ad_observability_parameters.mode == 'agent'
+           else ['prometheus.yml', 'loki.yml', 'prometheus-rules.yml'] }}
+      no_log: true
+
+    - name: Render tenant-local audit rules
+      ansible.builtin.template:
+        src: loki-rules.yml.j2
+        dest: /etc/samba-ad-observability/loki-rules/samba-ad/audit.yml
+        owner: root
+        group: root
+        mode: "0644"
+      when: samba_ad_observability_parameters.mode == 'collector'
+      no_log: true
+
+    - name: Validate full native configuration before creating activatable units
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -B
+          - -c
+          - "{{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/telemetry_setup.py') }}"
+          - native
+        stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+      changed_when: false
+      no_log: true
+
+    - name: Install only dedicated unit files
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "/etc/systemd/system/samba-ad-observability-{{ item }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ samba_ad_observability_units }}"
+
+    - name: Enable only the approved Samba JSON audit change on a qualified DC
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -B
+          - -c
+          - "{{ lookup('ansible.builtin.file', role_path ~ '/../../tools/samba_ad/telemetry_setup.py') }}"
+          - audit
+        stdin: "{{ {'config': samba_ad_observability_parameters, 'assets': samba_ad_observability_assets} | to_json }}"
+      changed_when: true
+      no_log: true
+      when:
+        - samba_ad_observability_parameters.mode == 'agent'
+        - samba_ad_observability_parameters.samba_json_enabled
+        - samba_ad_observability_activate
+
+    - name: Activate only the explicitly opted-in dedicated units
+      ansible.builtin.systemd_service:
+        name: "samba-ad-observability-{{ item }}"
+        daemon_reload: true
+        enabled: "{{ samba_ad_observability_activate }}"
+        state: "{{ 'started' if samba_ad_observability_activate else 'stopped' }}"
+      loop: "{{ samba_ad_observability_units | reject('equalto', 'exporter.service') | list }}"

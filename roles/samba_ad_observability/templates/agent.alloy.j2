@@ -1,0 +1,90 @@
+// Dedicated AD instance; does not import or replace the shared Alloy configuration.
+logging { level = "warn" }
+loki.write "ad" {
+  endpoint {
+    url = "http://127.0.0.1:19105/loki/api/v1/push"
+    bearer_token_file = {{ samba_ad_observability_parameters.token_file | to_json }}
+    min_backoff_period = "1s"
+    max_backoff_period = "1m"
+    max_backoff_retries = 1000000
+    retry_on_http_429 = true
+  }
+  wal {
+    enabled = true
+    max_segment_age = "24h"
+  }
+  external_labels = { project = "samba-ad", node = {{ samba_ad_observability_parameters.node | to_json }} }
+}
+prometheus.remote_write "ad" {
+  endpoint {
+    url = "http://127.0.0.1:19105/api/v1/write"
+    bearer_token_file = {{ samba_ad_observability_parameters.token_file | to_json }}
+    queue_config { retry_on_http_429 = true }
+  }
+  wal {
+    min_keepalive_time = "24h"
+    max_keepalive_time = "48h"
+  }
+  external_labels = { project = "samba-ad", node = {{ samba_ad_observability_parameters.node | to_json }} }
+}
+prometheus.exporter.self "ad" {}
+prometheus.scrape "self" {
+  targets = prometheus.exporter.self.ad.targets
+  scrape_interval = "30s"
+  forward_to = [prometheus.remote_write.ad.receiver]
+}
+{% if samba_ad_observability_parameters.platform == 'linux' %}
+prometheus.exporter.unix "ad" {
+  set_collectors = ["textfile", "filesystem"]
+  textfile { directory = "/var/lib/samba-ad-observability/textfile" }
+}
+prometheus.scrape "host" {
+  targets = prometheus.exporter.unix.ad.targets
+  scrape_interval = "30s"
+  forward_to = [prometheus.remote_write.ad.receiver]
+}
+loki.source.journal "linux" {
+  labels = { source = "linux_journal" }
+  max_age = "24h"
+  forward_to = [loki.write.ad.receiver]
+}
+{% else %}
+prometheus.exporter.windows "ad" {
+  enabled_collectors = ["os", "logical_disk", "service", "textfile"]
+  textfile { directories = ["C:/ProgramData/SambaADObservability/textfile"] }
+}
+prometheus.scrape "host" {
+  targets = prometheus.exporter.windows.ad.targets
+  scrape_interval = "30s"
+  forward_to = [prometheus.remote_write.ad.receiver]
+}
+{% for channel in ['Security', 'System', 'Application', 'Microsoft-Windows-GroupPolicy/Operational'] %}
+loki.source.windowsevent "channel_{{ loop.index }}" {
+  eventlog_name = {{ channel | to_json }}
+  bookmark_path = "C:/ProgramData/SambaADObservability/bookmark-{{ loop.index }}.xml"
+  labels = { source = "windows_event", channel = {{ channel | to_json }} }
+  forward_to = [loki.write.ad.receiver]
+  use_incoming_timestamp = true
+}
+{% endfor %}
+{% endif %}
+local.file_match "ad" {
+  path_targets = [
+{% for source,path in samba_ad_observability_parameters.log_files.items() %}
+    { __path__ = {{ path | to_json }}, source = {{ source | to_json }} },
+{% endfor %}
+    { __path__ = {{ samba_ad_observability_parameters.canary_file | to_json }}, source = "canary" },
+  ]
+}
+loki.process "files" {
+  stage.match {
+    selector = "{source=\"samba_json\"}"
+    stage.regex { expression = "(?P<json>\\{.*\\})" }
+    stage.output { source = "json" }
+  }
+  forward_to = [loki.write.ad.receiver]
+}
+loki.source.file "ad" {
+  targets = local.file_match.ad.targets
+  forward_to = [loki.process.files.receiver]
+}

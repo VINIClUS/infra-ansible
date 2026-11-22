@@ -1,0 +1,2 @@
+---
+samba_ad_observability_parameters: "{{ samba_ad_observability_config }}"

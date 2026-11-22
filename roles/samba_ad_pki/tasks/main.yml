@@ -152,6 +152,8 @@
         - pki_contract
         - pki_files
         - pki_runtime
+        - pki_telemetry
+        - pki_profiles
         - pki_material
         - pki_ca
 

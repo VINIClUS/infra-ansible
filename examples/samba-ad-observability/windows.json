@@ -1,0 +1,20 @@
+{
+  "schema": "samba-ad-observability-windows/v1",
+  "domain": "example.test",
+  "fqdn": "pilot.example.test",
+  "machine_guid": "11111111-2222-3333-4444-555555555555",
+  "rotation_task": "TelemetryRotate",
+  "alloy_binary": "C:/Program Files/SambaADTelemetry/alloy.exe",
+  "alloy_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pwsh_binary": "C:/Program Files/PowerShell/7/pwsh.exe",
+  "pwsh_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "alloy_config": "C:/Staging/samba-ad-agent.alloy",
+  "endpoint": "https://collector.example.test",
+  "server_name": "collector.example.test",
+  "pki_active": "C:\\ProgramData\\SambaADPKI\\telemetry_windows_pilot\\active.json",
+  "transition_file": "C:\\ProgramData\\SambaADPKI\\telemetry_windows_pilot\\transition.json",
+  "token_file": "C:\\ProgramData\\SambaADObservability\\token",
+  "python_binary": "C:/Program Files/SambaADTelemetry/Python/python.exe",
+  "python_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pki_config": "C:/Staging/windows-pki.json"
+}

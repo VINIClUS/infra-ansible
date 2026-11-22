@@ -1,0 +1,14 @@
+[Unit]
+Description=Dedicated Samba AD Prometheus backend
+[Service]
+Type=simple
+DynamicUser=true
+StateDirectory=samba-ad-observability-prometheus
+ExecStart=/opt/samba-ad-observability/bin/prometheus --config.file=/etc/samba-ad-observability/prometheus.yml --web.listen-address=127.0.0.1:19100 --web.enable-remote-write-receiver --storage.tsdb.path=/var/lib/samba-ad-observability-prometheus --storage.tsdb.retention.time=7d --storage.tsdb.retention.size=4GB
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
