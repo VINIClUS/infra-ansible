@@ -1,0 +1,99 @@
+---
+- name: Validate S6 opt-in types
+  ansible.builtin.assert:
+    that:
+      - samba_ad_pilots_enabled is boolean
+      - samba_ad_pilots_apply is boolean
+
+- name: Stop disabled pilots before transport
+  ansible.builtin.meta: end_role
+  when: not samba_ad_pilots_enabled
+
+- name: Require one exact target PVE node and dedicated manual tag
+  ansible.builtin.assert:
+    that:
+      - ansible_limit is defined
+      - ansible_limit | trim == inventory_hostname
+      - ansible_play_hosts_all | length == 1
+      - ansible_run_tags | list | sort == ['samba_ad_pilots']
+      - ansible_user is defined
+      - ansible_user != 'root'
+      - samba_ad_pilots_request is mapping
+      - samba_ad_pilots_manifest is mapping
+      - samba_ad_pilots_request.substrate.resource.node == inventory_hostname
+      - samba_ad_pilots_dc_hosts.keys() | list | sort == ['dc01', 'dc02']
+      - samba_ad_pilots_dc_hosts.dc01 in hostvars
+      - samba_ad_pilots_dc_hosts.dc02 in hostvars
+      - samba_ad_pilots_dc_hosts.dc01 != samba_ad_pilots_dc_hosts.dc02
+    fail_msg: S6 requires reviewed private contracts and exact manual target node.
+
+- name: Validate closed declarations locally before target or guest transport
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -B
+      - -c
+      - "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}"
+      - --validate
+    stdin: "{{ samba_ad_pilots_wire | to_json }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Probe only the owned new guest through its target PVE QGA
+  ansible.builtin.command:
+    argv: [python3, -B, -c, "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}", --probe]
+    stdin: "{{ samba_ad_pilots_wire | to_json }}"
+  register: samba_ad_pilots_probe
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Collect fresh host-local health from both declared DCs before membership
+  ansible.builtin.command:
+    argv: [python3, -B, -c, "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}", --dc, "{{ item }}"]
+    stdin: "{{ samba_ad_pilots_wire | to_json }}"
+  delegate_to: "{{ samba_ad_pilots_dc_hosts[item] }}"
+  loop: [dc01, dc02]
+  register: samba_ad_pilots_dc_result
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: not (samba_ad_pilots_request.action == 'prepare' and samba_ad_pilots_request.pilot == 'linux_pilot')
+
+- name: Create or inspect only the owned pilot OU on DC01
+  ansible.builtin.command:
+    argv: [python3, -B, -c, "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}", --directory]
+    stdin: >-
+      {{ samba_ad_pilots_wire | combine({'dc_records': samba_ad_pilots_dc_result.results |
+         map(attribute='stdout') | map('from_json') | list,
+         'probe': samba_ad_pilots_probe.stdout | from_json}) | to_json }}
+  delegate_to: "{{ samba_ad_pilots_dc_hosts.dc01 }}"
+  register: samba_ad_pilots_directory
+  changed_when: (samba_ad_pilots_directory.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+  when: samba_ad_pilots_request.action != 'prepare'
+
+- name: Run explicit client preparation or join policy and acceptance backend
+  ansible.builtin.command:
+    argv: [python3, -B, -c, "{{ lookup('ansible.builtin.template', 'bootstrap.py.j2') }}", --execute]
+    stdin: >-
+      {{ samba_ad_pilots_wire | combine({'dc_records':
+         (samba_ad_pilots_dc_result.results | map(attribute='stdout') | map('from_json') | list)
+         if not (samba_ad_pilots_request.action == 'prepare'
+         and samba_ad_pilots_request.pilot == 'linux_pilot') else [],
+         'directory': (samba_ad_pilots_directory.stdout | from_json)
+         if samba_ad_pilots_request.action != 'prepare' else none}) | to_json }}
+  register: samba_ad_pilots_result
+  changed_when: (samba_ad_pilots_result.stdout | from_json).changed
+  check_mode: false
+  no_log: true
+
+- name: Report sanitized client state
+  ansible.builtin.debug:
+    msg: "S6 state={{ (samba_ad_pilots_result.stdout | from_json).state }}; native acceptance requires both DCs."

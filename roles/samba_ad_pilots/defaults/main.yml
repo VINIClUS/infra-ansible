@@ -1,0 +1,6 @@
+---
+samba_ad_pilots_enabled: false
+samba_ad_pilots_apply: false
+samba_ad_pilots_manifest: {}
+samba_ad_pilots_request: {}
+samba_ad_pilots_dc_hosts: {}

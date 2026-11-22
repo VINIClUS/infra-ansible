@@ -1,0 +1,10 @@
+---
+- name: Manual S6 new owned client pilot
+  hosts: samba_ad_hosts
+  gather_facts: false
+  become: true
+  serial: 1
+  roles:
+    - role: samba_ad_pilots
+      tags:
+        - samba_ad_pilots
