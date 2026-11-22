@@ -29,6 +29,12 @@ only. The role is disabled by default and needs an exact `--limit` and
   zone, `except-interface=lo` and `no-dhcp-interface=<uplink>`; the role asserts
   nothing answers DNS on the uplink or a wildcard address. DHCP ranges announce
   the router, DNS and the VNet MTU (option 26).
+- `network_router_dns_host_records` (`{name, address}`) renders one
+  `host-record=` per entry: the VNets get that private address for the exact
+  name (never its subdomains) instead of the public one. Use it for public
+  names served by our own edge, which never connect from inside because the
+  LAN router has no hairpin NAT. The guests also need a forward rule to the
+  address returned.
 - Every ruleset is validated with `nft --check`. A verified complete preimage
   is published atomically before arming `network-router-deadman`; a staging
   failure stops outside the apply/rescue block. Applying and restoring also
