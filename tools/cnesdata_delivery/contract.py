@@ -437,6 +437,13 @@ def gate_sha(governance, role):
     return value
 
 
+def require_audit_gate(governance):
+    """Args: governance. Raises: ValueError when gate_shas carries plan or deploy without a valid audit sha."""
+    shas = governance.get("gate_shas")
+    if type(shas) is dict and ("plan" in shas or "deploy" in shas):
+        gate_sha(governance, "audit")
+
+
 def integer(value, minimum=1, maximum=2**53 - 1):
     require(type(value) is int and minimum <= value <= maximum, "integer range")
     return value

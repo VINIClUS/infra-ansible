@@ -26,6 +26,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
     c.integer(run_id)
     c.integer(attempt)
     c.require(role in {"plan", "deploy", "audit", "application"} and source == governance["source_sha"], "governed source/role")
+    c.require_audit_gate(governance)
     c.require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and os.environ.get("GITHUB_REF") == "refs/heads/main"
               and os.environ.get("GITHUB_REPOSITORY") == c.REPOSITORY, "manual production caller")
     purpose = governance["application_purpose"]

@@ -170,3 +170,52 @@ def test_credencial_oidc_do_audit_le_so_o_proprio_gate_sha_valido(monkeypatch, g
     with pytest.raises(ValueError, match=message):
         lifecycle_runtime.oidc_credentials({"gate_shas": gate_shas}, "audit", {}, {"id": 44, "run_attempt": 2})
     assert calls == []
+
+
+ROLES_QUE_ADMITEM = ["plan", "deploy", "audit", "application"]
+
+
+class CountingAPI:
+    def __init__(self, inner):
+        self.inner, self.reads = inner, []
+
+    def read(self, path, **kwargs):
+        self.reads.append(path)
+        return self.inner.read(path, **kwargs)
+
+
+def all_gate_shas(governance, role):
+    shas = {"application": "a" * 40, "plan": "1" * 40, "deploy": "2" * 40, "audit": "3" * 40}
+    shas[role] = governance["gate_shas"][role]
+    governance["gate_shas"] = shas
+
+
+@pytest.mark.parametrize("role", ROLES_QUE_ADMITEM)
+def test_governanca_com_os_quatro_gate_shas_validos_admite_cada_papel(monkeypatch, role):
+    governance, api, _, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", role)
+    all_gate_shas(governance, role)
+    assert admit(governance, api, role, step)["run_attempt"] == 2
+
+
+@pytest.mark.parametrize("role", ROLES_QUE_ADMITEM)
+@pytest.mark.parametrize("audit,message", [(None, "gate_shas role absent role=audit"),
+                                           (SENTINEL, "gate_shas sentinel role=audit")])
+def test_governanca_com_plan_e_deploy_sem_audit_valido_para_na_primeira_admissao(monkeypatch, role, audit, message):
+    governance, api, _, _, _, _ = _application_caller_fixture(monkeypatch, "promotion", role)
+    all_gate_shas(governance, role)
+    if audit is None:
+        governance["gate_shas"].pop("audit")
+    else:
+        governance["gate_shas"]["audit"] = audit
+    counting = CountingAPI(api)
+    with pytest.raises(ValueError, match=message):
+        lifecycle_runtime.source_admission(governance, counting, role, "b" * 40, 44, 2)
+    assert counting.reads == []
+
+
+@pytest.mark.parametrize("pinned", [{"plan": "1" * 40}, {"deploy": "2" * 40}])
+def test_regra_do_contrato_exige_audit_quando_a_governanca_tem_plan_ou_deploy(pinned):
+    with pytest.raises(ValueError, match="gate_shas role absent role=audit"):
+        c.require_audit_gate({"gate_shas": pinned})
+    c.require_audit_gate({"gate_shas": pinned | {"audit": "3" * 40}})
+    c.require_audit_gate({"gate_shas": {"application": "a" * 40}})
