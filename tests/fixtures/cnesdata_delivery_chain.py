@@ -45,6 +45,8 @@ class Chain:
         cost["evidence_sha256"] = c.sha(c.canonical(measured))
         self.gov = {"authority": "infra-ansible#28/6715994616+6716076093+6716241666+6716490764+6716699477+6718141241+6718506538",
                     "activation_enabled": True, "region": "us-east-2", "account_id": "111122223333", "report_hmac_key": "5a" * 32,
+                    "stage_windows": {"phase-b": 360, "api": 180, "static": 180, "unit": 180, "phase-c-recovery": 330,
+                                      "phase-c-audit": 330, "final": 90}, "fixed_deadline_seconds": 2070,
                     "roles": {"plan": "arn:aws:iam::111122223333:role/plan", "deploy": "arn:aws:iam::111122223333:role/deploy"},
                     "gate_shas": {"plan": "b" * 40, "deploy": "c" * 40}, "baseline": baseline, "cost": cost,
                     "dependencies": baseline["dependencies"], "required_checks": ["source-ci"],

@@ -90,7 +90,7 @@ def test_no_renewal_future_credit_after_ambiguous_readback(tmp_path, monkeypatch
     from test_personal_platform_deployer import operation
 
     g, clock, op = operation(tmp_path)
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     watchdog = g.Watchdog(op, window)
     clock.advance(60)
 

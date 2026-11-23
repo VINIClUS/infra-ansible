@@ -187,7 +187,7 @@ def _admitted_terminal_keeper(store, binding, historical, proof, *, carrier=None
     keeper.lease.checkpoint({"sequence": 0, "preparation_deadline": 1900, "close": None,
         "fixed_deadline": None, "input_deadline": None, "stage": "application-prepare", "admitted_at": 1000,
         "deadline": 1900, "decision": None, "checkpoint_sha256": c.sha(c.canonical(historical)),
-        "predecessor_sha256": "a" * 64, **lc.application_identity(binding)})
+        "predecessor_sha256": "a" * 64, "windows": MINIMUM_WINDOWS, **lc.application_identity(binding)})
     keeper.last_renewed = 1000
     owner = lc.owner_binding(keeper.lease.check())
     keeper.phase_a_originals = _phase_a_carrier_case()[0] if carrier is None else copy.deepcopy(carrier)
@@ -258,7 +258,7 @@ def _accepted_terminal_case():
     checkpoint = {"owner": owner, "state": historical["state_after"], "state_object": historical["state_object"],
                   "phase_a_originals": keeper.phase_a_originals}
     window = store.get()[0]["lifecycle"]
-    for stage, (duration, _) in lc.STAGES.items():
+    for stage, duration in MINIMUM_WINDOWS["stages"].items():
         window = window | {"sequence": window["sequence"] + 1, "close": 1000, "fixed_deadline": 2800,
                            "input_deadline": 3000, "stage": stage, "admitted_at": 1000, "deadline": 1000 + duration,
                            "checkpoint_sha256": c.sha(c.canonical(checkpoint))}
@@ -346,7 +346,7 @@ def test_keeper_terminal_release_requires_full_original_decision(case):
     checkpoint = {"owner": owner, "state": historical["state_after"], "state_object": historical["state_object"],
                   "phase_a_originals": keeper.phase_a_originals}
     window = store.get()[0]["lifecycle"]
-    for stage, (duration, _) in lc.STAGES.items():
+    for stage, duration in MINIMUM_WINDOWS["stages"].items():
         window = window | {"sequence": window["sequence"] + 1, "close": 1000, "fixed_deadline": 2800,
                            "input_deadline": 3000, "stage": stage, "admitted_at": 1000, "deadline": 1000 + duration,
                            "checkpoint_sha256": c.sha(c.canonical(checkpoint))}
@@ -399,7 +399,7 @@ def _terminal_fixture(*, failed=False, prepare_failure=False, current_caller=Fal
     checkpoint = {"owner": owner, "state": historical["state_after"], "state_object": historical["state_object"],
                   "phase_a_originals": keeper.phase_a_originals}
     window = store.get()[0]["lifecycle"]
-    for stage, (duration, _) in ([] if prepare_failure else lc.STAGES.items()):
+    for stage, duration in ([] if prepare_failure else MINIMUM_WINDOWS["stages"].items()):
         window = window | {"sequence": window["sequence"] + 1, "close": 1000, "fixed_deadline": 2800,
                            "input_deadline": 3000, "stage": stage, "admitted_at": 1000, "deadline": 1000 + duration,
                            "checkpoint_sha256": c.sha(c.canonical(checkpoint))}
@@ -470,7 +470,8 @@ def _publish_terminal_fixture(monkeypatch, tmp_path, *, failed=False, current_ca
     from tools.cnesdata_delivery.application_gate import ReleasedPublicationGuard, publish_terminal
     store, files = _terminal_fixture(failed=failed, current_caller=current_caller)
     record, etag = store.get()
-    governance = {"evidence_prefix": "cnesdata/prod/evidence/", "state_bucket": "synthetic-state", "evidence_bucket": "evidence",
+    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"],
+                  "evidence_prefix": "cnesdata/prod/evidence/", "state_bucket": "synthetic-state", "evidence_bucket": "evidence",
                   "gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "promotion / keeper"}
     run = {"id": 44, "run_attempt": 1, "head_sha": "b" * 40, "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
@@ -869,7 +870,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
     manifest = {"version": 1, "source_sha": "b" * 40,
                 "files": {caller["workflow_path"]: c.sha(raw), "scripts/promotion/promote_api.py": "c" * 64}}
     gov = {"source_sha": "b" * 40, "application_purpose": purpose, "context_kind": lc.APPLICATION_CONTEXTS[purpose],
-           "gate_shas": {"application": "a" * 40, role: role_pin}, "required_checks": ["CI"],
+           "gate_shas": {"application": "a" * 40, "audit": "f" * 40, role: role_pin}, "required_checks": ["CI"],
            "application_source_closure_sha256": "d" * 64, "application_product_source_manifest": manifest,
            "application_product_source_closure_sha256": c.sha(c.canonical(manifest))}
     run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "main",
@@ -1065,7 +1066,8 @@ def test_checkpoint_preserves_current_caller_alongside_original_history():
     initial = {"sequence": 0, "preparation_deadline": 1900, "close": None, "fixed_deadline": None,
                "input_deadline": None, "stage": "application-prepare", "admitted_at": 1000, "deadline": 1900,
                "decision": None, "checkpoint_sha256": "a" * 64, "predecessor_sha256": "b" * 64,
-               "application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": "c" * 64}
+               "application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": "c" * 64,
+               "windows": MINIMUM_WINDOWS}
     lc.checkpoint_transition(None, initial)
     following = initial | {"sequence": 1, "checkpoint_sha256": "d" * 64}
     lc.checkpoint_transition(initial, following)
@@ -1168,6 +1170,12 @@ def test_legacy_retry_does_not_treat_original_lifecycle_terminal_as_saved_plan(m
 
 
 
+WINDOWS = {"stages": {"phase-b": 360, "api": 180, "static": 180, "unit": 180, "phase-c-recovery": 330,
+                      "phase-c-audit": 330, "final": 90}, "fixed_deadline_seconds": 2070}
+MINIMUM_WINDOWS = {"stages": {"phase-b": 360, "api": 180, "static": 180, "unit": 120, "phase-c-recovery": 240,
+                              "phase-c-audit": 240, "final": 60}, "fixed_deadline_seconds": 1800}
+
+
 def _adapter_case(operation="inventory"):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     owner = {"repository": c.REPOSITORY, "source_sha": "a" * 40, "run_id": 41, "run_attempt": 1,
@@ -1175,20 +1183,20 @@ def _adapter_case(operation="inventory"):
              "application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": "e" * 64}
     window = {"close": None, "fixed_deadline": None, "input_deadline": None, "stage": "application-prepare",
               "admitted_at": 1000, "deadline": 1900, "decision": None, "preparation_deadline": 1900,
-              "sequence": 1, "checkpoint_sha256": "f" * 64, **lc.application_identity(owner)}
+              "sequence": 1, "checkpoint_sha256": "f" * 64, "windows": WINDOWS, **lc.application_identity(owner)}
     names = {"inventory": ("candidate", "dashboard-artifact", "archive", "static-baseline"),
              "close-drain": ("activation", "expirations"),
              "closed-ready": ("activation", "close-drain", "phase-b", "membership"),
              "publish-static": ("candidate", "dashboard-artifact", "static-plan", "inventory", "host-receipt"),
              "retire-static": ("static-plan", "inventory", "publication", "routing")}[operation]
     if operation == "closed-ready":
-        window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
+        window.update(close=1000, fixed_deadline=3070, input_deadline=4000, stage="api", admitted_at=1300, deadline=1480)
     if operation == "publish-static":
-        window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="static", admitted_at=1500, deadline=1680)
+        window.update(close=1000, fixed_deadline=3070, input_deadline=4000, stage="static", admitted_at=1500, deadline=1680)
     if operation == "retire-static":
-        window.update(close=1000, fixed_deadline=2800, input_deadline=4000, stage="final", admitted_at=2100, deadline=2160)
+        window.update(close=1000, fixed_deadline=3070, input_deadline=4000, stage="final", admitted_at=2100, deadline=2160)
     inputs = {name: c.canonical({"fixture_only": name}) for name in names}
-    request = {"abi_version": 2, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+    request = {"abi_version": 3, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
                "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": "1" * 64,
                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
@@ -1242,7 +1250,7 @@ def test_adapter_result_cannot_erase_uncertainty_or_invent_observations(mutation
     observations = [{"kind": "inventory", "sha256": c.sha(observation), "size": len(observation)}]
     receipts = [{"fixture_only": "original shared SDK receipt"}]
     pending, unknown = [{"kind": "call", "reference_sha256": "3" * 64}], [{"kind": "call", "reference_sha256": "4" * 64}]
-    result = {"abi_version": 2, "operation": "inventory", "owner_sha256": request["owner"]["owner_sha256"],
+    result = {"abi_version": 3, "operation": "inventory", "owner_sha256": request["owner"]["owner_sha256"],
               "generation": request["owner"]["generation"], "checkpoint_sha256": request["checkpoint_sha256"],
               "observations": copy.deepcopy(observations), "call_receipts_sha256": c.sha(c.canonical(receipts)),
               "pending": copy.deepcopy(pending), "unknown": copy.deepcopy(unknown)}
@@ -1297,7 +1305,7 @@ def test_adapter_journal_freezes_inputs_and_only_returns_registered_originals(mu
         return
     digest = journal.observe("inventory", observed)
     assert journal.observation_bytes[digest] == observed
-    result = {"abi_version": 2, "operation": "inventory", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
+    result = {"abi_version": 3, "operation": "inventory", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
               "checkpoint_sha256": window["checkpoint_sha256"], "observations": journal.observations,
               "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
     if mutation == "invent-result":
@@ -1417,7 +1425,7 @@ def test_shared_sdk_journal_cannot_accept_result_while_native_call_is_unresolved
                                 activation_sha256=request["activation_sha256"], guard=Guard())
     raw = c.canonical({"role": "fence_operator", "service": "dynamodb", "operation": "get_item", "parameters": {}})
     ticket = journal.begin_sdk_call(raw, role_session_sha256="2" * 64)
-    result = {"abi_version": 2, "operation": "closed-ready", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
+    result = {"abi_version": 3, "operation": "closed-ready", "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
               "checkpoint_sha256": window["checkpoint_sha256"], "observations": [], "call_receipts_sha256": c.sha(c.canonical([])),
               "pending": journal.pending, "unknown": []}
     with pytest.raises(ValueError):
@@ -1726,7 +1734,7 @@ def execute_shared_operation(operation, request, context):
     observed = canonical({'fixture_only': True, 'input_sha256': hashlib.sha256(original).hexdigest(),
                           'credentials_absent': all(name not in os.environ for name in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'GITHUB_TOKEN'))})
     digest = context.observe('inventory', observed)
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
             'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
             'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
             'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
@@ -2397,8 +2405,8 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
               "admitted_at": preparation["admitted_at"] - (mutation == "admitted") + (mutation == "admitted-later"),
               "deadline": preparation["deadline"] - (mutation == "preparation"),
               "decision": None, "preparation_deadline": preparation["deadline"] - (mutation == "preparation"),
-              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), **lc.application_identity(owner)}
-    request = {"abi_version": 2, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+              "sequence": 1, "checkpoint_sha256": c.sha(files["checkpoint.json"]), "windows": MINIMUM_WINDOWS, **lc.application_identity(owner)}
+    request = {"abi_version": 3, "operation": "close-drain", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
                "activation_sha256": c.sha(inputs["activation"]),
                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
@@ -2558,7 +2566,7 @@ def execute_shared_operation(operation, request, context):
     observed = canonical({'value': VALUE, 'stub_file': getattr(sys.modules.get('cnes_infra'), '__file__', None),
                           'domain_path': list(getattr(sys.modules['cnes_domain'], '__path__', []))})
     digest = context.observe('inventory', observed)
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
             'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
             'observations': [{'kind': 'inventory', 'sha256': digest, 'size': len(observed)}],
             'call_receipts_sha256': hashlib.sha256(canonical([])).hexdigest(), 'pending': [], 'unknown': []}
@@ -2722,7 +2730,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "missing-original":
         originals.pop("resources_sha256")
     if mutation == "duration":
-        originals["deadline"] = manifest["deadline"] = 1901
+        originals["deadline"] = manifest["deadline"] = 2201
     if mutation == "caller":
         owner.update(application_purpose="mode-readiness-drill", context_kind="readiness")
     with pytest.raises(ValueError):
@@ -3169,7 +3177,8 @@ def test_artifact_digests_retain_only_the_authenticated_download_digest():
 @pytest.mark.parametrize("role", ["application", "plan"])
 def test_admission_retains_artifact_digests_only_for_the_application_role(monkeypatch, role):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    governance = {"activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
+    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"],
+                  "activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
                   "lifecycle_steps_sha256": "a" * 64, "source_closure_sha256": "b" * 64}
     request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
                            "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
@@ -4047,7 +4056,7 @@ def execute_shared_operation(operation, request, context):
     digest = context.observe('closed-ready', raw)
     snapshot = context.evidence_snapshot()
     MUTATION
-    return {'abi_version': 2, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
+    return {'abi_version': 3, 'operation': operation, 'owner_sha256': request['owner']['owner_sha256'],
         'generation': request['owner']['generation'], 'checkpoint_sha256': request['checkpoint_sha256'],
         'observations': [{'kind': 'closed-ready', 'sha256': digest, 'size': len(raw)}], **snapshot}
 '''
@@ -4447,7 +4456,7 @@ def test_fence_session_policy_rejects_non_exact_scope(mutation):
         session_policy.fence_session_policy(**kwargs)
 
 
-def _fence_prepare_package_case(monkeypatch, mutation=None):
+def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS):
     """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
     import base64
     import hashlib
@@ -4518,7 +4527,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None):
             return body | {"ResponseMetadata": {"RequestId": f"req-{len(calls)}", "HTTPStatusCode": 200,
                                                 "HTTPHeaders": {"date": formatdate(now[0], usegmt=True)}}}
     class Guard:
-        window = {"admitted_at": 1000, "preparation_deadline": 1900}
+        window = {"admitted_at": 1000, "preparation_deadline": 1900, "windows": windows}
         def check(self, seconds=0): pass
     kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
         authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
@@ -4654,13 +4663,13 @@ def test_fence_prepare_package_connects_index_chain_and_predecessor_without_new_
                     or path == root + f"git/trees/{historical}?recursive=1" or path.endswith("?ref=" + historical)), path
 
 
-def _closed_ready_capability_case(monkeypatch, mutation=None):
+def _closed_ready_capability_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS):
     """Connected item-7 composition: real prepared producer/codec, real broker; GitHub/S3/STS are external fakes."""
     import io
     import zipfile
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
-    kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch, windows=windows)
     activation = b"original-ext2-payload-bytes"
     kwargs["activation_sha256"] = c.sha(activation)
     if mutation == "frozen":
@@ -4696,10 +4705,11 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
     members = scope["members"]
     membership = {"frozen_membership_sha256": c.sha(c.canonical(members)), "members": members}
-    close_raw = c.canonical({"version": 1, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
+    close_raw = c.canonical({"version": 2, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
                              "close_confirmed_at": c.utc(1000), "drain_observed_at": c.utc(1010), "members": members,
                              "frozen_membership_sha256": membership["frozen_membership_sha256"], "proofs": [], "permit": None,
-                             "input_expirations": [], "fixed_deadline": c.utc(2800), "decision": None})
+                             "input_expirations": [], "fixed_deadline": c.utc(1000 + windows["fixed_deadline_seconds"]),
+                             "decision": None, "windows": windows})
     if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
     prepared_at = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]["admitted_at"]
     admitted = prepared_at if mutation == "admitted" else 1300
@@ -4720,11 +4730,11 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": close_raw,
               "phase-b": b_files["checkpoint.json"] if mutation == "lifecycle-phase-b" else evidence,
               "membership": c.canonical(membership)}
-    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api",
-              "admitted_at": admitted, "deadline": 1480,
+    window = {"close": 1000, "fixed_deadline": 1000 + windows["fixed_deadline_seconds"], "input_deadline": 4000, "stage": "api",
+              "admitted_at": admitted, "deadline": 1300 + windows["stages"]["api"],
               "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
-              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), **lc.application_identity(owner)}
-    request = {"abi_version": 2, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), "windows": windows, **lc.application_identity(owner)}
+    request = {"abi_version": 3, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
                "activation_sha256": c.sha(inputs["activation"]),
                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
@@ -4892,20 +4902,24 @@ def _phase_b_material(**changes):
 
 
 PRODUCT_CLOSED_READY_ORIGIN = {
-    "commit": "b52bece9a3f1756acb148c57dbb02842a67813ec",
-    "scripts/promotion/promote_ready.py": "9ad21a169af0c4654985e78e9631d05c12f2219e7842b7e95bab57697751960b",
-    "scripts/promotion/_closed_ready.py": "d36d6d48b226b3157bd1ec45ccca2ff96a2b6b263c634c7cde372497d60311af",
-    "scripts/promotion/_adapter_abi.py": "f14d7becdaff7c00d7d2bdbb1fb9f6b2f27f8702380e22d6e046fb3b8aa112bc"}
-VENDORED_CLOSED_READY_SHA256 = "5df000fa1fe97ccdfd173a3ef5c82e33b6e5e12759ff6ba2083451f5d5cdbcf0"
+    "commit": "c7b1ece1b030073570a63f8327b7c9bb13142acb",
+    "scripts/promotion/promote_ready.py": "940dbb3f889c4d846eccc523dfdc40346e78ecd838dbc626ab1ccf7695c0eae2",
+    "scripts/promotion/_closed_ready.py": "c2b9e1111e297f7b84f047bc1e2e7117c07ee8a7bd3064b87f7d7bd0f658b25b",
+    "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
+    "scripts/promotion/_stage_windows.py": "2a8ae63dccf35b32d2954384c3ada2a7c6d393113f04d7e4924fd860c75fa412"}
+VENDORED_CLOSED_READY_SHA256 = "6abda86ea52acde970817ff449f41a114b0c51691e141e465b1876f0dc5b7c32"
 
 
-def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadline):
-    """Vendored from CnesData b52bece9: promote_ready.closed_ready field checks (_adapter_abi document/closed/versioned/
-    frozen_members, membership and binding) and _closed_ready.build_closed_ready kind/close_hash/common/stage_deadline."""
+def _product_closed_ready_fields(inputs, *, activation_sha256, windows, admitted, deadline):
+    """Vendored from CnesData c7b1ece1: promote_ready.closed_ready field checks (_adapter_abi document/closed/versioned/
+    close_drain_document/frozen_members, membership and binding), _stage_windows governed_windows/later_seconds and
+    _closed_ready.build_closed_ready kind/close_hash/common/stage_deadline."""
     import json
     from datetime import datetime
     from test_cnesdata_stage_events import (PRODUCT_CLOSE_DRAIN_FIELDS, PRODUCT_FROZEN_MEMBER_FIELDS, PRODUCT_MEMBERSHIP_FIELDS,
                                             PRODUCT_PHASE_B_FIELDS)
+    bounds = {"phase-b": (360, 720), "api": (180, 360), "static": (180, 360), "unit": (120, 360),
+              "phase-c-recovery": (240, 660), "phase-c-audit": (240, 660), "final": (60, 180)}
 
     def canonical(value):
         return (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -4933,9 +4947,32 @@ def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadlin
             raise ValueError(f"closed_ready=kind name={name}")
         return value
 
+    def governed_windows(value):
+        if not isinstance(value, dict) or set(value) != {"stages", "fixed_deadline_seconds"}:
+            raise ValueError("windows=fields")
+        stages, fixed = value["stages"], value["fixed_deadline_seconds"]
+        if not isinstance(stages, dict) or set(stages) != set(bounds):
+            raise ValueError("windows=stages")
+        for name, (low, high) in bounds.items():
+            if type(stages[name]) is not int or not low <= stages[name] <= high:
+                raise ValueError(f"windows=stage stage={name} value={stages[name]} min={low} max={high}")
+        if sum(stages.values()) > 1830:
+            raise ValueError(f"windows=sum sum={sum(stages.values())} ceiling=1830")
+        if type(fixed) is not int or fixed != sum(stages.values()) + 420:
+            raise ValueError(f"windows=fixed value={fixed} expected={sum(stages.values()) + 420}")
+        return value
+
+    def close_drain_document(raw):
+        value = closed(document(raw, "close-drain"), PRODUCT_CLOSE_DRAIN_FIELDS, "close-drain")
+        if type(value["version"]) is not int or value["version"] != 2 or value["kind"] != "close-drain":
+            raise ValueError("closed_ready=kind name=close-drain")
+        if governed_windows(value["windows"]) != windows:
+            raise ValueError("closed_ready=windows")
+        return value
+
     def moment(text):
         return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-    close = versioned(inputs["close-drain"], "close-drain", PRODUCT_CLOSE_DRAIN_FIELDS)
+    close = close_drain_document(inputs["close-drain"])
     phase = versioned(inputs["phase-b"], "phase-b", PRODUCT_PHASE_B_FIELDS)
     membership = closed(document(inputs["membership"], "membership"), PRODUCT_MEMBERSHIP_FIELDS, "membership")
     if not isinstance(membership["members"], list) or membership["frozen_membership_sha256"] != c.sha(canonical(membership["members"])):
@@ -4951,8 +4988,10 @@ def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadlin
         raise ValueError("closed_ready=close_hash")
     if common != phase["common"]:
         raise ValueError("closed_ready=original_exclusion")
+    stages, order = close["windows"]["stages"], list(bounds)
+    api, later = stages["api"], sum(stages[name] for name in order[order.index("api") + 1:])
     fixed, after = moment(close["fixed_deadline"]), moment(phase["observed_at"])
-    if not (after <= admitted < deadline <= min(fixed, admitted + 180) and fixed - admitted >= 1440):
+    if not (after <= admitted < deadline <= min(fixed, admitted + api) and fixed - admitted >= api + later + 420):
         raise ValueError("closed_ready=stage_deadline")
     return phase
 
@@ -4961,7 +5000,7 @@ def test_copia_vendorizada_do_closed_ready_do_produto_so_muda_junto_com_a_origem
     """infra-ansible CI cannot import CnesData: a refresh of the vendored check updates its origin and this digest together."""
     import inspect
     assert set(PRODUCT_CLOSED_READY_ORIGIN) == {"commit", "scripts/promotion/promote_ready.py", "scripts/promotion/_closed_ready.py",
-                                                "scripts/promotion/_adapter_abi.py"}
+                                                "scripts/promotion/_adapter_abi.py", "scripts/promotion/_stage_windows.py"}
     assert c.sha(inspect.getsource(_product_closed_ready_fields).encode()) == VENDORED_CLOSED_READY_SHA256
 
 
@@ -4976,7 +5015,8 @@ def test_produto_recusa_o_checkpoint_do_lifecycle_que_a_base_pinava_como_phase_b
     world = _phase_b_material()
     with pytest.raises(ValueError, match="^closed_ready=fields name=phase-b$"):
         _product_closed_ready_fields(_product_inputs(world, world.arguments["published"]["checkpoint.json"]),
-                                     activation_sha256=world.close["common"]["activation_sha256"], admitted=960, deadline=1140)
+                                     activation_sha256=world.close["common"]["activation_sha256"], windows=WINDOWS,
+                                     admitted=960, deadline=1140)
 
 
 def test_bytes_phase_b_do_keeper_passam_na_checagem_de_campos_do_closed_ready_do_produto():
@@ -4984,9 +5024,28 @@ def test_bytes_phase_b_do_keeper_passam_na_checagem_de_campos_do_closed_ready_do
     world = _phase_b_material()
     raw = ag.api_phase_b_evidence(**world.arguments)
     phase = _product_closed_ready_fields(_product_inputs(world, raw), activation_sha256=world.close["common"]["activation_sha256"],
-                                         admitted=960, deadline=1140)
+                                         windows=WINDOWS, admitted=960, deadline=1140)
     assert phase["observed_at"] == c.utc(950) and phase["apply_sha256"] == c.sha(world.arguments["published"]["checkpoint.json"])
     assert phase["audit_sha256"] == c.sha(world.arguments["published"]["approval.json"])
+
+
+API_179 = {"stages": WINDOWS["stages"] | {"api": 179}, "fixed_deadline_seconds": 2069}
+ABSENT = object()
+
+
+@pytest.mark.parametrize(("change", "windows", "reason"), [
+    pytest.param({"version": 1}, WINDOWS, "^closed_ready=kind name=close-drain$", id="close-drain-v1"),
+    pytest.param({"windows": ABSENT}, WINDOWS, "^closed_ready=fields name=close-drain$", id="close-drain-v2-sem-janelas"),
+    pytest.param({}, MINIMUM_WINDOWS, "^closed_ready=windows$", id="janelas-diferentes-das-do-request"),
+    pytest.param({"windows": API_179}, API_179, "^windows=stage stage=api value=179 min=180 max=360$", id="api-abaixo-do-minimo"),
+])
+def test_closed_ready_do_produto_so_aceita_close_drain_v2_com_as_janelas_governadas_do_request(change, windows, reason):
+    world = _phase_b_material()
+    close = {key: value for key, value in (world.close | change).items() if value is not ABSENT}
+    inputs = {"close-drain": world.g.canonical(close), "phase-b": b"", "membership": b""}
+    with pytest.raises(ValueError, match=reason):
+        _product_closed_ready_fields(inputs, activation_sha256=close["common"]["activation_sha256"], windows=windows,
+                                     admitted=960, deadline=1140)
 
 
 def test_evidencia_phase_b_do_keeper_passa_no_validate_closed_ready_do_host_gate():
@@ -5840,9 +5899,9 @@ def _synthetic_terminal_vectors(**changes):
         {"dispatch_id": "ffffffffffffffff", "request_sha256": "a" * 64, "generation": 1, "initial_state": "OUTCOME_UNKNOWN",
          "execution_ref": None, "resolution": "ABSENT_PROVEN", "proof_sha256": "b" * 64, "observed_at": c.utc(990),
          "send_disabled_at": c.utc(980)}]
-    close = {"version": 1, "kind": "close-drain", "common": {}, "fence": {}, "close_confirmed_at": c.utc(1000),
+    close = {"version": 2, "kind": "close-drain", "common": {}, "fence": {}, "close_confirmed_at": c.utc(1000),
              "drain_observed_at": c.utc(1000), "frozen_membership_sha256": c.sha(c.canonical(members)), "members": members,
-             "proofs": [], "permit": None, "fixed_deadline": c.utc(2800), "decision": None,
+             "proofs": [], "permit": None, "fixed_deadline": c.utc(2800), "decision": None, "windows": MINIMUM_WINDOWS,
              "input_expirations": [{"kind": "envelope", "object_sha256": "5" * 64, "expires_at": c.utc(2800)}]}
     caller = {"repository": "VINIClUS/CnesData", "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
     common = {"repository": "VINIClUS/CnesData", "release_id": "synthetic-release", "source_sha": "b" * 40,
@@ -6746,7 +6805,7 @@ def test_retire_static_result_takes_only_the_retirement_observation(kind):
     request = _adapter_case("retire-static")[0]
     raw = c.canonical({"fixture_only": "retirement"})
     observations = [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
-    result = {"abi_version": 2, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
+    result = {"abi_version": 3, "operation": "retire-static", "owner_sha256": request["owner"]["owner_sha256"],
               "generation": request["owner"]["generation"], "checkpoint_sha256": request["checkpoint_sha256"],
               "observations": observations, "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []}
     args = {"request": request, "observations": observations, "call_receipts": [], "pending": [], "unknown": []}
@@ -7069,7 +7128,7 @@ def test_retire_static_does_not_fit_the_final_budget_for_the_largest_498_plan_in
             low, high = (middle, high) if fits else (low, middle)
         thresholds[durable, watchdog] = low
     # Closed forms over the 60 s of decision 5: (60 - 20 [- 37]) / (AWS ops before the last capacity check).
-    assert lc.STAGES["final"] == (60, 0)
+    assert lc.STAGES["final"][0] == 60
     assert thresholds == {
         (True, True): pytest.approx((60 - 20 - 37) / (1 + 10 * (plan - 1) + 9), abs=1e-6),
         (True, False): pytest.approx((60 - 20) / (1 + 10 * (plan - 1) + 5), abs=1e-6),

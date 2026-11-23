@@ -53,7 +53,7 @@ def test_authenticated_https_date_shortens_effect_margin(monkeypatch):
         == {}
     )
     assert clock.upper() == 1011
-    window = g.Window(clock, close_confirmed_at=660, input_deadlines=[3600])
+    window = g.Window(clock, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600])
     window.stage_deadline = 1045
     with pytest.raises(ValueError, match="stage deadline"):
         window.guard(lease_expires_at=1300)
@@ -68,7 +68,7 @@ def test_authenticated_https_date_shortens_effect_margin(monkeypatch):
 
 def test_renewal_latch_allows_only_recording_first_recovery_decision():
     g, clock = runtime(), Clock()
-    window = g.Window(clock, close_confirmed_at=660, input_deadlines=[3600])
+    window = g.Window(clock, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600])
     window.fail("renewal failed or ambiguous")
     decision = window.choose_recovery(H, H, 1, H)
     assert decision["choice_at"] == g.utc(1000)
@@ -148,7 +148,7 @@ def test_symlink_and_insecure_store_refused(tmp_path):
 def test_fixed_budget_is_independent_of_current_300_second_lease():
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     window.enter_stage("phase-b", budget=240, later=1020)
     window.guard(lease_expires_at=1300)
     clock.advance(60)
@@ -163,7 +163,7 @@ def test_fixed_budget_is_independent_of_current_300_second_lease():
 def test_lease_guard_is_strict_and_uses_confirmed_expiry(remaining, accepted):
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     if accepted:
         window.guard(lease_expires_at=1000 + remaining)
     else:
@@ -174,7 +174,7 @@ def test_lease_guard_is_strict_and_uses_confirmed_expiry(remaining, accepted):
 def test_failed_renewal_latches_despite_future_schedule_and_window():
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     clock.advance(200)
     window.fail("ambiguous renewal")
     with pytest.raises(ValueError, match="ambiguous renewal"):
@@ -184,7 +184,7 @@ def test_failed_renewal_latches_despite_future_schedule_and_window():
 def test_stage_walltime_and_fixed_inputs_never_reset():
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[2700, 4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[2700, 4600])
     assert window.fixed_deadline == 2700
     window.enter_stage("candidate", budget=180, later=100)
     clock.advance(145)
@@ -196,7 +196,7 @@ def test_stage_walltime_and_fixed_inputs_never_reset():
 def test_recovery_420_is_allocated_once_and_consumes_elapsed_walltime():
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     decision = window.choose_recovery(H, H, 1, H)
     assert decision["recovery_deadline"] == g.utc(1420)
     clock.advance(120)
@@ -224,7 +224,7 @@ def test_recovery_420_is_allocated_once_and_consumes_elapsed_walltime():
 def test_clock_discontinuity_blocks_success(change):
     g = runtime()
     clock = Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     if change == "boot":
         clock.boot_id = "reboot"
     elif change == "wall":
@@ -237,7 +237,7 @@ def test_clock_discontinuity_blocks_success(change):
 
 def test_numeric_1800_second_witness_uses_only_observed_renewals():
     g, clock = runtime(), Clock()
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     expiry = 1300
     stages = [
         (120, 1260),

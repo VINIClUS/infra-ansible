@@ -3,7 +3,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from tools.cnesdata_delivery import contract as c, drift_handoff
+from tools.cnesdata_delivery import contract as c, drift_handoff, lifecycle_contract as lc
 from tools.cnesdata_delivery.producers import baseline_commitments, hmac_key, release_guard
 from tools.cnesdata_delivery.producers.chain import expiry_chain
 
@@ -18,14 +18,16 @@ GOVERNANCE_KEYS = frozenset("""
     artifact_purposes artifact_references authenticated_application_caller authority authorization baseline
     baseline_artifacts bootstrap_checkpoint caller_allowlist consumer contract_sha256 cost cost_handoff
     context_kind credentials crypto dependencies drift_handoff drift_matrix ecr_repository evidence_bucket
-    evidence_kms_key_arn evidence_prefix ext2 gate_shas history host images lifecycle_authority
+    evidence_kms_key_arn evidence_prefix ext2 fixed_deadline_seconds gate_shas history host images lifecycle_authority
     lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps_sha256 lifecycle_terminal_job
     phase_a_inputs phase_input_objects plan_run_id policy_evaluator_sha256 policy_sha256 predecessor_read
     principal_sha256 product_inputs promotion_sha256 proof_producers provenance readbacks region release
     report_hmac_key required_checks role roles runner runtime_contract_sha256 runtime_probes runtime_sha256
     session_duration_seconds session_owner_references session_policy_pins signing signing_spki_pem_sha256
-    source_closure_sha256 source_files source_sha state_bucket state_kms_key_arn storage workflows
+    source_closure_sha256 source_files source_sha stage_windows state_bucket state_kms_key_arn storage workflows
 """.split())
+INITIAL_STAGE_WINDOWS = {"phase-b": 360, "api": 180, "static": 180, "unit": 180,
+                          "phase-c-recovery": 330, "phase-c-audit": 330, "final": 90}
 HYDRATED_KEYS = frozenset(("lifecycle_steps", "source_closure"))
 REFERENCES = ("lifecycle_steps_sha256", "source_closure_sha256")
 
@@ -42,6 +44,26 @@ def _cost_stage(document):
     cost, baseline = document.get("cost"), document.get("baseline", {})
     if cost is not None and "cost_context" in baseline:
         c.require(cost["scope"] == baseline["cost_context"]["stage"], "cost scope differs from cost context stage")
+
+
+def stage_windows(overrides=()):
+    """Args: stage=seconds overrides. Returns: the two governance keys from the initial values. Raises: ValueError."""
+    stages = dict(INITIAL_STAGE_WINDOWS)
+    for item in overrides:
+        name, _, seconds = item.partition("=")
+        c.require(name in stages and seconds.isdigit(), f"stage window stage={name} value={seconds}")
+        stages[name] = int(seconds)
+    value = {"stage_windows": stages, "fixed_deadline_seconds": sum(stages.values()) + lc.FINAL_RESERVE}
+    lc.stage_windows(value)
+    return value
+
+
+def _stage_windows(document):
+    role = document.get("role")
+    present = {"stage_windows", "fixed_deadline_seconds"} & set(document)
+    if role == "application" or present:
+        c.require(role in (None, "application"), f"stage windows outside application governance role={role}")
+        lc.stage_windows(document)
 
 
 def _closed_keys(document):
@@ -98,6 +120,7 @@ def references(document):
 def crosscheck(document, commitments):
     """Args: governance document, public commitments. Raises: ValueError on any hash or format mismatch."""
     _closed_keys(document)
+    _stage_windows(document)
     _expiry_chain(document)
     c.report_key(document)
     value = document["product_inputs"]["shared_outputs"]
@@ -134,6 +157,10 @@ def _lifecycle_objects(args):
     sys.stdout.buffer.write(c.canonical(pinned))
 
 
+def _stage_windows_render(args):
+    sys.stdout.buffer.write(c.canonical(stage_windows(args.window)))
+
+
 def _baseline_inputs(args):
     private = c.loads(Path(args.private).read_bytes())
     key = hmac_key.Custody().lookup()
@@ -164,6 +191,9 @@ def parser():
     for name in ("--steps", "--manifest", "--output"):
         objects.add_argument(name, required=True)
     objects.set_defaults(run=_lifecycle_objects)
+    windows = commands.add_parser("stage-windows")
+    windows.add_argument("--window", action="append", default=[])
+    windows.set_defaults(run=_stage_windows_render)
     inputs = commands.add_parser("baseline-inputs")
     inputs.add_argument("--private", required=True)
     inputs.set_defaults(run=_baseline_inputs)

@@ -436,7 +436,9 @@ def validate_static_call(*, request, role, service, operation, parameters, bucke
     return STATIC_SDK_METHODS[service, operation]
 
 
-ADAPTER_STAGE_FIELDS = "close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence checkpoint_sha256"
+ADAPTER_ABI_VERSION = 3
+ADAPTER_STAGE_FIELDS = ("close fixed_deadline input_deadline stage admitted_at deadline decision preparation_deadline sequence "
+                        "checkpoint_sha256 windows")
 FENCE_PREPARE_PRODUCER = {
     "workflow_path": ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml", "job": "execute", "step_id": "gate",
     "step_name": "Execute under CAS watchdog and verify final publication", "step": "application-prepare-operational",
@@ -840,14 +842,14 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
 
 
 def validate_adapter_request(raw, *, operation, owner, window, inputs, activation_sha256):
-    """ABI2 byte binding only; provenance and domain validators remain mandatory.
+    """ABI3 byte binding only; provenance and domain validators remain mandatory.
 
     The old generic canary adapter route is deliberately unavailable: #499 uses
     different identities and producers that must be integrated before dispatch.
     """
     request = c.loads(raw, canonical=True, limit=128 * 1024)
     c.closed(request, "abi_version operation repository source_sha owner checkpoint_sha256 activation_sha256 stage inputs")
-    c.require(type(request["abi_version"]) is int and request["abi_version"] == 2
+    c.require(type(request["abi_version"]) is int and request["abi_version"] == ADAPTER_ABI_VERSION
               and operation in ADAPTER_INPUTS and request["operation"] == operation, "closed adapter ABI/operation")
     identity = application_identity(owner, required=True)
     c.require(identity["application_purpose"] == "promotion" and application_identity(window, required=True) == identity,
@@ -880,7 +882,7 @@ def validate_adapter_result(raw, *, request, observations, call_receipts, pendin
     result = c.loads(raw, canonical=True, limit=128 * 1024)
     c.closed(result, "abi_version operation owner_sha256 generation checkpoint_sha256 observations call_receipts_sha256 pending unknown")
     c.integer(result["generation"])
-    c.require(type(result["abi_version"]) is int and result["abi_version"] == 2
+    c.require(type(result["abi_version"]) is int and result["abi_version"] == ADAPTER_ABI_VERSION
               and result["operation"] == request["operation"] in ADAPTER_INPUTS
               and result["owner_sha256"] == request["owner"]["owner_sha256"]
               and result["generation"] == request["owner"]["generation"]
@@ -970,7 +972,7 @@ def validate_mode_context(inputs_raw, *, owner, application_purpose, originals):
     c.require(manifest["context_kind"] != "readiness" or predecessor is not None, "readiness original predecessor")
     for key in ("admitted_at", "deadline"):
         c.integer(manifest[key])
-    maximum = 900 if manifest["context_kind"] == "promotion" else 14400
+    maximum = PROMOTION_CONTEXT_SECONDS if manifest["context_kind"] == "promotion" else 14400
     c.require(0 < manifest["deadline"] - manifest["admitted_at"] <= maximum, "mode context original bounded deadline")
     digest = c.sha(raw)
     sessions = {alias: [] for alias in ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")}
@@ -1223,14 +1225,16 @@ def mode_session(binding, application_purpose):
 
 
 PURPOSES = frozenset({"application-prepare", "phase-b", "phase-c-recovery", "phase-c-audit", "static-maintenance"})
-STAGES = {"phase-b": (360, 1020), "api": (180, 840), "static": (180, 660),
-          "unit": (120, 540), "phase-c-recovery": (240, 300), "phase-c-audit": (240, 60),
-          "final": (60, 0)}
+STAGES = {"phase-b": (360, 720), "api": (180, 360), "static": (180, 360), "unit": (120, 360),
+          "phase-c-recovery": (240, 660), "phase-c-audit": (240, 660), "final": (60, 180)}
+FINAL_RESERVE = 420
+STAGE_SUM_CEILING = 1830
+PROMOTION_CONTEXT_SECONDS = 1200
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
 STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static")}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
-                      "permit input_expirations fixed_deadline decision")
+                      "permit input_expirations fixed_deadline decision windows")
 CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})
 OWNER_FIELDS = "repository source_sha run_id run_attempt release_sha256 generation session_sha256".split()
 STATE_MACHINE = "module.processing.aws_sfn_state_machine.processor[0]"
@@ -1468,15 +1472,67 @@ class DelegatedLeaseView:
             raise
 
 
+def _window_keys(value):
+    return ",".join(map(str, value)) if type(value) is dict else type(value).__name__
+
+
+def _window_changes(before, after):
+    def fields(value):
+        value = value if type(value) is dict else {}
+        stages = value.get("stages") if type(value.get("stages")) is dict else {}
+        return {**{name: stages.get(name) for name in STAGES}, "fixed_deadline_seconds": value.get("fixed_deadline_seconds")}
+    old, new = fields(before), fields(after)
+    return ",".join(name for name in new if old[name] != new[name]) or "other"
+
+
+def governed_windows(value):
+    """Args: windows vector. Returns: the same vector. Raises: ValueError outside the code bounds."""
+    c.closed(value, "stages fixed_deadline_seconds")
+    stages, fixed = value["stages"], value["fixed_deadline_seconds"]
+    c.require(type(stages) is dict and set(stages) == set(STAGES), "stage_windows keys=" + _window_keys(stages))
+    for name, (low, high) in STAGES.items():
+        seconds = stages[name]
+        c.require(type(seconds) is int and low <= seconds <= high,
+                  f"stage window stage={name} value={seconds} min={low} max={high}")
+    total = sum(stages.values())
+    c.require(total <= STAGE_SUM_CEILING, f"stage windows sum={total} ceiling={STAGE_SUM_CEILING}")
+    post_static = later_seconds(value, "static")
+    c.require(post_static <= PROMOTION_CONTEXT_SECONDS,
+              f"stage_windows post_static={post_static} context={PROMOTION_CONTEXT_SECONDS}")
+    c.require(type(fixed) is int and fixed == total + FINAL_RESERVE,
+              f"fixed_deadline_seconds value={fixed} expected={total + FINAL_RESERVE}")
+    return value
+
+
+def stage_windows(governance):
+    """Args: application governance. Returns: windows vector in stage order. Raises: ValueError; never a default."""
+    for key in ("stage_windows", "fixed_deadline_seconds"):
+        c.require(key in governance, f"governance key={key} absent")
+    stages = governance["stage_windows"]
+    c.require(type(stages) is dict and set(stages) == set(STAGES), "stage_windows keys=" + _window_keys(stages))
+    return governed_windows({"stages": {name: stages[name] for name in STAGES},
+                             "fixed_deadline_seconds": governance["fixed_deadline_seconds"]})
+
+
+def later_seconds(windows, stage):
+    order = list(STAGES)
+    return sum(windows["stages"][name] for name in order[order.index(stage) + 1:])
+
+
+def fixed_deadline(close, input_deadline, windows):
+    return min(close + windows["fixed_deadline_seconds"], input_deadline)
+
+
 def checkpoint_transition(previous, current):
     c.closed(current, "sequence preparation_deadline close fixed_deadline input_deadline stage admitted_at deadline decision checkpoint_sha256"
-             + (" predecessor_sha256" if "predecessor_sha256" in current else "")
+             + " windows" + (" predecessor_sha256" if "predecessor_sha256" in current else "")
              + " " + " ".join(application_identity(current)))
     if "predecessor_sha256" in current:
         c.digest(current["predecessor_sha256"])
     c.integer(current["sequence"], 0)
     c.digest(current["checkpoint_sha256"])
     c.require(current["preparation_deadline"] > 0, "preparation deadline")
+    governed_windows(current["windows"])
     if previous is None:
         c.require(current["sequence"] == 0 and current["close"] is None
                   and current["fixed_deadline"] is None and current["decision"] is None,
@@ -1487,6 +1543,8 @@ def checkpoint_transition(previous, current):
         c.require(current["sequence"] == previous["sequence"] + 1
                   and current["preparation_deadline"] == previous["preparation_deadline"],
                   "checkpoint sequence/preparation rearm")
+        c.require(current["windows"] == previous["windows"],
+                  "original stage windows cannot change changed=" + _window_changes(previous["windows"], current["windows"]))
         if previous["close"] is not None:
             c.require(all(current[k] == previous[k] for k in ("close", "fixed_deadline", "input_deadline")),
                       "original fence cannot rearm")
@@ -1505,7 +1563,7 @@ def checkpoint_transition(previous, current):
             c.require(current["stage"] == "recovery" and previous["stage"] != "recovery",
                       "recovery stage cannot restart")
     if current["close"] is not None:
-        c.require(current["fixed_deadline"] == min(current["close"] + 1800, current["input_deadline"]),
+        c.require(current["fixed_deadline"] == fixed_deadline(current["close"], current["input_deadline"], current["windows"]),
                   "original fixed deadline")
 
 
@@ -1516,8 +1574,10 @@ def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
     close.fixed_deadline. An earlier infra-known expiration refuses; it is never adopted.
     """
     value = c.closed(c.loads(raw, canonical=True, limit=1024**2), CLOSE_DRAIN_FIELDS)
-    c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == "close-drain",
+    c.require(type(value["version"]) is int and value["version"] == 2 and value["kind"] == "close-drain",
               "close-drain observation version/kind")
+    c.require(value["windows"] == governed_windows(previous["windows"]),
+              "close-drain windows differ from keeper windows changed=" + _window_changes(previous["windows"], value["windows"]))
     c.require(value["permit"] is None and value["decision"] is None, "original idle permit/decision")
     expirations = value["input_expirations"]
     c.require(type(expirations) is list and expirations, "original input expirations")
@@ -1529,7 +1589,7 @@ def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
     c.require(keys == sorted(set(keys)), "unique original input expirations")
     close = int(c.instant(value["close_confirmed_at"]))
     input_deadline = int(min(c.instant(expiry["expires_at"]) for expiry in expirations))
-    fixed = min(close + 1800, input_deadline)
+    fixed = fixed_deadline(close, input_deadline, previous["windows"])
     c.require(c.instant(value["fixed_deadline"]) == fixed, "original fixed deadline")
     c.require(type(infra_bound) is int and input_deadline <= infra_bound,
               "infra-known authenticated expiration precedes input deadline")
@@ -1538,7 +1598,8 @@ def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
               "close inside the preparation stage")
     return previous | {"sequence": previous["sequence"] + 1, "close": close, "fixed_deadline": fixed,
                        "input_deadline": input_deadline, "stage": "phase-b", "admitted_at": close,
-                       "deadline": min(fixed, close + STAGES["phase-b"][0]), "checkpoint_sha256": c.digest(checkpoint_sha256)}
+                       "deadline": min(fixed, close + previous["windows"]["stages"]["phase-b"]),
+                       "checkpoint_sha256": c.digest(checkpoint_sha256)}
 
 
 def api_window(previous, *, checkpoint_sha256, now):
@@ -1547,7 +1608,7 @@ def api_window(previous, *, checkpoint_sha256, now):
     c.require(previous["stage"] == "phase-b" and previous["close"] is not None and previous["decision"] is None
               and previous["admitted_at"] <= admitted, "API follows the closed phase-b stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "api", "admitted_at": admitted,
-                       "deadline": min(previous["fixed_deadline"], admitted + STAGES["api"][0]),
+                       "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["api"]),
                        "checkpoint_sha256": c.digest(checkpoint_sha256)}
 
 
@@ -1557,7 +1618,7 @@ def static_window(previous, *, now):
     c.require(previous["stage"] == "api" and previous["close"] is not None and previous["decision"] is None
               and previous["admitted_at"] <= admitted, "static follows the closed API stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "static", "admitted_at": admitted,
-                       "deadline": min(previous["fixed_deadline"], admitted + STAGES["static"][0])}
+                       "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["static"])}
 
 
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):
@@ -1570,7 +1631,8 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
         c.require(fixed is None and window["stage"] == "application-prepare" and window["decision"] is None
                   and now + operation_seconds + 157 < window["preparation_deadline"], "pre-fence prepare deadline")
         return
-    c.require(fixed == min(close + 1800, window["input_deadline"]) and close <= window["admitted_at"] <= now,
+    windows = governed_windows(window["windows"])
+    c.require(fixed == fixed_deadline(close, window["input_deadline"], windows) and close <= window["admitted_at"] <= now,
               "original F deadline")
     decision = window["decision"]
     if decision is not None:
@@ -1583,12 +1645,20 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
                   and window["deadline"] + 120 <= decision["deadline"], "recovery convergence/finalization")
     else:
         c.require(window["stage"] in STAGES, "closed phase")
-        duration, later = STAGES[window["stage"]]
+        duration, later = windows["stages"][window["stage"]], later_seconds(windows, window["stage"])
         deadline = window["deadline"]
         c.require(deadline <= min(fixed, window["admitted_at"] + duration)
                   and now + operation_seconds + 37 < deadline
-                  and fixed - now >= max(0, deadline - now) + later + 420, "phase remaining capacity")
+                  and fixed - now >= max(0, deadline - now) + later + FINAL_RESERVE, "phase remaining capacity")
 
+
+def adapter_seconds(window, *, now, credential_deadline, operation):
+    """Args: lifecycle window, sampled now, credential deadline, operation. Returns: largest admitted timeout."""
+    margin = 158 if window["close"] is None else 38
+    seconds = int(min(window["deadline"] - now - margin, credential_deadline - now - 121))
+    c.require(seconds >= 1, f"{operation} capacity seconds={seconds}")
+    phase_capacity(window, now=now, credential_deadline=credential_deadline, operation_seconds=seconds)
+    return seconds
 
 
 def terminal_deadline(window):

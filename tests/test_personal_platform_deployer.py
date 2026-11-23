@@ -207,7 +207,7 @@ def test_causal_receipts_keep_prior_observation_and_bind_final_response(
     g, clock, op = operation(tmp_path)
     op.transition("VERIFIED")
     op.transition("ACCEPTED")
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     original = g.read_private
 
     def delayed(path, maximum=g.LIMIT):
@@ -252,7 +252,7 @@ def test_loss_during_any_evidence_write_never_returns_accepted(
         return original(path, data, **kw)
 
     monkeypatch.setattr(g, "durable", fail)
-    window = g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600])
     with pytest.raises(OSError):
         op.seal(
             H,
@@ -277,7 +277,7 @@ def test_expiry_during_receipt_read_blocks_witness(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         op.seal(
             H,
-            g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600]),
+            g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600]),
             lambda: {"checked_processes": [], "all_absent_or_send_disabled": True},
         )
     assert not (op.directory / "receipt-readback-witness.json").exists()
@@ -288,7 +288,7 @@ def test_reopen_timestamp_is_actual_readback_and_partial_routes_never_send(tmp_p
     op.close()
     op.confirm_closed(lambda _: clock.advance(2))
     op.closed_ready(H)
-    window = g.Window(clock, close_confirmed_at=1002, input_deadlines=[4600])
+    window = g.Window(clock, close_confirmed_at=1002, fixed_seconds=1800, input_deadlines=[4600])
     sent = []
     release = op.record["binding"]["release"]
     routes = {
@@ -328,7 +328,7 @@ def test_lost_open_response_never_claims_closed_or_retries(tmp_path):
 
     with pytest.raises(TimeoutError):
         op.reopen(
-            g.Window(clock, close_confirmed_at=1000, input_deadlines=[4600]),
+            g.Window(clock, close_confirmed_at=1000, fixed_seconds=1800, input_deadlines=[4600]),
             lost,
             lambda _: None,
             lambda: routes,
@@ -363,7 +363,7 @@ def test_original_closed_ready_physical_driver_then_product_c_and_open(
     product.confirm_closed(lambda _: None)
     product.closed_ready(g.sha(g.canonical(close)))
     global_window = g.Window(
-        product_clock, close_confirmed_at=660, input_deadlines=[3600]
+        product_clock, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600]
     )
     product_watchdog = g.Watchdog(product, global_window)
 
@@ -552,11 +552,11 @@ def test_recovery_diagnostic_imports_first_decision_after_lost_response(
     tmp_path, monkeypatch
 ):
     g, clock, op = operation(tmp_path, "deploy")
-    window = g.Window(clock, close_confirmed_at=660, input_deadlines=[3600])
+    window = g.Window(clock, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600])
     decision = op.persist_recovery(window)
     raw = g.read_private(op.directory / "recovery-decision.json")
     clock.advance(60)
-    imported = g.Window(clock, close_confirmed_at=660, input_deadlines=[3600])
+    imported = g.Window(clock, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600])
     assert op.persist_recovery(imported) == decision
     assert imported.recovery_remaining() == 360
     assert g.read_private(op.directory / "recovery-decision.json") == raw
@@ -612,7 +612,7 @@ def test_rollback_imports_original_decision_and_preserves_close_phase_bytes():
     b["requested_action"], b["previous_accepted_sha256"] = "rollback-previous", H
     earlier = Clock()
     earlier.t = earlier.m = 900
-    original_window = g.Window(earlier, close_confirmed_at=660, input_deadlines=[3600])
+    original_window = g.Window(earlier, close_confirmed_at=660, fixed_seconds=1800, input_deadlines=[3600])
     decision = original_window.choose_recovery(
         H, g.sha(g.canonical(b)), 4, g.sha(g.canonical(phase["after"]))
     )

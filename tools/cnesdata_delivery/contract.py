@@ -428,6 +428,23 @@ def digest(value, length=64):
     return value
 
 
+def gate_sha(governance, role):
+    """Args: governance, role. Returns: the reviewed reusable sha. Raises: ValueError absent, malformed or sentinel."""
+    shas = governance.get("gate_shas")
+    require(type(shas) is dict and role in shas, f"gate_shas role absent role={role}")
+    value = shas[role]
+    require(type(value) is str and re.fullmatch(r"[0-9a-f]{40}", value), f"gate_shas malformed role={role}")
+    require(value != "0" * 40, f"gate_shas sentinel role={role}")
+    return value
+
+
+def require_audit_gate(governance):
+    """Args: governance. Raises: ValueError when gate_shas carries plan or deploy without a valid audit sha."""
+    shas = governance.get("gate_shas")
+    if type(shas) is dict and ("plan" in shas or "deploy" in shas):
+        gate_sha(governance, "audit")
+
+
 def integer(value, minimum=1, maximum=2**53 - 1):
     require(type(value) is int and minimum <= value <= maximum, "integer range")
     return value
