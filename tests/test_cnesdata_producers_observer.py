@@ -324,3 +324,23 @@ def test_observador_fecha_roles_da_configuracao_com_o_audit(monkeypatch):
     monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(without).decode())
     with pytest.raises(ValueError):
         observer._config()
+
+
+def test_observador_le_o_plano_de_ensaio_da_tentativa_pedida_e_nao_o_da_primeira(chain):
+    second = ATTEMPT + 1
+    other = copy.deepcopy(chain.replay.plan)
+    other["format_version"] = "outro"
+
+    def stage(reader, settings, names):
+        raw = reader.objects.pop((settings["evidence_bucket"], rehearsal_key(settings)))
+        reader.objects[settings["evidence_bucket"], rehearsal_key(settings, attempt=second)] = raw
+        reader.objects[settings["evidence_bucket"], rehearsal_key(settings)] = c.canonical(other)
+        old, new = namespace_prefix(settings), namespace_prefix(settings).replace(f"/{ATTEMPT}/", f"/{second}/")
+        for (bucket, key), value in list(reader.objects.items()):
+            if key.startswith(old):
+                reader.objects[bucket, new + key[len(old):]] = value
+
+    reference = request()["payload_reference"] | {"run_attempt": second}
+    _, result, _ = run(chain, mutate=stage, payload_reference=reference)
+    measured = observations(result)["drift-baseline"]["rehearsal_plan_sha256"]
+    assert measured == c.sha(c.canonical(chain.replay.plan)) != c.sha(c.canonical(other))
