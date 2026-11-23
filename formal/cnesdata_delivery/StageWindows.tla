@@ -37,7 +37,7 @@ CeilingDur == <<360, 180, 180, 300, 375, 375, 60>>
 CeilingVar == <<
     [plan |-> 37, aread |-> 37, pread |-> 37],
     [api_effect |-> 71, api_observe |-> 71],
-    [static_effect |-> 71, static_observe |-> 71],
+    [static_publish |-> 135, static_settle |-> 7],
     [unit_seed |-> 88, unit_start |-> 87, unit_observe |-> 87],
     [plan |-> 24, aread |-> 24, pread |-> 24, recovery_seed |-> 24, recovery_start |-> 24, recovery_observe |-> 24],
     [plan |-> 29, aread |-> 29, pread |-> 29, audit_start |-> 29, audit_observe |-> 28],
