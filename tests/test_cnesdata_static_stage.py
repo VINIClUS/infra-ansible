@@ -512,10 +512,12 @@ def _install_static(monkeypatch, world, static=None):
 
 
 def _publication(world, journal):
+    """With the real capability the product publishes three keys and invalidates; the fake child brokers nothing."""
+    real = world.static["capability"] == "real"
+    uploaded = [[key, f"New.{index}"] for index, key in enumerate(("assets/app.js", "index.html", "theme-init.js"), start=1)]
     return {"schema": "cnesdata.static-publication/v1", "plan_sha256": c.sha(journal._inputs["static-plan"]),
-            "closed_ready_sha256": c.sha(world.ready_raw), "uploaded": [[key, f"New.{index}"] for index, key in enumerate(
-                ("assets/app.js", "index.html", "theme-init.js"), start=1)],
-            "already_published": [], "invalidation_id": "I2SYNTH"} | world.static["observation"]
+            "closed_ready_sha256": c.sha(world.ready_raw), "uploaded": uploaded if real else [],
+            "already_published": [], "invalidation_id": "I2SYNTH" if real else None} | world.static["observation"]
 
 
 def _publish_static_child(world, journal, timeout):
