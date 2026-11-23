@@ -24,9 +24,9 @@ ou se esta `released` e `previous_success(value)` e verdadeiro. Para lifecycle v
 `previous_terminal` (`application_gate.py`), que autentica o terminal publicado e exige
 `promotion_status == "accepted"`; um terminal `failed` recusa com "failed terminal requires exact
 reviewed recovery acceptance" dentro de `previous_terminal`; como `previous_success` engole a excecao
-(`runtime.py`), o acquire em si falha com "held/recovery_required". Para o fluxo legado, `previous_success` (`runtime.py`) autentica recibo,
-envelope, evidencia do lease e checkpoint do run anterior, e qualquer excecao devolve falso ("retain
-coordinator and demand reviewed recovery").
+(`runtime.py`), o acquire em si falha com "held/recovery_required". Para o fluxo legado,
+`previous_success` (`runtime.py`) autentica recibo, envelope, evidencia do lease e checkpoint do run
+anterior, e qualquer excecao devolve falso ("retain coordinator and demand reviewed recovery").
 
 O modelo F1 `formal/cnesdata_delivery/LeaseTerminal.tla` define o estado alvo: `Admissible(record)` =
 `released` com `result` aceito **ou** `recovered`; a acao `ReviewedRecovery` marca `recovered` num lease
@@ -62,10 +62,10 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente**. Nao ha caminho de
    remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do dono. Condicoes:
    precondicao no etag lido no passo 1 quando o mecanismo a suportar, uma escrita, aprovada pelo dono,
-   sem nenhum run em andamento, e leitura de volta confirmando a ausencia. Efeito colateral a decidir na revisao: o acquire
-   seguinte com objeto ausente parte da geracao 1 (`previous_generation = 0`), e o lifecycle
-   (`generation` do predecessor, `predecessor_read`) pode exigir que o proximo run se encadeie ao
-   predecessor original; confirmar na governanca antes do reset.
+   sem nenhum run em andamento, e leitura de volta confirmando a ausencia. Efeito colateral a decidir
+   na revisao: o acquire seguinte com objeto ausente parte da geracao 1 (`previous_generation = 0`), e o
+   lifecycle (`generation` do predecessor, `predecessor_read`) pode exigir que o proximo run se encadeie
+   ao predecessor original; confirmar na governanca antes do reset.
 3. Proximo acquire so por um novo run gated (Phase A ou promocao). Nao dispare em cima do run vermelho e
    nao use rerun do mesmo run id.
 4. Registrar o reset (data, quem, etag antes, ausencia confirmada) junto da evidencia retida.
@@ -123,7 +123,7 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 - Presenca: `secret-tool lookup service cnesdata-delivery kind report_hmac_key | tr -d '\n' | wc -c`
   (esperado: 64) e `gh secret list --repo <repo> --env <environment>` mostram `REPORT_HMAC_KEY` com data
   de atualizacao nova nos dois environments. Nunca imprima o valor.
-- Igualdade entre os quatro lugares: comparar sha256 de cada copia obtida por stdin, nunca o valor.
+- Igualdade entre os quatro lugares: comparar o sha256 de cada copia obtida por stdin depois de `tr -d '\n'`, nunca o valor.
 - Relatorio: o gate recomputa `_facts` e aceita o relatorio do observador; um relatorio produzido com a
   chave antiga e recusado.
 - Higiene: grep dos logs do run e dos artefatos por 64 hex derivado da chave e por `report_hmac_key` com
@@ -140,7 +140,7 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 
 | Item | Estado | Observacao |
 |---|---|---|
-| DR1 (R21): dois tokens OIDC no mesmo job | rodou | passou; registrado no comentario 7050257778 do #55 (emenda de escopo ratificada) |
+| DR1 (R21): dois tokens OIDC no mesmo job | rodou | passou; registrado no comentario 7050257778 do #55 |
 | DR2 (R24): secret de environment ate o reusable por nome | rodou | passou em 2026-11-19; O18 (custodia do DD-6) fechada pelo comentario 7050257778 do #55, por decisao delegada da coordenadora |
 | DR3: `referenced_workflows` com varias chamadas do mesmo reusable | rodou | dependencia declarada: o numero de chamadas de plan e deploy por run depende do DR3 (spec de integracao do application); o resultado medido nao e reproduzido aqui |
 | Sonda O2: teto do secret | rodou (2026-11-20) | maior aceito 47 952 B (HTTP 422 em 47 953 B); job sem environment recebeu 0 B |
