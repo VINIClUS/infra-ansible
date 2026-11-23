@@ -1847,6 +1847,7 @@ class Keeper:
         self.last_renewed = None
         self._contexts = []
         self.static_inventory = None
+        self.static_inputs = None
 
     def attach(self, context):
         """Register an original journal/broker; its uncertainty keeps the lease held."""
@@ -2557,14 +2558,6 @@ def _caller_artifact(api, run, owner, *, job_name, name, members, guard, now):
     return files
 
 
-def _static_caller_inputs(api, governance, run, owner, *, guard, now):
-    from tools.cnesdata_delivery import static_inputs as si
-    members = _caller_artifact(api, run, owner, job_name=STATIC_INPUTS_JOB, members=STATIC_INPUTS_MEMBERS, guard=guard, now=now,
-                               name=f"cnesdata-static-inputs-{owner['run_id']}-{owner['run_attempt']}")
-    candidate = si.authenticated_candidate(members["candidate.json"], governance)
-    return members, candidate, si.dashboard_artifact(api, candidate, guard=guard, now=now)
-
-
 def inventory_input_source(*, api, governance, run, owner, guard, now):
     """candidate, dashboard-artifact, archive and static-baseline of inventory, each from an authenticated source (P15b).
 
@@ -2573,26 +2566,42 @@ def inventory_input_source(*, api, governance, run, owner, guard, now):
     Returns: the four input bytes. Raises: ValueError static_inputs=<input> on any mismatch.
     """
     from tools.cnesdata_delivery import static_inputs as si
-    members, candidate, dist = _static_caller_inputs(api, governance, run, owner, guard=guard, now=now)
-    return {"candidate": members["candidate.json"], "dashboard-artifact": dist,
+    members = _caller_artifact(api, run, owner, job_name=STATIC_INPUTS_JOB, members=STATIC_INPUTS_MEMBERS, guard=guard, now=now,
+                               name=f"cnesdata-static-inputs-{owner['run_id']}-{owner['run_attempt']}")
+    candidate = si.authenticated_candidate(members["candidate.json"], governance)
+    return {"candidate": members["candidate.json"], "dashboard-artifact": si.dashboard_artifact(api, candidate, guard=guard, now=now),
             "archive": si.archive_bytes(members["archive.tgz"], candidate),
             "static-baseline": si.baseline_bytes(members["static-baseline.json"])}
 
 
-def static_input_source(*, keeper, owner, window, api, governance, run, guard, terraform, now):
-    """candidate, dashboard-artifact, static-plan and inventory of publish-static, each from an authenticated source (P15b).
+def static_plan_source(*, keeper, owner, api, run, guard, terraform, now):
+    """Static plan of the static-inventory probe, read in application-prepare so the static window reads nothing (P15b).
 
-    candidate and dashboard-artifact as for inventory; inventory is the keeper's settled observation; static-plan is
-    the static-inventory probe artifact whose digest is the carrier binding and whose inventory digest is the keeper's.
+    Returns: the plan bytes whose digest is the carrier binding and whose inventory digest is the keeper's.
+    Raises: ValueError prepared=inventory_unsettled, static_inputs=<input> or static_binding=carrier_absent.
+    """
+    from tools.cnesdata_delivery import static_inputs as si
+    c.require(keeper.static_inventory is not None, "prepared=inventory_unsettled")
+    plan = _caller_artifact(api, run, owner, job_name=INVENTORY_PROBE, members={"static-plan.json"}, guard=guard, now=now,
+                            name=f"cnesdata-static-plan-{owner['run_id']}-{owner['run_attempt']}")["static-plan.json"]
+    return si.static_plan_bytes(plan, binding=si.carrier_binding(terraform), inventory=keeper.static_inventory)
+
+
+def static_input_source(*, keeper, window, governance, static_plan, terraform):
+    """candidate, dashboard-artifact, static-plan and inventory of publish-static, from memory only (P15b).
+
+    candidate and dashboard-artifact are the ones the inventory authenticated, inventory is its settled observation and
+    static-plan is the prepared one; each digest is checked again, with no read inside the static window.
     Returns: the four input bytes. Raises: ValueError static_inputs=<input> or static_binding=carrier_absent.
     """
     from tools.cnesdata_delivery import static_inputs as si
-    c.require(window["stage"] == "static" and keeper.static_inventory is not None, "prepared=inventory_unsettled")
-    members, _, dist = _static_caller_inputs(api, governance, run, owner, guard=guard, now=now)
-    plan = _caller_artifact(api, run, owner, job_name=INVENTORY_PROBE, members={"static-plan.json"}, guard=guard, now=now,
-                            name=f"cnesdata-static-plan-{owner['run_id']}-{owner['run_attempt']}")["static-plan.json"]
-    return {"candidate": members["candidate.json"], "dashboard-artifact": dist,
-            "static-plan": si.static_plan_bytes(plan, binding=si.carrier_binding(terraform), inventory=keeper.static_inventory),
+    retained = keeper.static_inputs
+    c.require(window["stage"] == "static" and keeper.static_inventory is not None and type(retained) is dict,
+              "prepared=inventory_unsettled")
+    candidate, dist = si.authenticated_candidate(retained["candidate"], governance), retained["dashboard-artifact"]
+    c.require(type(dist) is bytes and c.sha(dist) == candidate.get("dashboard_sha256"), "static_inputs=dashboard_sha256")
+    return {"candidate": retained["candidate"], "dashboard-artifact": dist,
+            "static-plan": si.static_plan_bytes(static_plan, binding=si.carrier_binding(terraform), inventory=keeper.static_inventory),
             "inventory": keeper.static_inventory}
 
 
@@ -2657,9 +2666,10 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     """Handlers of the keeper triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3, P15b).
 
     observer-bootstrap: authenticated inventory inputs, the inventory operation under the observer sp-i session and
-    the DD-2 publication of its settled observation for the operational inputs probe; the stage does not change.
-    prepared: the settled keeper inventory, authenticated fence package, activation from the plan carrier, close-drain,
-    close window.
+    the DD-2 publication of its settled observation for the operational inputs probe; the keeper retains the
+    observation, candidate and dist.tar; the stage does not change.
+    prepared: the settled keeper inventory, authenticated fence package, activation and static plan from the plan
+    carrier, close-drain, close window.
     phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
     and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window, then the static
     operation publish-static and, on its settled publication, the unit window (internal, DD-3). The unit stage
@@ -2692,6 +2702,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         (journal,) = _operation_journals(current, "inventory")
         raw = _inventory_observation(current, journal)
         publish_inventory(keeper=current, api=api, run=run, owner=owner, raw=raw, credential_limit=credential_limit, clock=clock)
+        current.static_inputs = {name: inputs[name] for name in ("candidate", "dashboard-artifact")}
         current.static_inventory = raw
 
     def prepared(current, reference):
@@ -2703,6 +2714,8 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             predecessor_raw=current.predecessor["raw"], predecessor_reference=current.predecessor_reference, guard=guard)
         activation, targets, terraform = _plan_activation(aws=aws, api=api, governance=governance, request=request, run=run,
                                                           prepared=files, owner=owner, window=window, guard=guard, now=clock())
+        static_plan = static_plan_source(keeper=current, owner=owner, api=api, run=run, guard=guard, terraform=terraform,
+                                         now=clock())
         journal = _close_drain_journal(guard=guard, owner=owner, window=window, activation=activation,
                                        expirations=close_expirations(authority, api))
         current.attach(journal)
@@ -2721,7 +2734,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  checkpoint_sha256=c.sha(files["checkpoint.json"]),
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
-        state.update({"prepared": files, "activation": activation, "terraform": terraform,
+        state.update({"prepared": files, "activation": activation, "terraform": terraform, "static-plan": static_plan,
                       "close-drain": journal._observation_bytes[observed[0]["sha256"]],
                       "revisions": {"unit": targets["processor_active_unit_task_definition_arn"],
                                     "recovery": targets["scheduler_recovery_task_definition_arn"],
@@ -2789,14 +2802,14 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window = current.lease.check()["lifecycle"]
         c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
         current.lease.checkpoint(lc.static_window(window, now=admitted))
-        publish_static(current, raw, guard)
+        publish_static(current, raw)
 
-    def publish_static(current, receipt, guard):
+    def publish_static(current, receipt):
         from tools.cnesdata_delivery.static_inputs import carrier_binding
         record = current.lease.check()
         window, owner = record["lifecycle"], lc.owner_binding(record)
-        inputs = dict(static_input_source(keeper=current, owner=owner, window=window, api=api, governance=governance, run=run,
-                                          guard=guard, terraform=state["terraform"], now=clock())) | {"host-receipt": receipt}
+        inputs = dict(static_input_source(keeper=current, window=window, governance=governance, static_plan=state["static-plan"],
+                                          terraform=state["terraform"])) | {"host-receipt": receipt}
         c.closed(inputs, lc.ADAPTER_INPUTS["publish-static"])
         carrier = carrier_binding(state["terraform"])
 
