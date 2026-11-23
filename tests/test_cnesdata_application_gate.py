@@ -5898,6 +5898,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "publish_static", "unit_window"),
         (gate, "_publication_observation", "static_plan"),
         (gate, "run_publish_static", "KeeperGuard"),
+        (gate, "run_publish_static", "static_plan"),
         (gate, "static_capability", "static_plan"),
         (gate, "static_capability", "publish_static_closed_ready"),
         (gate, "static_capability", "static_role_facts"),

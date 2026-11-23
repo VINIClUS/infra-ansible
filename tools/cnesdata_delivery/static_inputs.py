@@ -1,5 +1,6 @@
 """Authenticated inputs of the keeper inventory and publish-static operations (#55, P15b)."""
 import io
+import re
 import tarfile
 
 from tools.cnesdata_delivery import contract as c
@@ -148,6 +149,67 @@ def tar_member(tar_raw, reference):
     c.require(type(raw) is bytes and len(raw) == reference["size"] and c.sha(raw) == reference["sha256"],
               f"static_body=member_digest key={key}")
     return raw
+
+
+def static_body_budget(tar_raw, keys, seconds):
+    """Candidate member sizes under the per-file cap and their sum under STATIC_UPLOAD_FLOOR x the child timeout.
+
+    Returns: the total bytes. Raises: ValueError static_body=member_absent|member_size or static_total=over_window.
+    """
+    sizes = {}
+    with tarfile.open(fileobj=io.BytesIO(tar_raw), mode="r:") as archive:
+        for member in archive.getmembers():
+            if member.isfile():
+                sizes.setdefault(member.name.removeprefix("./"), []).append(member.size)
+    total = 0
+    for key in keys:
+        found = sizes.get(key, [])
+        c.require(len(found) == 1, f"static_body=member_absent key={key}")
+        c.require(found[0] <= lc.STATIC_MEMBER_LIMIT,
+                  f"static_body=member_size key={key} size={found[0]} limit={lc.STATIC_MEMBER_LIMIT}")
+        total += found[0]
+    limit = lc.STATIC_UPLOAD_FLOOR * seconds
+    c.require(total <= limit, f"static_total=over_window total={total} limit={limit} seconds={seconds}")
+    return total
+
+
+def static_role_facts(checkpoint_raw, approval_raw, *, governance, aliases):
+    """Static role facts from one deploy's after-apply readbacks, bound by index to the approval addresses.
+
+    Returns: {alias: {role_arn, role_name, role_id, policy_name, policy}}. Raises: ValueError static_role=<reason>.
+    """
+    checkpoint, approval = (c.loads(raw, canonical=True) for raw in (checkpoint_raw, approval_raw))
+    readbacks = approval.get("readbacks") if type(approval) is dict else None
+    specs = readbacks.get("after") if type(readbacks) is dict else None
+    reports = checkpoint.get("readbacks") if type(checkpoint) is dict else None
+    c.require(type(specs) is list and type(reports) is list and len(specs) == len(reports), "static_role=readbacks_unaligned")
+    return {alias: _role_facts(specs, reports, governance, alias) for alias in aliases}
+
+
+def _role_facts(specs, reports, governance, alias):
+    arn = governance["application_delegations"][alias]
+    name = arn.rsplit("/", 1)[1]
+    role = _observed(specs, reports, alias, "aws_iam_role", "get_role").get("Role")
+    c.require(type(role) is dict and role.get("Arn") == arn and role.get("RoleName") == name
+              and type(role.get("RoleId")) is str and re.fullmatch(r"AROA[0-9A-Z]{16,128}", role["RoleId"]) is not None,
+              f"static_role=identity alias={alias}")
+    policy = _observed(specs, reports, alias, "aws_iam_role_policy", "get_role_policy")
+    c.require(policy.get("RoleName") == name and type(policy.get("PolicyName")) is str and bool(policy["PolicyName"])
+              and type(policy.get("PolicyDocument")) is dict, f"static_role=policy alias={alias}")
+    return {"role_arn": arn, "role_name": name, "role_id": role["RoleId"], "policy_name": policy["PolicyName"],
+            "policy": policy["PolicyDocument"]}
+
+
+def _observed(specs, reports, alias, kind, operation):
+    address = f"module.runtime_iam.{kind}.static_{alias}[0]"
+    found = [index for index, spec in enumerate(specs) if type(spec) is dict and spec.get("address") == address]
+    spec = specs[found[0]] if len(found) == 1 else {}
+    c.require(spec.get("service") == "iam" and spec.get("operation") == operation and spec.get("absent") is False,
+              f"static_role=readback_absent alias={alias} operation={operation}")
+    report = reports[found[0]]
+    c.require(type(report) is dict and report.get("service") == "iam" and report.get("operation") == operation
+              and type(report.get("observed")) is dict, f"static_role=readback_shape alias={alias} operation={operation}")
+    return report["observed"]
 
 
 def inventory_observation(raw, inputs):

@@ -5,16 +5,22 @@ import pytest
 
 from tools.cnesdata_delivery import contract as c
 
-from test_cnesdata_static_stage import ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, ROLES, _journal
+from test_cnesdata_static_stage import ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, KEYS, ROLES, _journal
 
 BUCKET_ARN = "arn:aws:s3:::" + BUCKET
+ENABLED_UNTIL = "2027-02-12T00:00:00Z"
+EXPIRY = {"DateLessThan": {"aws:CurrentTime": ENABLED_UNTIL}}
 ROLE_POLICIES = {
     "observer": {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion", "s3:ListMultipartUploadParts"],
+         "Resource": [BUCKET_ARN + "/assets/*", BUCKET_ARN + "/index.html", BUCKET_ARN + "/theme-init.js"]},
         {"Effect": "Allow", "Action": ["s3:ListBucketVersions", "s3:ListBucketMultipartUploads"], "Resource": BUCKET_ARN},
-        {"Effect": "Allow", "Action": ["s3:GetObjectVersion", "s3:ListMultipartUploadParts"], "Resource": BUCKET_ARN + "/*"}]},
+        {"Effect": "Allow", "Action": "cloudfront:GetInvalidation", "Resource": DISTRIBUTION}]},
     "normal": {"Version": "2012-10-17", "Statement": [
-        {"Effect": "Allow", "Action": ["s3:PutObject", "s3:GetObject"], "Resource": BUCKET_ARN + "/*"},
-        {"Effect": "Allow", "Action": "cloudfront:CreateInvalidation", "Resource": DISTRIBUTION}]},
+        *({"Effect": "Allow", "Action": action, "Resource": [BUCKET_ARN + "/" + key for key in sorted(KEYS)],
+           "Condition": EXPIRY} for action in ("s3:PutObject", "s3:GetObject")),
+        {"Effect": "Allow", "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
+         "Resource": DISTRIBUTION, "Condition": EXPIRY}]},
 }
 ROLE_FACTS = {alias: {"role_arn": ROLES[alias], "role_name": ROLES[alias].rsplit("/", 1)[1],
                       "role_id": "AROA" + alias.upper().ljust(17, "X"), "policy_name": "cnesdata-prod-static-" + alias,
@@ -61,6 +67,14 @@ def role_files(aliases=("observer", "normal"), *, facts=None, mutate=None):
 def _index(specs, alias, operation):
     return next(index for index, spec in enumerate(specs)
                 if spec["address"].endswith("static_" + alias + "[0]") and spec["operation"] == operation)
+
+
+def test_politicas_do_fixture_sao_as_static_policies_do_498_para_as_candidate_keys():
+    import json
+    from test_cnesdata_application_gate import _static_policies
+    plan = {"candidate_keys": sorted(KEYS), "enabled_until": ENABLED_UNTIL, "distribution_arn": DISTRIBUTION,
+            "retire_versions": []}
+    assert {alias: json.loads(text) for alias, text in _static_policies(BUCKET_ARN, plan).items()} == ROLE_POLICIES
 
 
 def test_fatos_do_role_estatico_vem_do_readback_pos_apply_amarrado_ao_endereco():
@@ -162,7 +176,8 @@ def _sts(monkeypatch, *, roles=ROLE_FACTS, user=None, operation="publish-static"
             calls.append(parameters)
             alias = next(name for name, arn in ROLES.items() if arn == parameters["RoleArn"])
             from datetime import datetime, timezone
-            return {"AssumedRoleUser": {"Arn": assumed(alias), "AssumedRoleId": identity(alias)}, "Credentials": {
+            return {"PackedPolicySize": 10, "AssumedRoleUser": {"Arn": assumed(alias), "AssumedRoleId": identity(alias)},
+                    "Credentials": {
                 "AccessKeyId": alias, "SecretAccessKey": "synthetic-secret", "SessionToken": "synthetic-token",
                 "Expiration": datetime.fromtimestamp(limit, timezone.utc)}}
 

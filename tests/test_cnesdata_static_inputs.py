@@ -388,6 +388,7 @@ def _inventory_world(monkeypatch, *, probe="in_progress", observation=None, obse
             raise ValueError(capability)
         broker = ag.StaticBroker.__new__(ag.StaticBroker)
         broker.aws, broker.evidence, broker.journal, broker.child_deadline = "operation-client", [], journal, None
+        broker.clock = world.clock
         broker.session = SimpleNamespace(clients={"observer": "observer-client"}, evidence="operation-client")
         journal._broker = broker
         kwargs["keeper"].attach(broker)

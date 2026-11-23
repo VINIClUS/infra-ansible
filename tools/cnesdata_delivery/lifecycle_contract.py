@@ -246,7 +246,8 @@ def static_sessions(binding, operation):
     return {alias: static_session(binding, name) for alias, name in STATIC_SESSION_OPERATIONS[operation].items()}
 
 
-STATIC_MEMBER_LIMIT = 8 * 1024**2
+STATIC_MEMBER_LIMIT = 1024**2
+STATIC_UPLOAD_FLOOR = 512 * 1024
 
 
 def s3_put_body(parameters):

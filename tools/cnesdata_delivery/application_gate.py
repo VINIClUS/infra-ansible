@@ -125,6 +125,7 @@ STATIC_RESPONSE_FIELDS = {
     "GetObject": ("Body VersionId ContentType CacheControl", {}), "CreateInvalidation": ("Invalidation", {}),
 }
 STATIC_REQUEST_LIMIT = 128 * 1024 - 2048
+STATIC_ROOT_BLOCK_SECONDS = 5 * 20
 # host_gate.py public handoff (version 1) and validate_recovery_decision.
 HOST_HANDOFF_FIELDS = ("version kind caller producer_sha closed_ready_sha256 original_request_sha256 status response_sha256 "
                        "proof_sha256 receipt_sha256 witness_sha256 operation_id binding_sha256 generation recovery_decision "
@@ -1299,6 +1300,8 @@ class StaticBroker:
     One client per #498 static role of the operation (observer sp-i-*, normal sp-publish-*). Any native error is
     unknown (R12): poison, never retry. PutObject Body is the dist.tar member reference: the broker reads the member
     from the authenticated dashboard-artifact and checks its sha256 before any evidence; GetObject returns {sha256, size}.
+    Admission runs against the stage deadline narrowed by the child deadline; the first root PutObject also needs
+    STATIC_ROOT_BLOCK_SECONDS for both root put/get pairs and the invalidation.
     """
     def __init__(self, aws, governance, journal, session, *, clock=None):
         operation = journal._request["operation"] if type(journal) is AdapterJournal else None
@@ -1309,8 +1312,25 @@ class StaticBroker:
         self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
         prepared = journal._inputs["static-plan"] if operation == "publish-static" else journal._inputs["candidate"]
         self.prepared_sha256, self.clock = c.sha(prepared), clock or time.time
-        self.evidence = []
+        self.evidence, self.child_deadline, self._roots = [], None, False
         journal._broker = self
+
+    def admit_child(self, deadline):
+        """Fixes the child deadline once; admission uses min(stage deadline, child deadline)."""
+        c.require(self.child_deadline is None and type(deadline) is int, "static child deadline")
+        self.child_deadline = deadline
+
+    def _deadline(self):
+        stage = self.session.deadline
+        return stage if self.child_deadline is None else min(stage, self.child_deadline)
+
+    def _root_block(self, operation, parameters, deadline):
+        if operation != "PutObject" or parameters["Key"] not in lc.STATIC_ENTRYPOINTS or self._roots:
+            return
+        remaining = int(deadline - self.clock())
+        c.require(remaining > STATIC_ROOT_BLOCK_SECONDS,
+                  f"static_roots=window_short remaining={remaining} required={STATIC_ROOT_BLOCK_SECONDS}")
+        self._roots = True
 
     @property
     def uncertainty(self):
@@ -1318,12 +1338,13 @@ class StaticBroker:
 
     def call(self, *, role, service, operation, parameters):
         from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
-        journal, session = self.journal, self.session
+        journal, session, deadline = self.journal, self.session, self._deadline()
         journal.guard()
         c.require(session.request_binding == c.sha(c.canonical(journal._request))
-                  and self.clock() + 20 < session.deadline, "original finite SDK request/window")
+                  and self.clock() + 20 < deadline, "original finite SDK request/window")
         method = lc.validate_static_call(request=journal._request, role=role, service=service, operation=operation,
                                          parameters=parameters, bucket=session.scope["bucket"], plan=session.scope["plan"])
+        self._root_block(operation, parameters, deadline)
         body = _static_member(journal, lc.s3_put_body(parameters)) if operation == "PutObject" else None
         raw = c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters},
                           limit=2 * 1024**2)
@@ -1336,7 +1357,7 @@ class StaticBroker:
             c.require(ledger.reserve() == "created", "existing durable call is historical/unknown; no fresh SDK replay")
             created = True
             ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
-            c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
+            c.require(self.clock() + 20 < deadline, "SDK reservation consumed original budget")
             journal._guard.check(20)
             native = dict(parameters, Body=body) if operation == "PutObject" else dict(parameters)
             region = {"region": "us-east-1"} if service == "cloudfront" else {}
@@ -1345,12 +1366,12 @@ class StaticBroker:
             c.require(metadata.get("HTTPStatusCode") == (201 if operation == "CreateInvalidation" else 200),
                       "native SDK authenticated status")
             response_raw = c.canonical(_exact_sdk_dates(_static_response(operation, response)), limit=1024**2)
-            c.require(self.clock() < session.deadline, "native response exceeded original static window")
+            c.require(self.clock() < deadline, "native response exceeded original static window")
             receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],
                                                 server_date=metadata["HTTPHeaders"]["date"])
             ledger.complete(response_raw, receipt)
             journal.guard()
-            c.require(self.clock() < session.deadline, "durable receipt exceeded original static window")
+            c.require(self.clock() < deadline, "durable receipt exceeded original static window")
             return {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
         except BaseException:
             _poison_call(journal, ledger, ticket, created)
@@ -1379,12 +1400,13 @@ def _static_deadline(request):
     return stage["deadline"]
 
 
-def _assume_static_session(*, governance, journal, binding, credential_limit, operation_session, clock=time.time):
-    """Exact native static delegation after the capability authenticated its inputs and binding.
+def _assume_static_session(*, governance, journal, binding, roles, credential_limit, operation_session, clock=time.time):
+    """Exact native static delegation after the capability authenticated its inputs, binding and role facts.
 
     The #498 static roles of the operation (inventory: observer; publish-static: observer and normal) under the names
-    static_sessions derives; each session policy ends at _static_deadline. No role ID is pinned: governance carries
-    none for the static roles (open point for P28*).
+    static_sessions derives; each session policy ends at _static_deadline and the normal one names the candidate keys.
+    roles are the in-run after-apply readback facts: effective IAM of every product call before STS, UserId pinned
+    to role_id:session after it.
     """
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.session_policy import static_session_policy, validate_response
@@ -1397,14 +1419,15 @@ def _assume_static_session(*, governance, journal, binding, credential_limit, op
     publish = request["operation"] == "publish-static"
     plan = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET) if publish else None
     sessions, account = lc.static_sessions(binding, request["operation"]), governance["account_id"]
-    roles = {alias: governance["application_delegations"][alias] for alias in sessions}
-    c.require(all(arn == f"arn:aws:iam::{account}:role/cnesdata-prod-{lc.APPLICATION_DELEGATIONS[alias]}"
-                  for alias, arn in roles.items()), "static exact protected roles")
-    encoded = {alias: c.canonical(static_session_policy(alias, bucket_arn="arn:aws:s3:::" + STATIC_BUCKET,
-                                                        distribution_arn=plan["distribution_arn"] if publish else None,
-                                                        deadline=deadline)).decode().strip()
-               for alias in sessions}
+    facts = _static_roles(governance, roles, sessions)
+    policies = {alias: static_session_policy(alias, bucket_arn="arn:aws:s3:::" + STATIC_BUCKET,
+                                             distribution_arn=plan["distribution_arn"] if publish else None, deadline=deadline,
+                                             keys=plan["candidate_keys"] if alias == "normal" else None)
+                for alias in sessions}
+    encoded = {alias: c.canonical(policy).decode().strip() for alias, policy in policies.items()}
     c.require(all(len(text) <= 2048 for text in encoded.values()), "static STS policy limit")
+    _static_effective_iam(facts, policies, plan, c.utc(clock()))
+    roles = {alias: facts[alias]["role_arn"] for alias in sessions}
     journal._guard.check(40)
     journal.guard()
     operation = operation_session(request["operation"], dict(sessions), stage)
@@ -1424,9 +1447,10 @@ def _assume_static_session(*, governance, journal, binding, credential_limit, op
         client = AWS(governance | {"role": alias, "roles": {alias: roles[alias]}}, credentials=credentials)
         arn = roles[alias].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + sessions[alias]
         user = client.identity["UserId"]
-        c.require(client.identity["Account"] == account and client.identity["Arn"] == arn and type(user) is str
-                  and re.fullmatch(r"AROA[0-9A-Z]{16,128}:" + re.escape(sessions[alias]), user) is not None
-                  and response["AssumedRoleUser"] == {"Arn": arn, "AssumedRoleId": user}, "static exact native role/session/account")
+        c.require(client.identity["Account"] == account and client.identity["Arn"] == arn
+                  and user == facts[alias]["role_id"] + ":" + sessions[alias]
+                  and response["AssumedRoleUser"] == {"Arn": arn, "AssumedRoleId": user},
+                  "static exact native role ID/session/account")
         clients[alias] = client
         record[alias] = {"role_arn": roles[alias], "session_name": sessions[alias], "user_id": user,
                          "policy_sha256": c.sha(encoded[alias].encode()), "expires_at": c.utc(expiry.timestamp())}
@@ -1438,6 +1462,37 @@ def _assume_static_session(*, governance, journal, binding, credential_limit, op
                                     "account": account, "sessions": record}))
     return _StaticSession(clients, commitment, {"account": account, "bucket": STATIC_BUCKET, "plan": plan}, deadline, bound,
                           operation)
+
+
+def _static_roles(governance, roles, sessions):
+    account = governance["account_id"]
+    expected = {alias: f"arn:aws:iam::{account}:role/cnesdata-prod-{lc.APPLICATION_DELEGATIONS[alias]}" for alias in sessions}
+    c.require(type(roles) is dict and set(roles) == set(sessions)
+              and all(governance["application_delegations"][alias] == arn and type(roles[alias]) is dict
+                      and set(roles[alias]) == {"role_arn", "role_name", "role_id", "policy_name", "policy"}
+                      and roles[alias]["role_arn"] == arn and roles[alias]["role_name"] == arn.rsplit("/", 1)[1]
+                      and type(roles[alias]["role_id"]) is str and type(roles[alias]["policy"]) is dict
+                      for alias, arn in expected.items()), "static exact protected roles")
+    return roles
+
+
+def _static_effective_iam(facts, policies, plan, now):
+    """Role policy ∩ session policy for every product action on the resources it will touch, at the STS instant.
+
+    Normal object actions on each candidate key; observer object actions on the candidate keys (publish) or the
+    entrypoints (inventory, no plan yet); bucket and distribution actions on the bucket and the plan distribution.
+    """
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    from tools.cnesdata_delivery.session_policy import STATIC_SESSION_ACTIONS
+    bucket = "arn:aws:s3:::" + STATIC_BUCKET
+    keys = plan["candidate_keys"] if plan is not None else list(lc.STATIC_ENTRYPOINTS)
+    for alias in [alias for alias in ("observer", "normal") if alias in policies]:
+        resources = ([bucket], [bucket + "/" + key for key in keys], [plan["distribution_arn"]] if plan else [])
+        for actions, targets in zip(STATIC_SESSION_ACTIONS[alias], resources):
+            for action in actions:
+                c.require(all(effective_iam(facts[alias]["policy"], [policies[alias]], action, target,
+                                            {"aws:CurrentTime": now}) for target in targets),
+                          f"static_role=effective_iam alias={alias} action={action}")
 
 
 def _static_binding(governance, journal):
@@ -1458,14 +1513,17 @@ def _static_binding(governance, journal):
             "static_plan_sha256": None if journal._request["operation"] == "inventory" else c.sha(journal._inputs["static-plan"])}
 
 
-def static_capability(*, governance, journal, keeper, credential_limit, operation_session, carrier, clock=time.time):
+def static_capability(*, governance, journal, keeper, credential_limit, operation_session, carrier, prepared,
+                      clock=time.time):
     """Publish-static capability factory, sibling of closed_ready_capability (P15).
 
     Authenticates the static plan (#498 bucket, inventory digest, distribution account, no retire_versions: R16 stays
     out, D-C1), the host-receipt binding of the keeper closed-ready and the run's static binding against carrier (the
-    static_promotion.binding of the authenticated operational inputs, P15b), then the static STS.
+    static_promotion.binding of the authenticated operational inputs, P15b), the observer and normal role facts from
+    the prepared (operational deploy) after-apply readbacks, then the static STS.
     Any failure poisons the journal, keeps the lease held and mints no credential.
     """
+    from tools.cnesdata_delivery.static_inputs import static_role_facts
     c.require(type(journal) is AdapterJournal and type(keeper) is Keeper, "publish-static original journal/keeper")
     c.require(journal._request["operation"] == "publish-static" and getattr(journal, "_broker", None) is None,
               "publish-static only; every other operation remains rejected")
@@ -1477,8 +1535,10 @@ def static_capability(*, governance, journal, keeper, credential_limit, operatio
         c.require(plan["distribution_arn"].split(":")[4] == governance["account_id"], "static plan distribution account")
         binding = _static_binding(governance, journal)
         _compare_carrier(binding, carrier)
+        roles = static_role_facts(prepared["checkpoint.json"], prepared["approval.json"], governance=governance,
+                                  aliases=("observer", "normal"))
         publish_static_closed_ready(journal, keeper)
-        session = _assume_static_session(governance=governance, journal=journal, binding=binding,
+        session = _assume_static_session(governance=governance, journal=journal, binding=binding, roles=roles,
                                          credential_limit=credential_limit, operation_session=operation_session, clock=clock)
         broker = StaticBroker(session.evidence, governance, journal, session, clock=clock)
         keeper.attach(broker)
@@ -1494,20 +1554,26 @@ def _compare_carrier(binding, carrier):
     compare_binding(binding, carrier)
 
 
-def inventory_capability(*, governance, journal, keeper, credential_limit, operation_session, clock=time.time):
+def inventory_capability(*, governance, journal, keeper, credential_limit, operation_session, publication,
+                         clock=time.time):
     """Inventory capability factory (P15b): the observer sp-i STS at application-prepare, then the static broker.
 
     The binding commits to no plan; the operational inputs carrier does not exist yet, so no carrier comparison here.
+    The observer role facts come from the observer-bootstrap deploy publication's after-apply readbacks.
     Any failure poisons the journal, keeps the lease held and mints no credential.
     """
+    from tools.cnesdata_delivery.static_inputs import static_role_facts
     c.require(type(journal) is AdapterJournal and type(keeper) is Keeper, "inventory original journal/keeper")
     c.require(journal._request["operation"] == "inventory" and getattr(journal, "_broker", None) is None,
               "inventory only; every other operation remains rejected")
     try:
         keeper.lease.check()
         c.require(not keeper.uncertainty(), "inventory keeper uncertainty")
+        roles = static_role_facts(publication["checkpoint.json"], publication["approval.json"], governance=governance,
+                                  aliases=("observer",))
         session = _assume_static_session(governance=governance, journal=journal, binding=_static_binding(governance, journal),
-                                         credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+                                         roles=roles, credential_limit=credential_limit,
+                                         operation_session=operation_session, clock=clock)
         broker = StaticBroker(session.evidence, governance, journal, session, clock=clock)
         keeper.attach(broker)
         return broker
@@ -1581,6 +1647,24 @@ def _observer_step(governance):
              and step["direction"] == "advance"]
     c.require(len(steps) == 1, "unique protected observer-bootstrap step")
     return steps[0]
+
+
+def _observer_publication(api, aws, governance, request, run, owner, guard, now):
+    """Completed same-run observer-bootstrap deploy publication: its checkpoint and approval, bound to the owner."""
+    from tools.cnesdata_delivery.lifecycle_runtime import private_payload
+    name, step = _observer_step(governance)
+    job = _same_run_job(api, run, kind="observer-bootstrap", job_name=step["job_name"], guard=guard)
+    _, public, _ = _same_run_publication(api, run, owner, job, kind="observer-bootstrap", step=name, guard=guard, now=now)
+    files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+    checkpoint, approval = (c.loads(files[name], canonical=True) for name in ("checkpoint.json", "approval.json"))
+    delta = approval.get("delta") if type(approval) is dict else None
+    c.require(type(checkpoint) is dict and type(delta) is dict and checkpoint.get("purpose") == "application-prepare"
+              and c.canonical(checkpoint.get("owner")) == c.canonical(owner) == c.canonical(approval.get("owner"))
+              and approval.get("purpose") == "application-prepare" and approval.get("direction") == "advance"
+              and approval.get("plan_sha256") == checkpoint.get("plan_sha256")
+              and {key: delta.get(key) for key in ("purpose", "direction", "mode")}
+              == {key: step[key] for key in ("purpose", "direction", "mode")}, "observer-bootstrap=publication_binding")
+    return files
 
 
 def _trigger_producer(governance, kind):
@@ -2292,6 +2376,10 @@ def run_publish_static(*, keeper, request_raw, owner, window, inputs, activation
     capability(journal=journal, keeper=keeper)
     c.require(type(getattr(journal, "_broker", None)) is StaticBroker, "static broker admitted before adapter")
     timeout = seconds()
+    from tools.cnesdata_delivery.static_inputs import static_body_budget
+    keys = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET)["candidate_keys"]
+    static_body_budget(journal._inputs["dashboard-artifact"], keys, timeout)
+    journal._broker.admit_child(int(journal._broker.clock()) + timeout)
     return invoke_adapter(product=product, source=source, manifest=manifest, manifest_sha256=manifest_sha256,
                           journal=journal, timeout=timeout)
 
@@ -2305,6 +2393,7 @@ def run_inventory(*, keeper, request_raw, owner, window, inputs, activation_sha2
     capability(journal=journal, keeper=keeper)
     c.require(type(getattr(journal, "_broker", None)) is StaticBroker, "static broker admitted before adapter")
     timeout = seconds()
+    journal._broker.admit_child(int(journal._broker.clock()) + timeout)
     return invoke_adapter(product=product, source=source, manifest=manifest, manifest_sha256=manifest_sha256,
                           journal=journal, timeout=timeout)
 
@@ -2711,11 +2800,12 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window, owner = record["lifecycle"], lc.owner_binding(record)
         c.require(current.static_inventory is None, "observer-bootstrap=inventory_settled")
         inputs = inventory_input_source(api=api, governance=governance, run=run, owner=owner, guard=guard, now=clock())
+        publication = _observer_publication(api, aws, governance, request, run, owner, guard, clock())
         activation = c.canonical(governance["release"])
 
         def capability(*, journal, keeper):
             return inventory_capability(governance=governance, journal=journal, keeper=keeper, credential_limit=credential_limit,
-                                        operation_session=operation_session, clock=clock)
+                                        operation_session=operation_session, publication=publication, clock=clock)
         try:
             run_inventory(keeper=current, request_raw=_operation_request("inventory", owner=owner, window=window, inputs=inputs,
                                                                          activation=activation),
@@ -2842,7 +2932,8 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
 
         def capability(*, journal, keeper):
             return static_capability(governance=governance, journal=journal, keeper=keeper, credential_limit=credential_limit,
-                                     operation_session=operation_session, carrier=carrier, clock=clock)
+                                     operation_session=operation_session, carrier=carrier, prepared=state["prepared"],
+                                     clock=clock)
         request_raw = _operation_request("publish-static", owner=owner, window=window, inputs=inputs, activation=state["activation"])
         try:
             run_publish_static(keeper=current, request_raw=request_raw, owner=owner, window=window, inputs=inputs,

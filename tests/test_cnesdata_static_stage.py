@@ -527,6 +527,7 @@ def _install_static(monkeypatch, world, static=None):
                 raise ValueError(static["capability_error"])
             broker = ag.StaticBroker.__new__(ag.StaticBroker)
             broker.aws, broker.evidence, broker.journal, broker.child_deadline = "operation-client", [], journal, None
+            broker.clock = world.clock
             broker.session = SimpleNamespace(clients={"observer": "observer-client", "normal": "normal-client"},
                                              evidence="operation-client")
             journal._broker = broker
@@ -623,7 +624,7 @@ def test_host_handler_roda_o_publish_static_e_avanca_de_static_para_unit(monkeyp
     (capability,) = world.static_capability
     assert {key: capability[key] for key in capability if key not in {"journal", "keeper"}} == {
         "governance": world.governance, "credential_limit": 6000, "operation_session": world.operation_session,
-        "clock": world.clock, "carrier": carrier}
+        "clock": world.clock, "carrier": carrier, "prepared": world.prepared}
     assert capability["journal"] is journal and capability["keeper"] is world.keeper
     (invoked,) = world.invoke[-1:]
     assert invoked["journal"] is journal and invoked["timeout"] == 1380 - 1205 - 38 - 7
