@@ -2175,8 +2175,10 @@ def test_closed_ready_evidence_keys_stay_byte_identical():
     close = lr.closed_ready_evidence_keys(governance, **arguments, operation="close-drain")
     assert close["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/close-drain/sdk-")
     assert close["intent"].rsplit("/", 1)[1] != keys["intent"].rsplit("/", 1)[1]
+    inventory = lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+    assert inventory["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/inventory/sdk-")
     with pytest.raises(ValueError):
-        lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+        lr.closed_ready_evidence_keys(governance, **arguments, operation="retire-static")
 
 
 R12_ERRORS = {
@@ -5566,8 +5568,8 @@ def test_operation_session_factory_mints_the_exact_delegation_in_process_and_nev
     assert seen[2][1:] == (governance, credentials)
 
 
-@pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", "other", "promotion", ""])
-def test_operation_session_factory_serves_only_the_fence_and_publish_static_operations(monkeypatch, operation):
+@pytest.mark.parametrize("operation", ["keeper", "retire-static", "terminal", "other", "promotion", ""])
+def test_operation_session_factory_serves_only_the_fence_and_static_operations(monkeypatch, operation):
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
     with pytest.raises(ValueError, match="^operation session operation$"):
         factory(operation, {"session_name": "promotion-fence-r1"}, stage)

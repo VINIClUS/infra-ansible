@@ -527,3 +527,126 @@ def test_execute_de_producao_nao_para_mais_em_source_unconnected_e_chega_ao_unit
     assert journal._inputs["inventory"] == world.values.inventory and journal._inputs["static-plan"] == world.values.plan
     assert journal._inputs["dashboard-artifact"] == world.values.dist and journal.unknown == [] and journal.pending == []
     assert [call[1] for client in world.clients.values() for call in client.calls].count("put_object") == 3
+
+
+def _inventory_journal():
+    from test_cnesdata_application_gate import _adapter_case
+    from test_cnesdata_static_stage import _static_inputs
+    from tools.cnesdata_delivery import application_gate as ag
+    _, owner, window, _ = _adapter_case("inventory")
+    base = _static_inputs(owner["source_sha"])
+    inputs = {"candidate": base["candidate"], "dashboard-artifact": base["dashboard-artifact"], "archive": _archive(),
+              "static-baseline": _baseline()}
+    request = ag._operation_request("inventory", owner=owner, window=window, inputs=inputs, activation=b"release")
+    journal = ag.AdapterJournal(request, operation="inventory", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=c.sha(b"release"), guard=_Guard())
+    return journal, owner, window
+
+
+def test_sessao_do_inventory_assume_so_o_observer_sp_i_ate_o_prazo_da_preparacao(monkeypatch):
+    from datetime import datetime, timezone
+    from test_cnesdata_static_stage import ACCOUNT, ROLES
+    from tools.cnesdata_delivery import application_gate as ag, aws_boundary, lifecycle_contract as lc, session_policy
+    journal, owner, window = _inventory_journal()
+    binding = ag._static_binding(EVIDENCE_GOVERNANCE, journal)
+    assert binding["static_plan_sha256"] is None
+    names = lc.static_sessions(binding, "inventory")
+    assumed = ROLES["observer"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + names["observer"]
+    user = "AROA" + "OBSERVER".ljust(17, "X") + ":" + names["observer"]
+    calls, factory_calls = [], []
+
+    class Operation:
+        def call(self, service, operation, **parameters):
+            calls.append((service, operation, parameters))
+            return {"PackedPolicySize": 10, "AssumedRoleUser": {"Arn": assumed, "AssumedRoleId": user}, "Credentials": {
+                "AccessKeyId": "observer", "SecretAccessKey": "synthetic-secret", "SessionToken": "synthetic-token",
+                "Expiration": datetime.fromtimestamp(2000, timezone.utc)}}
+    operation = Operation()
+
+    class Delegated:
+        def __init__(self, governance, *, credentials):
+            self.identity = {"Account": ACCOUNT, "Arn": assumed, "UserId": user}
+    monkeypatch.setattr(aws_boundary, "AWS", Delegated)
+
+    def factory(name, role, stage):
+        factory_calls.append((name, dict(role), dict(stage)))
+        return operation
+    session = ag._assume_static_session(governance=EVIDENCE_GOVERNANCE, journal=journal, binding=binding, credential_limit=2000,
+                                        operation_session=factory, clock=lambda: 1100)
+    stage = journal._request["stage"]
+    assert factory_calls == [("inventory", {"observer": names["observer"]}, stage)]
+    policy = session_policy.static_session_policy("observer", bucket_arn="arn:aws:s3:::" + BUCKET, distribution_arn=None,
+                                                  deadline=window["preparation_deadline"])
+    assert calls == [("sts", "assume_role", {"RoleArn": ROLES["observer"], "RoleSessionName": names["observer"],
+                                             "DurationSeconds": 900, "Policy": c.canonical(policy).decode().strip()})]
+    assert set(session.clients) == {"observer"} and session.scope["plan"] is None
+    assert session.deadline == window["preparation_deadline"] and session.evidence is operation
+
+
+def test_politica_do_observer_sem_distribuicao_e_a_mesma_e_o_normal_exige_a_distribuicao():
+    from tools.cnesdata_delivery import session_policy
+    bucket = "arn:aws:s3:::" + BUCKET
+    assert session_policy.static_session_policy("observer", bucket_arn=bucket, distribution_arn=None, deadline=2000) == \
+        session_policy.static_session_policy("observer", bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000)
+    with pytest.raises(ValueError, match="^static session distribution$"):
+        session_policy.static_session_policy("normal", bucket_arn=bucket, distribution_arn=None, deadline=2000)
+
+
+def test_broker_do_inventory_despacha_so_o_catalogo_do_observer_com_evidencia_no_namespace_inventory():
+    from test_cnesdata_static_stage import ACCOUNT, PAIR, _put
+    from tools.cnesdata_delivery import application_gate as ag
+    journal, owner, window = _inventory_journal()
+    evidence = _Evidence()
+    request = c.sha(c.canonical(journal._request))
+    with pytest.raises(ValueError, match="one original admitted static broker"):
+        ag.StaticBroker(evidence, EVIDENCE_GOVERNANCE, journal, ag._StaticSession(
+            {"observer": _Native("observer"), "normal": _Native("normal")}, "9" * 64,
+            {"account": ACCOUNT, "bucket": BUCKET, "plan": None}, 1900, request, evidence))
+    observer = _Native("observer", versions=PAIR)
+    session = ag._StaticSession({"observer": observer}, "9" * 64, {"account": ACCOUNT, "bucket": BUCKET, "plan": None}, 1900,
+                                request, evidence)
+    broker = ag.StaticBroker(evidence, EVIDENCE_GOVERNANCE, journal, session, clock=lambda: 1100)
+    reply, _ = ag._adapter_message(_frame("observer", "s3", "ListObjectVersions", {"Bucket": BUCKET}), journal)
+    assert reply["kind"] == "sdk-result" and [key for key, _ in PAIR] == [item["Key"] for item in reply["value"]["Versions"]]
+    assert len(evidence.writes) == 3 and all("/inventory/sdk-" in key for key in evidence.writes)
+    with pytest.raises(ValueError):
+        ag._adapter_message(_frame(*_put("assets/app.js")), journal)
+    assert len(observer.calls) == 1 and len(evidence.writes) == 3 and broker.uncertainty == []
+
+
+def test_capability_do_inventory_assume_o_sp_i_sem_plano_e_falha_fechada_retendo_o_lease(monkeypatch):
+    from test_cnesdata_application_gate import _prepare_stage_keeper
+    from test_cnesdata_static_stage import ACCOUNT
+    from tools.cnesdata_delivery import application_gate as ag
+    journal, owner, window = _inventory_journal()
+    keeper, store = _prepare_stage_keeper()
+    seen = []
+
+    def assume(**kwargs):
+        seen.append(kwargs)
+        return ag._StaticSession({"observer": _Native("observer")}, "9" * 64, {"account": ACCOUNT, "bucket": BUCKET, "plan": None},
+                                 1900, c.sha(c.canonical(journal._request)), "operation-client")
+    monkeypatch.setattr(ag, "_assume_static_session", assume)
+    broker = ag.inventory_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=2000,
+                                     operation_session="factory", clock=lambda: 1100)
+    (call,) = seen
+    assert call["binding"] == ag._static_binding(EVIDENCE_GOVERNANCE, journal) and call["binding"]["static_plan_sha256"] is None
+    assert call["operation_session"] == "factory" and call["credential_limit"] == 2000
+    assert type(broker) is ag.StaticBroker and broker in keeper._contexts and journal._broker is broker
+    other, _, _ = _inventory_journal()
+    monkeypatch.setattr(ag, "_assume_static_session", lambda **kwargs: (_ for _ in ()).throw(ValueError("static STS refused")))
+    with pytest.raises(ValueError, match="^static STS refused$"):
+        ag.inventory_capability(governance=EVIDENCE_GOVERNANCE, journal=other, keeper=keeper, credential_limit=2000,
+                                operation_session="factory", clock=lambda: 1100)
+    assert other._failed is True and other in keeper._contexts and store.get()[0]["status"] == "held"
+
+
+def test_fabrica_de_sessao_de_operacao_serve_o_inventory_so_com_o_observer(monkeypatch):
+    from test_cnesdata_application_gate import _operation_factory_case
+    factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
+    sessions = {"observer": "sp-i-" + "1" * 40}
+    assert factory("inventory", dict(sessions), stage) is client
+    assert seen[0][1:] == ((admitted[0], "b" * 40, 4242, 1, "inventory"),
+                           {"application_purpose": "promotion", "delegations": ("observer",), "sessions": sessions})
+    with pytest.raises(ValueError, match="closed object fields"):
+        factory("inventory", dict(sessions, normal="sp-publish-" + "2" * 40), stage)
