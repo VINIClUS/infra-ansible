@@ -5477,7 +5477,8 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert keeper_kwargs == {"api": world.api, "governance": governance, "evidence_aws": world.aws}
     assert by_name["register"][0][1] is validators and by_name["acquire"][1] == {"preparation_deadline": 1000 + 900}
     events_kwargs = by_name["events"][1]
-    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "clock"} and events_kwargs["owner"] == {"owner": "acquired"}
+    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "keeper", "clock"}
+    assert events_kwargs["owner"] == {"owner": "acquired"} and events_kwargs["keeper"] is by_name["register"][0][0]
     assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
     handler_kwargs = by_name["handlers"][1]
     assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit",

@@ -774,9 +774,10 @@ def _lifecycle(world):
     return world.store.get()[0]["lifecycle"]
 
 
-def test_stage_handlers_sao_exatamente_os_tres_gatilhos_ratificados(monkeypatch):
+def test_stage_handlers_sao_exatamente_os_quatro_gatilhos_do_keeper(monkeypatch):
     world = _stage_world(monkeypatch)
-    assert set(world.handlers) == {"prepared", "phase-b", "host"} and all(callable(item) for item in world.handlers.values())
+    assert set(world.handlers) == {"observer-bootstrap", "prepared", "phase-b", "host"}
+    assert all(callable(item) for item in world.handlers.values())
 
 
 def test_prepared_handler_closes_the_window_from_the_authenticated_plan_activation(monkeypatch):

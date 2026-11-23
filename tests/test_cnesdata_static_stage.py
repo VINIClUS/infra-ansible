@@ -586,8 +586,8 @@ def _lifecycle(world):
 
 def test_host_handler_roda_o_publish_static_e_avanca_de_static_para_unit(monkeypatch):
     """P15 RED: api -> static (handoff aceito) -> unit, depois de uma observacao publication liquidada sem incerteza."""
-    from test_cnesdata_stage_events import HOST_REFERENCE
-    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
+    from test_cnesdata_stage_events import HOST_REFERENCE, RUN
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, static_inputs as si
     world = _static_world(monkeypatch)
     before = _lifecycle(world)
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
@@ -602,11 +602,14 @@ def test_host_handler_roda_o_publish_static_e_avanca_de_static_para_unit(monkeyp
     assert handoff["status"] == "accepted" and handoff["closed_ready_sha256"] == c.sha(world.ready_raw)
     assert {name: inputs[name] for name in world.static_values} == world.static_values
     (requested,) = world.static_requests
-    assert requested == {"keeper": world.keeper, "owner": world.owner, "window": static}
+    carrier = ag._static_binding(world.governance, journal)
+    assert type(requested.pop("guard")) is ag.KeeperGuard and si.carrier_binding(requested.pop("terraform")) == carrier
+    assert requested == {"keeper": world.keeper, "owner": world.owner, "window": static, "api": world.api,
+                         "governance": world.governance, "run": RUN, "now": 1200}
     (capability,) = world.static_capability
     assert {key: capability[key] for key in capability if key not in {"journal", "keeper"}} == {
         "governance": world.governance, "credential_limit": 6000, "operation_session": world.operation_session,
-        "clock": world.clock}
+        "clock": world.clock, "carrier": carrier}
     assert capability["journal"] is journal and capability["keeper"] is world.keeper
     (invoked,) = world.invoke[-1:]
     assert invoked["journal"] is journal and invoked["timeout"] == 1380 - 1205 - 38 - 7
