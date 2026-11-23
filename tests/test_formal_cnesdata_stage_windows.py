@@ -15,13 +15,14 @@ CONTRACT = (CODE / "lifecycle_contract.py").read_text(encoding="utf-8")
 RUNTIME = (CODE / "lifecycle_runtime.py").read_text(encoding="utf-8")
 CONFIGS = {name: (FORMAL / f"{name}.cfg").read_text(encoding="utf-8")
            for name in ("StageWindows", "StageWindowsE2", "StageWindowsOverrun", "StageWindowsCodeAudit",
-                        "StageWindowsCodeFinal")}
+                        "StageWindowsCodeFinal", "StageWindowsCeiling")}
 MUTANTS = {
     "StageWindowsMutantPause": ("StageWindowsE2", "ReviewPause", "60", "InBoundsAccepts"),
     "StageWindowsMutantMargin": ("StageWindowsOverrun", "AdmitMargin", "0", "EffectsInsideStage"),
     "StageWindowsMutantEarly": ("StageWindowsE2", "AllowEarly", "TRUE", "EffectsInsideStage"),
     "StageWindowsMutantLate": ("StageWindowsOverrun", "CheckCompletion", "FALSE", "AcceptBeforeDeadline"),
     "StageWindowsMutantSpan": ("StageWindowsE2", "ModeCeiling", "300", "ModeSpan"),
+    "StageWindowsMutantCeilingSpan": ("StageWindowsCeiling", "ModeCeiling", "957", "ModeSpan"),
 }
 STAGE_NAMES = ["phase-b", "api", "static", "unit", "phase-c-recovery", "phase-c-audit", "final"]
 MODE_PHASE = {4: "unit", 5: "recovery", 6: "audit"}
@@ -51,11 +52,15 @@ def underscored(names):
     return [name.replace("-", "_") for name in names]
 
 
-def code_stages():
+def code_constant(name):
     tree = ast.parse(CONTRACT)
     node = next(item for item in tree.body if isinstance(item, ast.Assign)
-                and getattr(item.targets[0], "id", "") == "STAGES")
+                and getattr(item.targets[0], "id", "") == name)
     return ast.literal_eval(node.value)
+
+
+def code_stages():
+    return code_constant("STAGES")
 
 
 def function_source(text, name):
@@ -64,9 +69,19 @@ def function_source(text, name):
     return text[start:end if end > 0 else None]
 
 
+CLOSED_PHASE_ANCHOR = 'duration, later = windows["stages"][window["stage"]]'
+
+
 def closed_phase_branch():
     capacity = function_source(CONTRACT, "phase_capacity")
-    return capacity[capacity.index("duration, later = STAGES"):]
+    return capacity[capacity.index(CLOSED_PHASE_ANCHOR):]
+
+
+def code_later(durations):
+    namespace = {"STAGES": code_stages()}
+    exec(function_source(CONTRACT, "later_seconds"), namespace)
+    windows = {"stages": dict(zip(STAGE_NAMES, durations, strict=True))}
+    return [namespace["later_seconds"](windows, name) for name in STAGE_NAMES]
 
 
 def code_modes():
@@ -193,19 +208,26 @@ def table(name, cfg_name):
 def test_duracoes_e_reservas_do_codigo_igualam_a_tabela_de_estagios_do_modelo():
     stages = code_stages()
     assert list(stages) == STAGE_NAMES
-    durations = model_tuple("CodeDur")
-    assert durations == [duration for duration, _ in stages.values()]
-    assert [later for _, later in stages.values()] == [sum(durations[index + 1:])
-                                                       for index in range(len(durations))]
+    durations, governed = model_tuple("CodeDur"), model_tuple("E2Dur")
+    assert durations == [low for low, _ in stages.values()]
+    assert all(low <= seconds <= high for seconds, (low, high) in zip(governed, stages.values(), strict=True))
+    assert sum(governed) <= code_constant("STAGE_SUM_CEILING")
+    for table_durations in (durations, governed):
+        assert code_later(table_durations) == [sum(table_durations[index + 1:])
+                                               for index in range(len(table_durations))]
 
 
 def test_janela_fixa_e_reserva_final_do_modelo_igualam_o_codigo():
+    reserve = code_constant("FINAL_RESERVE")
+    assert reserve == int(re.search(r"^FinalReserve == (\d+)", MODEL, re.M).group(1))
+    for name, cfg_name in (("CodeDur", "StageWindows"), ("E2Dur", "StageWindowsE2")):
+        assert int(cfg_values(CONFIGS[cfg_name])["FixedWindow"]) == sum(model_tuple(name)) + reserve
+    assert re.findall(r"fixed == total \+ (\w+)(.)", function_source(CONTRACT, "governed_windows")) == [("FINAL_RESERVE", ",")]
+    assert 'min(close + windows["fixed_deadline_seconds"], input_deadline)' in function_source(CONTRACT, "fixed_deadline")
     capacity = function_source(CONTRACT, "phase_capacity")
-    assert set(re.findall(r"min\(close \+ (\d+), window\[\"input_deadline\"\]\)", capacity)) == {
-        cfg_values(CONFIGS["StageWindows"])["FixedWindow"]}
+    assert 'fixed == fixed_deadline(close, window["input_deadline"], windows)' in capacity
     branch = closed_phase_branch()
-    assert re.findall(r"fixed - now >= max\(0, deadline - now\) \+ later \+ (\d+)", branch) == [
-        str(re.search(r"^FinalReserve == (\d+)", MODEL, re.M).group(1))]
+    assert re.findall(r"fixed - now >= max\(0, deadline - now\) \+ later \+ (\w+)", branch) == ["FINAL_RESERVE"]
 
 
 def test_margem_da_fase_fechada_liga_a_linha_propria_com_operador_e_termo():
@@ -217,7 +239,7 @@ def test_margem_da_fase_fechada_liga_a_linha_propria_com_operador_e_termo():
 
 def test_margem_do_ramo_de_recuperacao_tambem_e_ligada():
     capacity = function_source(CONTRACT, "phase_capacity")
-    recovery = capacity[:capacity.index("duration, later = STAGES")]
+    recovery = capacity[:capacity.index(CLOSED_PHASE_ANCHOR)]
     found = re.findall(r"now \+ operation_seconds \+ (\d+) (<=?) window\[\"deadline\"\]", recovery)
     assert found == [(cfg_values(CONFIGS["StageWindows"])["AdmitMargin"], "<")]
 
@@ -252,7 +274,8 @@ def test_operacoes_de_modo_do_modelo_igualam_a_tabela_do_contrato():
     assert model_modes("AuditModeOps") == underscored(found["audit"])
 
 
-@pytest.mark.parametrize("name,cfg_name", [("Code", "StageWindows"), ("E2", "StageWindowsE2")])
+@pytest.mark.parametrize("name,cfg_name", [("Code", "StageWindows"), ("E2", "StageWindowsE2"),
+                                           ("Ceiling", "StageWindowsCeiling")])
 def test_limites_do_modelo_sao_admissiveis_e_maximais_pelas_reservas_do_codigo(name, cfg_name):
     cfg, durations, records = table(name, cfg_name)
     assert len(records) == 7
@@ -312,3 +335,45 @@ def test_mutante_difere_em_uma_constante_e_espera_a_violacao_nomeada(name):
     assert mutant[constant] == value
     assert f"\\* expect invariant:{invariant}" in text
     assert re.search(rf"^INVARIANT {invariant}$", text, re.M)
+
+
+def post_static_span(name, cfg_name):
+    cfg, durations, records = table(name, cfg_name)
+    return sum(actual for stage in range(4, 8) for _, _, actual in stage_ops(stage, records[stage - 1], cfg))
+
+
+def test_teto_de_modo_de_toda_configuracao_iguala_o_contexto_de_promocao_do_codigo():
+    context = code_constant("PROMOTION_CONTEXT_SECONDS")
+    for name, text in CONFIGS.items():
+        assert int(cfg_values(text)["ModeCeiling"]) == context, name
+        assert re.search(r"^\s+ModeSpan$", text, re.M), name
+
+
+def test_contexto_do_modelo_abre_no_fim_do_static_como_a_checagem_pos_static_da_governanca():
+    opens = re.findall(r"ctxOpen' = IF isLast /\\ stage = (\d) THEN", MODEL)
+    assert [int(stage) for stage in opens] == [STAGE_NAMES.index("static") + 1]
+    source = function_source(CONTRACT, "governed_windows")
+    assert re.findall(r'post_static = later_seconds\(value, "([\w-]+)"\)', source) == ["static"]
+    assert re.findall(r"post_static <= (\w+),", source) == ["PROMOTION_CONTEXT_SECONDS"]
+
+
+def test_configuracao_do_teto_da_soma_usa_janelas_no_teto_do_codigo_e_preenche_o_vao_pos_static():
+    durations, bounds = model_tuple("CeilingDur"), code_stages()
+    assert all(low <= value <= high for value, (low, high) in zip(durations, bounds.values(), strict=True))
+    ceiling, reserve = code_constant("STAGE_SUM_CEILING"), code_constant("FINAL_RESERVE")
+    assert sum(durations) == ceiling
+    cfg, e2 = cfg_values(CONFIGS["StageWindowsCeiling"]), cfg_values(CONFIGS["StageWindowsE2"])
+    assert int(cfg["FixedWindow"]) == ceiling + reserve
+    assert {key for key in e2 if e2[key] != cfg[key]} == {"FixedWindow"}
+    assert re.findall(r"^\s+(Stage\w+) <- (\w+)$", CONFIGS["StageWindowsCeiling"], re.M) == [
+        ("StageDur", "CeilingDur"), ("StageVar", "CeilingVar")]
+    assert sum(durations[STAGE_NAMES.index("static") + 1:]) <= code_constant("PROMOTION_CONTEXT_SECONDS")
+
+
+def test_mutante_do_teto_de_modo_fica_um_segundo_abaixo_do_maior_vao_alcancavel():
+    span = post_static_span("Ceiling", "StageWindowsCeiling")
+    durations = model_tuple("CeilingDur")
+    assert span == sum(durations[STAGE_NAMES.index("static") + 1:]) - 4 * (int(cfg_values(
+        CONFIGS["StageWindowsCeiling"])["AdmitMargin"]) + 1)
+    mutant = cfg_values((FORMAL / "StageWindowsMutantCeilingSpan.cfg").read_text(encoding="utf-8"))
+    assert int(mutant["ModeCeiling"]) == span - 1
