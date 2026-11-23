@@ -7,7 +7,7 @@ from tools.cnesdata_delivery import contract as c, drift_handoff, lifecycle_cont
 from tools.cnesdata_delivery.producers import baseline_commitments, hmac_key, release_guard
 from tools.cnesdata_delivery.producers.chain import expiry_chain
 
-CLI_CEILING = 40960
+CLI_CEILING = 43856
 SECRET_CEILING = 47952
 SESSION_ROLES = ("plan", "deploy", "application")
 GOVERNANCE_KEYS = frozenset("""
