@@ -2730,7 +2730,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "missing-original":
         originals.pop("resources_sha256")
     if mutation == "duration":
-        originals["deadline"] = manifest["deadline"] = 1901
+        originals["deadline"] = manifest["deadline"] = 2201
     if mutation == "caller":
         owner.update(application_purpose="mode-readiness-drill", context_kind="readiness")
     with pytest.raises(ValueError):

@@ -97,6 +97,7 @@ STAGE_WINDOW_BOUNDS = {
 }
 STAGE_SUM_CEILING = 1830
 FINAL_RESERVE = 420
+PROMOTION_CONTEXT_SECONDS = 1200
 
 
 def require(condition, reason):
@@ -137,6 +138,11 @@ def governed_windows(value):
     require(
         total <= STAGE_SUM_CEILING,
         f"stage windows sum={total} ceiling={STAGE_SUM_CEILING}",
+    )
+    post_static = later_seconds(value, "static")
+    require(
+        post_static <= PROMOTION_CONTEXT_SECONDS,
+        f"stage_windows post_static={post_static} context={PROMOTION_CONTEXT_SECONDS}",
     )
     require(
         type(fixed) is int and fixed == total + FINAL_RESERVE,

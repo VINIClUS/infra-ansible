@@ -972,7 +972,7 @@ def validate_mode_context(inputs_raw, *, owner, application_purpose, originals):
     c.require(manifest["context_kind"] != "readiness" or predecessor is not None, "readiness original predecessor")
     for key in ("admitted_at", "deadline"):
         c.integer(manifest[key])
-    maximum = 900 if manifest["context_kind"] == "promotion" else 14400
+    maximum = PROMOTION_CONTEXT_SECONDS if manifest["context_kind"] == "promotion" else 14400
     c.require(0 < manifest["deadline"] - manifest["admitted_at"] <= maximum, "mode context original bounded deadline")
     digest = c.sha(raw)
     sessions = {alias: [] for alias in ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")}
@@ -1229,6 +1229,7 @@ STAGES = {"phase-b": (360, 720), "api": (180, 360), "static": (180, 360), "unit"
           "phase-c-recovery": (240, 660), "phase-c-audit": (240, 660), "final": (60, 180)}
 FINAL_RESERVE = 420
 STAGE_SUM_CEILING = 1830
+PROMOTION_CONTEXT_SECONDS = 1200
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
 STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static")}
@@ -1486,6 +1487,9 @@ def governed_windows(value):
                   f"stage window stage={name} value={seconds} min={low} max={high}")
     total = sum(stages.values())
     c.require(total <= STAGE_SUM_CEILING, f"stage windows sum={total} ceiling={STAGE_SUM_CEILING}")
+    post_static = later_seconds(value, "static")
+    c.require(post_static <= PROMOTION_CONTEXT_SECONDS,
+              f"stage_windows post_static={post_static} context={PROMOTION_CONTEXT_SECONDS}")
     c.require(type(fixed) is int and fixed == total + FINAL_RESERVE,
               f"fixed_deadline_seconds value={fixed} expected={total + FINAL_RESERVE}")
     return value

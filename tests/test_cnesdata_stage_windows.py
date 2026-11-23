@@ -282,6 +282,7 @@ def test_host_gate_usa_os_mesmos_limites_do_lifecycle():
     g = _host()
     assert g.STAGE_WINDOW_BOUNDS == lc.STAGES
     assert (g.STAGE_SUM_CEILING, g.FINAL_RESERVE) == (lc.STAGE_SUM_CEILING, lc.FINAL_RESERVE)
+    assert g.PROMOTION_CONTEXT_SECONDS == lc.PROMOTION_CONTEXT_SECONDS
 
 
 def _host_case(stages):
@@ -381,6 +382,61 @@ def test_sessao_avaliada_da_fence_expira_com_a_janela_api_governada(monkeypatch)
                                               execution_prefix=prefix, observed_at=1000, api_seconds=240)
     assert documents["fence_session"] == session_policy.fence_session_policy(control_table_arn=table, execution_prefix=prefix,
                                                                              deadline=1240)
+
+
+CEILING_VECTOR = {"phase-b": 360, "api": 180, "static": 180, "unit": 300,
+                  "phase-c-recovery": 375, "phase-c-audit": 375, "final": 60}
+
+
+def test_teto_do_contexto_de_promocao_cobre_o_maior_vao_pos_static_sob_o_teto_da_soma():
+    assert lc.PROMOTION_CONTEXT_SECONDS == 1200
+    order = list(lc.STAGES)
+    before_context = sum(lc.STAGES[name][0] for name in order[:order.index("static") + 1])
+    assert lc.STAGE_SUM_CEILING - before_context == 1110 <= lc.PROMOTION_CONTEXT_SECONDS
+    assert sum(CEILING_VECTOR.values()) == lc.STAGE_SUM_CEILING
+    assert lc.later_seconds(vector(CEILING_VECTOR), "static") == 1110
+
+
+def test_governanca_recusa_vao_pos_static_acima_do_contexto_de_promocao(monkeypatch):
+    windows = vector(CEILING_VECTOR)
+    monkeypatch.setattr(lc, "PROMOTION_CONTEXT_SECONDS", 1110)
+    assert lc.governed_windows(windows) == windows
+    monkeypatch.setattr(lc, "PROMOTION_CONTEXT_SECONDS", 1109)
+    with pytest.raises(ValueError, match="^stage_windows post_static=1110 context=1109$"):
+        lc.governed_windows(windows)
+    with pytest.raises(ValueError, match="^stage_windows post_static=1110 context=1109$"):
+        lc.stage_windows(governance(CEILING_VECTOR))
+
+
+def test_host_gate_recusa_vao_pos_static_acima_do_contexto_de_promocao(monkeypatch):
+    g, clock, gov, api, close, ready, pack = _host_case(CEILING_VECTOR)
+    pack()
+    monkeypatch.setattr(g, "PROMOTION_CONTEXT_SECONDS", 1109)
+    with pytest.raises(ValueError, match="^stage_windows post_static=1110 context=1109$"):
+        g.admit_physical_action(gov["binding"], gov, api, clock)
+    monkeypatch.setattr(g, "PROMOTION_CONTEXT_SECONDS", 1110)
+    window = g.admit_physical_action(gov["binding"], gov, api, clock).window(clock)
+    assert window.fixed_deadline == 660 + lc.STAGE_SUM_CEILING + lc.FINAL_RESERVE
+
+
+@pytest.mark.parametrize(("span", "accepted"), [(1200, True), (1201, False)])
+def test_contexto_de_modo_da_promocao_vai_ate_o_teto_do_contexto_de_promocao(span, accepted):
+    from test_cnesdata_application_gate import _mode_semantic_context
+    manifest, originals, owner, encode = _mode_semantic_context("promotion")
+    originals["deadline"] = manifest["deadline"] = manifest["admitted_at"] + span
+    arguments = {"owner": owner, "application_purpose": "promotion", "originals": originals}
+    if accepted:
+        assert lc.validate_mode_context(encode(manifest), **arguments)["manifest"]["deadline"] == 1000 + span
+    else:
+        with pytest.raises(ValueError, match="^mode context original bounded deadline$"):
+            lc.validate_mode_context(encode(manifest), **arguments)
+
+
+def test_contrato_documenta_o_teto_do_contexto_de_promocao_do_codigo():
+    from pathlib import Path
+    contract = Path(__file__).resolve().parents[1] / "docs/cnesdata-delivery-application-lifecycle.md"
+    text = contract.read_text(encoding="utf-8")
+    assert f"{lc.PROMOTION_CONTEXT_SECONDS}-second promotion" in text and "900-second promotion" not in text
 
 
 INITIAL_RENDER = {"stage_windows": INITIAL, "fixed_deadline_seconds": 2070}
