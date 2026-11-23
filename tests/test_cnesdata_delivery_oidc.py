@@ -1042,7 +1042,8 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
         scope, execution_prefix = lr.fence_evaluation_scope(governance=gov, role=role, control_table_arn=shared_table,
                                                             owner=owner, checkpoint_sha256="5" * 64)
         documents = lr.fence_evaluation_documents(governance=gov, pin=pin, fragment=fragment, owner=owner, role=role,
-            control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=observed)
+            control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=observed,
+            api_seconds=180)
         return scope, execution_prefix, documents
     if mutation:
         with pytest.raises(ValueError):
@@ -1063,5 +1064,6 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
     assert all(item["observed"] is item["expected"] for item in report["cases"])
     late = copy.deepcopy(documents)
     late["fence_session"] = lr.fence_evaluation_documents(governance=gov, pin=pin | {"frozen_until": "2029-12-31T23:51:00Z"},
-        fragment=fragment, owner=owner, role=role, control_table_arn=table, execution_prefix=prefix, observed_at=observed)["fence_session"]
+        fragment=fragment, owner=owner, role=role, control_table_arn=table, execution_prefix=prefix, observed_at=observed,
+        api_seconds=180)["fence_session"]
     assert late["fence_session"]["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": "2029-12-31T23:51:00Z"}
