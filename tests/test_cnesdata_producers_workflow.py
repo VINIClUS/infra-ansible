@@ -176,9 +176,11 @@ def test_segredos_ficam_no_env_do_passo_observe_e_nao_no_job(document):
     assert masks and all("REPORT_HMAC_KEY" not in step["env"] for step in masks)
 
 
-def test_observe_so_roda_no_role_plan_e_o_assemble_aceita_observe_pulado(document):
+def test_observe_roda_nos_roles_plan_e_audit_e_o_assemble_aceita_observe_pulado(document):
     jobs = document["jobs"]
     assert "inputs.role" in jobs["observe"]["if"] and "plan" in jobs["observe"]["if"]
+    assert "audit" in jobs["observe"]["if"] and "deploy" not in jobs["observe"]["if"]
+    assert "audit" in triggers(document)["workflow_call"]["inputs"]["role"]["description"]
     condition = jobs["assemble"]["if"]
     assert "skipped" in condition and "success" in condition and "cancelled" in condition
 
@@ -186,4 +188,4 @@ def test_observe_so_roda_no_role_plan_e_o_assemble_aceita_observe_pulado(documen
 def test_assemble_do_deploy_nao_baixa_o_artefato_de_observacao_do_proprio_run(document):
     steps = document["jobs"]["assemble"]["steps"]
     download = next(step for step in steps if step["name"].startswith("Download the observations"))
-    assert "inputs.role" in download["if"]
+    assert "inputs.role" in download["if"] and "audit" in download["if"] and "deploy" not in download["if"]
