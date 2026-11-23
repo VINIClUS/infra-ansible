@@ -1,0 +1,1334 @@
+{
+ "botocore": "1.44.5",
+ "operations": {
+  "cloudfront get_response_headers_policy": {
+   "": {
+    "ETag": [
+     "string",
+     false
+    ],
+    "ResponseHeadersPolicy": [
+     "structure",
+     false
+    ]
+   },
+   "ResponseHeadersPolicy": {
+    "Id": [
+     "string",
+     true
+    ],
+    "LastModifiedTime": [
+     "timestamp",
+     true
+    ],
+    "ResponseHeadersPolicyConfig": [
+     "structure",
+     true
+    ]
+   },
+   "ResponseHeadersPolicy.ResponseHeadersPolicyConfig": {
+    "Comment": [
+     "string",
+     false
+    ],
+    "CorsConfig": [
+     "structure",
+     false
+    ],
+    "CustomHeadersConfig": [
+     "structure",
+     false
+    ],
+    "Name": [
+     "string",
+     true
+    ],
+    "RemoveHeadersConfig": [
+     "structure",
+     false
+    ],
+    "SecurityHeadersConfig": [
+     "structure",
+     false
+    ],
+    "ServerTimingHeadersConfig": [
+     "structure",
+     false
+    ]
+   }
+  },
+  "cloudwatch describe_alarms": {
+   "": {
+    "CompositeAlarms": [
+     "list",
+     false
+    ],
+    "LogAlarms": [
+     "list",
+     false
+    ],
+    "MetricAlarms": [
+     "list",
+     false
+    ],
+    "NextToken": [
+     "string",
+     false
+    ]
+   },
+   "CompositeAlarms[]": {
+    "ActionConfiguration": [
+     "structure",
+     false
+    ],
+    "ActionsEnabled": [
+     "boolean",
+     false
+    ],
+    "ActionsSuppressedBy": [
+     "string",
+     false
+    ],
+    "ActionsSuppressedReason": [
+     "string",
+     false
+    ],
+    "ActionsSuppressor": [
+     "string",
+     false
+    ],
+    "ActionsSuppressorExtensionPeriod": [
+     "integer",
+     false
+    ],
+    "ActionsSuppressorWaitPeriod": [
+     "integer",
+     false
+    ],
+    "AlarmActions": [
+     "list",
+     false
+    ],
+    "AlarmArn": [
+     "string",
+     false
+    ],
+    "AlarmConfigurationUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "AlarmDescription": [
+     "string",
+     false
+    ],
+    "AlarmName": [
+     "string",
+     false
+    ],
+    "AlarmRule": [
+     "string",
+     false
+    ],
+    "InsufficientDataActions": [
+     "list",
+     false
+    ],
+    "OKActions": [
+     "list",
+     false
+    ],
+    "StateReason": [
+     "string",
+     false
+    ],
+    "StateReasonData": [
+     "string",
+     false
+    ],
+    "StateTransitionedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateValue": [
+     "string",
+     false
+    ]
+   },
+   "LogAlarms[]": {
+    "ActionConfiguration": [
+     "structure",
+     false
+    ],
+    "ActionLogLineCount": [
+     "integer",
+     false
+    ],
+    "ActionLogLineRoleArn": [
+     "string",
+     false
+    ],
+    "ActionsEnabled": [
+     "boolean",
+     false
+    ],
+    "AlarmActions": [
+     "list",
+     false
+    ],
+    "AlarmArn": [
+     "string",
+     false
+    ],
+    "AlarmConfigurationUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "AlarmDescription": [
+     "string",
+     false
+    ],
+    "AlarmName": [
+     "string",
+     false
+    ],
+    "ComparisonOperator": [
+     "string",
+     false
+    ],
+    "EvaluationState": [
+     "string",
+     false
+    ],
+    "InsufficientDataActions": [
+     "list",
+     false
+    ],
+    "OKActions": [
+     "list",
+     false
+    ],
+    "QueryResultsToAlarm": [
+     "integer",
+     false
+    ],
+    "QueryResultsToEvaluate": [
+     "integer",
+     false
+    ],
+    "ScheduledQueryConfiguration": [
+     "structure",
+     false
+    ],
+    "StateReason": [
+     "string",
+     false
+    ],
+    "StateReasonData": [
+     "string",
+     false
+    ],
+    "StateTransitionedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateValue": [
+     "string",
+     false
+    ],
+    "Threshold": [
+     "double",
+     false
+    ],
+    "TreatMissingData": [
+     "string",
+     false
+    ],
+    "WarmUpConfiguration": [
+     "structure",
+     false
+    ]
+   },
+   "MetricAlarms[]": {
+    "ActionConfiguration": [
+     "structure",
+     false
+    ],
+    "ActionsEnabled": [
+     "boolean",
+     false
+    ],
+    "AlarmActions": [
+     "list",
+     false
+    ],
+    "AlarmArn": [
+     "string",
+     false
+    ],
+    "AlarmConfigurationUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "AlarmDescription": [
+     "string",
+     false
+    ],
+    "AlarmName": [
+     "string",
+     false
+    ],
+    "ComparisonOperator": [
+     "string",
+     false
+    ],
+    "DatapointsToAlarm": [
+     "integer",
+     false
+    ],
+    "Dimensions": [
+     "list",
+     false
+    ],
+    "EvaluateLowSampleCountPercentile": [
+     "string",
+     false
+    ],
+    "EvaluationCriteria": [
+     "structure",
+     false
+    ],
+    "EvaluationInterval": [
+     "integer",
+     false
+    ],
+    "EvaluationPeriods": [
+     "integer",
+     false
+    ],
+    "EvaluationState": [
+     "string",
+     false
+    ],
+    "EvaluationWindow": [
+     "structure",
+     false
+    ],
+    "ExtendedStatistic": [
+     "string",
+     false
+    ],
+    "InsufficientDataActions": [
+     "list",
+     false
+    ],
+    "MetricName": [
+     "string",
+     false
+    ],
+    "Metrics": [
+     "list",
+     false
+    ],
+    "Namespace": [
+     "string",
+     false
+    ],
+    "OKActions": [
+     "list",
+     false
+    ],
+    "Period": [
+     "integer",
+     false
+    ],
+    "StateReason": [
+     "string",
+     false
+    ],
+    "StateReasonData": [
+     "string",
+     false
+    ],
+    "StateTransitionedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateUpdatedTimestamp": [
+     "timestamp",
+     false
+    ],
+    "StateValue": [
+     "string",
+     false
+    ],
+    "Statistic": [
+     "string",
+     false
+    ],
+    "Threshold": [
+     "double",
+     false
+    ],
+    "ThresholdMetricId": [
+     "string",
+     false
+    ],
+    "TreatMissingData": [
+     "string",
+     false
+    ],
+    "Unit": [
+     "string",
+     false
+    ],
+    "WarmUpConfiguration": [
+     "structure",
+     false
+    ]
+   }
+  },
+  "dynamodb describe_table": {
+   "": {
+    "Table": [
+     "structure",
+     false
+    ]
+   },
+   "Table": {
+    "ArchivalSummary": [
+     "structure",
+     false
+    ],
+    "AttributeDefinitions": [
+     "list",
+     false
+    ],
+    "BillingModeSummary": [
+     "structure",
+     false
+    ],
+    "CreationDateTime": [
+     "timestamp",
+     false
+    ],
+    "DeletionProtectionEnabled": [
+     "boolean",
+     false
+    ],
+    "DisassociationProtectionEnabled": [
+     "boolean",
+     false
+    ],
+    "GlobalSecondaryIndexes": [
+     "list",
+     false
+    ],
+    "GlobalTableSettingsReplicationMode": [
+     "string",
+     false
+    ],
+    "GlobalTableVersion": [
+     "string",
+     false
+    ],
+    "GlobalTableWitnesses": [
+     "list",
+     false
+    ],
+    "ItemCount": [
+     "long",
+     false
+    ],
+    "KeySchema": [
+     "list",
+     false
+    ],
+    "LatestStreamArn": [
+     "string",
+     false
+    ],
+    "LatestStreamLabel": [
+     "string",
+     false
+    ],
+    "LocalSecondaryIndexes": [
+     "list",
+     false
+    ],
+    "MultiRegionConsistency": [
+     "string",
+     false
+    ],
+    "OnDemandThroughput": [
+     "structure",
+     false
+    ],
+    "ProvisionedThroughput": [
+     "structure",
+     false
+    ],
+    "Replicas": [
+     "list",
+     false
+    ],
+    "RestoreSummary": [
+     "structure",
+     false
+    ],
+    "SSEDescription": [
+     "structure",
+     false
+    ],
+    "StreamSpecification": [
+     "structure",
+     false
+    ],
+    "TableArn": [
+     "string",
+     false
+    ],
+    "TableClassSummary": [
+     "structure",
+     false
+    ],
+    "TableId": [
+     "string",
+     false
+    ],
+    "TableName": [
+     "string",
+     false
+    ],
+    "TableSizeBytes": [
+     "long",
+     false
+    ],
+    "TableStatus": [
+     "string",
+     false
+    ],
+    "VectorIndexes": [
+     "list",
+     false
+    ],
+    "WarmThroughput": [
+     "structure",
+     false
+    ]
+   },
+   "Table.ArchivalSummary": {
+    "ArchivalBackupArn": [
+     "string",
+     false
+    ],
+    "ArchivalDateTime": [
+     "timestamp",
+     false
+    ],
+    "ArchivalReason": [
+     "string",
+     false
+    ]
+   },
+   "Table.AttributeDefinitions[]": {
+    "AttributeName": [
+     "string",
+     true
+    ],
+    "AttributeType": [
+     "string",
+     true
+    ]
+   },
+   "Table.BillingModeSummary": {
+    "BillingMode": [
+     "string",
+     false
+    ],
+    "LastUpdateToPayPerRequestDateTime": [
+     "timestamp",
+     false
+    ]
+   },
+   "Table.GlobalSecondaryIndexes[]": {
+    "Backfilling": [
+     "boolean",
+     false
+    ],
+    "IndexArn": [
+     "string",
+     false
+    ],
+    "IndexName": [
+     "string",
+     false
+    ],
+    "IndexSizeBytes": [
+     "long",
+     false
+    ],
+    "IndexStatus": [
+     "string",
+     false
+    ],
+    "ItemCount": [
+     "long",
+     false
+    ],
+    "KeySchema": [
+     "list",
+     false
+    ],
+    "OnDemandThroughput": [
+     "structure",
+     false
+    ],
+    "Projection": [
+     "structure",
+     false
+    ],
+    "ProvisionedThroughput": [
+     "structure",
+     false
+    ],
+    "WarmThroughput": [
+     "structure",
+     false
+    ]
+   },
+   "Table.GlobalTableWitnesses[]": {
+    "RegionName": [
+     "string",
+     false
+    ],
+    "WitnessStatus": [
+     "string",
+     false
+    ]
+   },
+   "Table.KeySchema[]": {
+    "AttributeName": [
+     "string",
+     true
+    ],
+    "KeyType": [
+     "string",
+     true
+    ]
+   },
+   "Table.LocalSecondaryIndexes[]": {
+    "IndexArn": [
+     "string",
+     false
+    ],
+    "IndexName": [
+     "string",
+     false
+    ],
+    "IndexSizeBytes": [
+     "long",
+     false
+    ],
+    "ItemCount": [
+     "long",
+     false
+    ],
+    "KeySchema": [
+     "list",
+     false
+    ],
+    "Projection": [
+     "structure",
+     false
+    ]
+   },
+   "Table.OnDemandThroughput": {
+    "MaxReadRequestUnits": [
+     "long",
+     false
+    ],
+    "MaxWriteRequestUnits": [
+     "long",
+     false
+    ]
+   },
+   "Table.ProvisionedThroughput": {
+    "LastDecreaseDateTime": [
+     "timestamp",
+     false
+    ],
+    "LastIncreaseDateTime": [
+     "timestamp",
+     false
+    ],
+    "NumberOfDecreasesToday": [
+     "long",
+     false
+    ],
+    "ReadCapacityUnits": [
+     "long",
+     false
+    ],
+    "WriteCapacityUnits": [
+     "long",
+     false
+    ]
+   },
+   "Table.Replicas[]": {
+    "GlobalSecondaryIndexes": [
+     "list",
+     false
+    ],
+    "GlobalTableSettingsReplicationMode": [
+     "string",
+     false
+    ],
+    "KMSMasterKeyId": [
+     "string",
+     false
+    ],
+    "OnDemandThroughputOverride": [
+     "structure",
+     false
+    ],
+    "ProvisionedThroughputOverride": [
+     "structure",
+     false
+    ],
+    "RegionName": [
+     "string",
+     false
+    ],
+    "ReplicaArn": [
+     "string",
+     false
+    ],
+    "ReplicaInaccessibleDateTime": [
+     "timestamp",
+     false
+    ],
+    "ReplicaStatus": [
+     "string",
+     false
+    ],
+    "ReplicaStatusDescription": [
+     "string",
+     false
+    ],
+    "ReplicaStatusPercentProgress": [
+     "string",
+     false
+    ],
+    "ReplicaTableClassSummary": [
+     "structure",
+     false
+    ],
+    "WarmThroughput": [
+     "structure",
+     false
+    ]
+   },
+   "Table.RestoreSummary": {
+    "RestoreDateTime": [
+     "timestamp",
+     true
+    ],
+    "RestoreInProgress": [
+     "boolean",
+     true
+    ],
+    "SourceBackupArn": [
+     "string",
+     false
+    ],
+    "SourceTableArn": [
+     "string",
+     false
+    ]
+   },
+   "Table.SSEDescription": {
+    "InaccessibleEncryptionDateTime": [
+     "timestamp",
+     false
+    ],
+    "KMSMasterKeyArn": [
+     "string",
+     false
+    ],
+    "SSEType": [
+     "string",
+     false
+    ],
+    "Status": [
+     "string",
+     false
+    ]
+   },
+   "Table.StreamSpecification": {
+    "StreamEnabled": [
+     "boolean",
+     true
+    ],
+    "StreamViewType": [
+     "string",
+     false
+    ]
+   },
+   "Table.TableClassSummary": {
+    "LastUpdateDateTime": [
+     "timestamp",
+     false
+    ],
+    "TableClass": [
+     "string",
+     false
+    ]
+   },
+   "Table.VectorIndexes[]": {
+    "Backfilling": [
+     "boolean",
+     false
+    ],
+    "Dimensions": [
+     "long",
+     false
+    ],
+    "DistanceFunction": [
+     "string",
+     false
+    ],
+    "IndexArn": [
+     "string",
+     false
+    ],
+    "IndexName": [
+     "string",
+     false
+    ],
+    "IndexSizeBytes": [
+     "long",
+     false
+    ],
+    "IndexStatus": [
+     "string",
+     false
+    ],
+    "ItemCount": [
+     "long",
+     false
+    ],
+    "Projection": [
+     "structure",
+     false
+    ],
+    "SearchSchema": [
+     "list",
+     false
+    ],
+    "VectorAttribute": [
+     "structure",
+     false
+    ]
+   },
+   "Table.WarmThroughput": {
+    "ReadUnitsPerSecond": [
+     "long",
+     false
+    ],
+    "Status": [
+     "string",
+     false
+    ],
+    "WriteUnitsPerSecond": [
+     "long",
+     false
+    ]
+   }
+  },
+  "ecs describe_task_definition": {
+   "": {
+    "tags": [
+     "list",
+     false
+    ],
+    "taskDefinition": [
+     "structure",
+     false
+    ]
+   },
+   "tags[]": {
+    "key": [
+     "string",
+     false
+    ],
+    "value": [
+     "string",
+     false
+    ]
+   },
+   "taskDefinition": {
+    "compatibilities": [
+     "list",
+     false
+    ],
+    "containerDefinitions": [
+     "list",
+     false
+    ],
+    "cpu": [
+     "string",
+     false
+    ],
+    "deleteRequestedAt": [
+     "timestamp",
+     false
+    ],
+    "deregisteredAt": [
+     "timestamp",
+     false
+    ],
+    "enableFaultInjection": [
+     "boolean",
+     false
+    ],
+    "ephemeralStorage": [
+     "structure",
+     false
+    ],
+    "executionRoleArn": [
+     "string",
+     false
+    ],
+    "family": [
+     "string",
+     false
+    ],
+    "inferenceAccelerators": [
+     "list",
+     false
+    ],
+    "ipcMode": [
+     "string",
+     false
+    ],
+    "memory": [
+     "string",
+     false
+    ],
+    "networkMode": [
+     "string",
+     false
+    ],
+    "pidMode": [
+     "string",
+     false
+    ],
+    "placementConstraints": [
+     "list",
+     false
+    ],
+    "proxyConfiguration": [
+     "structure",
+     false
+    ],
+    "registeredAt": [
+     "timestamp",
+     false
+    ],
+    "registeredBy": [
+     "string",
+     false
+    ],
+    "requiresAttributes": [
+     "list",
+     false
+    ],
+    "requiresCompatibilities": [
+     "list",
+     false
+    ],
+    "revision": [
+     "integer",
+     false
+    ],
+    "runtimePlatform": [
+     "structure",
+     false
+    ],
+    "status": [
+     "string",
+     false
+    ],
+    "taskDefinitionArn": [
+     "string",
+     false
+    ],
+    "taskRoleArn": [
+     "string",
+     false
+    ],
+    "trustedExecutionConfiguration": [
+     "structure",
+     false
+    ],
+    "volumes": [
+     "list",
+     false
+    ]
+   }
+  },
+  "events describe_rule": {
+   "": {
+    "Arn": [
+     "string",
+     false
+    ],
+    "CreatedBy": [
+     "string",
+     false
+    ],
+    "Description": [
+     "string",
+     false
+    ],
+    "EventBusName": [
+     "string",
+     false
+    ],
+    "EventPattern": [
+     "string",
+     false
+    ],
+    "ManagedBy": [
+     "string",
+     false
+    ],
+    "Name": [
+     "string",
+     false
+    ],
+    "RoleArn": [
+     "string",
+     false
+    ],
+    "ScheduleExpression": [
+     "string",
+     false
+    ],
+    "State": [
+     "string",
+     false
+    ]
+   }
+  },
+  "iam get_role": {
+   "": {
+    "Role": [
+     "structure",
+     true
+    ]
+   },
+   "Role": {
+    "Arn": [
+     "string",
+     true
+    ],
+    "AssumeRolePolicyDocument": [
+     "string",
+     false
+    ],
+    "CreateDate": [
+     "timestamp",
+     true
+    ],
+    "Description": [
+     "string",
+     false
+    ],
+    "MaxSessionDuration": [
+     "integer",
+     false
+    ],
+    "Path": [
+     "string",
+     true
+    ],
+    "PermissionsBoundary": [
+     "structure",
+     false
+    ],
+    "RoleId": [
+     "string",
+     true
+    ],
+    "RoleLastUsed": [
+     "structure",
+     false
+    ],
+    "RoleName": [
+     "string",
+     true
+    ],
+    "SourceRoleTemplate": [
+     "structure",
+     false
+    ],
+    "Tags": [
+     "list",
+     false
+    ]
+   },
+   "Role.PermissionsBoundary": {
+    "PermissionsBoundaryArn": [
+     "string",
+     false
+    ],
+    "PermissionsBoundaryType": [
+     "string",
+     false
+    ]
+   },
+   "Role.RoleLastUsed": {
+    "LastUsedDate": [
+     "timestamp",
+     false
+    ],
+    "Region": [
+     "string",
+     false
+    ]
+   },
+   "Role.SourceRoleTemplate": {
+    "TemplateArn": [
+     "string",
+     true
+    ],
+    "TemplateMinorVersion": [
+     "integer",
+     true
+    ]
+   },
+   "Role.Tags[]": {
+    "Key": [
+     "string",
+     true
+    ],
+    "Value": [
+     "string",
+     true
+    ]
+   }
+  },
+  "iam get_role_policy": {
+   "": {
+    "PolicyDocument": [
+     "string",
+     true
+    ],
+    "PolicyName": [
+     "string",
+     true
+    ],
+    "RoleName": [
+     "string",
+     true
+    ]
+   }
+  },
+  "s3 get_bucket_lifecycle_configuration": {
+   "": {
+    "Rules": [
+     "list",
+     false
+    ],
+    "TransitionDefaultMinimumObjectSize": [
+     "string",
+     false
+    ]
+   }
+  },
+  "s3 get_bucket_policy": {
+   "": {
+    "Policy": [
+     "string",
+     false
+    ]
+   }
+  },
+  "s3 get_object_lock_configuration": {
+   "": {
+    "ObjectLockConfiguration": [
+     "structure",
+     false
+    ]
+   },
+   "ObjectLockConfiguration": {
+    "ObjectLockEnabled": [
+     "string",
+     false
+    ],
+    "Rule": [
+     "structure",
+     false
+    ]
+   }
+  },
+  "scheduler get_schedule": {
+   "": {
+    "ActionAfterCompletion": [
+     "string",
+     false
+    ],
+    "Arn": [
+     "string",
+     false
+    ],
+    "CreationDate": [
+     "timestamp",
+     false
+    ],
+    "Description": [
+     "string",
+     false
+    ],
+    "EndDate": [
+     "timestamp",
+     false
+    ],
+    "FlexibleTimeWindow": [
+     "structure",
+     false
+    ],
+    "GroupName": [
+     "string",
+     false
+    ],
+    "KmsKeyArn": [
+     "string",
+     false
+    ],
+    "LastModificationDate": [
+     "timestamp",
+     false
+    ],
+    "Name": [
+     "string",
+     false
+    ],
+    "ScheduleExpression": [
+     "string",
+     false
+    ],
+    "ScheduleExpressionTimezone": [
+     "string",
+     false
+    ],
+    "StartDate": [
+     "timestamp",
+     false
+    ],
+    "State": [
+     "string",
+     false
+    ],
+    "Target": [
+     "structure",
+     false
+    ]
+   }
+  },
+  "scheduler get_schedule_group": {
+   "": {
+    "Arn": [
+     "string",
+     false
+    ],
+    "CreationDate": [
+     "timestamp",
+     false
+    ],
+    "LastModificationDate": [
+     "timestamp",
+     false
+    ],
+    "Name": [
+     "string",
+     false
+    ],
+    "State": [
+     "string",
+     false
+    ]
+   }
+  },
+  "stepfunctions describe_state_machine": {
+   "": {
+    "creationDate": [
+     "timestamp",
+     true
+    ],
+    "definition": [
+     "string",
+     true
+    ],
+    "description": [
+     "string",
+     false
+    ],
+    "encryptionConfiguration": [
+     "structure",
+     false
+    ],
+    "label": [
+     "string",
+     false
+    ],
+    "loggingConfiguration": [
+     "structure",
+     false
+    ],
+    "name": [
+     "string",
+     true
+    ],
+    "revisionId": [
+     "string",
+     false
+    ],
+    "roleArn": [
+     "string",
+     true
+    ],
+    "stateMachineArn": [
+     "string",
+     true
+    ],
+    "status": [
+     "string",
+     false
+    ],
+    "tracingConfiguration": [
+     "structure",
+     false
+    ],
+    "type": [
+     "string",
+     true
+    ],
+    "variableReferences": [
+     "map",
+     false
+    ]
+   }
+  }
+ },
+ "regenerate": "PYTHONPATH=$PWD:$PWD/tests uv run --no-project --python 3.12 --with botocore==1.44.5 --with pytest python -c 'import test_cnesdata_delivery_lifecycle_catalog as t; t.write_botocore_members()'"
+}

@@ -90,19 +90,23 @@ def test_linha_de_franquia_nao_verificada_e_excluida_com_motivo():
 
 
 def credit_variants():
-    null = line("credit_line", None, 5)
+    null = line("cognito_allowance", None, 5)
     null["status"] = "unverified"
-    return [null, line("credit_line", -3, 10), line("credit_line", None, 0)]
+    return [null, line("credit_line", -3, 10), line("cognito_allowance", None, 0)]
+
+
+def without_allowance(value):
+    value["lines"] = [item for item in value["lines"] if item["id"] != "cognito_allowance"]
 
 
 @pytest.mark.parametrize("credit", credit_variants(), ids=["nulo", "preco-negativo", "nulo-sem-quantidade"])
 def test_excluir_a_linha_de_credito_nunca_reduz_max(credit):
-    plain = derive()
-    with_credit = derive(document(lambda value: value["lines"].append(credit)))
+    plain = derive(document(without_allowance))
+    with_credit = derive(document(lambda value: (without_allowance(value), value["lines"].append(credit))))
     assert Decimal(with_credit["aggregate_monthly_usd"]) >= Decimal(plain["aggregate_monthly_usd"])
     assert with_credit["aggregate_monthly_usd"] == plain["aggregate_monthly_usd"]
     assert with_credit["product_monthly_usd"] == plain["product_monthly_usd"]
-    assert {"id": "credit_line", "reason": "credit not applied"} in with_credit["excluded"]
+    assert {"id": credit["id"], "reason": "credit not applied"} in with_credit["excluded"]
 
 
 def test_franquia_da_propria_linha_abate_so_aquela_linha():
@@ -240,3 +244,46 @@ def test_derivacao_pre_ativacao_e_recusada_com_razao_chave_valor():
     stage = cost_context.stage("bootstrap", SHA, context(), None)
     with pytest.raises(ValueError, match="stage=pre-activation"):
         cost_context.cost_objects(derived, stage)
+
+
+def spend_line(value):
+    return next(item for item in value["lines"] if item["id"] == "other_projects_spend")
+
+
+def unpriced_spend(value):
+    spend_line(value)["unit_price_usd"] = None
+    spend_line(value).pop("measurement")
+
+
+def absent_spend(value):
+    value["lines"] = [item for item in value["lines"] if item["id"] != "other_projects_spend"]
+
+
+@pytest.mark.parametrize("mutate, reason", [
+    (unpriced_spend, "other projects spend price id=other_projects_spend"),
+    (absent_spend, "other projects spend count=0"),
+    (lambda value: value["lines"].append(copy.deepcopy(spend_line(value))), "other projects spend count=2"),
+    (lambda value: spend_line(value).__setitem__("unit_price_usd", -1), "other projects spend price id=other_projects_spend"),
+], ids=["sem-preco-e-sem-medicao", "ausente", "duplicada", "preco-negativo"])
+def test_other_projects_spend_fora_de_uma_linha_precificada_e_recusado(mutate, reason):
+    with pytest.raises(ValueError, match=reason):
+        derive(document(mutate))
+
+
+@pytest.mark.parametrize("identifier", ["brand_new_line", "kms_signing", "fargate_vcpu_hours"])
+def test_linha_sem_preco_fora_da_allowlist_e_recusada(identifier):
+    def unpriced(value):
+        found = [item for item in value["lines"] if item["id"] == identifier]
+        if not found:
+            value["lines"].append(line(identifier, None, 1))
+        for item in found:
+            item["unit_price_usd"] = None
+
+    with pytest.raises(ValueError, match=f"unpriced line id={identifier}"):
+        derive(document(unpriced))
+
+
+def test_so_a_allowlist_sem_preco_e_o_credito_negativo_sao_excluidos():
+    derived = derive(document(lambda value: value["lines"].append(line("credit_line", -3, 10))))
+    assert derived["excluded"] == [{"id": "cognito_allowance", "reason": "credit not applied"},
+                                   {"id": "credit_line", "reason": "credit not applied"}]

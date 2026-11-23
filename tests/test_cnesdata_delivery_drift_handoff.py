@@ -308,6 +308,15 @@ def test_recusa_de_valor_derivado_da_conta_normaliza_unicode_caixa_e_separadores
         c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
 
 
+@pytest.mark.parametrize("value", [
+    "id0000.1111.2222.3333x", "id9999/1111/2222/3333x", "id0000:1111:2222:3333x",
+    *(f"id0000{mark}1111{mark}2222{mark}3333x" for mark in ZERO_WIDTH)])
+def test_recusa_de_valor_derivado_da_conta_colapsa_cada_janela_4_4_4_sobreposta(value):
+    raw = ('{"campo":"' + value + '"}').encode()
+    with pytest.raises(ValueError, match="account-derived value in public report"):
+        c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)
+
+
 def test_recusa_de_valor_derivado_da_conta_aceita_relatorio_sem_valores_conhecidos():
     raw = '{"campo":"id1111-2222-33","outro":"ＡＢＣ 1111 2222"}'.encode()
     c.refuse_account_derived(raw, ACCOUNT_GOVERNANCE)

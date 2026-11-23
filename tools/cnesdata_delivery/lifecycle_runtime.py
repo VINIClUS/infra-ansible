@@ -909,15 +909,19 @@ class LifecycleWatchdog(Watchdog):
         return super().run(command, cwd=cwd, env=env, output=output, timeout=timeout, mutating=mutating)
 
 
+LIFECYCLE_READ_API = {"iam": {"get_role", "get_role_policy"}, "stepfunctions": {"describe_state_machine"},
+                      "scheduler": {"get_schedule", "get_schedule_group", "list_schedules"},
+                      "events": {"describe_rule"}, "cloudwatch": {"describe_alarms"},
+                      "cloudfront": {"get_response_headers_policy"}, "s3": {"get_bucket_lifecycle_configuration"}}
+
+
 def readbacks(aws, specifications, guard):
-    allowed = {"iam": {"get_role", "get_role_policy"}, "stepfunctions": {"describe_state_machine"},
-               "scheduler": {"get_schedule", "get_schedule_group", "list_schedules"},
-               "events": {"describe_rule"}, "cloudwatch": {"describe_alarms"},
-               "cloudfront": {"get_response_headers_policy"}, "s3": {"get_bucket_lifecycle_configuration"}}
+    allowed = LIFECYCLE_READ_API
     reports = []
     for spec in specifications:
         grouped = spec.get("service") == "scheduler" and spec.get("operation") == "list_schedules"
-        c.closed({k: v for k, v in spec.items() if k != "address"}, "service operation parameters absent" + (" members" if grouped else ""))
+        c.closed(spec, "service operation parameters absent" + (" members" if grouped else "")
+                 + (" address" if "address" in spec else ""))
         c.require(spec["operation"] in allowed.get(spec["service"], set()), "lifecycle readback API")
         c.require(type(spec["parameters"]) is dict and type(spec["absent"]) is bool, "readback parameters")
         if grouped:
@@ -929,13 +933,11 @@ def readbacks(aws, specifications, guard):
             value = aws.call(spec["service"], spec["operation"], **spec["parameters"])
         except Exception as error:
             code = getattr(error, "response", {}).get("Error", {}).get("Code")
-            c.require(spec["absent"] is True and code in {"ResourceNotFoundException", "StateMachineDoesNotExist", "ResourceNotFound"}, "readback unknown")
-            value = {"absent": True}
+            c.require(spec["absent"] is True, "readback unknown")
+            value = dc.absent_by_error(spec["service"], spec["operation"], code)
         else:
-            c.require(spec["absent"] is False, "resource still exists/DELETING")
             value.pop("ResponseMetadata", None)
-            if spec["operation"] in {"get_schedule_group", "describe_state_machine"}:
-                c.require(value.get("State", value.get("status")) == "ACTIVE", "resource DELETING/unknown")
+            value = dc.observe_response(spec, value)
         guard.check()
         reports.append({"service": spec["service"], "operation": spec["operation"], "observed": _dates(value)})
     return reports
@@ -1105,6 +1107,9 @@ def _dates(value):
     from datetime import datetime
     if type(value) is datetime:
         return c.utc(value.timestamp())
+    if type(value) is float:
+        from decimal import Decimal
+        return Decimal(repr(value))
     if type(value) is dict:
         return {k: _dates(v) for k, v in value.items()}
     if type(value) is list:
@@ -1383,7 +1388,8 @@ def execute(role):
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
             before_calls = readback_calls(plan, approval["readbacks"]["before"], "before")
             before_reports = readbacks(aws, before_calls, guard)
-            c.drift_coverage(plan, before_reports, approval["drift_matrix"], source, step["purpose"], "before")
+            c.drift_coverage(plan, before_reports, approval["drift_matrix"], source, step["purpose"], "before",
+                             specs=before_calls, envelope=dc.LIFECYCLE_ENVELOPE)
             (temp / "plan.bin").write_bytes(payload["plan.bin"])
             guard.run([tofu, "show", "-json", str(temp / "plan.bin")], cwd=root, env=env, output=temp / "saved.json", timeout=20, mutating=False)
             c.require(c.loads((temp / "saved.json").read_bytes(), state=True) == plan, "binary/json exact plan")
@@ -1400,7 +1406,8 @@ def execute(role):
                 bind_state(resolver, state)
             after_calls = readback_calls(plan, approval["readbacks"]["after"], "after", state)
             reports = readbacks(aws, after_calls, guard)
-            c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state)
+            c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state,
+                             specs=after_calls, envelope=dc.LIFECYCLE_ENVELOPE)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}
@@ -1435,32 +1442,40 @@ def _spec_fields(spec):
     c.require(type(spec["address"]) is str and type(spec["absent"]) is bool, "readback spec fields")
     c.require(not grouped or (type(spec["members"]) is list and len(spec["members"]) <= 32
                               and all(type(name) is str for name in spec["members"])), "readback spec members")
+    dc.require_catalog_read(spec)
     return grouped
 
 
-def _absent_call(spec, changes, stage):
-    change = changes.get(spec["address"])
-    c.require(stage == "after" and change is not None and change["actions"] == ["delete"], "absent readback")
-    dc.require_read_only(spec["service"], spec["operation"])
-    return spec | {"parameters": dc.parameters(dc.resource_type(spec["address"]), change["before"])}
-
-
-def _live_call(spec, derived, grouped):
-    parameters = {"GroupName": derived["parameters"]["GroupName"]} if grouped else derived["parameters"]
-    return spec | {"parameters": parameters}
-
-
 def readback_calls(plan, specs, stage, state=None):
-    """Args: plan, approval specs, stage, state. Returns: specs plus derived parameters. Raises: ValueError."""
-    c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"}, "readback specs")
-    grouped = [_spec_fields(spec) for spec in specs]
-    changes = {row["address"]: row["change"] for row in plan.get("resource_changes", []) if row.get("mode") == "managed"}
-    live = [index for index, spec in enumerate(specs) if not spec["absent"]]
-    cores = [{"service": "scheduler", "operation": "get_schedule", "address": specs[index]["address"]} if grouped[index]
-             else {key: specs[index][key] for key in ("service", "operation", "address")} for index in live]
-    derived = dict(zip(live, dc.readback_calls(plan, cores, stage, state))) if live else {}
-    return [_live_call(spec, derived[index], grouped[index]) if index in derived else _absent_call(spec, changes, stage)
-            for index, spec in enumerate(specs)]
+    """Args: plan, approval specs, stage, state. Returns: specs plus parameters. Raises: ValueError."""
+    c.require(type(specs) is list and len(specs) <= 4096 and stage in {"before", "after"},
+              "readback specs")
+    for spec in specs:
+        _spec_fields(spec)
+        c.require(stage == "after" or not spec["absent"], "absent readback")
+    return dc.lifecycle_calls(plan, specs, stage, state)
+
+
+def _approval_stage(plan, specs, matrix, stage):
+    absent = matrix["absent"] if stage == "after" else []
+    c.require(type(specs) is list and type(matrix[stage]) is list and type(absent) is list,
+              "readback specs")
+    for row in absent:
+        c.closed(row, "address readback")
+    if stage == "before":
+        specs = readback_calls(plan, specs, "before")
+    else:
+        for spec in specs:
+            _spec_fields(spec)
+        readback_calls(plan, [spec for spec in specs if spec["absent"]], "after")
+    dc.bind_rows(specs, matrix[stage] + absent)
+    c.require(all(specs[row["readback"]]["absent"] for row in absent)
+              and not any(specs[row["readback"]]["absent"] for row in matrix[stage]),
+              "absent drift proof")
+    deletes = sorted(row["address"] for row in plan.get("resource_changes", [])
+                     if row.get("mode") == "managed" and row["change"]["actions"] == ["delete"])
+    c.require(stage == "before" or sorted(row["address"] for row in absent) == deletes,
+              "absent drift coverage")
 
 
 def build_approval(*, governance, step, owner, payload, before_raw):
@@ -1475,15 +1490,12 @@ def build_approval(*, governance, step, owner, payload, before_raw):
     lc.validate_delta(plan, delta)
     readbacks_, matrix = governance["readbacks"], governance["drift_matrix"]
     c.closed(readbacks_, "before after")
-    c.require(type(matrix) is dict and matrix.get("source_sha") == governance["source_sha"]
-              and matrix.get("purpose") == step["purpose"], "governed drift matrix identity")
+    c.closed(matrix, "matrix_version source_sha purpose before after absent")
+    c.require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == 2
+              and matrix["source_sha"] == governance["source_sha"]
+              and matrix["purpose"] == step["purpose"], "governed drift matrix identity")
     for stage in ("before", "after"):
-        specs = readback_calls(plan, readbacks_[stage], "before") if stage == "before" else readbacks_[stage]
-        c.require(type(matrix.get(stage)) is list, "readback specs")
-        if stage == "after":
-            for spec in specs:
-                _spec_fields(spec)
-        dc.bind_rows(specs, matrix[stage])
+        _approval_stage(plan, readbacks_[stage], matrix, stage)
     return {"version": 1, "owner": owner, "purpose": step["purpose"], "direction": step["direction"],
             "plan_sha256": c.sha(payload["plan.bin"]), "inputs_sha256": c.sha(payload["inputs.json"]),
             "checkpoint_sha256": c.sha(payload["checkpoint.json"]), "delta": delta,
