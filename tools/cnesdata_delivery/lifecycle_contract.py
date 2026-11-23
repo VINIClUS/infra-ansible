@@ -1619,7 +1619,7 @@ def unit_window(previous, *, now):
     c.require(previous["stage"] == "static" and previous["close"] is not None and previous["decision"] is None
               and previous["admitted_at"] <= admitted, "unit follows the closed static stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "unit", "admitted_at": admitted,
-                       "deadline": min(previous["fixed_deadline"], admitted + STAGES["unit"][0])}
+                       "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["unit"])}
 
 
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):
