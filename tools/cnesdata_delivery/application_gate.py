@@ -114,6 +114,16 @@ CLOSED_READY_FIELDS = ("version kind common close_drain_sha256 phase_b_sha256 fe
 # field types of publish_dashboard.PublicationReceipt.
 PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
 PUBLICATION_FIELDS = "schema plan_sha256 closed_ready_sha256 uploaded already_published invalidation_id"
+STATIC_BUCKET = "cnesdata-prod-static-web"
+STATIC_RESPONSE_FIELDS = {
+    "ListObjectVersions": ("IsTruncated NextKeyMarker NextVersionIdMarker",
+                           {"Versions": "Key VersionId IsLatest LastModified Size",
+                            "DeleteMarkers": "Key VersionId IsLatest LastModified"}),
+    "HeadObject": ("VersionId ChecksumSHA256", {}), "ListMultipartUploads": ("IsTruncated", {"Uploads": "Key UploadId"}),
+    "ListParts": ("IsTruncated", {"Parts": "Size"}), "PutObject": ("VersionId ChecksumSHA256", {}),
+    "GetObject": ("Body VersionId ContentType CacheControl", {}), "CreateInvalidation": ("Invalidation", {}),
+}
+STATIC_BODY_LIMIT = 128 * 1024
 # host_gate.py public handoff (version 1) and validate_recovery_decision.
 HOST_HANDOFF_FIELDS = ("version kind caller producer_sha closed_ready_sha256 original_request_sha256 status response_sha256 "
                        "proof_sha256 receipt_sha256 witness_sha256 operation_id binding_sha256 generation recovery_decision "
@@ -565,7 +575,7 @@ def _adapter_message(frame, journal):
         return journal.evidence_snapshot(), None
     if kind == "call":
         c.closed(value, "kind role service operation parameters")
-        c.require(type(getattr(journal, "_broker", None)) is ClosedReadyBroker, "adapter protected SDK admission absent")
+        c.require(type(getattr(journal, "_broker", None)) in BROKERS, "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
@@ -847,8 +857,11 @@ class AdapterJournal:
         """
         request = c.loads(raw, canonical=True, limit=128 * 1024)
         c.closed(request, "role service operation parameters")
-        c.require(request["role"] == "fence_operator"
-                  and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(self._request["operation"], ()),
+        operation = self._request["operation"]
+        c.require((request["role"] == "fence_operator"
+                   and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(operation, ()))
+                  or (operation == "publish-static"
+                      and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation]),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -884,7 +897,9 @@ class AdapterJournal:
             c._secrets(response)
             _sdk_private_fields(response)
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
-            allowed = ({"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
+            static = STATIC_RESPONSE_FIELDS.get(request["operation"]) if self._request["operation"] == "publish-static" else None
+            allowed = (set(static[0].split()) | set(static[1]) if static is not None else
+                       {"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
             absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
@@ -988,11 +1003,7 @@ class ClosedReadyEvidence:
         from tools.cnesdata_delivery.lifecycle_runtime import closed_ready_evidence_keys
         c.require(type(journal) is AdapterJournal and governance["role"] == "application", "shared closed-ready journal")
         operation = journal._request["operation"]
-        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation == "closed-ready" else ""))
-        c.require(scope["account"] == governance["account_id"], "original journal account")
-        native = c.loads(native_raw, canonical=True, limit=128 * 1024)
-        c.closed(native, "role service operation parameters")
-        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), **native, **scope)
+        native = self._native(journal, native_raw, scope, governance)
         _sdk_private_fields(native)
         request = journal._request
         sequence, previous = journal._next_durable()
@@ -1015,6 +1026,16 @@ class ClosedReadyEvidence:
         self._native_sha256, self._session_sha256 = c.sha(native_raw), role_session_sha256
         self._binding = c.sha(c.canonical({key: request[key] for key in ("owner", "checkpoint_sha256", "activation_sha256", "stage")}))
         self._state, self._reserved, self._response, self._receipt = "unexamined", False, None, None
+
+    @staticmethod
+    def _native(journal, native_raw, scope, governance):
+        operation = journal._request["operation"]
+        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation == "closed-ready" else ""))
+        c.require(scope["account"] == governance["account_id"], "original journal account")
+        native = c.loads(native_raw, canonical=True, limit=128 * 1024)
+        c.closed(native, "role service operation parameters")
+        lc.validate_fence_call(request=journal._request, history=journal._settled_calls(), **native, **scope)
+        return native
 
     @property
     def uncertainty(self):
@@ -1200,15 +1221,238 @@ class ClosedReadyBroker:
             c.require(self.clock() < session.deadline, "durable receipt exceeded original API window")
             return {"kind": "sdk-error", "code": "ExecutionDoesNotExist"} if absent else {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
         except BaseException:
-            if created or ledger.uncertainty:
-                ledger.fail()
-                if ticket is not None and journal._inflight is not None:
-                    journal.fail_sdk_call(ticket)
-                for item in ledger.uncertainty:
-                    if item not in journal._unknown:
-                        journal._unknown.append(item)
-            journal._failed = True
+            _poison_call(journal, ledger, ticket, created)
             raise
+
+
+def _poison_call(journal, ledger, ticket, created):
+    """An attempted or reserved native call stays unknown in the journal; the context fails either way."""
+    if created or ledger.uncertainty:
+        ledger.fail()
+        if ticket is not None and journal._inflight is not None:
+            journal.fail_sdk_call(ticket)
+        for item in ledger.uncertainty:
+            if item not in journal._unknown:
+                journal._unknown.append(item)
+    journal._failed = True
+
+
+class StaticEvidence(ClosedReadyEvidence):
+    """ClosedReadyEvidence over the publish-static catalogue; the scope is the authenticated bucket and plan.
+
+    prepared_sha256 is the static-plan digest: the #498 static_normal trust binds that plan, not a fence package.
+    """
+    @staticmethod
+    def _native(journal, native_raw, scope, governance):
+        c.closed(scope, "account bucket plan")
+        c.require(scope["account"] == governance["account_id"] and scope["bucket"] == STATIC_BUCKET, "original static journal scope")
+        native = c.loads(native_raw, canonical=True, limit=128 * 1024)
+        c.closed(native, "role service operation parameters")
+        lc.validate_static_call(request=journal._request, **native, bucket=scope["bucket"], plan=scope["plan"])
+        return native
+
+
+def _static_response(operation, response):
+    """Sanitized projection of one native static response onto the fields publish_dashboard.py reads."""
+    top, lists = STATIC_RESPONSE_FIELDS[operation]
+    value = {}
+    for name in [name for name in top.split() if name in response]:
+        item = response[name]
+        if name == "Body":
+            item = lc.s3_body_value(item, maximum=STATIC_BODY_LIMIT)
+        elif name == "Invalidation":
+            c.require(type(item) is dict and type(item.get("Id")) is str, "static invalidation response")
+            item = {"Id": item["Id"]}
+        else:
+            c.require(type(item) is (bool if name == "IsTruncated" else str), "static response field")
+        value[name] = item
+    for name, fields in lists.items():
+        if name in response:
+            entries = response[name]
+            c.require(type(entries) is list and len(entries) <= 1000 and all(type(entry) is dict for entry in entries),
+                      "static response list")
+            value[name] = [{key: entry[key] for key in fields.split() if key in entry} for entry in entries]
+    return value
+
+
+class _StaticSession:
+    """Shared-only result of the static STS boundary, one client per #498 static role; never exposed over IPC.
+
+    evidence is the operation client that assumed both roles; it is the client of the SDK evidence.
+    """
+    def __init__(self, clients, commitment, scope, deadline, request_binding, evidence):
+        c.require(type(clients) is dict and set(clients) == set(lc.STATIC_SESSION_OPERATIONS["publish-static"]),
+                  "static session clients")
+        self.clients, self.commitment = dict(clients), c.digest(commitment)
+        self.scope = c.loads(c.canonical(c.closed(scope, "account bucket plan")), canonical=True)
+        self.deadline, self.request_binding, self.evidence = deadline, request_binding, evidence
+
+
+class StaticBroker:
+    """Finite private s3/cloudfront dispatcher for publish-static with a durable reservation before native IO.
+
+    One client per #498 static role (observer sp-i-*, normal sp-publish-*). Any native error is unknown (R12):
+    poison, never retry. PutObject sends the decoded bytes; GetObject returns them as {"base64": ...}.
+    """
+    def __init__(self, aws, governance, journal, session, *, clock=None):
+        c.require(type(journal) is AdapterJournal and type(session) is _StaticSession
+                  and journal._request["operation"] == "publish-static"
+                  and session.request_binding == c.sha(c.canonical(journal._request))
+                  and getattr(journal, "_broker", None) is None, "one original admitted static broker")
+        self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
+        self.prepared_sha256, self.clock = c.sha(journal._inputs["static-plan"]), clock or time.time
+        self.evidence = []
+        journal._broker = self
+
+    @property
+    def uncertainty(self):
+        return [item for ledger in self.evidence for item in ledger.uncertainty]
+
+    def call(self, *, role, service, operation, parameters):
+        from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
+        journal, session = self.journal, self.session
+        journal.guard()
+        c.require(session.request_binding == c.sha(c.canonical(journal._request))
+                  and self.clock() + 20 < session.deadline, "original finite SDK request/window")
+        method = lc.validate_static_call(request=journal._request, role=role, service=service, operation=operation,
+                                         parameters=parameters, bucket=session.scope["bucket"], plan=session.scope["plan"])
+        raw = c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}, limit=128 * 1024)
+        ledger = StaticEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
+                                role_session_sha256=session.commitment, scope=session.scope)
+        self.evidence.append(ledger)
+        ticket, created = None, False
+        try:
+            c.require(ledger.reserve() == "created", "existing durable call is historical/unknown; no fresh SDK replay")
+            created = True
+            ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
+            c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
+            journal._guard.check(20)
+            native = dict(parameters, Body=lc.s3_put_body(parameters)) if operation == "PutObject" else dict(parameters)
+            region = {"region": "us-east-1"} if service == "cloudfront" else {}
+            response = session.clients[role].call(service, method, **region, **native)
+            metadata = response.get("ResponseMetadata", {})
+            c.require(metadata.get("HTTPStatusCode") == (201 if operation == "CreateInvalidation" else 200),
+                      "native SDK authenticated status")
+            response_raw = c.canonical(_exact_sdk_dates(_static_response(operation, response)), limit=1024**2)
+            c.require(self.clock() < session.deadline, "native response exceeded original static window")
+            receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],
+                                                server_date=metadata["HTTPHeaders"]["date"])
+            ledger.complete(response_raw, receipt)
+            journal.guard()
+            c.require(self.clock() < session.deadline, "durable receipt exceeded original static window")
+            return {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
+        except BaseException:
+            _poison_call(journal, ledger, ticket, created)
+            raise
+
+
+BROKERS = (ClosedReadyBroker, StaticBroker)
+
+
+def _journal_of(context):
+    return context.journal if type(context) in BROKERS else context
+
+
+def _assume_static_session(*, governance, journal, binding, credential_limit, operation_session, clock=time.time):
+    """Exact native static delegation after the capability authenticated plan, host receipt and binding.
+
+    Both #498 static roles under the names static_sessions derives; each session policy ends at the static stage
+    deadline. No role ID is pinned: governance carries none for the static roles (open point for P28*).
+    """
+    from tools.cnesdata_delivery.aws_boundary import AWS
+    from tools.cnesdata_delivery.session_policy import static_session_policy, validate_response
+    request, stage = journal._request, journal._request["stage"]
+    c.require(type(journal) is AdapterJournal and request["operation"] == "publish-static"
+              and journal._identity["application_purpose"] == "promotion", "static original promotion journal")
+    deadline = stage["deadline"]
+    c.require(stage["stage"] == "static" and stage["admitted_at"] <= clock() and clock() + 40 < deadline
+              and clock() + 900 <= credential_limit, "static original stage/credential window")
+    plan = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET)
+    sessions, account = lc.static_sessions(binding, "publish-static"), governance["account_id"]
+    roles = {alias: governance["application_delegations"][alias] for alias in sessions}
+    c.require(all(arn == f"arn:aws:iam::{account}:role/cnesdata-prod-{lc.APPLICATION_DELEGATIONS[alias]}"
+                  for alias, arn in roles.items()), "static exact protected roles")
+    encoded = {alias: c.canonical(static_session_policy(alias, bucket_arn="arn:aws:s3:::" + STATIC_BUCKET,
+                                                        distribution_arn=plan["distribution_arn"], deadline=deadline)).decode().strip()
+               for alias in sessions}
+    c.require(all(len(text) <= 2048 for text in encoded.values()), "static STS policy limit")
+    journal._guard.check(40)
+    journal.guard()
+    operation = operation_session("publish-static", dict(sessions), stage)
+    c.require(clock() + 40 < deadline and clock() + 900 <= credential_limit, "static original window after operation session")
+    clients, record = {}, {}
+    for alias in ("observer", "normal"):
+        response = operation.call("sts", "assume_role", RoleArn=roles[alias], RoleSessionName=sessions[alias],
+                                  DurationSeconds=900, Policy=encoded[alias])
+        credentials = validate_response(response)
+        expiry = credentials["Expiration"]
+        c.require(getattr(expiry, "tzinfo", None) is not None and clock() + 140 < expiry.timestamp()
+                  <= min(credential_limit, clock() + 900), "static original STS expiration")
+        c.require(all(type(credentials[field]) is str and credentials[field] and "\n" not in credentials[field]
+                      and "\r" not in credentials[field] for field in ("AccessKeyId", "SecretAccessKey", "SessionToken")),
+                  "static temporary credential shape")
+        journal.guard()
+        client = AWS(governance | {"role": alias, "roles": {alias: roles[alias]}}, credentials=credentials)
+        arn = roles[alias].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + sessions[alias]
+        user = client.identity["UserId"]
+        c.require(client.identity["Account"] == account and client.identity["Arn"] == arn and type(user) is str
+                  and re.fullmatch(r"AROA[0-9A-Z]{16,128}:" + re.escape(sessions[alias]), user) is not None
+                  and response["AssumedRoleUser"] == {"Arn": arn, "AssumedRoleId": user}, "static exact native role/session/account")
+        clients[alias] = client
+        record[alias] = {"role_arn": roles[alias], "session_name": sessions[alias], "user_id": user,
+                         "policy_sha256": c.sha(encoded[alias].encode()), "expires_at": c.utc(expiry.timestamp())}
+        journal.guard()
+    c.require(clock() + 20 < deadline, "static STS completed in original stage window")
+    bound = c.sha(c.canonical(request))
+    commitment = c.sha(c.canonical({"request_sha256": bound, "static_plan_sha256": c.sha(journal._inputs["static-plan"]),
+                                    "account": account, "sessions": record}))
+    return _StaticSession(clients, commitment, {"account": account, "bucket": STATIC_BUCKET, "plan": plan}, deadline, bound,
+                          operation)
+
+
+def _static_binding(governance, journal):
+    """#498 static_promotion.binding of this run from the owner, the candidate and the static plan bytes.
+
+    release_id is CnesData publish_dashboard.binding_release_id of the candidate id; shared_source_sha is the gate pin.
+    """
+    owner = journal._request["owner"]
+    candidate = c.loads(journal._inputs["candidate"], limit=1024**2)
+    release = candidate.get("release_id") if type(candidate) is dict else None
+    c.require(type(candidate) is dict and candidate.get("source_sha") == owner["source_sha"] and type(release) is str
+              and re.fullmatch(r"candidate-[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*", release) is not None
+              and release.startswith("candidate-" + owner["source_sha"] + "-"), "static binding candidate")
+    return {"release_id": "r" + c.sha(release.encode())[:31], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
+            "generation": owner["generation"], "product_source_sha": owner["source_sha"],
+            "shared_source_sha": c.digest(governance["gate_shas"]["application"], 40),
+            "static_plan_sha256": c.sha(journal._inputs["static-plan"])}
+
+
+def static_capability(*, governance, journal, keeper, credential_limit, operation_session, clock=time.time):
+    """Publish-static capability factory, sibling of closed_ready_capability (P15).
+
+    Authenticates the static plan (#498 bucket, inventory digest, distribution account, no retire_versions: R16 stays
+    out, D-C1), the host-receipt binding of the keeper closed-ready and the run's static binding, then the static STS.
+    Any failure poisons the journal, keeps the lease held and mints no credential.
+    """
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper, "publish-static original journal/keeper")
+    c.require(journal._request["operation"] == "publish-static" and getattr(journal, "_broker", None) is None,
+              "publish-static only; every other operation remains rejected")
+    try:
+        keeper.lease.check()
+        plan = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET)
+        c.require(not plan["retire_versions"], f"static_plan=retire_versions_unsupported count={len(plan['retire_versions'])}")
+        c.require(plan["inventory_sha256"] == c.sha(journal._inputs["inventory"]), "static plan inventory binding")
+        c.require(plan["distribution_arn"].split(":")[4] == governance["account_id"], "static plan distribution account")
+        publish_static_closed_ready(journal, keeper)
+        session = _assume_static_session(governance=governance, journal=journal, binding=_static_binding(governance, journal),
+                                         credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+        broker = StaticBroker(session.evidence, governance, journal, session, clock=clock)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
 
 
 def _phase_b_step(governance):
@@ -1278,10 +1522,12 @@ def stage_event_source(*, api, governance, run, owner, guard, clock=time.time):
     A producer not yet completed-success is no event (the keeper keeps ticking, bounded
     by the stage deadline); a publication that can never be the trigger refuses. The host
     event carries only the job: its handler authenticates the public host handoff (DD-3).
+    An internal trigger (static) is no event: the previous handler advances on its own observation.
     """
     def next_event(window):
         stage = window["stage"]
-        c.require(window["decision"] is None and stage in lc.STAGE_TRIGGERS, f"stage trigger not connected stage={stage}")
+        c.require(window["decision"] is None and stage in lc.STAGE_TRIGGERS and lc.STAGE_TRIGGERS[stage][0] in KEEPER_EVENTS,
+                  f"stage trigger not connected stage={stage}")
         c.require((window["close"] is None) == (stage == "application-prepare"), "stage/close consistency")
         now = clock()
         c.require(now < lc.terminal_deadline(window), f"stage deadline elapsed stage={stage}")
@@ -1380,7 +1626,7 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
                   and c.canonical(b_checkpoint["owner"]) == c.canonical(owner)
                   and c.sha(files["checkpoint.json"]) == stage["checkpoint_sha256"] == journal._request["checkpoint_sha256"],
                   "preparation -> B -> API checkpoint ancestry")
-        journals = [item.journal if type(item) is ClosedReadyBroker else item for item in keeper._contexts]
+        journals = [_journal_of(item) for item in keeper._contexts]
         drained = [found._observation_bytes.get(entry["sha256"]) for found in {id(item): item for item in journals}.values()
                    for entry in found._observations if entry["kind"] == "close-drain"]
         c.require(drained == [journal._inputs["close-drain"]], "closed-ready close-drain is the keeper observation")
@@ -1524,17 +1770,17 @@ class Keeper:
 
     def attach(self, context):
         """Register an original journal/broker; its uncertainty keeps the lease held."""
-        c.require(type(context) in (AdapterJournal, ClosedReadyBroker), "original adapter context")
+        c.require(type(context) in (AdapterJournal, *BROKERS), "original adapter context")
         if not any(item is context for item in self._contexts):
             self._contexts.append(context)
 
     def uncertainty(self):
         """Pending, unknown, in-flight or failed SDK state across every attached context."""
-        journals = [item.journal if type(item) is ClosedReadyBroker else item for item in self._contexts]
+        journals = [_journal_of(item) for item in self._contexts]
         found = [{"kind": "context-failed"} for journal in journals if journal._failed]
         found += [{"kind": "sdk-inflight"} for journal in journals if journal._inflight is not None]
         found += [entry for journal in journals for entry in journal.pending + journal.unknown]
-        found += [entry for item in self._contexts if type(item) is ClosedReadyBroker for entry in item.uncertainty]
+        found += [entry for item in self._contexts if type(item) in BROKERS for entry in item.uncertainty]
         return found
 
     def _previous(self, previous):
@@ -1635,7 +1881,7 @@ class Keeper:
         """
         journals = []
         for context in self._contexts:
-            found = context.journal if type(context) is ClosedReadyBroker else context
+            found = _journal_of(context)
             journals += [] if any(known is found for known in journals) else [found]
         latest = {}
         for journal in journals:
@@ -1764,7 +2010,7 @@ def publish_static_closed_ready(journal, keeper):
                              HOST_HANDOFF_FIELDS)
         journals = []
         for item in keeper._contexts:
-            found = item.journal if type(item) is ClosedReadyBroker else item
+            found = _journal_of(item)
             journals += [] if any(known is found for known in journals) else [found]
         ready = [entry["sha256"] for found in journals for entry in found._observations if entry["kind"] == "closed-ready"]
         c.require(len(ready) == 1 and receipt["closed_ready_sha256"] == ready[0],
@@ -1947,6 +2193,19 @@ def run_closed_ready(*, keeper, request_raw, owner, window, inputs, activation_s
                           journal=journal, timeout=timeout)
 
 
+def run_publish_static(*, keeper, request_raw, owner, window, inputs, activation_sha256, capability, product, source,
+                       manifest, manifest_sha256, seconds):
+    """Publish-static dispatch, sibling of run_closed_ready: journal, static capability before any child, adapter."""
+    journal = AdapterJournal(request_raw, operation="publish-static", owner=owner, window=window, inputs=inputs,
+                             activation_sha256=activation_sha256, guard=KeeperGuard(keeper))
+    keeper.attach(journal)
+    capability(journal=journal, keeper=keeper)
+    c.require(type(getattr(journal, "_broker", None)) is StaticBroker, "static broker admitted before adapter")
+    timeout = seconds()
+    return invoke_adapter(product=product, source=source, manifest=manifest, manifest_sha256=manifest_sha256,
+                          journal=journal, timeout=timeout)
+
+
 class _ArtifactTap:
     """Keeps the artifact metadata that lifecycle_artifact already authenticated; every other read is delegated."""
     def __init__(self, inner):
@@ -1960,11 +2219,15 @@ class _ArtifactTap:
         return value
 
 
-def _operation_request(operation, *, owner, window, inputs):
-    """The ABI2 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts."""
+def _operation_request(operation, *, owner, window, inputs, activation=None):
+    """The ABI2 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts.
+
+    activation is the keeper activation for an operation without that input (publish-static).
+    """
+    activation = inputs["activation"] if activation is None else activation
     return c.canonical({"abi_version": 2, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                         "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
-                        "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(inputs["activation"]),
+                        "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(activation),
                         "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
                         "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}})
 
@@ -2024,6 +2287,20 @@ def _closed_ready_seconds(window, credential_limit, now):
     lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
     lc.phase_capacity(window, now=now + seconds + ADAPTER_EXIT_SECONDS + SAME_RUN_READ_SECONDS,
                       credential_deadline=credential_limit, operation_seconds=CLOSED_READY_PUBLICATION_SECONDS)
+    return seconds
+
+
+STATIC_RESERVE_SECONDS = ADAPTER_EXIT_SECONDS
+
+
+def _static_seconds(window, credential_limit, now):
+    """Largest static-stage child timeout admitted with the max(20, op) floor that leaves the adapter exit admitted.
+
+    The window deadline is the only static budget read here; the observation check and unit checkpoint are in-memory/CAS.
+    """
+    seconds = int(min(window["deadline"] - now - 38, credential_limit - now - 121)) - STATIC_RESERVE_SECONDS
+    c.require(seconds >= 1, "publish-static capacity")
+    lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=max(20, seconds))
     return seconds
 
 
@@ -2091,12 +2368,16 @@ def api_phase_b_evidence(*, close_raw, prepared, published, moments, admitted_at
 
 
 def _drop_operation_clients(broker):
-    """The keeper retains the broker: drop the operation and fence clients, ledgers included, and keep the journal."""
+    """The keeper retains the broker: drop the operation and fence/static clients, ledgers included, and keep the journal."""
     if broker is None:
         return
     for ledger in broker.evidence:
         ledger._aws = None
-    broker.aws = broker.session.evidence = broker.session.client = None
+    broker.aws = broker.session.evidence = None
+    if type(broker) is StaticBroker:
+        broker.session.clients = None
+    else:
+        broker.session.client = None
 
 
 def _frozen_membership(close_raw):
@@ -2115,6 +2396,31 @@ def _closed_ready_observation(keeper, journal, inputs):
               and value["close_drain_sha256"] == c.sha(inputs["close-drain"]) and value["phase_b_sha256"] == c.sha(inputs["phase-b"])
               and not keeper.uncertainty(), "closed-ready single observation bound to its inputs without uncertainty")
     return raw
+
+
+def _publication_observation(keeper, journal, ready):
+    """The single publish-static observation, bound to its static plan and to the keeper closed-ready, without uncertainty."""
+    observed = [entry for entry in journal._observations if entry["kind"] == "publication"]
+    raw = journal._observation_bytes.get(observed[0]["sha256"]) if len(observed) == len(journal._observations) == 1 else None
+    value = c.loads(raw, canonical=True, limit=1024**2) if type(raw) is bytes else None
+    plan = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET)
+    uploaded = value.get("uploaded") if type(value) is dict else None
+    c.require(type(value) is dict and set(value) == set(PUBLICATION_FIELDS.split()) and value["schema"] == PUBLICATION_SCHEMA
+              and value["plan_sha256"] == c.sha(journal._inputs["static-plan"]) and value["closed_ready_sha256"] == ready
+              and type(uploaded) is list and all(type(item) is list and len(item) == 2 and item[0] in plan["candidate_keys"]
+                                                 and type(item[1]) is str for item in uploaded)
+              and type(value["already_published"]) is list and all(type(key) is str for key in value["already_published"])
+              and type(value["invalidation_id"]) in (str, type(None)) and not keeper.uncertainty(), "publish-static single publication observation bound to its plan and "
+              "closed-ready without uncertainty")
+    return raw
+
+
+def static_input_source(*, keeper, owner, window):
+    """candidate, dashboard-artifact, static-plan and inventory of publish-static; the keeper has no authenticated source.
+
+    The inventory operation and the caller build artifacts are unwired (DD-1), so production refuses at the static stage.
+    """
+    raise ValueError("static_inputs=source_unconnected")
 
 
 CLOSED_READY_PROBE = "closed-ready"
@@ -2158,8 +2464,9 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
 
     prepared: authenticated fence package, activation from the plan carrier, close-drain, close window.
     phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
-    and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window. The static
-    stage ends this slice.
+    and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window, then the static
+    operation publish-static and, on its settled publication, the unit window (internal, DD-3). The unit stage
+    ends this slice.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     state = {}
@@ -2256,6 +2563,36 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window = current.lease.check()["lifecycle"]
         c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
         current.lease.checkpoint(lc.static_window(window, now=admitted))
+        publish_static(current, raw)
+
+    def publish_static(current, receipt):
+        record = current.lease.check()
+        window, owner = record["lifecycle"], lc.owner_binding(record)
+        inputs = dict(static_input_source(keeper=current, owner=owner, window=window)) | {"host-receipt": receipt}
+        c.closed(inputs, lc.ADAPTER_INPUTS["publish-static"])
+
+        def capability(*, journal, keeper):
+            return static_capability(governance=governance, journal=journal, keeper=keeper, credential_limit=credential_limit,
+                                     operation_session=operation_session, clock=clock)
+        request_raw = _operation_request("publish-static", owner=owner, window=window, inputs=inputs, activation=state["activation"])
+        try:
+            run_publish_static(keeper=current, request_raw=request_raw, owner=owner, window=window, inputs=inputs,
+                               activation_sha256=c.sha(state["activation"]), capability=capability, product=product,
+                               source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                               manifest_sha256=governance["application_product_source_closure_sha256"],
+                               seconds=lambda: _static_seconds(window, credential_limit, clock()))
+        finally:
+            for item in current._contexts:
+                if type(item) is AdapterJournal and item._request["operation"] == "publish-static":
+                    _drop_operation_clients(getattr(item, "_broker", None))
+        (journal,) = [item for item in current._contexts
+                      if type(item) is AdapterJournal and item._request["operation"] == "publish-static"]
+        _publication_observation(current, journal, state["closed-ready"])
+        publish_static_closed_ready(journal, current)
+        admitted = clock()
+        window = current.lease.check()["lifecycle"]
+        c.require(admitted < lc.terminal_deadline(window), "static stage deadline elapsed")
+        current.lease.checkpoint(lc.unit_window(window, now=admitted))
 
     return {"prepared": prepared, "phase-b": phase_b, "host": host}
 
@@ -2264,11 +2601,12 @@ KEEPER_EVENTS = ("prepared", "phase-b", "host")
 
 
 def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over the three ratified stage triggers; it never returns.
+    """The single keeper polling loop over the three ratified external stage triggers; it never returns.
 
     next_event is the authenticated event producer and handlers holds exactly the three stage
-    handlers. After the static stage the producer refuses and the lease stays held (R18): there
-    is no finish, terminal publication or dispatch here. Any exception leaves the lease held.
+    handlers; static -> unit is internal to the host handler (DD-3). At the unit stage the producer
+    refuses and the lease stays held (R18): there is no finish, terminal publication or dispatch
+    here. Any exception leaves the lease held.
     """
     c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
@@ -2300,7 +2638,7 @@ def _verify_session(client, governance, authority, run, expires):
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry: compose the original keeper and run the stage loop to the static stage.
+    """Operational keeper entry: compose the original keeper and run the stage loop to the unit stage.
 
     The order is the contract: release, adapter closure, owner authority, credential window, AWS and
     session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
@@ -2339,9 +2677,13 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), clock=keeper.clock)
     def operation_session(operation, role, stage):
-        c.require(operation in ("close-drain", "closed-ready"), "operation session operation")
+        c.require(operation in ("close-drain", "closed-ready", "publish-static"), "operation session operation")
+        if operation == "publish-static":
+            delegations, sessions = ("observer", "normal"), dict(c.closed(role, "observer normal"))
+        else:
+            delegations, sessions = ("fence_operator",), {"fence_operator": role["session_name"]}
         restriction = session_policy.application_request(governance, request["source_sha"], run["id"], run["run_attempt"], operation,
-            application_purpose="promotion", delegations=("fence_operator",), sessions={"fence_operator": role["session_name"]})
+            application_purpose="promotion", delegations=delegations, sessions=sessions)
         value = lr.oidc_credentials(governance, "application", restriction, run, duration=900)
         client = lr.AWS(governance, credentials=value)
         c.require(all(client.identity[key] == aws.identity[key] for key in ("Account", "Arn", "UserId")), "operation session identity")

@@ -16,7 +16,7 @@ E2Dur == <<360, 180, 180, 180, 330, 330, 90>>
 CodeVar == <<
     [plan |-> 37, aread |-> 37, pread |-> 37],
     [api_effect |-> 71, api_observe |-> 71],
-    [static_effect |-> 71, static_observe |-> 71],
+    [static_publish |-> 135, static_settle |-> 7],
     [unit_seed |-> 28, unit_start |-> 27, unit_observe |-> 27],
     [plan |-> 1, aread |-> 1, pread |-> 1, recovery_seed |-> 1, recovery_start |-> 1, recovery_observe |-> 1],
     [plan |-> 1, aread |-> 1, pread |-> 1, audit_start |-> 1, audit_observe |-> 1],
@@ -26,7 +26,7 @@ CodeVar == <<
 E2Var == <<
     [plan |-> 37, aread |-> 37, pread |-> 37],
     [api_effect |-> 71, api_observe |-> 71],
-    [static_effect |-> 71, static_observe |-> 71],
+    [static_publish |-> 135, static_settle |-> 7],
     [unit_seed |-> 48, unit_start |-> 47, unit_observe |-> 47],
     [plan |-> 17, aread |-> 17, pread |-> 17, recovery_seed |-> 16, recovery_start |-> 16, recovery_observe |-> 16],
     [plan |-> 20, aread |-> 20, pread |-> 20, audit_start |-> 20, audit_observe |-> 19],
@@ -50,7 +50,7 @@ DeployOps == Job1 \o Job2 \o Job3
 Ops(s) ==
     CASE s = 1 -> DeployOps
       [] s = 2 -> <<"api_effect", "api_observe">>
-      [] s = 3 -> <<"static_effect", "static_observe">>
+      [] s = 3 -> <<"static_publish", "static_settle">>
       [] s = 4 -> UnitModeOps
       [] s = 5 -> DeployOps \o RecoveryModeOps
       [] s = 6 -> DeployOps \o AuditModeOps
