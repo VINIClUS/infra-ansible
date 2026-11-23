@@ -158,7 +158,8 @@ def test_dashboard_so_entra_pelo_zip_e_pelo_dist_tar_que_o_candidato_fixa(mutati
     candidate = json.loads(values.candidate)
     assert si.dashboard_artifact(_dashboard_api(values), candidate, guard=_Guard(), now=1000) == values.dist
     api = {"digest": lambda: _dashboard_api(values, _dashboard_metadata(values, digest="sha256:" + "0" * 64)),
-           "zip": lambda: _dashboard_api(values, served=values.artifact[:-1] + b"\0"),
+           "zip": lambda: _dashboard_api(values, served=values.artifact[:40] + bytes([values.artifact[40] ^ 1])
+                                         + values.artifact[41:]),
            "expired": lambda: _dashboard_api(values, _dashboard_metadata(values, expired=True)),
            "run": lambda: _dashboard_api(values, _dashboard_metadata(values, workflow_run={"id": 7, "head_sha": SOURCE})),
            "name": lambda: _dashboard_api(values, _dashboard_metadata(values, name="production-config"))}

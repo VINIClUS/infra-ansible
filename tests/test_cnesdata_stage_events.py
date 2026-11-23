@@ -1281,7 +1281,7 @@ def test_host_handler_reconfere_o_prazo_do_api_depois_de_autenticar_o_handoff(mo
     world = _api_world(monkeypatch, ready={"host_seconds": 1310 - 1200 - 1})
     world.clock.value = 1200 + 1 - seconds_left
     if admitted:
-        with pytest.raises(ValueError, match="^static_inputs=source_unconnected$"):
+        with pytest.raises(ValueError, match="^static_inputs=caller_artifact job=static-inputs$"):
             world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
         assert _lifecycle(world)["stage"] == "static"
         return
@@ -1316,9 +1316,9 @@ def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_af
 def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish_static_despachados(monkeypatch):
     """R18 and R15 after P15: the reachable end is the unit stage; prepared -> B -> API (closed-ready) -> host -> static
     (publish-static, internal) -> unit."""
-    from test_cnesdata_static_stage import _install_static
+    from test_cnesdata_static_stage import _install_static, _static_carrier
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
-    world = _install_static(monkeypatch, _stage_world(monkeypatch))
+    world = _install_static(monkeypatch, _stage_world(monkeypatch, carrier=_static_carrier()))
     for name in ("publish_terminal", "published_terminal"):
         monkeypatch.setattr(ag, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached before the unit stage ends the slice"))
     world.keeper.finish = lambda reference: pytest.fail("finish reached before the unit stage ends the slice")

@@ -5316,7 +5316,7 @@ def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty()
         journal._failed = True
         raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        run(handlers={"prepared": failing, "phase-b": failing, "host": failing})
+        run(handlers={"observer-bootstrap": failing, "prepared": failing, "phase-b": failing, "host": failing})
     assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
     assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
@@ -7286,7 +7286,7 @@ def _static_product_calls(bucket=_STATIC_BUCKET):
                 ("observer", "s3", "ListParts", {"Bucket": bucket, "Key": "assets/big.js", "UploadId": "upload-1"})]
 
     def put(key, **extra):
-        return ("normal", "s3", "PutObject", {"Bucket": bucket, "Key": key, "Body": {"base64": _b64(body)},
+        return ("normal", "s3", "PutObject", {"Bucket": bucket, "Key": key, "Body": _member_reference(key, body),
                 "ContentType": "text/javascript", "CacheControl": "public, max-age=31536000, immutable",
                 "ChecksumSHA256": _b64(hashlib.sha256(body).digest())} | extra)
     normal = [put("assets/app.js", IfNoneMatch="*"), put("index.html"), put("theme-init.js"),
