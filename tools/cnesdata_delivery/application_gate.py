@@ -124,6 +124,7 @@ STATIC_RESPONSE_FIELDS = {
     "GetObject": ("Body VersionId ContentType CacheControl", {}), "CreateInvalidation": ("Invalidation", {}),
 }
 STATIC_BODY_LIMIT = 128 * 1024
+STATIC_REQUEST_LIMIT = 128 * 1024
 # host_gate.py public handoff (version 1) and validate_recovery_decision.
 HOST_HANDOFF_FIELDS = ("version kind caller producer_sha closed_ready_sha256 original_request_sha256 status response_sha256 "
                        "proof_sha256 receipt_sha256 witness_sha256 operation_id binding_sha256 generation recovery_decision "
@@ -1316,7 +1317,9 @@ class StaticBroker:
                   and self.clock() + 20 < session.deadline, "original finite SDK request/window")
         method = lc.validate_static_call(request=journal._request, role=role, service=service, operation=operation,
                                          parameters=parameters, bucket=session.scope["bucket"], plan=session.scope["plan"])
-        raw = c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}, limit=128 * 1024)
+        raw = c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters},
+                          limit=2 * 1024**2)
+        c.require(len(raw) <= STATIC_REQUEST_LIMIT, f"static request size={len(raw)} limit={STATIC_REQUEST_LIMIT}")
         ledger = StaticEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
                                 role_session_sha256=session.commitment, scope=session.scope)
         self.evidence.append(ledger)
@@ -2398,8 +2401,21 @@ def _closed_ready_observation(keeper, journal, inputs):
     return raw
 
 
+def _publication_receipts(journal):
+    calls = journal._settled_calls()
+    puts = [[call["call"]["parameters"]["Key"], lc._static_version(call["response"].get("VersionId"))]
+            for call in calls if call["call"]["operation"] == "PutObject"]
+    invalidations = [call["response"]["Invalidation"]["Id"] for call in calls if call["call"]["operation"] == "CreateInvalidation"]
+    c.require(len(invalidations) <= 1, f"publication=invalidation_calls count={len(invalidations)}")
+    return puts, invalidations[0] if invalidations else None
+
+
 def _publication_observation(keeper, journal, ready):
-    """The single publish-static observation, bound to its static plan and to the keeper closed-ready, without uncertainty."""
+    """The single publish-static observation, bound to its plan, the keeper closed-ready and the journal's own receipts.
+
+    uploaded is the ordered (Key, VersionId) of the settled PutObject receipts, invalidation_id the CreateInvalidation
+    receipt Id (None iff none) and already_published candidate keys outside uploaded; the gate never trusts the child.
+    """
     observed = [entry for entry in journal._observations if entry["kind"] == "publication"]
     raw = journal._observation_bytes.get(observed[0]["sha256"]) if len(observed) == len(journal._observations) == 1 else None
     value = c.loads(raw, canonical=True, limit=1024**2) if type(raw) is bytes else None
@@ -2412,6 +2428,13 @@ def _publication_observation(keeper, journal, ready):
               and type(value["already_published"]) is list and all(type(key) is str for key in value["already_published"])
               and type(value["invalidation_id"]) in (str, type(None)) and not keeper.uncertainty(), "publish-static single publication observation bound to its plan and "
               "closed-ready without uncertainty")
+    puts, invalidation = _publication_receipts(journal)
+    index = next((index for index, pair in enumerate(zip(uploaded, puts)) if pair[0] != pair[1]), min(len(uploaded), len(puts)))
+    c.require(uploaded == puts, f"publication=uploaded_mismatch index={index} observed={len(uploaded)} receipts={len(puts)}")
+    c.require(value["invalidation_id"] == invalidation, "publication=invalidation_mismatch")
+    published = set(value["already_published"])
+    c.require(published <= set(plan["candidate_keys"]) and not published & {key for key, _ in uploaded},
+              "publication=already_published_invalid")
     return raw
 
 
