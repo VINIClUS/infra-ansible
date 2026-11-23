@@ -1,4 +1,5 @@
 """Insumos estaticos autenticados, operacao inventory do keeper e corpo por digest (#55, P15b)."""
+import base64
 import gzip
 import hashlib
 import io
@@ -452,7 +453,7 @@ def test_prepared_autentica_o_static_plan_do_portador_antes_do_close_drain(monke
     (requested,) = world.static_plan_requests
     assert type(requested.pop("guard")) is ag.KeeperGuard
     assert requested == {"keeper": world.keeper, "owner": world.owner, "api": world.api, "run": RUN, "now": 1100,
-                         "terraform": c.loads(world.raw_carrier, canonical=True)["terraform"]}
+                         "terraform": base64.b64decode(c.loads(world.raw_carrier, canonical=True)["terraform"]["bytes_base64"])}
 
 
 def test_static_plan_recusado_no_prepared_nunca_fecha_a_janela(monkeypatch):

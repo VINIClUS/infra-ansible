@@ -1287,7 +1287,7 @@ def test_host_handler_reconfere_o_prazo_do_api_depois_de_autenticar_o_handoff(mo
     world = _api_world(monkeypatch, ready={"host_seconds": 1310 - 1200 - 1})
     world.clock.value = 1200 + 1 - seconds_left
     if admitted:
-        with pytest.raises(ValueError, match="^static_inputs=caller_artifact job=static-inputs$"):
+        with pytest.raises(ValueError, match="^prepared=inventory_unsettled$"):
             world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
         assert _lifecycle(world)["stage"] == "static"
         return
