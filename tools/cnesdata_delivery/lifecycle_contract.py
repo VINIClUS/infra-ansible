@@ -175,8 +175,10 @@ MODE_ADDRESSES = frozenset(f"module.runtime_iam.{kind}.{alias}[0]" for alias in 
                            for kind in ("aws_iam_role", "aws_iam_role_policy"))
 MODE_INPUT_FIELDS = ("schema_version context_kind application_principal_arn owner context_manifest delegation_sessions "
                      "resources enabled_until")
-MODE_GATE_ORIGINALS = "product_source_closure_sha256 shared_source_sha shared_source_closure_sha256 release_id"
-MODE_PRODUCT_COMMITTED = "fixture_manifest_sha256 scenario_plan_sha256 predecessor_terminal_sha256 admitted_at deadline"
+MODE_GATE_ORIGINALS = ("product_source_closure_sha256 shared_source_sha shared_source_closure_sha256 release_id "
+                       "fixture_manifest_sha256")
+MODE_PRODUCT_COMMITTED = "scenario_plan_sha256 predecessor_terminal_sha256 admitted_at deadline"
+MODE_FIXTURE_MANIFEST = "tests/production/fixtures/mode_canary/fixture-manifest.json"
 MODE_CLOSED_POLICY = {"Version": "2012-10-17", "Statement": [{"Effect": "Deny", "Action": "*", "Resource": "*"}]}
 MODE_SESSION_OPERATIONS = {
     "unit-seed": ("us", "mode_seed", "promotion", "unit"),
@@ -1325,6 +1327,14 @@ def has_unknown(value):
     c.require(type(value) in {dict, list}, "malformed unknown mask")
     values = value.values() if type(value) is dict else value
     return any([has_unknown(item) for item in values])
+
+def mode_fixture_manifest_sha256(manifest):
+    """Args: authenticated product source manifest. Returns: fixture-manifest.json digest. Raises: ValueError."""
+    files = manifest["files"]
+    c.require(type(files) is dict and MODE_FIXTURE_MANIFEST in files and type(files[MODE_FIXTURE_MANIFEST]) is str
+              and re.fullmatch(r"[0-9a-f]{64}", files[MODE_FIXTURE_MANIFEST]) is not None, "mode fixture manifest original")
+    return files[MODE_FIXTURE_MANIFEST]
+
 
 def mode_canary_stage(before):
     """Args: audited full-state resources. Returns: initial or established. Raises: ValueError if partial."""

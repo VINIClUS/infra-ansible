@@ -1005,7 +1005,8 @@ def mode_canary_admission(*, plan, step_mode, inputs_raw, owner, governance, his
     originals = {"product_source_closure_sha256": governance["application_product_source_closure_sha256"],
                  "shared_source_sha": governance["gate_shas"]["application"],
                  "shared_source_closure_sha256": governance["application_source_closure_sha256"],
-                 "release_id": historical["envelope"]["plan"]["release"]["release_id"]}
+                 "release_id": historical["envelope"]["plan"]["release"]["release_id"],
+                 "fixture_manifest_sha256": lc.mode_fixture_manifest_sha256(governance["application_product_source_manifest"])}
     admitted = lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
                                              principal_arn=principal_arn, originals=originals,
                                              activation_sha256=activation_sha256)

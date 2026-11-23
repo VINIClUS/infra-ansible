@@ -9,8 +9,9 @@ from tools.cnesdata_delivery import lifecycle_contract as lc
 ACCOUNT = "111122223333"
 PRINCIPAL = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-application"
 ALIASES = ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")
+FIXTURE_MANIFEST = "tests/production/fixtures/mode_canary/fixture-manifest.json"
 GATE = {"product_source_closure_sha256": "1" * 64, "shared_source_sha": "2" * 40,
-        "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release"}
+        "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release", "fixture_manifest_sha256": "6" * 64}
 ACTIVATION = "4" * 64
 RESOURCES = {"table_arn": f"arn:aws:dynamodb:us-east-2:{ACCOUNT}:table/cnesdata-prod-control-plane",
              "cluster_arn": f"arn:aws:ecs:us-east-2:{ACCOUNT}:cluster/cnesdata-prod"}
@@ -47,8 +48,7 @@ def _mode_input(context="promotion", *, manifest_change=None, input_change=None,
     manifest = {"schema_version": 2, "context_kind": context,
                 "owner": {key: owner[key] for key in ("repository", "run_id", "run_attempt", "generation", "owner_sha256")},
                 "product_source_sha": owner["source_sha"], **GATE, "activation_sha256": ACTIVATION,
-                "resources_sha256": c.sha(c.canonical(RESOURCES)), "fixture_manifest_sha256": "6" * 64,
-                "scenario_plan_sha256": "7" * 64,
+                "resources_sha256": c.sha(c.canonical(RESOURCES)), "scenario_plan_sha256": "7" * 64,
                 "predecessor_terminal_sha256": None if context == "promotion" else "8" * 64,
                 "admitted_at": admitted, "deadline": deadline}
     manifest.update(manifest_change or {})
@@ -81,7 +81,7 @@ def test_entrada_de_modo_admite_so_as_sessoes_derivadas_do_manifesto_e_dos_origi
 
 @pytest.mark.parametrize("field,value", [("product_source_closure_sha256", "9" * 64), ("shared_source_sha", "9" * 40),
                                          ("shared_source_closure_sha256", "9" * 64), ("release_id", "other-release"),
-                                         ("activation_sha256", "9" * 64)])
+                                         ("activation_sha256", "9" * 64), ("fixture_manifest_sha256", "6" * 63 + "7")])
 def test_entrada_de_modo_recusa_campo_de_sessao_trocado_mesmo_com_wrapper_e_sessoes_coerentes(field, value):
     inputs, owner = _mode_input(manifest_change={field: value})
     with pytest.raises(ValueError, match="mode context original producer commitments|mode promotion activation original"):
@@ -415,7 +415,9 @@ def _runtime_case(context="promotion"):
     rows, _ = _mode_rows(admitted)
     governance = {"application_product_source_closure_sha256": GATE["product_source_closure_sha256"],
                   "gate_shas": {"application": GATE["shared_source_sha"]},
-                  "application_source_closure_sha256": GATE["shared_source_closure_sha256"]}
+                  "application_source_closure_sha256": GATE["shared_source_closure_sha256"],
+                  "application_product_source_manifest": {"version": 1, "source_sha": owner["source_sha"], "files": {
+                      "scripts/promotion/promote_api.py": "5" * 64, FIXTURE_MANIFEST: GATE["fixture_manifest_sha256"]}}}
     historical = {"envelope": {"plan": {"release": {"release_id": GATE["release_id"]}}}}
     arguments = {"plan": {"resource_changes": rows}, "step_mode": "operational" if context == "promotion" else "mode-canary",
                  "inputs_raw": c.canonical(inputs), "owner": owner, "governance": governance, "historical": historical,
@@ -433,7 +435,7 @@ def test_admissao_de_modo_do_runtime_liga_os_originais_do_gate_e_o_contexto_do_p
         lr.mode_canary_admission(**arguments | {"step_mode": other})
 
 
-@pytest.mark.parametrize("mutation", ["closure", "shared", "shared-closure", "release", "trust"])
+@pytest.mark.parametrize("mutation", ["closure", "shared", "shared-closure", "release", "trust", "fixture-byte"])
 def test_admissao_de_modo_do_runtime_recusa_original_do_gate_trocado_e_trust_deslocado(mutation):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     arguments, _, rows = _runtime_case()
@@ -446,6 +448,8 @@ def test_admissao_de_modo_do_runtime_recusa_original_do_gate_trocado_e_trust_des
         governance["application_source_closure_sha256"] = "9" * 64
     if mutation == "release":
         arguments["historical"] = {"envelope": {"plan": {"release": {"release_id": "other-release"}}}}
+    if mutation == "fixture-byte":
+        governance["application_product_source_manifest"]["files"][FIXTURE_MANIFEST] = "6" * 63 + "7"
     if mutation == "trust":
         shifted, _ = _mode_input(sessions_from=_other_attempt)
         role = next(row for row in rows if row["address"] == "module.runtime_iam.aws_iam_role.mode_seed[0]")
@@ -454,6 +458,16 @@ def test_admissao_de_modo_do_runtime_recusa_original_do_gate_trocado_e_trust_des
             shifted["mode_canary"]["delegation_sessions"]["mode_seed"])
         role["change"]["after"]["assume_role_policy"] = json.dumps(trust)
     with pytest.raises(ValueError, match="mode context original producer commitments|mode trust document"):
+        lr.mode_canary_admission(**arguments | {"governance": governance})
+
+
+@pytest.mark.parametrize("files", [{}, {"tests/production/fixtures/mode_canary/other.json": "6" * 64}, {FIXTURE_MANIFEST: "6"}])
+def test_admissao_de_modo_do_runtime_exige_o_fixture_manifest_no_manifesto_de_fonte_autenticado(files):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    arguments, _, _ = _runtime_case()
+    governance = copy.deepcopy(arguments["governance"])
+    governance["application_product_source_manifest"]["files"] = {"scripts/promotion/promote_api.py": "5" * 64, **files}
+    with pytest.raises(ValueError, match="mode fixture manifest original"):
         lr.mode_canary_admission(**arguments | {"governance": governance})
 
 
