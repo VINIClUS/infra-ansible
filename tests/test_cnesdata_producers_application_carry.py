@@ -7,7 +7,7 @@ import pytest
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.producers import application, governance_assembly
 
-ARN = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-lifecycle"
+ARN = "states:stateMachine:cnesdata-prod-lifecycle"
 SELECTION = {"selection_version": 1, "ext2_post_upload_receipt_v1": {"fixture": "isolated"}}
 
 
@@ -80,8 +80,10 @@ def test_catalogo_recusa_delete_resources_em_plan_e_deploy_advance(change):
 
 @pytest.mark.parametrize("value", [
     True, None, [], [ARN] * 2, [ARN.replace("states", "iam")], [ARN.replace("cnesdata-prod", "other")],
-    [ARN.replace("111122223333", "12345")], [ARN + str(index) for index in range(9)], "arn", [1],
-], ids=["true", "nulo", "vazio", "repetido", "servico", "outro-produto", "conta", "nove", "string", "nao-string"])
+    ["arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-lifecycle"],
+    [ARN + "-" + "1" * 12], [ARN + str(index) for index in range(9)], "arn", [1], ["states:"],
+], ids=["true", "nulo", "vazio", "repetido", "servico", "outro-produto", "arn-completo", "conta-embutida", "nove",
+        "string", "nao-string", "sem-recurso"])
 def test_catalogo_recusa_converge_deploy_com_inventario_de_delete_invalido(value):
     with pytest.raises(ValueError, match="step delete resources"):
         application.catalog(mutated(lambda s: s["recovery-deploy"].update(delete_resources=value)))
@@ -146,3 +148,13 @@ def test_assembly_nao_aceita_o_manifesto_inline_como_chave_de_governanca():
 def test_crosscheck_recusa_o_manifesto_inline():
     with pytest.raises(ValueError, match="governance key=application_product_source_manifest"):
         governance_assembly.crosscheck({"application_product_source_manifest": {}}, {})
+
+
+@pytest.mark.parametrize("change", [
+    lambda s: s["operational-plan"].update(job_name="plan 111122223333 / execute"),
+    lambda s: s["phase-b-deploy"]["input_jobs"].update(x={"name": "job 123456789012", "step": "operational-plan"}),
+    lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1={"id": "9" * 12}),
+], ids=["job-name", "input-job", "selecao"])
+def test_catalogo_recusa_numero_de_conta_em_qualquer_lugar(change):
+    with pytest.raises(ValueError, match="catalog account number"):
+        application.catalog(mutated(change))
