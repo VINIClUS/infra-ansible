@@ -114,14 +114,15 @@ def application_caller(api, governance, run, role, step, *, include_job=False):
     c.require(len(raw) <= 1024**2 and c.sha(raw) == c.digest(manifest["files"][caller["workflow_path"]]), "caller original workflow bytes")
     path = (".github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f".github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
-    expected = "VINIClUS/infra-ansible/" + path + "@" + c.digest(governance["gate_shas"][role], 40)
+    pin = c.gate_sha(governance, role)
+    expected = "VINIClUS/infra-ansible/" + path + "@" + pin
     # GitHub authenticates the executed reusable reference, including its literal
     # @ref. Measuring the source bytes plus this exact @SHA avoids an unpinned
     # YAML parser in preflight and does not accept a branch resolved to that SHA.
     references = [item for item in run.get("referenced_workflows", [])
                   if item["path"].startswith("VINIClUS/infra-ansible/" + path + "@")]
     c.require(len(references) == 1 and references[0]["path"] == expected
-              and references[0]["sha"] == governance["gate_shas"][role], "caller original reusable invocation")
+              and references[0]["sha"] == pin, "caller original reusable invocation")
     jobs, total = [], None
     for page in range(1, 21):
         response = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page={page}")
