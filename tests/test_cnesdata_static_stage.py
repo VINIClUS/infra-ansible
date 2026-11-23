@@ -425,17 +425,24 @@ def test_static_seconds_recusa_sem_capacidade_no_estagio_static(now, credential_
         ag._static_seconds(_static_window(), credential_limit, now)
 
 
-def _static_window():
+def _static_window(windows=None):
+    from test_cnesdata_application_gate import MINIMUM_WINDOWS
     from tools.cnesdata_delivery import lifecycle_contract as lc
     api = {"sequence": 2, "stage": "api", "close": 1050, "fixed_deadline": 2850, "input_deadline": 5000, "decision": None,
-           "admitted_at": 1130, "deadline": 1310, "preparation_deadline": 2000, "checkpoint_sha256": "e" * 64}
+           "admitted_at": 1130, "deadline": 1310, "preparation_deadline": 2000, "checkpoint_sha256": "e" * 64,
+           "windows": MINIMUM_WINDOWS if windows is None else windows}
     return lc.static_window(api, now=1200)
 
 
-def test_unit_window_segue_o_estagio_static_com_a_duracao_do_contrato():
+@pytest.mark.parametrize("vector, deadline", [("MINIMUM_WINDOWS", 1300 + 120), ("WINDOWS", 1300 + 180)])
+def test_unit_window_segue_o_estagio_static_com_a_janela_governada_do_unit(vector, deadline):
+    import test_cnesdata_application_gate as gate
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    window = _static_window()
-    assert lc.unit_window(window, now=1300) == window | {"sequence": 4, "stage": "unit", "admitted_at": 1300, "deadline": 1420}
+    windows = lc.governed_windows(getattr(gate, vector))
+    window = _static_window(windows)
+    assert window["deadline"] == 1200 + windows["stages"]["static"]
+    assert lc.unit_window(window, now=1300) == window | {"sequence": 4, "stage": "unit", "admitted_at": 1300,
+                                                        "deadline": deadline}
     assert lc.unit_window(window | {"fixed_deadline": 1400}, now=1300)["deadline"] == 1400
 
 
@@ -544,10 +551,12 @@ def _install_static(monkeypatch, world, static=None):
 
 
 def _publication(world, journal):
+    """With the real capability the product publishes three keys and invalidates; the fake child brokers nothing."""
+    real = world.static["capability"] == "real"
+    uploaded = [[key, f"New.{index}"] for index, key in enumerate(("assets/app.js", "index.html", "theme-init.js"), start=1)]
     return {"schema": "cnesdata.static-publication/v1", "plan_sha256": c.sha(journal._inputs["static-plan"]),
-            "closed_ready_sha256": c.sha(world.ready_raw), "uploaded": [[key, f"New.{index}"] for index, key in enumerate(
-                ("assets/app.js", "index.html", "theme-init.js"), start=1)],
-            "already_published": [], "invalidation_id": "I2SYNTH"} | world.static["observation"]
+            "closed_ready_sha256": c.sha(world.ready_raw), "uploaded": uploaded if real else [],
+            "already_published": [], "invalidation_id": "I2SYNTH" if real else None} | world.static["observation"]
 
 
 def _publish_static_child(world, journal, timeout):

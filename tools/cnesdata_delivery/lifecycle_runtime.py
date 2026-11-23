@@ -26,6 +26,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
     c.integer(run_id)
     c.integer(attempt)
     c.require(role in {"plan", "deploy", "audit", "application"} and source == governance["source_sha"], "governed source/role")
+    c.require_audit_gate(governance)
     c.require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and os.environ.get("GITHUB_REF") == "refs/heads/main"
               and os.environ.get("GITHUB_REPOSITORY") == c.REPOSITORY, "manual production caller")
     purpose = governance["application_purpose"]
@@ -39,7 +40,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
               and run["status"] == "in_progress", "original live manual attempt")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
-    pin = c.digest(governance["gate_shas"][role], 40)
+    pin = c.gate_sha(governance, role)
     refs = [x for x in run.get("referenced_workflows", []) if x["path"].startswith(path + "@")]
     c.require(len(refs) == 1 and refs[0]["path"] == path + "@" + pin and refs[0]["sha"] == pin, "immutable reusable")
     comparison = api.read(f"repos/{c.REPOSITORY}/compare/{source}...main")
@@ -85,6 +86,8 @@ def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
+    if role == "application":
+        lc.stage_windows(governance)
     c.require("application_product_source_manifest" not in governance, "inline product source manifest")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
@@ -546,7 +549,8 @@ def fence_evaluation_scope(*, governance, role, control_table_arn, owner, checkp
     return scope, prefix
 
 
-def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at):
+def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at,
+                               api_seconds):
     """Six evaluation documents from protected sources (amendment 2026-11-13 item 3)."""
     from tools.cnesdata_delivery import session_owner, session_policy
     c.integer(observed_at)
@@ -561,7 +565,7 @@ def fence_evaluation_documents(*, governance, pin, fragment, owner, role, contro
         "application_session": c.loads(session["Policy"].encode()),
         "fence_identity": role["policy"],
         "fence_session": session_policy.fence_session_policy(control_table_arn=control_table_arn,
-            execution_prefix=execution_prefix, deadline=int(min(observed_at + 180, frozen))),
+            execution_prefix=execution_prefix, deadline=int(min(observed_at + api_seconds, frozen))),
         "freeze": {"frozen_until": c.utc(frozen), "application_fragment_sha256": c.sha(c.canonical(fragment)),
                    "owner_policy_sha256": c.digest(pin["document_sha256"])},
     }
@@ -684,7 +688,8 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     scope, execution_prefix = fence_evaluation_scope(governance=governance, role=role,
         control_table_arn=terraform["shared_outputs"]["control_table_arn"], owner=owner, checkpoint_sha256=c.sha(checkpoint_raw))
     documents = fence_evaluation_documents(governance=governance, pin=authority.pin, fragment=fragment, owner=owner, role=role,
-        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"])
+        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"],
+        api_seconds=lc.governed_windows(window["windows"])["stages"]["api"])
     evaluation = fence_effective_evaluation(documents, scope, evaluator_source_sha=producer["workflow_sha"],
                                             observed_at=c.utc(preparation["observed_at"]))
     origins = {"schema_version": 1, "phase_a": fence_phase_a_origin(history, projection["source_files"]),
@@ -1548,7 +1553,7 @@ def oidc_credentials(governance, role, restriction, run, *, duration=3600):
     c.require(type(duration) is int and duration in (900, 3600), "OIDC session duration")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
-    workflow = path + "@" + governance["gate_shas"][role]
+    workflow = path + "@" + c.gate_sha(governance, role)
     caller = governance["authenticated_application_caller"]
     c.closed(caller, lc.CALLER_BINDING_FIELDS)
     lc.application_caller_binding(caller | {"event": "workflow_dispatch", "fragment_version": 4},

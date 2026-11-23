@@ -33,6 +33,17 @@ E2Var == <<
     [reopen |-> 26, terminal_readback |-> 26]
 >>
 
+CeilingDur == <<360, 180, 180, 300, 375, 375, 60>>
+CeilingVar == <<
+    [plan |-> 37, aread |-> 37, pread |-> 37],
+    [api_effect |-> 71, api_observe |-> 71],
+    [static_effect |-> 71, static_observe |-> 71],
+    [unit_seed |-> 88, unit_start |-> 87, unit_observe |-> 87],
+    [plan |-> 24, aread |-> 24, pread |-> 24, recovery_seed |-> 24, recovery_start |-> 24, recovery_observe |-> 24],
+    [plan |-> 29, aread |-> 29, pread |-> 29, audit_start |-> 29, audit_observe |-> 28],
+    [reopen |-> 11, terminal_readback |-> 11]
+>>
+
 UnitModeOps == <<"unit_seed", "unit_start", "unit_observe">>
 RecoveryModeOps == <<"recovery_seed", "recovery_start", "recovery_observe">>
 AuditModeOps == <<"audit_start", "audit_observe">>

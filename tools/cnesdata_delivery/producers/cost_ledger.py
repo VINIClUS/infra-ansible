@@ -6,6 +6,7 @@ from tools.cnesdata_delivery import contract as c
 
 CREDIT_REASON = "credit not applied"
 SPEND_LINE = "other_projects_spend"
+UNPRICED_CREDITS = frozenset({"cognito_allowance"})
 CATEGORIES = {
     "fargate_vcpu_hours": "fargate-vcpu", "fargate_memory_gb_hours": "fargate-memory",
     "public_ipv4_hours": "public-ipv4", "cloudwatch_alarm_metrics": "cloudwatch-alarms",
@@ -35,7 +36,12 @@ def _source(raw):
 
 def _credit(line):
     price = line["unit_price_usd"]
-    return price is None or price < 0
+    if line["id"] == SPEND_LINE:
+        return False
+    if price is None:
+        c.require(line["id"] in UNPRICED_CREDITS, f"unpriced line id={line['id']}")
+        return True
+    return price < 0
 
 
 def _maximum(line):
@@ -45,6 +51,8 @@ def _maximum(line):
 
 
 def _spend(line):
+    price = line["unit_price_usd"]
+    c.require(price is not None and price >= 0, f"other projects spend price id={line['id']}")
     measurement = line.get("measurement")
     c.require(type(measurement) is dict and {"month", "measured_on", "total_usd", "method"} <= set(measurement),
               "other projects spend measurement")
@@ -70,6 +78,8 @@ def derive(raw, *, source_sha, calculated_at, expires_at):
     """
     document = _source(raw)
     lines = document["lines"]
+    spend = [line for line in lines if line["id"] == SPEND_LINE]
+    c.require(len(spend) == 1, f"other projects spend count={len(spend)}")
     components = [_component(line) for line in lines if not _credit(line)]
     c.require(0 < len(components) <= 64, "complete cost ledger")
     product, total = _sum(components, "product"), _sum(components)
