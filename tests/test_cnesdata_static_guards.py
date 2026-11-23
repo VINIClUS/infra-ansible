@@ -90,15 +90,22 @@ def test_publicacao_com_tipo_de_campo_errado_recusa_pela_forma(monkeypatch, obse
     assert _lifecycle(world)["stage"] == "static"
 
 
-def test_put_object_acima_do_orcamento_recusa_com_tamanho_e_limite_antes_de_evidencia_ou_io():
+@pytest.mark.parametrize("length, accepted", [(96528, True), (96529, False), (97243, False), (98064, False),
+                                              (125138, False), (310126, False)])
+def test_put_object_acima_do_orcamento_recusa_com_tamanho_e_limite_antes_de_evidencia_ou_io(length, accepted):
     ag, broker, journal, clients, evidence = _broker_case()
-    body = (bytes(range(256)) * 1212)[:310126]
+    body = (bytes(range(256)) * 1212)[:length]
     role, service, operation, parameters = _put("assets/app.js")
     parameters = parameters | {"Body": {"base64": _b64(body)}, "ChecksumSHA256": _b64(hashlib.sha256(body).digest())}
     size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters},
                            limit=2 * 1024**2))
-    with pytest.raises(ValueError, match=f"^static request size={size} limit=131072$"):
-        ag._adapter_message(_frame(role, service, operation, parameters), journal)
+    frame = _frame(role, service, operation, parameters)
+    if accepted:
+        ag._adapter_message(frame, journal)
+        assert size <= 129024 and len(clients["normal"].calls) == 1 and evidence.writes
+        return
+    with pytest.raises(ValueError, match=f"^static request size={size} limit=129024$"):
+        ag._adapter_message(frame, journal)
     assert clients["normal"].calls == [] and evidence.writes == []
 
 

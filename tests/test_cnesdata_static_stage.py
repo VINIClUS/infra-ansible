@@ -412,17 +412,24 @@ def test_static_seconds_recusa_sem_capacidade_no_estagio_static(now, credential_
         ag._static_seconds(_static_window(), credential_limit, now)
 
 
-def _static_window():
+def _static_window(windows=None):
+    from test_cnesdata_application_gate import MINIMUM_WINDOWS
     from tools.cnesdata_delivery import lifecycle_contract as lc
     api = {"sequence": 2, "stage": "api", "close": 1050, "fixed_deadline": 2850, "input_deadline": 5000, "decision": None,
-           "admitted_at": 1130, "deadline": 1310, "preparation_deadline": 2000, "checkpoint_sha256": "e" * 64}
+           "admitted_at": 1130, "deadline": 1310, "preparation_deadline": 2000, "checkpoint_sha256": "e" * 64,
+           "windows": MINIMUM_WINDOWS if windows is None else windows}
     return lc.static_window(api, now=1200)
 
 
-def test_unit_window_segue_o_estagio_static_com_a_duracao_do_contrato():
+@pytest.mark.parametrize("vector, deadline", [("MINIMUM_WINDOWS", 1300 + 120), ("WINDOWS", 1300 + 180)])
+def test_unit_window_segue_o_estagio_static_com_a_janela_governada_do_unit(vector, deadline):
+    import test_cnesdata_application_gate as gate
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    window = _static_window()
-    assert lc.unit_window(window, now=1300) == window | {"sequence": 4, "stage": "unit", "admitted_at": 1300, "deadline": 1420}
+    windows = lc.governed_windows(getattr(gate, vector))
+    window = _static_window(windows)
+    assert window["deadline"] == 1200 + windows["stages"]["static"]
+    assert lc.unit_window(window, now=1300) == window | {"sequence": 4, "stage": "unit", "admitted_at": 1300,
+                                                        "deadline": deadline}
     assert lc.unit_window(window | {"fixed_deadline": 1400}, now=1300)["deadline"] == 1400
 
 

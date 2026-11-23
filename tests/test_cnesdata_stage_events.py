@@ -1336,7 +1336,8 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
     assert len(world.static_capability) == len(world.static_requests) == 1 and world.keeper.uncertainty() == []
     window = record["lifecycle"]
     assert window["checkpoint_sha256"] == c.sha(world.b_files["checkpoint.json"]) and window["close"] == 1050
-    assert window["sequence"] == 4 and window["admitted_at"] == 1130 + 5 + 10 + 7 and window["deadline"] == 1152 + 120
+    assert window["sequence"] == 4 and window["admitted_at"] == 1130 + 5 + 10 + 7
+    assert window["deadline"] == 1152 + window["windows"]["stages"]["unit"]
     journal = _ready_journal(world)
     api = window | {"sequence": 2, "stage": "api", "admitted_at": 1115, "deadline": 1295}
     lc.validate_adapter_request(c.canonical(journal._request), operation="closed-ready", owner=world.owner, window=api,
