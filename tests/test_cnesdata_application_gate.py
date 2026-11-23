@@ -4451,7 +4451,7 @@ def test_fence_session_policy_rejects_non_exact_scope(mutation):
         session_policy.fence_session_policy(**kwargs)
 
 
-def _fence_prepare_package_case(monkeypatch, mutation=None):
+def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS):
     """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
     import base64
     import hashlib
@@ -4522,7 +4522,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None):
             return body | {"ResponseMetadata": {"RequestId": f"req-{len(calls)}", "HTTPStatusCode": 200,
                                                 "HTTPHeaders": {"date": formatdate(now[0], usegmt=True)}}}
     class Guard:
-        window = {"admitted_at": 1000, "preparation_deadline": 1900, "windows": MINIMUM_WINDOWS}
+        window = {"admitted_at": 1000, "preparation_deadline": 1900, "windows": windows}
         def check(self, seconds=0): pass
     kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
         authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
@@ -4658,13 +4658,13 @@ def test_fence_prepare_package_connects_index_chain_and_predecessor_without_new_
                     or path == root + f"git/trees/{historical}?recursive=1" or path.endswith("?ref=" + historical)), path
 
 
-def _closed_ready_capability_case(monkeypatch, mutation=None):
+def _closed_ready_capability_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS):
     """Connected item-7 composition: real prepared producer/codec, real broker; GitHub/S3/STS are external fakes."""
     import io
     import zipfile
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
-    kwargs, _, _ = _fence_prepare_package_case(monkeypatch)
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch, windows=windows)
     activation = b"original-ext2-payload-bytes"
     kwargs["activation_sha256"] = c.sha(activation)
     if mutation == "frozen":
@@ -4703,8 +4703,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     close_raw = c.canonical({"version": 2, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
                              "close_confirmed_at": c.utc(1000), "drain_observed_at": c.utc(1010), "members": members,
                              "frozen_membership_sha256": membership["frozen_membership_sha256"], "proofs": [], "permit": None,
-                             "input_expirations": [], "fixed_deadline": c.utc(2800), "decision": None,
-                             "windows": MINIMUM_WINDOWS})
+                             "input_expirations": [], "fixed_deadline": c.utc(1000 + windows["fixed_deadline_seconds"]),
+                             "decision": None, "windows": windows})
     if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
     prepared_at = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]["admitted_at"]
     admitted = prepared_at if mutation == "admitted" else 1300
@@ -4725,10 +4725,10 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     inputs = {"activation": activation if mutation != "activation" else b"other", "close-drain": close_raw,
               "phase-b": b_files["checkpoint.json"] if mutation == "lifecycle-phase-b" else evidence,
               "membership": c.canonical(membership)}
-    window = {"close": 1000, "fixed_deadline": 2800, "input_deadline": 4000, "stage": "api",
-              "admitted_at": admitted, "deadline": 1480,
+    window = {"close": 1000, "fixed_deadline": 1000 + windows["fixed_deadline_seconds"], "input_deadline": 4000, "stage": "api",
+              "admitted_at": admitted, "deadline": 1300 + windows["stages"]["api"],
               "decision": None, "preparation_deadline": 1900 if mutation != "preparation" else 1899, "sequence": 2,
-              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), "windows": MINIMUM_WINDOWS, **lc.application_identity(owner)}
+              "checkpoint_sha256": c.sha(b_files["checkpoint.json"]), "windows": windows, **lc.application_identity(owner)}
     request = {"abi_version": 3, "operation": "closed-ready", "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
                "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]}, "checkpoint_sha256": window["checkpoint_sha256"],
                "activation_sha256": c.sha(inputs["activation"]),

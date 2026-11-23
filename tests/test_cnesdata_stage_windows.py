@@ -293,9 +293,22 @@ def test_host_gate_admite_closed_ready_com_as_janelas_governadas_do_close_drain(
     assert window.stage_deadline == 960 + stages["api"]
 
 
-@pytest.mark.parametrize("mutation", ["later", "deadline", "fixed", "bounds", "sum", "legacy"])
+HOST_REFUSALS = {
+    "later": "^original API admission budget$",
+    "deadline": "^original API admission budget$",
+    "fixed": "^original fixed deadline$",
+    "bounds": "^stage window stage=final value=30 min=60 max=180$",
+    "sum": "^stage windows sum=1831 ceiling=1830$",
+    "fixed-seconds": "^fixed_deadline_seconds value=2131 expected=2130$",
+    "close-drain-v1-com-janelas": "^canonical original ClosedReady$",
+    "close-drain-v2-sem-janelas": "^closed object fields$",
+}
+
+
+@pytest.mark.parametrize("mutation", list(HOST_REFUSALS))
 def test_host_gate_recusa_closed_ready_fora_das_janelas_governadas(mutation):
     g, clock, gov, api, close, ready, pack = _host_case(INITIAL | {"api": 240})
+    windows = close["windows"]
     if mutation == "later":
         ready["stage"]["later_seconds"] = 840
     elif mutation == "deadline":
@@ -303,16 +316,23 @@ def test_host_gate_recusa_closed_ready_fora_das_janelas_governadas(mutation):
     elif mutation == "fixed":
         close["fixed_deadline"] = g.utc(660 + 1800)
     elif mutation == "bounds":
-        close["windows"]["stages"]["final"] = 30
-        close["windows"]["fixed_deadline_seconds"] -= 60
+        windows["stages"]["final"] = 30
+        windows["fixed_deadline_seconds"] -= 60
     elif mutation == "sum":
-        close["windows"]["stages"]["phase-b"] = 720
-        close["windows"]["fixed_deadline_seconds"] += 360
-    elif mutation == "legacy":
-        close.pop("windows")
+        windows["stages"]["phase-b"] = 481
+        windows["fixed_deadline_seconds"] += 121
+    elif mutation == "fixed-seconds":
+        windows["fixed_deadline_seconds"] += 1
+    elif mutation == "close-drain-v1-com-janelas":
         close["version"] = 1
+    elif mutation == "close-drain-v2-sem-janelas":
+        close.pop("windows")
+    if mutation in {"bounds", "sum", "fixed-seconds"}:
+        order = list(lc.STAGES)
+        close["fixed_deadline"] = g.utc(min(660 + windows["fixed_deadline_seconds"], 3600))
+        ready["stage"]["later_seconds"] = sum(windows["stages"][name] for name in order[order.index("api") + 1:])
     pack()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=HOST_REFUSALS[mutation]):
         g.admit_physical_action(gov["binding"], gov, api, clock)
 
 
