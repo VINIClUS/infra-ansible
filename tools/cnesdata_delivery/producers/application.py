@@ -9,8 +9,7 @@ from tools.cnesdata_delivery import session_policy
 from tools.cnesdata_delivery.producers import governance_assembly
 
 STEP_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
-ACCOUNT_NUMBER = re.compile(r"\d{12}")
-ACTIVATION_REFERENCE = "ext2_post_upload_receipt_v1"
+ACTIVATION_MARKER = c.canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMON = "role purpose job_name producer_job admission_steps input_jobs"
 INFRA = COMMON + " mode direction"
@@ -164,26 +163,24 @@ def _activation_selection(value):
     operational = (value["role"], value["mode"]) == ("plan", "operational")
     c.require(not operational or "activation_selection" in value, "step activation selection")
     if "activation_selection" in value:
-        selection = value["activation_selection"]
-        c.require(type(selection) is dict and set(selection) == {"selection_version", ACTIVATION_REFERENCE}
-                  and type(selection["selection_version"]) is int and selection["selection_version"] == 1
-                  and type(selection[ACTIVATION_REFERENCE]) is dict, "step activation selection")
+        c.require(c.canonical(value["activation_selection"]) == ACTIVATION_MARKER, "step activation selection")
 
 
 def _delete_resources(value):
     inventory = value.get("delete_resources")
-    if value["direction"] == "advance" or value["role"] == "plan":
+    if value["direction"] == "advance" or value["role"] in {"plan", "audit"}:
         c.require(inventory is None and "delete_resources" not in value, "step delete resources")
         return
     c.require(type(inventory) is list and 1 <= len(inventory) <= 8 and len(set(inventory)) == len(inventory)
               and all(type(item) is str and provenance.RESOURCE_IDENTIFIER.fullmatch(item) is not None
-                      and "cnesdata-prod" in item and ACCOUNT_NUMBER.search(item) is None
+                      and "cnesdata-prod" in item and c.ACCOUNT_LIKE.search(item) is None
                       for item in inventory), "step delete resources")
 
 
 def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
+    c.require((value["role"], value["direction"]) != ("audit", "converge"), "step audit converge")
     _historical_entry(value)
     _activation_selection(value)
     _delete_resources(value)
@@ -238,7 +235,7 @@ def catalog(steps):
         c.require(type(name) is str and STEP_NAME.fullmatch(name) is not None, "catalog step name")
         _validate_step(value)
     _cross(steps)
-    c.require(ACCOUNT_NUMBER.search(c.canonical(steps).decode()) is None, "catalog account number")
+    c.require(c.ACCOUNT_LIKE.search(c.canonical(steps).decode()) is None, "catalog account number")
     return c.loads(c.canonical(steps), canonical=True)
 
 

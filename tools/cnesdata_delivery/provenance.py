@@ -102,6 +102,7 @@ def source_closure(manifest):
 
 RESOURCE_IDENTIFIER = re.compile(r"(states|scheduler|events|cloudwatch):[A-Za-z0-9_./:-]+")
 INVENTORY_REGION = "us-east-2"
+ACTIVATION_MARKER = canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
 
 
 def _composed_inventory(governance, identifiers):
@@ -110,6 +111,21 @@ def _composed_inventory(governance, identifiers):
                                               for item in identifiers), "lifecycle steps delete resources")
     return [f"arn:aws:{item.partition(':')[0]}:{INVENTORY_REGION}:{account}:{item.partition(':')[2]}"
             for item in identifiers]
+
+
+def _compose_receipts(governance, steps):
+    from tools.cnesdata_delivery import ext2_transport
+    receipts = governance.get("activation_receipts", {})
+    require(type(receipts) is dict, "lifecycle steps activation receipt")
+    for name, reference in receipts.items():
+        step = steps.get(name)
+        require(type(step) is dict and canonical(step.get("activation_selection")) == ACTIVATION_MARKER,
+                "lifecycle steps activation receipt")
+        try:
+            ext2_transport.validate_reference(reference)
+        except ValueError:
+            require(False, "lifecycle steps activation receipt")
+        step["activation_selection"] = {"selection_version": 1, "ext2_post_upload_receipt_v1": reference}
 
 
 def lifecycle_objects(api, governance, manifest):
@@ -131,6 +147,7 @@ def lifecycle_objects(api, governance, manifest):
     for step in steps.values():
         if "delete_resources" in step:
             step["delete_resources"] = _composed_inventory(governance, step["delete_resources"])
+    _compose_receipts(governance, steps)
     return {"lifecycle_steps": steps, "source_closure": closure}
 
 

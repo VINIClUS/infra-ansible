@@ -11,7 +11,7 @@ CLI_CEILING = 40960
 SECRET_CEILING = 47952
 SESSION_ROLES = ("plan", "deploy", "application")
 GOVERNANCE_KEYS = frozenset("""
-    account_id activation_enabled activation_read admission_reference application_configuration
+    account_id activation_enabled activation_read activation_receipts admission_reference application_configuration
     application_coordination_policy application_delegations application_fragment
     application_product_source_closure_sha256
     application_product_source_manifest_artifact application_purpose application_source_closure_sha256
@@ -72,6 +72,20 @@ def _expiry_chain(document):
         c.require(ok, "expiry chain violated element=cloudfront")
 
 
+def _activation_receipts(document):
+    from tools.cnesdata_delivery import ext2_transport
+    if "activation_receipts" not in document:
+        return
+    receipts = document["activation_receipts"]
+    c.require(type(receipts) is dict and receipts and all(type(name) is str and name for name in receipts),
+              "activation receipt steps")
+    for reference in receipts.values():
+        try:
+            ext2_transport.validate_reference(reference)
+        except ValueError:
+            c.require(False, "activation receipt")
+
+
 def references(document):
     """Args: governance document. Raises: ValueError on an inline hydrated object or a malformed reference."""
     for key in HYDRATED_KEYS:
@@ -94,6 +108,7 @@ def crosscheck(document, commitments):
     if "drift_handoff" in document:
         drift_handoff.pin(document)
     references(document)
+    _activation_receipts(document)
     _cost_stage(document)
 
 
