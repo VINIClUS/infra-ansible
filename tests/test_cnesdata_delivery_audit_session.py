@@ -159,20 +159,59 @@ def test_admissao_recusa_gate_sha_sentinela_de_quarenta_zeros(monkeypatch, role)
         admit(governance, api, role, step)
 
 
-@pytest.mark.parametrize("gate_shas,message", [({"plan": "e" * 40}, "gate_shas role absent role=audit"),
-                                               ({"audit": SENTINEL}, "gate_shas sentinel role=audit"),
-                                               ({"audit": "E" * 40}, "digest")])
-def test_credencial_oidc_do_audit_le_so_o_proprio_gate_sha_valido(monkeypatch, gate_shas, message):
+ROLES_QUE_ADMITEM = ["plan", "deploy", "audit", "application"]
+CASOS_INVALIDOS = ["absent", "sentinel", "malformed"]
+
+
+def break_gate_sha(governance, api, run, role, case):
+    if case == "absent":
+        governance["gate_shas"].pop(role)
+        return f"gate_shas role absent role={role}"
+    swap_gate_sha(governance, api, run, role, SENTINEL if case == "sentinel" else governance["gate_shas"][role].upper())
+    return f"gate_shas {case} role={role}"
+
+
+@pytest.mark.parametrize("role", ROLES_QUE_ADMITEM)
+@pytest.mark.parametrize("case", CASOS_INVALIDOS)
+def test_admissao_recusa_gate_sha_invalido_do_proprio_papel(monkeypatch, role, case):
+    governance, api, run, _, _, _ = _application_caller_fixture(monkeypatch, "promotion", role)
+    message = break_gate_sha(governance, api, run, role, case)
+    with pytest.raises(ValueError, match=message):
+        lifecycle_runtime.source_admission(governance, api, role, "b" * 40, 44, 2)
+
+
+@pytest.mark.parametrize("role", ROLES_QUE_ADMITEM)
+@pytest.mark.parametrize("case", CASOS_INVALIDOS)
+def test_conversao_do_caller_recusa_gate_sha_invalido_apos_admissao_valida(monkeypatch, role, case):
+    governance, api, run, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", role)
+    observed = lifecycle_runtime.source_admission(governance, api, role, "b" * 40, 44, 2)
+    message = break_gate_sha(governance, api, run, role, case)
+    with pytest.raises(ValueError, match=message):
+        provenance.application_caller(api, governance, observed, role, step)
+
+
+@pytest.mark.parametrize("role", ROLES_QUE_ADMITEM)
+@pytest.mark.parametrize("case", CASOS_INVALIDOS)
+def test_credencial_oidc_le_so_o_proprio_gate_sha_valido_de_cada_papel(monkeypatch, role, case):
     calls = []
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: calls.append(a)))
     monkeypatch.setitem(sys.modules, "botocore", SimpleNamespace(UNSIGNED="synthetic"))
     monkeypatch.setitem(sys.modules, "botocore.config", SimpleNamespace(Config=lambda **kwargs: kwargs))
+    gate_shas = {name: "e" * 40 for name in ROLES_QUE_ADMITEM if name != role}
+    if case != "absent":
+        gate_shas[role] = SENTINEL if case == "sentinel" else "E" * 40
+    message = f"gate_shas role absent role={role}" if case == "absent" else f"gate_shas {case} role={role}"
     with pytest.raises(ValueError, match=message):
-        lifecycle_runtime.oidc_credentials({"gate_shas": gate_shas}, "audit", {}, {"id": 44, "run_attempt": 2})
+        lifecycle_runtime.oidc_credentials({"gate_shas": gate_shas}, role, {}, {"id": 44, "run_attempt": 2})
     assert calls == []
 
 
-ROLES_QUE_ADMITEM = ["plan", "deploy", "audit", "application"]
+@pytest.mark.parametrize("value", ["E" * 40, "e" * 39, "e" * 41, None, 7, "g" * 40])
+def test_gate_sha_malformado_recusa_com_chave_e_papel(value):
+    with pytest.raises(ValueError, match="^gate_shas malformed role=deploy$"):
+        c.gate_sha({"gate_shas": {"deploy": value}}, "deploy")
+
+
 
 
 class CountingAPI:

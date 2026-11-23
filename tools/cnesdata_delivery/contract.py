@@ -432,7 +432,8 @@ def gate_sha(governance, role):
     """Args: governance, role. Returns: the reviewed reusable sha. Raises: ValueError absent, malformed or sentinel."""
     shas = governance.get("gate_shas")
     require(type(shas) is dict and role in shas, f"gate_shas role absent role={role}")
-    value = digest(shas[role], 40)
+    value = shas[role]
+    require(type(value) is str and re.fullmatch(r"[0-9a-f]{40}", value), f"gate_shas malformed role={role}")
     require(value != "0" * 40, f"gate_shas sentinel role={role}")
     return value
 
