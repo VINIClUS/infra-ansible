@@ -162,7 +162,8 @@ jobs:
         id: drift
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: delivery-drift-${{ inputs.role }}-${{ steps.names.outputs.source8 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: "delivery-drift-${{ inputs.role }}-${{ steps.names.outputs.source8 }}-\
+            ${{ github.run_id }}-${{ github.run_attempt }}"
           path: ${{ runner.temp }}/observed/drift-handoff.json
           retention-days: 30
           if-no-files-found: error
