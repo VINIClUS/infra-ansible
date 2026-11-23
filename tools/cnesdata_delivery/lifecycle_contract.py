@@ -1469,6 +1469,15 @@ def mode_readback_expected(resources, account):
     return expected
 
 
+def mode_observed_role(observed, role, attributes):
+    """Args: observed get_role, state-derived Role fields, applied role attributes. Returns: observed. Raises: ValueError."""
+    c.require(type(observed) is dict and set(observed) == {"Role"} and type(observed["Role"]) is dict
+              and all(observed["Role"].get(key) == value for key, value in role.items())
+              and observed["Role"].get("RoleId") == attributes.get("unique_id")
+              and observed["Role"].get("Path") == attributes.get("path"), "mode output role identity")
+    return observed
+
+
 def validate_delta(plan, approval):
     """Source-bound independent audit plus closed structural phase oracle.
 

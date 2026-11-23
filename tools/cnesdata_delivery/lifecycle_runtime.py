@@ -1013,12 +1013,19 @@ def mode_canary_admission(*, plan, step_mode, inputs_raw, owner, governance, his
     return admitted
 
 
-def mode_canary_output(aws, *, state, account, guard):
-    """Args: client, applied state, account, guard. Returns: the IAM readback proof. Raises: ValueError."""
+def mode_canary_output(aws, *, state, account, guard, clock=time.time, sleep=time.sleep):
+    """Args: client, applied state, account, guard, clock, sleep. Returns: the IAM readback proof. Raises: ValueError."""
+    resources = lc.state_resources(state)
+    expected = lc.mode_readback_expected(resources, account)
+    for alias in sorted(expected):
+        role = expected[alias]["role"]["Role"]
+        report, = readbacks(aws, [{"service": "iam", "operation": "get_role", "parameters": {"RoleName": role["RoleName"]},
+                                   "absent": False}], guard)
+        expected[alias]["role"] = lc.mode_observed_role(report["observed"], role,
+                                                        resources[f"module.runtime_iam.aws_iam_role.{alias}[0]"])
     window = guard.window
-    return mode_canary_readbacks(aws, account=account, expected=lc.mode_readback_expected(lc.state_resources(state), account),
-                                 preparation_admitted_at=window["admitted_at"],
-                                 preparation_deadline=window["preparation_deadline"], guard=guard)
+    return mode_canary_readbacks(aws, account=account, expected=expected, preparation_admitted_at=window["admitted_at"],
+                                 preparation_deadline=window["preparation_deadline"], guard=guard, clock=clock, sleep=sleep)
 
 
 def fence_role_readbacks(aws, *, account, expected, preparation_admitted_at, preparation_deadline,

@@ -457,24 +457,67 @@ def test_admissao_de_modo_do_runtime_recusa_original_do_gate_trocado_e_trust_des
         lr.mode_canary_admission(**arguments | {"governance": governance})
 
 
-def test_saida_de_modo_do_runtime_le_iam_contra_o_estado_aplicado_na_janela_de_preparo(monkeypatch):
-    from types import SimpleNamespace
-    from tools.cnesdata_delivery import lifecycle_runtime as lr
-    _, admitted, rows = _runtime_case()
+def _applied(rows):
     resources, state = {}, {"resources": []}
     for row in rows:
         attributes = dict(row["change"]["after"])
         if row["type"] == "aws_iam_role":
-            attributes["arn"] = f"arn:aws:iam::{ACCOUNT}:role/" + attributes["name"]
+            attributes.update(arn=f"arn:aws:iam::{ACCOUNT}:role/" + attributes["name"], path="/",
+                              unique_id="AROA" + attributes["name"].upper().replace("-", "")[:16])
         resources[row["address"]] = attributes
         name = row["address"].split(".")[-1].removesuffix("[0]")
         state["resources"].append({"module": "module.runtime_iam", "mode": "managed", "type": row["type"], "name": name,
                                    "instances": [{"index_key": 0, "attributes": attributes}]})
-    calls = []
-    monkeypatch.setattr(lr, "mode_canary_readbacks", lambda aws, **kwargs: calls.append((aws, kwargs)) or {"proof": 1})
-    guard = SimpleNamespace(window={"admitted_at": 1000, "preparation_deadline": 1900})
-    assert lr.mode_canary_output("aws", state=state, account=ACCOUNT, guard=guard) == {"proof": 1}
-    (aws, kwargs), = calls
-    assert aws == "aws" and kwargs["expected"] == lc.mode_readback_expected(resources, ACCOUNT)
-    assert kwargs["preparation_admitted_at"] == 1000 and kwargs["preparation_deadline"] == 1900
-    assert kwargs["account"] == ACCOUNT and kwargs["guard"] is guard
+    return resources, state
+
+
+class _Iam:
+    def __init__(self, resources, change=None):
+        self.resources, self.change, self.calls = resources, change or {}, []
+
+    def call(self, service, operation, **parameters):
+        import datetime
+        self.calls.append((service, operation, parameters["RoleName"]))
+        role = next(item for address, item in self.resources.items()
+                    if ".aws_iam_role." in address and item["name"] == parameters["RoleName"])
+        if operation == "get_role":
+            body = {"Path": role["path"], "RoleName": role["name"], "RoleId": role["unique_id"], "Arn": role["arn"],
+                    "CreateDate": datetime.datetime(2026, 11, 23, 12, 0, tzinfo=datetime.timezone.utc),
+                    "AssumeRolePolicyDocument": json.loads(role["assume_role_policy"]),
+                    "MaxSessionDuration": role["max_session_duration"], "RoleLastUsed": {}}
+            return {"Role": body | self.change, "ResponseMetadata": {"RequestId": "fixture"}}
+        policy = next(item for address, item in self.resources.items()
+                      if ".aws_iam_role_policy." in address and item["role"] == parameters["RoleName"])
+        return {"RoleName": policy["role"], "PolicyName": parameters["PolicyName"],
+                "PolicyDocument": json.loads(policy["policy"]), "ResponseMetadata": {"RequestId": "fixture"}}
+
+
+class _Window:
+    window = {"admitted_at": 1000, "preparation_deadline": 1900}
+
+    def check(self, *args):
+        pass
+
+
+def test_saida_de_modo_do_runtime_aceita_a_resposta_real_do_iam_com_os_campos_extras_do_role():
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    _, _, rows = _runtime_case()
+    resources, state = _applied(rows)
+    aws, now = _Iam(resources), [1100.0]
+    proof = lr.mode_canary_output(aws, state=state, account=ACCOUNT, guard=_Window(), clock=lambda: now[0],
+                                  sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+    assert proof["proof_kind"] == "iam-readback-and-evaluation" and len(proof["readbacks"]) == 2
+    role = proof["readbacks"][0]["observations"][0]["observed"]["Role"]
+    assert role["RoleId"].startswith("AROA") and role["CreateDate"] == "2026-11-23T12:00:00Z" and role["RoleLastUsed"] == {}
+    assert len(aws.calls) == 4 + 16 and {call[1] for call in aws.calls[:4]} == {"get_role"}
+
+
+@pytest.mark.parametrize("change", [{"RoleId": "AROAOTHER"}, {"Path": "/other/"}, {"MaxSessionDuration": 7200},
+                                    {"AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []}}])
+def test_saida_de_modo_do_runtime_recusa_role_observado_diferente_do_estado_aplicado(change):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    _, _, rows = _runtime_case()
+    resources, state = _applied(rows)
+    with pytest.raises(ValueError, match="mode output role identity"):
+        lr.mode_canary_output(_Iam(resources, change), state=state, account=ACCOUNT, guard=_Window(),
+                              clock=lambda: 1100.0, sleep=lambda seconds: None)
