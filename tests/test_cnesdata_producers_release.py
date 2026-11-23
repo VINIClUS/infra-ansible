@@ -478,7 +478,7 @@ def test_sessoes_da_cadeia_de_expiracao_incluem_o_audit_com_o_inicio_do_plan():
 
 
 @pytest.mark.parametrize("audit", [
-    pin_at(observed_at="2026-11-20T12:00:01Z"),
+    pin_at(observed_at="2026-11-20T12:00:01Z", expires_at="2026-11-20T15:00:01Z", frozen_until="2026-11-20T16:00:01Z"),
     pin_at(expires_at="2026-11-20T14:59:59Z"),
     pin_at(frozen_until="2026-11-20T15:59:59Z"),
 ], ids=["inicio-diferente-do-plan", "expira-antes-da-prova", "congela-antes-do-fim"])
