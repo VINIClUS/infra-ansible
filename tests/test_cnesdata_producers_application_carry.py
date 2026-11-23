@@ -237,3 +237,29 @@ def test_catalogo_admite_a_cadeia_de_primeira_aceitacao_toda_advance():
         steps[audit] = infra("audit", purpose, f"{audit} / audit", mode=mode)
         steps[deploy] = infra("deploy", purpose, f"{deploy} / execute", mode=mode)
     application.catalog(steps)
+
+
+@pytest.mark.parametrize("role", ["plan", "audit", "deploy"])
+def test_catalogo_recusa_converge_para_todo_papel(role):
+    steps = base_catalog()
+    steps["recovery-step"] = infra(role, "phase-c-recovery", f"recovery-{role} / execute", mode="initial",
+                                   direction="converge")
+    with pytest.raises(ValueError, match="lifecycle converge custody unavailable"):
+        application.catalog(steps)
+
+
+def test_catalogo_recusa_converge_antes_de_qualquer_leitura_de_rede(monkeypatch):
+    import socket
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: pytest.fail("network"))
+    steps = base_catalog()
+    steps["phase-b-deploy"].update(direction="converge")
+    with pytest.raises(ValueError, match="lifecycle converge custody unavailable"):
+        application.catalog(steps)
+
+
+def test_catalogo_recusa_a_chave_delete_resources_como_chave_desconhecida():
+    steps = base_catalog()
+    steps["phase-b-deploy"]["delete_resources"] = [ARN]
+    with pytest.raises(ValueError) as refused:
+        application.catalog(steps)
+    assert "step delete resources" not in str(refused.value)
