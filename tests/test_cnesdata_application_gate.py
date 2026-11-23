@@ -870,7 +870,7 @@ def _application_caller_fixture(monkeypatch, purpose="promotion", role="applicat
     manifest = {"version": 1, "source_sha": "b" * 40,
                 "files": {caller["workflow_path"]: c.sha(raw), "scripts/promotion/promote_api.py": "c" * 64}}
     gov = {"source_sha": "b" * 40, "application_purpose": purpose, "context_kind": lc.APPLICATION_CONTEXTS[purpose],
-           "gate_shas": {"application": "a" * 40, role: role_pin}, "required_checks": ["CI"],
+           "gate_shas": {"application": "a" * 40, "audit": "f" * 40, role: role_pin}, "required_checks": ["CI"],
            "application_source_closure_sha256": "d" * 64, "application_product_source_manifest": manifest,
            "application_product_source_closure_sha256": c.sha(c.canonical(manifest))}
     run = {"id": 44, "run_attempt": 2, "head_sha": "b" * 40, "head_branch": "main",

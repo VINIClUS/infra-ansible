@@ -10,10 +10,13 @@ locals {
     local.delivery_activation == null ? [] : [{ Effect = "Allow", Action = ["kms:Decrypt", "kms:GenerateDataKey"], Resource = local.delivery_activation.cipher_kms_key_arn,
     Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = local.delivery_activation_objects } } }]
   )
-  delivery_roles = var.github_delivery == null ? {} : {
-    plan   = { name = var.github_delivery.plan_role_name, sha = var.github_delivery.plan_workflow_sha }
-    deploy = { name = var.github_delivery.deploy_role_name, sha = var.github_delivery.deploy_workflow_sha }
-  }
+  delivery_roles = var.github_delivery == null ? {} : merge(
+    {
+      plan   = { name = var.github_delivery.plan_role_name, sha = var.github_delivery.plan_workflow_sha }
+      deploy = { name = var.github_delivery.deploy_role_name, sha = var.github_delivery.deploy_workflow_sha }
+    },
+    var.audit == null ? {} : { audit = { name = var.audit.role_name, sha = var.audit.workflow_sha } }
+  )
   # These unavoidable global reads have no write side effects. ARN-scoped writes
   # below are an explicit finite API matrix; creation APIs without ARN scope omitted.
   delivery_product_reads = [
@@ -91,7 +94,7 @@ resource "aws_iam_role" "delivery" {
 }
 
 resource "aws_iam_role_policy" "delivery" {
-  for_each = local.delivery_roles
+  for_each = { for role, settings in local.delivery_roles : role => settings if role != "audit" }
   name     = "cnesdata-exact-delivery"
   role     = aws_iam_role.delivery[each.key].id
   policy = jsonencode({
