@@ -354,7 +354,7 @@ def require_catalog_read(spec):
               "read-only API boundary")
     tipo = resource_type(spec["address"])
     expected = _operation(tipo) if tipo in CATALOG else None
-    expected = ("scheduler", "list_schedules") if "members" in spec else expected
+    expected = ("scheduler", "list_schedules") if "members" in spec and tipo == "aws_scheduler_schedule_group" else expected
     c.require((service, operation) == expected, "readback catalog operation")
 
 

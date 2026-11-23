@@ -113,7 +113,7 @@ def test_absent_de_tipo_do_lifecycle_segue_a_regra_de_ausencia_do_catalogo():
 
 def test_spec_agrupada_exige_endereco_do_grupo_e_nao_do_schedule():
     grouped = spec(SCHEDULE, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
-    with pytest.raises(ValueError, match="readback spec fields"):
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
         lr.readback_calls(schedule_plan(), [grouped], "before")
 
 
@@ -361,3 +361,19 @@ def test_deploy_aceita_approval_do_audit_e_recusa_sem_approval():
     lr.admit_approval_origin(gov, "deploy", {"plan.bin": "a-plan", "approval.json": "a-audit"})
     with pytest.raises(ValueError, match="independent audit approval absent"):
         lr.admit_approval_origin(gov, "deploy", {"plan.bin": "a-plan"})
+
+
+@pytest.mark.parametrize("address", [SCHEDULE, STATE_MACHINE], ids=["schedule", "state-machine"])
+def test_approval_recusa_leitura_agrupada_after_fora_do_grupo_de_schedules(address):
+    case = b_case()
+    grouped = spec(address, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
+    case["governance"]["readbacks"]["after"] = [grouped]
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
+        lr.build_approval(**case)
+
+
+def test_approval_aceita_leitura_agrupada_after_no_grupo_de_schedules():
+    case = b_case()
+    grouped = spec(GROUP, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
+    case["governance"]["readbacks"]["after"] = [grouped]
+    assert lr.build_approval(**case)["readbacks"]["after"] == [grouped]
