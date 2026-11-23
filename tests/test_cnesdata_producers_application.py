@@ -37,6 +37,9 @@ class JobAPI:
         self.inner = inner
 
     def read(self, path, **kwargs):
+        if path.endswith("/jobs/92"):
+            job = copy.deepcopy(self.inner.read(path.replace("/jobs/92", "/jobs/91"), **kwargs))
+            return job | {"run_id": job["run_id"] + 1}
         if "/actions/jobs/" in path and not path.endswith("/jobs/91"):
             raise ValueError("GitHub HTTP failure")
         return self.inner.read(path, **kwargs)
@@ -107,7 +110,7 @@ PREDECESSOR_REASONS = {
     "checkpoint_sha256": "original historical checkpoint commitment",
     "artifact_id": "original legacy predecessor receipt",
     "artifact_digest": "original legacy predecessor receipt",
-    "producer_job_id": "GitHub HTTP failure",
+    "producer_job_id": "original historical producer job",
     "producer_name": "original historical producer job",
     "objects[checkpoint.json]": "original historical checkpoint commitment",
     "objects[drift.json]": "original selected historical bytes",
@@ -137,7 +140,15 @@ def test_consumidor_recusa_predecessor_produzido_com_um_campo_mudado(history, fi
         authenticated_previous(history.aws, history.api, history.gov | value, history.previous)
 
 
-@pytest.mark.parametrize("change", ["object-missing", "checkpoint-lease", "lease-held", "publication-legacy"])
+INCOHERENT = {
+    "object-missing": "predecessor objects count=4",
+    "checkpoint-lease": "predecessor lease checkpoint",
+    "lease-held": "predecessor lease status=held",
+    "publication-legacy": "predecessor publication protocol=legacy-infra",
+}
+
+
+@pytest.mark.parametrize("change", list(INCOHERENT))
 def test_produtor_do_predecessor_recusa_entrada_incoerente(history, change):
     objects = originals(history.aws, history.gov, history.selector)
     lease, publication = copy.deepcopy(history.previous), None
@@ -149,7 +160,7 @@ def test_produtor_do_predecessor_recusa_entrada_incoerente(history, change):
         lease["status"] = "held"
     if change == "publication-legacy":
         publication = {"artifact_id": 1, "artifact_digest": "sha256:" + "1" * 64}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(INCOHERENT[change])):
         producer().predecessor(history.api, history.gov, history.selector, lease=lease, job=PREDECESSOR_JOB,
                                objects=objects, publication=publication)
 

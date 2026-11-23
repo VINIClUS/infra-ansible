@@ -270,6 +270,15 @@ def test_other_projects_spend_fora_de_uma_linha_precificada_e_recusado(mutate, r
         derive(document(mutate))
 
 
+@pytest.mark.parametrize("field, value", [
+    ("measured_on", None), ("measured_on", "ontem"), ("measured_on", "2026-11-23"), ("measured_on", 20261123),
+    ("month", None), ("month", "novembro"), ("month", "2026-13"), ("month", "2026-11-01"), ("month", 202611),
+], ids=lambda item: str(item))
+def test_other_projects_spend_com_medicao_de_valor_invalido_e_recusada(field, value):
+    with pytest.raises(ValueError, match="other projects spend measurement"):
+        derive(document(lambda document_: spend_line(document_)["measurement"].__setitem__(field, value)))
+
+
 @pytest.mark.parametrize("identifier", ["brand_new_line", "kms_signing", "fargate_vcpu_hours"])
 def test_linha_sem_preco_fora_da_allowlist_e_recusada(identifier):
     def unpriced(value):
