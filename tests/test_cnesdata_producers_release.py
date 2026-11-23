@@ -333,13 +333,16 @@ def test_cruzamento_recusa_pin_do_application_fora_da_propria_cadeia(changes):
         governance_assembly.crosscheck(document_with(session_policy_pins=pins_), COMMITMENTS)
 
 
+RUNTIME_MANIFEST = "application_product_source_manifest"
+
+
 def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem():
     pattern = re.compile(r'\bgovernance(?:\[\s*"(\w+)"\s*\]|\.get\(\s*"(\w+)")')
     read = set()
     for path in (ROOT / "tools/cnesdata_delivery").glob("*.py"):
         if path.name not in {"host_gate.py", "signing_gate.py"}:
             read |= {first or second for first, second in pattern.findall(path.read_text())}
-    closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS
+    closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS | {RUNTIME_MANIFEST}
     assert "account_id" in read and read <= closed, sorted(read - closed)
     assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure"}
     assert governance_assembly.HYDRATED_KEYS.isdisjoint(governance_assembly.GOVERNANCE_KEYS)

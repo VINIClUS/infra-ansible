@@ -9,6 +9,8 @@ from tools.cnesdata_delivery import session_policy
 from tools.cnesdata_delivery.producers import governance_assembly
 
 STEP_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
+SAME_PRODUCT_ARN = re.compile(r"arn:aws:(?:states|scheduler|events|cloudwatch):us-east-2:\d{12}:[A-Za-z0-9_./:-]+")
+ACTIVATION_REFERENCE = "ext2_post_upload_receipt_v1"
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMON = "role purpose job_name producer_job admission_steps input_jobs"
 INFRA = COMMON + " mode direction"
@@ -37,9 +39,11 @@ def _publication(api, governance, selector, publication):
 
 
 def _lease(lease, selector, checkpoint):
-    c.require(lease["status"] == "released" and lease["repository"] == c.REPOSITORY
-              and (lease["run_id"], lease["run_attempt"]) == (selector["run_id"], selector["run_attempt"])
-              and lease["checkpoint_sha256"] == checkpoint, f"predecessor lease status={lease['status']}")
+    c.require(lease["status"] == "released", f"predecessor lease status={lease['status']}")
+    c.require(lease["repository"] == c.REPOSITORY, f"predecessor lease repository={lease['repository']}")
+    run = (lease["run_id"], lease["run_attempt"])
+    c.require(run == (selector["run_id"], selector["run_attempt"]), f"predecessor lease run={run[0]}/{run[1]}")
+    c.require(lease["checkpoint_sha256"] == checkpoint, "predecessor lease checkpoint")
 
 
 def predecessor(api, governance, selector, *, lease, job, objects, publication=None):
@@ -149,11 +153,39 @@ def _input_jobs(value):
                   and type(producer["name"]) is str and 1 <= len(producer["name"]) <= 256, "step input job")
 
 
+def _historical_entry(value):
+    if "historical_entry" in value:
+        c.require(value["historical_entry"] is True and value["role"] in {"plan", "deploy"}
+                  and value["purpose"] == "application-prepare" and value["direction"] == "advance",
+                  "step historical entry")
+
+
+def _activation_selection(value):
+    operational = (value["role"], value["mode"]) == ("plan", "operational")
+    c.require(not operational or "activation_selection" in value, "step activation selection")
+    if "activation_selection" in value:
+        selection = value["activation_selection"]
+        c.require(type(selection) is dict and set(selection) == {"selection_version", ACTIVATION_REFERENCE}
+                  and type(selection["selection_version"]) is int and selection["selection_version"] == 1
+                  and type(selection[ACTIVATION_REFERENCE]) is dict, "step activation selection")
+
+
+def _delete_resources(value):
+    inventory = value.get("delete_resources")
+    if value["direction"] == "advance" or value["role"] == "plan":
+        c.require(inventory is None and "delete_resources" not in value, "step delete resources")
+        return
+    c.require(type(inventory) is list and 1 <= len(inventory) <= 8 and len(set(inventory)) == len(inventory)
+              and all(type(arn) is str and SAME_PRODUCT_ARN.fullmatch(arn) and "cnesdata-prod" in arn
+                      for arn in inventory), "step delete resources")
+
+
 def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
-    c.require(value.get("historical_entry", True) is True, "step historical entry")
-    c.require("delete_resources" not in value or value["direction"] == "converge", "step delete resources")
+    _historical_entry(value)
+    _activation_selection(value)
+    _delete_resources(value)
 
 
 def step(role, purpose, *, job_name, producer_job, admission_steps, input_jobs=None, **infra):
@@ -193,6 +225,9 @@ def _cross(steps):
     prepared = [name for name, item in steps.items() if (item["role"], item["purpose"], item.get("mode")) == shape]
     named = all(steps[name]["job_name"] == fence["job_name"] for name in prepared)
     c.require(prepared in ([], [fence["step"]]) and named, "catalog fence prepare producer")
+    if fence["step"] in steps:
+        c.require(prepared == [fence["step"]], "catalog fence prepare producer")
+        c.require(steps[fence["step"]]["direction"] == fence["direction"], "catalog fence prepare delta")
 
 
 def catalog(steps):

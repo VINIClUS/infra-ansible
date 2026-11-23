@@ -271,7 +271,7 @@ def test_other_projects_spend_fora_de_uma_linha_precificada_e_recusado(mutate, r
 
 
 @pytest.mark.parametrize("field, value", [
-    ("measured_on", None), ("measured_on", "ontem"), ("measured_on", "2026-11-23"), ("measured_on", 20261123),
+    ("measured_on", None), ("measured_on", "ontem"), ("measured_on", "2026-02-30"), ("measured_on", 20261123),
     ("month", None), ("month", "novembro"), ("month", "2026-13"), ("month", "2026-11-01"), ("month", 202611),
 ], ids=lambda item: str(item))
 def test_other_projects_spend_com_medicao_de_valor_invalido_e_recusada(field, value):

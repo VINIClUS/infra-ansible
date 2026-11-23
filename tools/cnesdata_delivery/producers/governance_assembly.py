@@ -13,7 +13,7 @@ SESSION_ROLES = ("plan", "deploy", "application")
 GOVERNANCE_KEYS = frozenset("""
     account_id activation_enabled activation_read admission_reference application_configuration
     application_coordination_policy application_delegations application_fragment
-    application_product_source_closure_sha256 application_product_source_manifest
+    application_product_source_closure_sha256
     application_product_source_manifest_artifact application_purpose application_source_closure_sha256
     artifact_purposes artifact_references authenticated_application_caller authority authorization baseline
     baseline_artifacts bootstrap_checkpoint caller_allowlist consumer contract_sha256 cost cost_handoff
