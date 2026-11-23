@@ -156,6 +156,7 @@ def _repository(tmp_path, mutation=None):
         git("add", "infra/opentofu/env/prod/link.tf")
     if mutation == "submodule":
         git("update-index", "--add", "--cacheinfo", "160000", "a" * 40, "infra/opentofu/vendor")
+        (tmp_path / "infra/opentofu/vendor").mkdir()
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
     return git("rev-parse", "HEAD")
 
