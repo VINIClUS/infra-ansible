@@ -9,6 +9,8 @@ from tools.cnesdata_delivery import contract as c, drift_catalog, lifecycle_cont
 
 ROLE = "module.runtime_iam.aws_iam_role.fence[0]"
 SCHEDULE = 'module.schedulers.aws_scheduler_schedule.mode["audit"]'
+GROUP = 'module.schedulers.aws_scheduler_schedule_group.mode["audit"]'
+MACHINE_ARN = "arn:aws:states:sa-east-1:111122223333:stateMachine:cnesdata-prod-processor"
 STATE_MACHINE = lc.STATE_MACHINE
 SOURCE = "a" * 40
 APPROVAL_KEYS = "version owner purpose direction plan_sha256 inputs_sha256 checkpoint_sha256 delta drift_matrix readbacks"
@@ -33,6 +35,11 @@ def schedule_plan():
     return plan_of(change(SCHEDULE, SCHEDULE_ATTRIBUTES, SCHEDULE_ATTRIBUTES, ["update"]))
 
 
+def group_plan():
+    group = {"name": "cnesdata-prod-audit"}
+    return plan_of(change(GROUP, group, group, ["no-op"]))
+
+
 def test_recusa_spec_de_approval_com_parameters():
     with pytest.raises(ValueError, match="closed object fields"):
         lr.readback_calls(role_plan(), [spec(parameters={"RoleName": "cnesdata-prod-fence"})], "before")
@@ -51,8 +58,8 @@ def test_spec_do_approval_exige_absent_booleano():
 
 
 def test_aceita_spec_agrupada_list_schedules_com_members_sem_parameters():
-    grouped = spec(SCHEDULE, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
-    calls = lr.readback_calls(schedule_plan(), [grouped], "before")
+    grouped = spec(GROUP, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
+    calls = lr.readback_calls(group_plan(), [grouped], "before")
     assert calls == [grouped | {"parameters": {"GroupName": "cnesdata-prod-audit"}}]
     page = {"Schedules": [{"Name": "cnesdata-prod-audit", "GroupName": "cnesdata-prod-audit"}]}
     reports = lr.readbacks(ReadbackAWS([page]), calls, ReadbackGuard())
@@ -85,8 +92,72 @@ def test_spec_absent_so_vale_para_endereco_deletado_no_estagio_after():
     assert calls[0]["parameters"] == {"RoleName": "cnesdata-prod-fence"} and calls[0]["absent"] is True
     with pytest.raises(ValueError, match="absent readback"):
         lr.readback_calls(deleted, [spec(absent=True)], "before")
-    with pytest.raises(ValueError, match="absent readback"):
+    with pytest.raises(ValueError, match="absence identity"):
         lr.readback_calls(role_plan(), [spec(absent=True)], "after")
+
+
+def test_resolvedor_unico_deriva_tipo_do_lifecycle_pela_identidade_do_lifecycle():
+    machine = {"arn": MACHINE_ARN, "definition": "{}"}
+    plan = plan_of(change(STATE_MACHINE, machine, machine | {"definition": '{"a":1}'}, ["update"]))
+    machine_spec = spec(STATE_MACHINE, "stepfunctions", "describe_state_machine")
+    calls = lr.readback_calls(plan, [machine_spec], "before")
+    assert calls[0]["parameters"] == {"stateMachineArn": MACHINE_ARN}
+
+
+def test_absent_de_tipo_do_lifecycle_segue_a_regra_de_ausencia_do_catalogo():
+    plan = plan_of(change(STATE_MACHINE, {"arn": MACHINE_ARN}, None, ["delete"]))
+    absent = spec(STATE_MACHINE, "stepfunctions", "describe_state_machine", absent=True)
+    [call] = lr.readback_calls(plan, [absent], "after")
+    assert call["parameters"] == {"stateMachineArn": MACHINE_ARN}
+
+
+def test_spec_agrupada_exige_endereco_do_grupo_e_nao_do_schedule():
+    grouped = spec(SCHEDULE, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
+    with pytest.raises(ValueError, match="readback spec fields"):
+        lr.readback_calls(schedule_plan(), [grouped], "before")
+
+
+@pytest.mark.parametrize("operation", ["delete_role", "update_role"])
+def test_approval_recusa_spec_com_operacao_que_nao_e_leitura(operation):
+    with pytest.raises(ValueError, match="^read-only API boundary$"):
+        lr.readback_calls(role_plan(), [spec(operation=operation)], "before")
+
+
+def test_approval_recusa_leitura_que_nao_e_a_operacao_do_catalogo_para_o_tipo_do_endereco():
+    machine = {"arn": MACHINE_ARN, "definition": "{}"}
+    plan = plan_of(change(STATE_MACHINE, machine, machine | {"definition": '{"a":1}'}, ["update"]))
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
+        lr.readback_calls(plan, [spec(STATE_MACHINE, "iam", "get_role")], "before")
+
+
+def sfn_approval_case(stage, service, operation):
+    case = b_case()
+    before = {"definition": '{"TaskDefinition":"unit:1"}', "role_arn": "role", "arn": MACHINE_ARN}
+    after = before | {"definition": '{"TaskDefinition":"unit:2"}'}
+    case["payload"]["plan.json"] = c.canonical(plan_of(change(STATE_MACHINE, before, after, ["update"])))
+    case["before_raw"] = sfn_state(before)
+    case["governance"]["readbacks"][stage] = [spec(STATE_MACHINE, service, operation)]
+    case["governance"]["drift_matrix"][stage] = [{"address": STATE_MACHINE, "attribute": "definition",
+                                                  "readback": 0, "path": ["definition"], "encoding": "json"}]
+    return case
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_aceita_a_leitura_do_catalogo_da_state_machine(stage):
+    case = sfn_approval_case(stage, "stepfunctions", "describe_state_machine")
+    assert lr.build_approval(**case)["readbacks"][stage] == case["governance"]["readbacks"][stage]
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_recusa_spec_mutante_da_state_machine(stage):
+    with pytest.raises(ValueError, match="^read-only API boundary$"):
+        lr.build_approval(**sfn_approval_case(stage, "stepfunctions", "delete_state_machine"))
+
+
+@pytest.mark.parametrize("stage", ["before", "after"])
+def test_build_approval_recusa_leitura_de_outro_tipo_no_endereco_da_state_machine(stage):
+    with pytest.raises(ValueError, match="^readback catalog operation$"):
+        lr.build_approval(**sfn_approval_case(stage, "iam", "get_role"))
 
 
 def sfn_state(before):
@@ -102,8 +173,8 @@ def b_case(**override):
     payload = {"plan.bin": b"binary-plan", "plan.json": c.canonical(plan), "inputs.json": b'{"x":1}\n',
                "checkpoint.json": b'{"c":1}\n'}
     governance = {"source_sha": SOURCE, "readbacks": {"before": [], "after": []},
-                  "drift_matrix": {"matrix_version": 1, "source_sha": SOURCE, "purpose": "phase-b",
-                                   "before": [], "after": []}} | override
+                  "drift_matrix": {"matrix_version": 2, "source_sha": SOURCE, "purpose": "phase-b",
+                                   "before": [], "after": [], "absent": []}} | override
     step = {"purpose": "phase-b", "direction": "advance", "mode": "established"}
     return {"governance": governance, "step": step, "owner": OWNER, "payload": payload,
             "before_raw": sfn_state(before)}
@@ -166,6 +237,49 @@ def test_audit_recusa_matriz_de_outra_fonte_ou_proposito(field, value):
     case["governance"]["drift_matrix"][field] = value
     with pytest.raises(ValueError, match="governed drift matrix identity"):
         lr.build_approval(**case)
+
+
+def test_audit_recusa_matriz_sem_envelope_versao_1_ou_sem_lista_absent():
+    case = b_case()
+    case["governance"]["drift_matrix"]["matrix_version"] = 1
+    with pytest.raises(ValueError, match="governed drift matrix identity"):
+        lr.build_approval(**case)
+    case = b_case()
+    case["governance"]["drift_matrix"].pop("absent")
+    with pytest.raises(ValueError, match="closed object fields"):
+        lr.build_approval(**case)
+
+
+MACHINE_SPEC = spec(STATE_MACHINE, "stepfunctions", "describe_state_machine")
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ("spec-absent-sem-delete", "absence identity"),
+    ("linha-absent-sem-delete", "absent drift"),
+    ("linha-absent-aberta", "closed object fields")])
+def test_audit_liga_absent_da_matriz_v2_aos_deletes_do_plano(mutation, message):
+    case = b_case()
+    governance = case["governance"]
+    absent = mutation == "spec-absent-sem-delete"
+    governance["readbacks"]["after"] = [MACHINE_SPEC | {"absent": absent}]
+    governance["drift_matrix"]["after"] = [{"address": STATE_MACHINE, "readback": 0}]
+    if not absent:
+        governance["drift_matrix"]["absent"] = [{"address": STATE_MACHINE, "readback": 0}]
+    if mutation == "linha-absent-aberta":
+        governance["drift_matrix"]["absent"][0]["path"] = []
+    with pytest.raises(ValueError, match=message):
+        lr.build_approval(**case)
+
+
+def test_audit_aceita_inventario_agrupado_sem_linha_da_matriz():
+    case = b_case()
+    plan = c.loads(case["payload"]["plan.json"], state=True)
+    plan["resource_changes"].append(change(GROUP, {"name": "cnesdata-prod-audit"},
+                                           {"name": "cnesdata-prod-audit"}, ["no-op"]))
+    case["payload"]["plan.json"] = c.canonical(plan)
+    grouped = spec(GROUP, "scheduler", "list_schedules", members=["cnesdata-prod-audit"])
+    case["governance"]["readbacks"]["before"] = [grouped]
+    assert lr.build_approval(**case)["readbacks"]["before"] == [grouped]
 
 
 def test_audit_recusa_readbacks_com_parameters_na_governanca():

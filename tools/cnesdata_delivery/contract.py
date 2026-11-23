@@ -174,7 +174,7 @@ def _bind(spec, report, row):
 
 
 STRICT_ENCODINGS = {"identity", "json"}
-ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions"}
+ENCODINGS = STRICT_ENCODINGS | {"tags-kv", "json-set", "ecs-container-definitions", "scheduler-target"}
 EMPTY = (None, [], {})
 
 
@@ -227,7 +227,117 @@ def _containers(value):
     return containers
 
 
+TARGET_TOP = (("arn", "Arn"), ("role_arn", "RoleArn"), ("input", "Input"))
+TARGET_ECS = (("task_definition_arn", "TaskDefinitionArn"), ("task_count", "TaskCount"),
+              ("launch_type", "LaunchType"), ("platform_version", "PlatformVersion"), ("group", "Group"),
+              ("reference_id", "ReferenceId"), ("enable_ecs_managed_tags", "EnableECSManagedTags"),
+              ("enable_execute_command", "EnableExecuteCommand"), ("propagate_tags", "PropagateTags"))
+TARGET_RETRY = (("maximum_event_age_in_seconds", "MaximumEventAgeInSeconds"),
+                ("maximum_retry_attempts", "MaximumRetryAttempts"))
+TARGET_SETS = {"capacity_provider_strategy": ("CapacityProviderStrategy", (
+    ("base", "base"), ("capacity_provider", "capacityProvider"), ("weight", "weight"))),
+    "placement_constraints": ("PlacementConstraints", (("expression", "expression"), ("type", "type"))),
+    "placement_strategy": ("PlacementStrategy", (("field", "field"), ("type", "type")))}
+
+
+def _prune(value):
+    if type(value) is dict:
+        value = {key: item if key in ("tags", "Tags") else _prune(item)
+                 for key, item in value.items()}
+        return {key: item for key, item in value.items() if item not in EMPTY and item != ""}
+    if type(value) is list:
+        pruned = (_prune(item) for item in value)
+        return [item for item in pruned if item not in EMPTY and item != ""]
+    return value
+
+
+def _one(value):
+    require(value in (None, []) or (type(value) is list and len(value) == 1), "drift target projection")
+    return value[0] if value else None
+
+
+def _target_pick(source, pairs, side, allowed):
+    source = {} if source is None else source
+    require(type(source) is dict and set(source) <= allowed, "drift target projection")
+    return {pair[0]: source[pair[side]] for pair in pairs if source.get(pair[side]) not in EMPTY}
+
+
+def _target_sets(source, side):
+    result = {}
+    for key, (api, pairs) in TARGET_SETS.items():
+        items = source.get(key if side == 0 else api) or []
+        require(type(items) is list, "drift target projection")
+        names = {pair[side] for pair in pairs}
+        rows = [_target_pick(item, pairs, side, names) for item in items]
+        encoded = [canonical(row).decode() for row in rows]
+        result[key] = encoded if key == "placement_strategy" else sorted(encoded)
+    return result
+
+
+def _target_network(source, side):
+    if side == 0:
+        block = _one(source.get("network_configuration"))
+        block = {} if block is None else block
+        public = block.get("assign_public_ip")
+        keys = {"assign_public_ip", "security_groups", "subnets"}
+        require(set(block) <= keys, "drift target projection")
+        data = {"security_groups": block.get("security_groups"), "subnets": block.get("subnets"),
+                "assign_public_ip": None if public is None else "ENABLED" if public else "DISABLED"}
+    else:
+        outer = source.get("NetworkConfiguration") or {}
+        require(set(outer) <= {"awsvpcConfiguration"}, "drift target projection")
+        block = outer.get("awsvpcConfiguration") or {}
+        require(set(block) <= {"AssignPublicIp", "SecurityGroups", "Subnets"}, "drift target projection")
+        data = {"security_groups": block.get("SecurityGroups"), "subnets": block.get("Subnets"),
+                "assign_public_ip": block.get("AssignPublicIp")}
+    return {key: sorted(item) if type(item) is list else item for key, item in data.items() if item not in EMPTY}
+
+
+def _target_tags(source, side):
+    tags = source.get("tags" if side == 0 else "Tags")
+    if side == 1 and tags:
+        require(type(tags) is list and all(type(item) is dict for item in tags), "drift target projection")
+        keys = [key for item in tags for key in item]
+        require(len(keys) == len(set(keys)), "drift target projection")
+        tags = {key: item[key] for item in tags for key in item}
+    return tags or {}
+
+
+def _target_keys(side):
+    if side == 0:
+        return ({"arn", "role_arn", "input", "dead_letter_config", "ecs_parameters", "retry_policy"},
+                {pair[0] for pair in TARGET_ECS} | {"tags", "network_configuration"} | set(TARGET_SETS))
+    return ({"Arn", "RoleArn", "Input", "DeadLetterConfig", "EcsParameters", "RetryPolicy"},
+            {pair[1] for pair in TARGET_ECS} | {"Tags", "NetworkConfiguration"}
+            | {api for api, _ in TARGET_SETS.values()})
+
+
+def _target(source, side):
+    top, ecs_keys = _target_keys(side)
+    source = _prune(source)
+    require(type(source) is dict and all(key in top or source[key] in EMPTY for key in source),
+            "drift target projection")
+    pick = lambda value, pairs: _target_pick(value, pairs, side, {pair[side] for pair in pairs})
+    shape = (lambda name, api: _one(source.get(name))) if side == 0 else (lambda name, api: source.get(api))
+    ecs = shape("ecs_parameters", "EcsParameters") or {}
+    require(type(ecs) is dict and all(key in ecs_keys or ecs[key] in EMPTY for key in ecs),
+            "drift target projection")
+    dead = pick(shape("dead_letter_config", "DeadLetterConfig"), (("arn", "Arn"),))
+    return _compact({
+        **_target_pick(source, TARGET_TOP, side, top),
+        "dead_letter_arn": dead.get("arn"),
+        "retry": pick(shape("retry_policy", "RetryPolicy"), TARGET_RETRY),
+        "ecs": {**_target_pick(ecs, TARGET_ECS, side, ecs_keys), **_target_sets(ecs, side), "network": _target_network(ecs, side),
+                "tags": _target_tags(ecs, side)}})
+
+
+def _scheduler_target(value, observed):
+    return _target(_one(value) or {}, 0), _target(observed, 1)
+
+
 def _encoded(encoding, value, observed):
+    if encoding == "scheduler-target":
+        return _scheduler_target(value, observed)
     if encoding == "json":
         return _json(value), _json(observed)
     if encoding == "tags-kv":
@@ -250,7 +360,7 @@ def _projection(row, observed, value, encodings, omitted=None):
         if type(observed) is dict:
             require(type(component) is str, "drift response field")
             if component not in observed:
-                require(depth > 0, "drift response field")
+                require(depth > 0 or len(row["path"]) == 1, "drift response field")
                 return _omitted(value, omitted)
         else:
             require(type(observed) is list and type(component) is int and 0 <= component < len(observed), "drift response index")
@@ -300,7 +410,8 @@ def drift_coverage(plan, reports, matrix, source_sha, purpose, stage, state=None
     require(seen == required, "incomplete governed drift coverage; Production blocked")
     if envelope is not None:
         envelope.absent(plan, matrix["absent"], (specs, reports, used), stage)
-    require(specs is None or used == set(range(len(specs))), "orphan readback")
+    inventories = {index for index, spec in enumerate(specs or []) if "members" in spec}
+    require(specs is None or used | inventories == set(range(len(specs))), "orphan readback")
 
 
 def closed(value, fields):
@@ -530,7 +641,9 @@ def _secrets(value):
             _secrets(child)
 
 
-ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|[0-9]{4}[-_ ][0-9]{4}[-_ ][0-9]{4})(?![0-9A-Za-z])")
+ACCOUNT_SEPARATOR = r"[-_ ./:\u200b\u200c\u200d\u2060\ufeff]"
+ACCOUNT_GROUPS = r"([0-9]{4})%s([0-9]{4})%s([0-9]{4})" % (ACCOUNT_SEPARATOR, ACCOUNT_SEPARATOR)
+ACCOUNT_LIKE = re.compile(r"(?<![0-9A-Za-z])(?:[0-9]{12}|%s)(?![0-9A-Za-z])" % ACCOUNT_GROUPS)
 PRIVATE_KEYS = {"password", "secret", "token", "access_key_id", "secret_access_key", "state_json", "terraform_state"}
 PRIVATE_TEXT = re.compile(r"arn:aws(?:-[a-z]+)?:|://|BEGIN (?:RSA |EC )?PRIVATE KEY|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\b(?:vpc|subnet|sg|eni|i)-[0-9a-f]{8,17}\b")
 
@@ -543,6 +656,10 @@ def _bucket_pattern(governance):
 
 def public_safe(value, governance=None):
     """Defense in depth on the already authenticated sanitized producer reports."""
+    if governance is not None:
+        require(type(governance) is dict and all(
+            type(governance.get(key)) is str and governance[key] for key in ("state_bucket", "evidence_bucket")),
+            "bucket governance")
     _public_safe(value, _bucket_pattern(governance))
 
 
@@ -586,11 +703,22 @@ def _account_derived_values(governance):
         sha(value.encode()) for value in plain]
 
 
+GROUP_SEPARATOR = re.compile(r"(?<=[0-9])[-_ ](?=[0-9])")
+GROUPED_ACCOUNT = re.compile(r"(?<![0-9])%s(?![0-9])" % ACCOUNT_GROUPS)
+GROUPED_WINDOW = re.compile(r"(?<![0-9])(?=%s(?![0-9]))" % ACCOUNT_GROUPS)
+
+
+def _comparable(text):
+    text = GROUPED_ACCOUNT.sub(r"\1\2\3", unicodedata.normalize("NFKC", text).casefold())
+    return GROUP_SEPARATOR.sub("", text)
+
+
 def refuse_account_derived(raw, governance):
     """Public reports carry no account, no key and no plain hash or ARN of known values."""
     report_key(governance)
-    text = raw.decode()
-    require(not any(type(v) is str and v and v in text for v in _account_derived_values(governance)),
+    folded = unicodedata.normalize("NFKC", raw.decode()).casefold()
+    text = "\n".join([_comparable(folded)] + ["".join(match.groups()) for match in GROUPED_WINDOW.finditer(folded)])
+    require(not any(type(v) is str and v and _comparable(v) in text for v in _account_derived_values(governance)),
             "account-derived value in public report")
 
 
