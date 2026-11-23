@@ -11,14 +11,19 @@ from tools.cnesdata_delivery.producers import aws_reader, chain, drift_handoff, 
 from tools.cnesdata_delivery.session_policy import managed_arn
 
 STATE_KEY = "cnesdata/prod/opentofu.tfstate"
-REHEARSAL = "phase-inputs/rehearsal/plan.json"
-ROLES = ("plan", "deploy")
+ROLES = ("plan", "deploy", "audit")
 CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository"
 Observed = namedtuple("Observed", "files pins")
 
 
-def _rehearsal(reader, config):
-    key = phase_inputs.prefix(config) + REHEARSAL
+def rehearsal_key(config, asked):
+    reference = asked["payload_reference"]
+    return phase_inputs.prefix(config) + "phase-inputs/rehearsal/{}/{}/{}/plan.json".format(
+        c.digest(asked["source_sha"], 40), c.integer(reference["run_id"]), c.integer(reference["run_attempt"]))
+
+
+def _rehearsal(reader, config, asked):
+    key = rehearsal_key(config, asked)
     failed = False
     try:
         raw = reader.read(config["evidence_bucket"], key)
@@ -99,7 +104,7 @@ def observe(reader, config, asked, key_hex):
     """
     c.require(asked["purpose"] in drift_catalog.ENVELOPES, "purpose without envelope")
     key = c.report_key({"report_hmac_key": key_hex})
-    plan, rehearsal_sha = _rehearsal(reader, config)
+    plan, rehearsal_sha = _rehearsal(reader, config, asked)
     state_raw = reader.read(config["state_bucket"], STATE_KEY)
     document = drift_handoff.generate(plan, c.loads(state_raw, state=True), asked["source_sha"], asked["purpose"])
     raw = drift_handoff.serialize(document)

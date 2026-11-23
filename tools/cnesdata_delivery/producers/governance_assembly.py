@@ -9,7 +9,8 @@ from tools.cnesdata_delivery.producers.chain import expiry_chain
 
 CLI_CEILING = 40960
 SECRET_CEILING = 47952
-SESSION_ROLES = ("plan", "deploy", "application")
+SESSION_ROLES = ("plan", "deploy", "audit", "application")
+PLAN_CYCLE_ROLES = ("deploy", "audit")
 GOVERNANCE_KEYS = frozenset("""
     account_id activation_enabled activation_read activation_receipts admission_reference application_configuration
     application_coordination_policy application_delegations application_fragment
@@ -86,7 +87,7 @@ def _expiry_chain(document):
         c.require(type(pin) is dict and {"observed_at", "expires_at", "frozen_until"} <= set(pin),
                   f"session pin fields role={role}")
     for role, pin in pins.items():
-        start = pins["plan"]["observed_at"] if role == "deploy" and "plan" in pins else pin["observed_at"]
+        start = pins["plan"]["observed_at"] if role in PLAN_CYCLE_ROLES and "plan" in pins else pin["observed_at"]
         _pin_chain(role, pin, start)
     cost = document.get("cost")
     if cost and cost.get("cloudfront"):

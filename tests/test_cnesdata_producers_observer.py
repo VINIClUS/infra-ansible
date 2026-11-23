@@ -146,7 +146,7 @@ def test_plano_de_ensaio_fora_do_namespace_nao_muda_a_contagem(chain):
 def test_fatos_da_sessao_sao_hmac_e_iguais_aos_do_session_owner(chain):
     _, result, asked = run(chain, mode="local")
     pins = result.pins
-    assert set(pins) == {"plan", "deploy"}
+    assert set(pins) == {"plan", "deploy", "audit"}
     for role, pin in pins.items():
         assert observations(result)["session_facts"][role] == session_owner._facts(pin, KEY)
         assert pin["owner_producer"] == asked["owner_producer"] and pin["root_source_sha"] == "d" * 40
