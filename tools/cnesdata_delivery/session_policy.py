@@ -191,7 +191,7 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
             {"Effect": "Allow", "Action": "kms:Decrypt", "Resource": key,
              "Condition": {"StringEquals": {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": arn}}},
         ]
-    if direction == "advance" or role == "plan":
+    if direction == "advance" or role in {"plan", "audit"}:
         c.require(not delete_resources, "advance/read session cannot delete")
         statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"})
     else:
@@ -278,7 +278,7 @@ class PhaseInputScope(str):
 
 
 def managed_arn(governance, role):
-    c.require(role in {"plan", "deploy", "application"}, "session role")
+    c.require(role in {"plan", "deploy", "application", "audit"}, "session role")
     account = governance["account_id"]
     c.require(
         type(account) is str and re.fullmatch(r"[0-9]{12}", account), "session account"

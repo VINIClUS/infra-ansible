@@ -14,6 +14,7 @@ CONSUMER_WORKFLOWS = {
     ".github/workflows/infra-apply.yml",
     ".github/workflows/reusable-cnesdata-infra-plan-gate.yml",
     ".github/workflows/reusable-cnesdata-infra-deploy-gate.yml",
+    ".github/workflows/reusable-cnesdata-infra-audit-gate.yml",
     ".github/workflows/reusable-cnesdata-application-gate.yml",
     ".github/workflows/promote-production.yml",
     ".github/workflows/readiness-production.yml",
