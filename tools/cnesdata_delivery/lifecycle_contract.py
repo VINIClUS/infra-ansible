@@ -1246,7 +1246,13 @@ STAGE_SUM_CEILING = 1830
 PROMOTION_CONTEXT_SECONDS = 1200
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
-STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static")}
+# P02 DD-3 rows: unit is internal (the unit acceptance); the two C rows are external (the C deploy
+# job) plus the acceptance of their mode.
+STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static"),
+                  "unit": ("unit", "phase-c-recovery"),
+                  "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
+                  "phase-c-audit": ("phase-c-audit", "final")}
+MODE_STAGE_PREVIOUS = {"phase-c-recovery": "unit", "phase-c-audit": "phase-c-recovery", "final": "phase-c-audit"}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision windows")
 CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})
@@ -1624,6 +1630,20 @@ def static_window(previous, *, now):
               and previous["admitted_at"] <= admitted, "static follows the closed API stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "static", "admitted_at": admitted,
                        "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["static"])}
+
+
+def mode_stage_window(previous, stage, *, now, checkpoint_sha256=None):
+    """DD-3 after unit: unit -> phase-c-recovery keeps the checkpoint (the unit changes no state); the C
+    transitions take the checkpoint of the C deploy that ran in the stage being left."""
+    admitted = int(now)
+    c.require(stage in MODE_STAGE_PREVIOUS, f"mode stage window stage={stage}")
+    c.require(previous["stage"] == MODE_STAGE_PREVIOUS[stage] and previous["close"] is not None
+              and previous["decision"] is None and previous["admitted_at"] <= admitted,
+              f"{stage} follows the closed {MODE_STAGE_PREVIOUS[stage]} stage")
+    c.require((checkpoint_sha256 is None) == (stage == "phase-c-recovery"), f"{stage} checkpoint")
+    window = previous | {"sequence": previous["sequence"] + 1, "stage": stage, "admitted_at": admitted,
+                         "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"][stage])}
+    return window if checkpoint_sha256 is None else window | {"checkpoint_sha256": c.digest(checkpoint_sha256)}
 
 
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):

@@ -41,9 +41,6 @@ TERMINAL_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)">>,?$')
 STAGE_ROW = re.compile(r'^ {4}"([a-z-]+)",?$')
 EXPECTED_DIFFERENCE = {
     ("static", "publish-static", "internal", "unit"),
-    ("unit", "unit", "internal", "phase-c-recovery"),
-    ("phase-c-recovery", "phase-c-recovery", "external", "phase-c-audit"),
-    ("phase-c-audit", "phase-c-audit", "external", "final"),
 }
 TERMINAL_EXIT = ("final", "terminal-readback", "internal", "terminal")
 
@@ -141,10 +138,13 @@ def test_cada_estagio_do_contrato_tem_exatamente_um_gatilho_no_modelo():
     assert sorted(row[0] for row in _triggers()) == sorted(["application-prepare", *lc.STAGES])
 
 
-def test_gatilhos_do_codigo_estao_no_modelo_como_externos():
+def test_gatilhos_do_codigo_estao_no_modelo_com_a_classificacao_do_keeper():
+    """Externo sse o loop do keeper despacha o evento (KEEPER_EVENTS); interno sse o handler anterior avanca sozinho (DD-3)."""
     model = {(row[0], row[1], row[3]): row[2] for row in _triggers()}
     assert _code_triggers() <= set(model)
-    assert {model[key] for key in _code_triggers()} == {"external"}
+    assert {key: model[key] for key in _code_triggers()} == {
+        key: "external" if key[1] in ag.KEEPER_EVENTS else "internal" for key in _code_triggers()}
+    assert {model[key] for key in _code_triggers()} == {"external", "internal"}
 
 
 def test_gatilhos_que_o_codigo_ainda_nao_tem_sao_exatamente_a_lista_esperada():

@@ -5307,7 +5307,8 @@ def _keeper_loop_case():
         if window["stage"] not in lc.STAGE_TRIGGERS:
             raise ValueError(f"stage trigger not connected stage={window['stage']}")
         return events[window["stage"]].pop(0)
-    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b, "host": host},
+    unreached = {name: lambda *a, _name=name: pytest.fail(_name + " before the static stage") for name in ("phase-c-recovery", "phase-c-audit")}
+    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b, "host": host} | unreached,
                                                       "sleep": slept.append} | changes))
     return ag, keeper, store, run, seen, handled, slept
 
@@ -5327,7 +5328,7 @@ def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
     import inspect
     from tools.cnesdata_delivery import application_gate as ag
     assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
-    assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host")
+    assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
 
 
 @pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b"), ("prepared", "host"),
@@ -5348,9 +5349,7 @@ def test_keeper_loop_conecta_so_os_tres_gatilhos_de_estagio(names):
 def test_keeper_loop_refuses_events_outside_the_stage_triggers(event, message):
     ag, keeper, store, run, _, handled, _ = _keeper_loop_case()
     with pytest.raises(ValueError, match=message):
-        run(next_event=lambda window: event, handlers={"prepared": lambda *a: pytest.fail("no dispatch"),
-                                                       "phase-b": lambda *a: pytest.fail("no dispatch"),
-                                                       "host": lambda *a: pytest.fail("no dispatch")})
+        run(next_event=lambda window: event, handlers={name: lambda *a: pytest.fail("no dispatch") for name in ag.KEEPER_EVENTS})
     assert store.get()[0]["status"] == "held" and handled == []
 
 
@@ -5362,7 +5361,7 @@ def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty()
         journal._failed = True
         raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        run(handlers={"prepared": failing, "phase-b": failing, "host": failing})
+        run(handlers=dict.fromkeys(ag.KEEPER_EVENTS, failing))
     assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
     assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
@@ -5810,7 +5809,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
-               "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready"}
+               "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready", "mode_capability",
+               "run_mode_operation", "mode_stage", "mode_stage_window"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5863,6 +5863,12 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "publish_closed_ready", "KeeperGuard"),
         (gate, "host", "KeeperGuard"),
         (gate, "host", "static_window"),
+        (gate, "handler", "KeeperGuard"),                                       # phase-c handlers (DD-3)
+        (gate, "mode", "mode_stage"),                                           # stage_handlers' mode run
+        (gate, "mode_stage", "run_mode_operation"),
+        (gate, "mode_stage", "mode_stage_window"),
+        (gate, "run_mode_operation", "KeeperGuard"),
+        (gate, "run_mode_operation", "mode_capability"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call

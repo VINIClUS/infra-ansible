@@ -201,7 +201,9 @@ def test_static_window_so_segue_o_estagio_api_fechado(change):
 def test_stage_triggers_are_the_closed_ratified_table():
     from tools.cnesdata_delivery import lifecycle_contract as lc
     assert lc.STAGE_TRIGGERS == {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"),
-                                 "api": ("host", "static")}
+                                 "api": ("host", "static"), "unit": ("unit", "phase-c-recovery"),
+                                 "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
+                                 "phase-c-audit": ("phase-c-audit", "final")}
     order = ["application-prepare", *lc.STAGES]
     for stage, (_, following) in lc.STAGE_TRIGGERS.items():
         assert order.index(following) == order.index(stage) + 1
@@ -396,8 +398,7 @@ def test_stage_event_source_refuses_a_publication_that_can_never_be_the_trigger(
         _source(_GitHub(job_name, step, mutation))(_window(stage))
 
 
-@pytest.mark.parametrize("stage, decision", [(stage, None) for stage in ("static", "unit", "phase-c-recovery",
-                                                                         "phase-c-audit", "final", "recovery")]
+@pytest.mark.parametrize("stage, decision", [(stage, None) for stage in ("static", "unit", "final", "recovery")]
                          + [(stage, {"choice_at": 1200, "deadline": 1620, "checkpoint_sha256": "9" * 64})
                             for stage in ("phase-b", "api")])
 def test_stage_event_source_refuses_every_transition_without_ratified_trigger(stage, decision):
@@ -770,9 +771,10 @@ def _lifecycle(world):
     return world.store.get()[0]["lifecycle"]
 
 
-def test_stage_handlers_sao_exatamente_os_tres_gatilhos_ratificados(monkeypatch):
+def test_stage_handlers_sao_exatamente_os_gatilhos_externos_ratificados(monkeypatch):
     world = _stage_world(monkeypatch)
-    assert set(world.handlers) == {"prepared", "phase-b", "host"} and all(callable(item) for item in world.handlers.values())
+    assert set(world.handlers) == {"prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit"}
+    assert all(callable(item) for item in world.handlers.values())
 
 
 def test_prepared_handler_closes_the_window_from_the_authenticated_plan_activation(monkeypatch):
