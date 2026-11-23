@@ -481,3 +481,58 @@ def test_session_policy_recusa_arn_composto_de_outro_produto():
     with pytest.raises(ValueError, match="inverse exact same-product ARN"):
         lifecycle_request(governance, "a" * 40, 123, 1, "deploy", "phase-c-recovery-converge", direction="converge",
                           delete_resources=resources)
+
+
+MARKER = {"selection_version": 1, "ext2_post_upload_receipt_v1": {}}
+RECEIPT = {"repository": c.REPOSITORY, "run_id": "123", "run_attempt": "1", "artifact_id": "456",
+           "artifact_digest": "sha256:" + "a" * 64, "publisher_job_id": "789", "publisher_step_number": 2,
+           "source_sha": "b" * 40, "caller_workflow_path": ".github/workflows/promote-production.yml",
+           "reusable_workflow_sha": "c" * 40}
+
+
+def receipt_case(receipts, marker=None):
+    steps = catalog_steps()
+    steps["operational-plan"] = {"role": "plan", "purpose": "application-prepare", "direction": "advance",
+                                 "mode": "operational", "job_name": "operational-plan / execute", "input_jobs": {},
+                                 "activation_selection": MARKER if marker is None else marker}
+    manifest = world_manifest()
+    governance = {"source_sha": SOURCE, "account_id": ACCOUNT}
+    raw = objects.install(governance, manifest, steps)
+    governance["activation_receipts"] = receipts
+    return governance, manifest, Contents(raw), raw
+
+
+def test_hidratacao_compoe_o_recibo_da_governanca_no_passo_do_plano_operacional():
+    governance, manifest, api, raw = receipt_case({"operational-plan": RECEIPT})
+    step = provenance().lifecycle_objects(api, governance, manifest)["lifecycle_steps"]["operational-plan"]
+    assert step["activation_selection"] == {"selection_version": 1, "ext2_post_upload_receipt_v1": RECEIPT}
+    assert c.sha(raw) == governance["lifecycle_steps_sha256"] and b"789" not in raw
+
+
+def test_hidratacao_sem_recibo_deixa_o_marcador_fechado_que_o_consumidor_recusa():
+    from tools.cnesdata_delivery import ext2_transport
+    governance, manifest, api, _ = receipt_case({})
+    step = provenance().lifecycle_objects(api, governance, manifest)["lifecycle_steps"]["operational-plan"]
+    assert step["activation_selection"] == MARKER
+    with pytest.raises(ValueError):
+        ext2_transport.validate_reference(step["activation_selection"]["ext2_post_upload_receipt_v1"])
+
+
+@pytest.mark.parametrize("receipts", [
+    {"inexistente": RECEIPT},
+    {"keeper": RECEIPT},
+    {"operational-plan": {**RECEIPT, "run_id": "0"}},
+    {"operational-plan": "ref"},
+    ["operational-plan"],
+], ids=["passo-ausente", "passo-sem-marcador", "recibo-invalido", "recibo-nao-dict", "lista"])
+def test_hidratacao_recusa_recibo_para_passo_inadequado_ou_invalido(receipts):
+    governance, manifest, api, _ = receipt_case(receipts)
+    with pytest.raises(ValueError, match="lifecycle steps activation receipt"):
+        provenance().lifecycle_objects(api, governance, manifest)
+
+
+def test_hidratacao_recusa_marcador_que_ja_carrega_recibo():
+    governance, manifest, api, _ = receipt_case(
+        {"operational-plan": RECEIPT}, {"selection_version": 1, "ext2_post_upload_receipt_v1": RECEIPT})
+    with pytest.raises(ValueError, match="lifecycle steps activation receipt"):
+        provenance().lifecycle_objects(api, governance, manifest)

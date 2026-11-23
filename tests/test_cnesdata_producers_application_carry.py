@@ -8,7 +8,9 @@ from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.producers import application, governance_assembly
 
 ARN = "states:stateMachine:cnesdata-prod-lifecycle"
-SELECTION = {"selection_version": 1, "ext2_post_upload_receipt_v1": {"fixture": "isolated"}}
+MARKER = {"selection_version": 1, "ext2_post_upload_receipt_v1": {}}
+SELECTION = MARKER
+ACCOUNT = "111122223333"
 
 
 def infra(role, purpose, job_name, **extra):
@@ -63,7 +65,10 @@ def test_catalogo_recusa_historical_entry_fora_de_plan_deploy_prepare_advance(ch
     lambda s: s["operational-plan"]["activation_selection"].update(selection_version=True),
     lambda s: s["operational-plan"]["activation_selection"].update(extra=1),
     lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1="ref"),
-], ids=["ausente", "nao-dict", "sem-referencia", "versao-2", "versao-bool", "chave-extra", "referencia-nao-dict"])
+    lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1={"run_id": "1"}),
+    lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1=None),
+], ids=["ausente", "nao-dict", "sem-referencia", "versao-2", "versao-bool", "chave-extra", "referencia-nao-dict",
+        "recibo-no-catalogo", "recibo-nulo"])
 def test_catalogo_recusa_plano_operacional_sem_selecao_de_ativacao_fechada(change):
     with pytest.raises(ValueError, match="step activation selection"):
         application.catalog(mutated(change))
@@ -151,11 +156,40 @@ def test_crosscheck_recusa_o_manifesto_inline():
 
 
 @pytest.mark.parametrize("change", [
-    lambda s: s["operational-plan"].update(job_name="plan 111122223333 / execute"),
-    lambda s: (s["operational-plan"].update(job_name="job 123456789012"),
-               s["phase-b-deploy"]["input_jobs"].update(x={"name": "job 123456789012", "step": "operational-plan"})),
-    lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1={"id": "9" * 12}),
-], ids=["job-name", "input-job", "selecao"])
+    lambda s: s["operational-plan"].update(job_name=f"plan {ACCOUNT} / execute"),
+    lambda s: (s["operational-plan"].update(job_name=f"job {ACCOUNT}"),
+               s["phase-b-deploy"]["input_jobs"].update(x={"name": f"job {ACCOUNT}", "step": "operational-plan"})),
+    lambda s: s["phase-b-deploy"]["admission_steps"].append(f"step={ACCOUNT}"),
+], ids=["job-name", "input-job", "admissao"])
 def test_catalogo_recusa_numero_de_conta_em_qualquer_lugar(change):
     with pytest.raises(ValueError, match="catalog account number"):
         application.catalog(mutated(change))
+
+
+def test_catalogo_aceita_doze_digitos_dentro_de_um_digest_hexadecimal():
+    run = "a" + "9" * 12 + "b"
+    steps = base_catalog()
+    steps["operational-plan"]["job_name"] = f"plan sha256:{run} / execute"
+    steps["operational-audit"]["admission_steps"] = [f"digest {run}"]
+    application.catalog(steps)
+
+
+def test_catalogo_recusa_audit_converge_porque_o_consumidor_nao_tem_custodia():
+    steps = base_catalog()
+    steps["operational-audit"].update(direction="converge", delete_resources=[ARN])
+    with pytest.raises(ValueError, match="step audit converge"):
+        application.catalog(steps)
+
+
+def test_catalogo_recusa_audit_converge_sem_inventario():
+    steps = base_catalog()
+    steps["operational-audit"].update(direction="converge")
+    with pytest.raises(ValueError, match="step audit converge"):
+        application.catalog(steps)
+
+
+def test_catalogo_recusa_delete_resources_em_audit_advance():
+    steps = base_catalog()
+    steps["operational-audit"].update(delete_resources=[ARN])
+    with pytest.raises(ValueError, match="step delete resources"):
+        application.catalog(steps)
