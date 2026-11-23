@@ -2670,7 +2670,7 @@ def _mode_semantic_context(application_purpose):
                  "shared_source_sha": "2" * 40, "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release",
                  "activation_sha256": "4" * 64, "resources_sha256": "5" * 64, "fixture_manifest_sha256": "6" * 64,
                  "scenario_plan_sha256": "7" * 64, "predecessor_terminal_sha256": "8" * 64,
-                 "admitted_at": 1000, "deadline": 1900 if context == "promotion" else 15400}
+                 "admitted_at": c.utc(1000), "deadline": c.utc(1900 if context == "promotion" else 15400)}
     manifest = {"schema_version": 2, "context_kind": context,
                 "owner": {key: owner[key] for key in ("repository", "run_id", "run_attempt", "generation", "owner_sha256")}, **originals}
     def encode(value):
@@ -2718,7 +2718,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "owner":
         manifest["owner"]["generation"] += 1
     if mutation == "deadline":
-        manifest["deadline"] += 1
+        manifest["deadline"] = c.utc(1901)
     if mutation == "schema-bool":
         manifest["schema_version"] = True
     if mutation == "run-bool":
@@ -2730,7 +2730,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "missing-original":
         originals.pop("resources_sha256")
     if mutation == "duration":
-        originals["deadline"] = manifest["deadline"] = 2201
+        originals["deadline"] = manifest["deadline"] = c.utc(2201)
     if mutation == "caller":
         owner.update(application_purpose="mode-readiness-drill", context_kind="readiness")
     with pytest.raises(ValueError):
@@ -2743,7 +2743,7 @@ def test_mode_context_preserves_original_predecessor_and_unextended_deadline(pur
     manifest, originals, owner, encode = _mode_semantic_context(purpose)
     originals["predecessor_terminal_sha256"] = manifest["predecessor_terminal_sha256"] = predecessor
     if oversize:
-        originals["deadline"] = manifest["deadline"] = 15401
+        originals["deadline"] = manifest["deadline"] = c.utc(15401)
     if purpose == "promotion":
         assert lc.validate_mode_context(encode(manifest), owner=owner, application_purpose=purpose, originals=originals)["manifest"]["predecessor_terminal_sha256"] is None
     else:
@@ -2757,8 +2757,9 @@ def test_mode_context_preserves_original_predecessor_and_unextended_deadline(pur
     ("release_id", "foreign/release"), ("release_id", "ação"), ("release_id", "r" * 33),
     ("activation_sha256", None), ("resources_sha256", True), ("fixture_manifest_sha256", "0"),
     ("scenario_plan_sha256", []), ("predecessor_terminal_sha256", "bad"),
-    ("admitted_at", True), ("admitted_at", 0), ("admitted_at", 1900), ("admitted_at", 1901),
-    ("deadline", True), ("deadline", 2**53),
+    ("admitted_at", True), ("admitted_at", 0), ("admitted_at", 1000), ("admitted_at", "1970-01-01T00:31:40Z"),
+    ("admitted_at", "1970-01-01T00:31:41Z"), ("admitted_at", "1970-01-01 00:16:40Z"),
+    ("deadline", True), ("deadline", 2**53), ("deadline", 1900), ("deadline", "1970-01-01T00:31:40.000Z"),
 ])
 def test_mode_context_rejects_malformed_semantics_even_when_original_values_match(field, value):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -2773,8 +2774,8 @@ def test_mode_context_rejects_incomplete_or_type_confused_originals(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     manifest, originals, owner, encode = _mode_semantic_context("promotion")
     if mutation == "original-bool":
-        manifest["admitted_at"] = 1
-        manifest["deadline"] = originals["deadline"] = 901
+        manifest["admitted_at"] = c.utc(1)
+        manifest["deadline"] = originals["deadline"] = c.utc(901)
         originals["admitted_at"] = True
     if mutation == "owner-extra":
         manifest["owner"]["source_sha"] = owner["source_sha"]

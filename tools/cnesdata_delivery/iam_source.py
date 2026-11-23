@@ -24,9 +24,9 @@ from tools.cnesdata_delivery.iam_expression import (
 
 type Node = dict[str, Any]
 ROOT = "infra/opentofu/env/prod"
+MODE_ALIASES = ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")
 MODE_POLICIES = {f"module.runtime_iam.aws_iam_role_policy.{name}[0]":
-                 f"module.runtime_iam.aws_iam_role.{name}[0]"
-                 for name in ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")}
+                 f"module.runtime_iam.aws_iam_role.{name}[0]" for name in MODE_ALIASES}
 POLICIES = {
     f"module.runtime_iam.aws_iam_role_policy.{name}[0]": name
     for name in (
@@ -103,6 +103,8 @@ class SourceResolver:
                          else lifecycle_policies.get(purpose, {}))
         if mode == "mode-canary":
             self.policies = MODE_POLICIES
+        elif mode == "operational" and purpose == "application-prepare":
+            self.policies = {**self.policies, **MODE_POLICIES}
         require(projection in {None, "fence-noop"}, "iam=projection_scope")
         if projection == "fence-noop":
             require(purpose == "application-prepare" and mode == "operational", "iam=fence_projection_context")
@@ -123,6 +125,9 @@ class SourceResolver:
         self.role_values: dict[str, str] = {}
         self.identity_fields: dict[str, set[str]] = {}
 
+    def mode_scope(self) -> bool:
+        return self.bindings.get("purpose") == "application-prepare" and self.bindings.get("mode") in {"mode-canary", "operational"}
+
     def module(self, name: str) -> Node:
         root = self.plan["configuration"]["root_module"]
         return root if not name else root["module_calls"][name]["module"]
@@ -141,8 +146,8 @@ class SourceResolver:
         if module == "runtime_iam":
             base = name.rsplit(".", 1)[-1]
             if base in {"mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe"}:
-                require(self.bindings.get("purpose") == "application-prepare" and self.bindings.get("mode") == "mode-canary"
-                        and name.startswith(("aws_iam_role.", "aws_iam_role_policy.")), "iam=mode_resource_scope")
+                require(self.mode_scope() and name.startswith(("aws_iam_role.", "aws_iam_role_policy.")),
+                        "iam=mode_resource_scope")
                 return "mode-canary.tf"
             if base in {"static_observer", "static_normal", "static_recovery"}:
                 require(name.startswith(("aws_iam_role.", "aws_iam_role_policy.")), "iam=static_resource_scope")
@@ -189,8 +194,7 @@ class SourceResolver:
             file = "main.tf"
         elif kind == "locals":
             if module == "runtime_iam" and field.startswith("mode_canary"):
-                require(self.bindings.get("purpose") == "application-prepare" and self.bindings.get("mode") == "mode-canary",
-                        "iam=mode_local_scope")
+                require(self.mode_scope(), "iam=mode_local_scope")
                 return directory + "/mode-canary.tf"
             if module == "runtime_iam" and field.startswith("static_"):
                 return directory + "/static-promotion.tf"
@@ -252,7 +256,8 @@ class SourceResolver:
                 # Native OpenTofu leaves reference-free jsonencode expressions
                 # empty in configuration. The evaluated full source document is
                 # still compared to the planned value by the mode oracle.
-                encoded_mode_document = (self.bindings.get("mode") == "mode-canary" and configured == {}
+                encoded_mode_document = (self.mode_scope() and kind == "resource" and module == "runtime_iam"
+                    and name.rsplit(".", 1)[-1] in MODE_ALIASES and configured == {}
                     and field in {"policy", "assume_role_policy"} and node[0:2] == ("call", "jsonencode")
                     and len(node[2]) == 1 and node[2][0][0] == "object")
                 require(configured.get("constant_value") == value or encoded_mode_document, "iam=constant_binding")
@@ -527,7 +532,7 @@ class SourceResolver:
         self.trace = set()
         expected = self.policy(address)
         change = self.changes[address]["change"]
-        if self.bindings.get("mode") == "mode-canary":
+        if address in MODE_POLICIES:
             require(not pending(expected) and not change.get("after_unknown", {}).get("policy"), "iam=mode_unknown_policy")
         if not pending(expected) and not change.get("after_unknown", {}).get("policy"):
             require(canonical_bytes(expected, 65536) == canonical_bytes(decode_json(change["after"]["policy"].encode(), limit=65536), 65536), "iam=known_source_policy")

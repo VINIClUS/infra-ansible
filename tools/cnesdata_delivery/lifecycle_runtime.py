@@ -995,6 +995,32 @@ def mode_canary_readbacks(aws, *, account, expected, preparation_admitted_at, pr
     return {"proof_kind": "iam-readback-and-evaluation", "readbacks": observations}
 
 
+def mode_canary_admission(*, plan, step_mode, inputs_raw, owner, governance, historical, activation_sha256, principal_arn):
+    """Mode input and trust oracle of a prepare step that applies the eight mode addresses.
+
+    Args: audited plan, step mode, generated request, owner, governance, Phase A originals, activation, principal.
+    Returns: the admitted mode input. Raises: ValueError.
+    """
+    c.require((step_mode == "mode-canary") == (owner["context_kind"] == "readiness"), "mode step context")
+    originals = {"product_source_closure_sha256": governance["application_product_source_closure_sha256"],
+                 "shared_source_sha": governance["gate_shas"]["application"],
+                 "shared_source_closure_sha256": governance["application_source_closure_sha256"],
+                 "release_id": historical["envelope"]["plan"]["release"]["release_id"]}
+    admitted = lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
+                                             principal_arn=principal_arn, originals=originals,
+                                             activation_sha256=activation_sha256)
+    lc.validate_mode_canary_trust(plan, admitted)
+    return admitted
+
+
+def mode_canary_output(aws, *, state, account, guard):
+    """Args: client, applied state, account, guard. Returns: the IAM readback proof. Raises: ValueError."""
+    window = guard.window
+    return mode_canary_readbacks(aws, account=account, expected=lc.mode_readback_expected(lc.state_resources(state), account),
+                                 preparation_admitted_at=window["admitted_at"],
+                                 preparation_deadline=window["preparation_deadline"], guard=guard)
+
+
 def fence_role_readbacks(aws, *, account, expected, preparation_admitted_at, preparation_deadline,
                          guard, clock=time.time, sleep=time.sleep):
     """Finite reader for a future protected current-owner preparation producer.
@@ -1330,6 +1356,10 @@ def execute(role):
         unwrapped = operational_inputs(terraform_raw, governance=governance, owner=owner, window=guard.window)
         terraform_raw, activation_sha256 = unwrapped["terraform"], unwrapped["activation_sha256"]
     inputs = c.loads(terraform_raw, canonical=True)
+    mode_rows = step["purpose"] == "application-prepare" and step["mode"] in {"mode-canary", "operational"}
+    mode_arguments = {"step_mode": step["mode"], "inputs_raw": terraform_raw, "owner": owner, "governance": governance,
+                      "historical": historical, "activation_sha256": activation_sha256,
+                      "principal_arn": application_authority.application_fragment["application_role_arn"]}
     original_phase = historical["envelope"]["plan"]["phase_a_inputs"]
     c.require(all(c.canonical(inputs.get(key)) == c.canonical(original_phase[key]) for key in
                   ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")), "original Phase A release/principal inputs")
@@ -1369,6 +1399,8 @@ def execute(role):
             c.require(c.loads((temp / "saved.json").read_bytes(), state=True) == c.loads(payload["plan.json"], state=True),
                       "binary/json exact plan")
             approval = build_approval(governance=governance, step=step, owner=owner, payload=payload, before_raw=before_raw)
+            if mode_rows:
+                mode_canary_admission(plan=c.loads(payload["plan.json"], state=True), **mode_arguments)
             result_files = {"approval.json": c.canonical(approval)}
             status = "audited"
         else:
@@ -1381,10 +1413,11 @@ def execute(role):
             c.require(type(approval["delta"]) is dict
                       and all(approval["delta"].get(key) == step[key] for key in ("purpose", "direction", "mode")),
                       "independent protected step discriminants")
-            c.require(step["mode"] != "mode-canary", "mode-canary executable oracle unavailable")
             plan = c.loads(payload["plan.json"], state=True)
             c.require(approval["delta"]["before"] == lc.state_resources(c.loads(before_raw, state=True)), "audit actual full state")
             lc.validate_delta(plan, approval["delta"])
+            if mode_rows:
+                mode_canary_admission(plan=plan, **mode_arguments)
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
             before_calls = readback_calls(plan, approval["readbacks"]["before"], "before")
             before_reports = readbacks(aws, before_calls, guard)
@@ -1408,6 +1441,8 @@ def execute(role):
             reports = readbacks(aws, after_calls, guard)
             c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state,
                              specs=after_calls, envelope=dc.LIFECYCLE_ENVELOPE)
+            if mode_rows:
+                mode_canary_output(aws, state=state, account=governance["account_id"], guard=guard)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}

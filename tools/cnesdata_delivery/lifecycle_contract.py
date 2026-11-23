@@ -170,6 +170,14 @@ def phase_a_carrier(origin, files):
     return carrier
 
 
+MODE_ALIASES = ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")
+MODE_ADDRESSES = frozenset(f"module.runtime_iam.{kind}.{alias}[0]" for alias in MODE_ALIASES
+                           for kind in ("aws_iam_role", "aws_iam_role_policy"))
+MODE_INPUT_FIELDS = ("schema_version context_kind application_principal_arn owner context_manifest delegation_sessions "
+                     "resources enabled_until")
+MODE_GATE_ORIGINALS = "product_source_closure_sha256 shared_source_sha shared_source_closure_sha256 release_id"
+MODE_PRODUCT_COMMITTED = "fixture_manifest_sha256 scenario_plan_sha256 predecessor_terminal_sha256 admitted_at deadline"
+MODE_CLOSED_POLICY = {"Version": "2012-10-17", "Statement": [{"Effect": "Deny", "Action": "*", "Resource": "*"}]}
 MODE_SESSION_OPERATIONS = {
     "unit-seed": ("us", "mode_seed", "promotion", "unit"),
     "unit-start": ("ux", "mode_dispatch", "promotion", "unit"),
@@ -926,6 +934,15 @@ def _product_context_bytes(value):
     return raw
 
 
+def _mode_instant(value, label):
+    try:
+        moment = int(c.instant(value))
+    except ValueError:
+        moment = None
+    c.require(moment is not None and c.utc(moment) == value, f"mode {label} instant")
+    return moment
+
+
 def decode_mode_context(inputs_raw):
     """Decode the adopted wrapper inside the entire bounded generated request.
 
@@ -984,12 +1001,11 @@ def validate_mode_context(inputs_raw, *, owner, application_purpose, originals):
     if predecessor is not None:
         c.digest(predecessor)
     c.require(manifest["context_kind"] != "readiness" or predecessor is not None, "readiness original predecessor")
-    for key in ("admitted_at", "deadline"):
-        c.integer(manifest[key])
+    admitted, deadline = (_mode_instant(manifest[key], "context " + key) for key in ("admitted_at", "deadline"))
     maximum = PROMOTION_CONTEXT_SECONDS if manifest["context_kind"] == "promotion" else 14400
-    c.require(0 < manifest["deadline"] - manifest["admitted_at"] <= maximum, "mode context original bounded deadline")
+    c.require(0 < deadline - admitted <= maximum, "mode context original bounded deadline")
     digest = c.sha(raw)
-    sessions = {alias: [] for alias in ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")}
+    sessions = {alias: [] for alias in MODE_ALIASES}
     for operation, (_, alias, context, phase) in MODE_SESSION_OPERATIONS.items():
         if context != manifest["context_kind"]:
             continue
@@ -1310,41 +1326,146 @@ def has_unknown(value):
     values = value.values() if type(value) is dict else value
     return any([has_unknown(item) for item in values])
 
+def mode_canary_stage(before):
+    """Args: audited full-state resources. Returns: initial or established. Raises: ValueError if partial."""
+    c.require(type(before) is dict, "mode prepare baseline")
+    present = MODE_ADDRESSES & set(before)
+    c.require(present in (set(), MODE_ADDRESSES), "mode partial baseline")
+    return "established" if present else "initial"
+
+
+def _mode_inventory(plan):
+    rows = {row["address"]: row for row in plan["resource_changes"]}
+    c.require(len(rows) == len(plan["resource_changes"]) and MODE_ADDRESSES <= set(rows), "mode exact eight-address inventory")
+    return rows
+
+
+def _mode_row(row, before, stage):
+    change = row["change"]
+    c.require(not row.get("importing") and not change.get("importing"), "mode no import")
+    c.require(row["mode"] == "managed", "mode managed inventory")
+    c.require(change["before"] == before.get(row["address"]), "mode actual baseline")
+    kind = "aws_iam_role" if ".aws_iam_role." in row["address"] else "aws_iam_role_policy"
+    c.require(row["type"] == kind, "mode exact resource kind")
+    if change["actions"] == ["no-op"]:
+        c.require(type(change["after"]) is dict and change["before"] == change["after"]
+                  and not has_unknown(change.get("after_unknown", {})), "mode all other resources noop")
+        return
+    if stage == "initial":
+        c.require(change["actions"] == ["create"] and change["before"] is None, "mode initial create only")
+    else:
+        c.require(change["actions"] == ["update"] and type(change["before"]) is dict, "mode established update only")
+    c.require(type(change["after"]) is dict, "mode exact resource kind")
+    computed = COMPUTED_OUTPUTS[kind] | {"id"}
+    c.require(not has_unknown({key: value for key, value in change.get("after_unknown", {}).items()
+                               if key not in computed}), "mode unknown authority")
+
+
 def validate_mode_canary_delta(plan, before, *, stage):
     """Structural gate only; source/input/trust/output audit is also mandatory.
 
     Stage comes from the authenticated baseline, never a new caller wire field.
     This does not admit a prepare or replace the complete independent oracle.
     """
-    from tools.cnesdata_delivery.iam_source import MODE_POLICIES
     c.require(stage in {"initial", "established"} and type(before) is dict, "mode prepare baseline")
     c._secrets(plan)
-    expected = set(MODE_POLICIES) | set(MODE_POLICIES.values())
-    rows = {row["address"]: row for row in plan["resource_changes"]}
-    c.require(len(rows) == len(plan["resource_changes"]) and expected <= set(rows)
-              and set(before) <= set(rows), "mode exact eight-address inventory")
+    rows = _mode_inventory(plan)
+    c.require(set(before) <= set(rows), "mode exact eight-address inventory")
     for address, row in rows.items():
+        if address in MODE_ADDRESSES:
+            _mode_row(row, before, stage)
+            continue
         change = row["change"]
         c.require(not row.get("importing") and not change.get("importing"), "mode no import")
         if row["mode"] != "managed":
             c.require(row["mode"] == "data" and change["actions"] in (["read"], ["no-op"]), "mode data read only")
             continue
         c.require(change["before"] == before.get(address), "mode actual baseline")
-        if address in expected:
-            kind = "aws_iam_role_policy" if address in MODE_POLICIES else "aws_iam_role"
-            c.require(row["type"] == kind and type(change["after"]) is dict, "mode exact resource kind")
-        if address not in expected or change["actions"] == ["no-op"]:
-            c.require(change["actions"] == ["no-op"] and change["before"] == change["after"]
-                      and not has_unknown(change.get("after_unknown", {})), "mode all other resources noop")
-            continue
-        if stage == "initial":
-            c.require(change["actions"] == ["create"] and change["before"] is None, "mode initial create only")
-        else:
-            c.require(change["actions"] == ["update"] and type(change["before"]) is dict, "mode established update only")
-        computed = COMPUTED_OUTPUTS[kind] | {"id"}
-        c.require(not has_unknown({key: value for key, value in change.get("after_unknown", {}).items()
-                                   if key not in computed}), "mode unknown authority")
-    c.require(all(rows[address]["mode"] == "managed" for address in expected), "mode managed inventory")
+        c.require(change["actions"] == ["no-op"] and change["before"] == change["after"]
+                  and not has_unknown(change.get("after_unknown", {})), "mode all other resources noop")
+    return set(MODE_ADDRESSES)
+
+
+def validate_mode_canary_input(inputs_raw, *, owner, application_purpose, principal_arn, originals, activation_sha256):
+    """Bind the generated mode_canary input to the gate originals and to its own manifest.
+
+    Args: request bytes, owner, purpose, principal, MODE_GATE_ORIGINALS, activation (promotion only).
+    Returns: validate_mode_context result plus enabled_until and principal. Raises: ValueError.
+    """
+    manifest, _ = decode_mode_context(inputs_raw)
+    mode = c.loads(inputs_raw, limit=131072)["mode_canary"]
+    c.closed(mode, MODE_INPUT_FIELDS)
+    c.closed(originals, MODE_GATE_ORIGINALS)
+    c.require(type(mode["schema_version"]) is int and mode["schema_version"] == 2, "mode input schema")
+    c.require(type(manifest) is dict and mode["context_kind"] == manifest.get("context_kind"), "mode input context")
+    c.require(mode["owner"] == manifest.get("owner"), "mode input owner")
+    c.require(mode["application_principal_arn"] == principal_arn, "mode application principal")
+    promotion = manifest["context_kind"] == "promotion"
+    if promotion:
+        c.require(activation_sha256 is not None, "mode promotion activation original")
+        bound = {"activation_sha256": c.digest(activation_sha256)}
+    else:
+        c.require(activation_sha256 is None, "mode readiness activation original")
+        bound = {"activation_sha256": manifest.get("activation_sha256")}
+    committed = {key: manifest.get(key) for key in MODE_PRODUCT_COMMITTED.split()}
+    resources = {"resources_sha256": c.sha(c.canonical(mode["resources"])), "product_source_sha": owner["source_sha"]}
+    context = validate_mode_context(inputs_raw, owner=owner, application_purpose=application_purpose,
+                                    originals=originals | bound | committed | resources)
+    c.require(mode["delegation_sessions"] == context["delegation_sessions"], "mode delegation sessions")
+    admitted = _mode_instant(manifest["admitted_at"], "context admitted_at")
+    enabled = _mode_instant(mode["enabled_until"], "enabled_until")
+    c.require(admitted < enabled, "mode enabled_until after admission")
+    c.require(promotion or enabled <= _mode_instant(manifest["deadline"], "context deadline"),
+              "mode readiness enabled_until deadline")
+    return context | {"enabled_until": mode["enabled_until"], "application_principal_arn": principal_arn}
+
+
+def _mode_trust(admitted, alias, closed):
+    statement = {"Effect": "Deny" if closed else "Allow", "Principal": {"AWS": admitted["application_principal_arn"]},
+                 "Action": "sts:AssumeRole"}
+    if not closed:
+        statement["Condition"] = {"DateLessThan": {"aws:CurrentTime": admitted["enabled_until"]},
+                                  "StringEquals": {"sts:RoleSessionName": admitted["delegation_sessions"][alias]}}
+    return {"Version": "2012-10-17", "Statement": [statement]}
+
+
+def _mode_document(after, field):
+    c.require(type(after) is dict and type(after.get(field)) is str, "mode trust document")
+    return c.loads(after[field].encode("utf-8"), limit=65536)
+
+
+def validate_mode_canary_trust(plan, admitted):
+    """Args: plan, validate_mode_canary_input result. Returns: role addresses. Raises: ValueError."""
+    rows = _mode_inventory(plan)
+    readiness = admitted["manifest"]["context_kind"] == "readiness"
+    roles = []
+    for alias in MODE_ALIASES:
+        closed = readiness and alias == "mode_audit_launch"
+        address = f"module.runtime_iam.aws_iam_role.{alias}[0]"
+        c.require(_mode_document(rows[address]["change"]["after"], "assume_role_policy") == _mode_trust(admitted, alias, closed),
+                  "mode trust document")
+        if closed:
+            policy = rows[f"module.runtime_iam.aws_iam_role_policy.{alias}[0]"]["change"]["after"]
+            c.require(_mode_document(policy, "policy") == MODE_CLOSED_POLICY, "mode closed policy")
+        roles.append(address)
+    return sorted(roles)
+
+
+def mode_readback_expected(resources, account):
+    """Args: applied state resources, account. Returns: alias -> expected IAM readback. Raises: ValueError."""
+    c.require(type(resources) is dict and MODE_ADDRESSES <= set(resources), "mode output applied inventory")
+    expected = {}
+    for alias in MODE_ALIASES:
+        role = resources[f"module.runtime_iam.aws_iam_role.{alias}[0]"]
+        policy = resources[f"module.runtime_iam.aws_iam_role_policy.{alias}[0]"]
+        c.require(role["arn"] == f"arn:aws:iam::{account}:role/{role['name']}" and policy["role"] == role["name"],
+                  "mode output applied inventory")
+        expected[alias] = {
+            "role": {"Role": {"RoleName": role["name"], "Arn": role["arn"],
+                              "AssumeRolePolicyDocument": _mode_document(role, "assume_role_policy"),
+                              "MaxSessionDuration": role["max_session_duration"]}},
+            "policy": {"RoleName": policy["role"], "PolicyName": policy["name"],
+                       "PolicyDocument": _mode_document(policy, "policy")}}
     return expected
 
 
@@ -1364,8 +1485,16 @@ def validate_delta(plan, approval):
     c.require(c.sha(c.canonical(changes)) == c.digest(approval["expected_changes_sha256"]), "independent exact delta audit")
     c.require(len(changes) == len({r["address"] for r in changes}), "duplicate change")
     creates, updates = set(), {}
+    oracle = frozenset()
     if purpose == "application-prepare":
-        c.require(direction == "advance" and mode in {"observer-bootstrap", "operational"}, "prepare mode")
+        c.require(direction == "advance" and mode in {"observer-bootstrap", "operational", "mode-canary"}, "prepare mode")
+        if mode == "mode-canary":
+            validate_mode_canary_delta(plan, approval["before"], stage=mode_canary_stage(approval["before"]))
+            return changes
+        if mode == "operational":
+            oracle, rows, stage = MODE_ADDRESSES, _mode_inventory(plan), mode_canary_stage(approval["before"])
+            for address in sorted(MODE_ADDRESSES):
+                _mode_row(rows[address], approval["before"], stage)
         roles = ("observer",) if mode == "observer-bootstrap" else ("normal", "recovery")
         for name in roles:
             for kind in ("aws_iam_role", "aws_iam_role_policy"):
@@ -1390,6 +1519,8 @@ def validate_delta(plan, approval):
                    "module.static_web.aws_cloudfront_response_headers_policy.this": {"security_headers_config", "custom_headers_config"}}
     for row in changes:
         address, change = row["address"], row["change"]
+        if address in oracle:
+            continue
         before, after, actions = change["before"], change["after"], change["actions"]
         computed = COMPUTED_OUTPUTS.get(row["type"], set())
         c.require(address in creates | set(updates), "unapproved phase resource")

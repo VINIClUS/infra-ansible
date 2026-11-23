@@ -160,14 +160,15 @@ def authenticate_sources(product: Path, source: str) -> dict[str, bytes]:
 def prepare(plan, inputs, account, purpose, sources, *, mode=None):
     addresses = sorted(item["address"] for item in plan["resource_changes"]
                        if item["type"] == "aws_iam_role_policy" and item["change"]["actions"] != ["no-op"])
-    if mode == "mode-canary":
+    present = {item["address"] for item in plan["resource_changes"] if item["type"] == "aws_iam_role_policy"}
+    if mode == "mode-canary" or (mode == "operational" and present & set(MODE_POLICIES)):
         c.require(purpose == "application-prepare", "iam=mode_prepare_purpose")
         c.require(inputs.get("mode_canary") is not None
                   and plan.get("variables", {}).get("mode_canary", {}).get("value") == inputs["mode_canary"],
                   "iam=mode_exact_generated_input")
-        present = {item["address"] for item in plan["resource_changes"] if item["type"] == "aws_iam_role_policy"}
-        c.require(set(MODE_POLICIES) <= present and set(addresses) <= set(MODE_POLICIES), "iam=mode_policy_inventory")
-        addresses = sorted(MODE_POLICIES)
+        c.require(set(MODE_POLICIES) <= present and (mode == "operational" or set(addresses) <= set(MODE_POLICIES)),
+                  "iam=mode_policy_inventory")
+        addresses = sorted(set(MODE_POLICIES) | (set(addresses) if mode == "operational" else set()))
     if not addresses:
         return None
     resolver = SourceResolver(plan, sources, {"generated_inputs": inputs, "account_id": account,
