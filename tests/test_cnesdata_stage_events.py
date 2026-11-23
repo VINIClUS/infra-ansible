@@ -687,6 +687,12 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
             assert (bucket, key) == ("evidence", prefix + "inputs.json")
             return raw_carrier, None
     world.aws = AWS()
+    world.static_plan, world.static_plan_requests = c.canonical({"fixture": "static-plan"}), []
+
+    def static_plan_source(**kwargs):
+        world.static_plan_requests.append(kwargs)
+        return world.static_plan
+    monkeypatch.setattr(ag, "static_plan_source", static_plan_source)
 
     def fence_prepared_payload(*args, **kwargs):
         world.events.append("fence_prepared_payload")

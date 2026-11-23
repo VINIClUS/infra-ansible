@@ -409,6 +409,7 @@ def test_observer_bootstrap_roda_o_inventory_e_publica_o_resultado_para_os_input
     assert world.events == ["inventory_inputs", "inventory_capability", "invoke_adapter", "upload", "verify_upload"]
     assert world.uploads == [("cnesdata-inventory-4242-1", {"inventory.json": world.values.inventory})]
     assert world.keeper.static_inventory == world.values.inventory
+    assert world.keeper.static_inputs == {name: world.values.inputs[name] for name in ("candidate", "dashboard-artifact")}
     assert world.store.get()[0]["lifecycle"] == before and before["stage"] == "application-prepare"
     (journal,) = [item for item in world.keeper._contexts if type(item) is ag.AdapterJournal
                   and item._request["operation"] == "inventory"]
@@ -424,7 +425,7 @@ def test_inventario_so_e_publicado_com_a_sonda_dos_inputs_em_andamento(monkeypat
     world = _inventory_world(monkeypatch, probe=probe)
     with pytest.raises(ValueError, match="^inventory probe in progress before publication$"):
         world.handlers["observer-bootstrap"](world.keeper, dict(world.github.reference))
-    assert world.uploads == [] and world.keeper.static_inventory is None
+    assert world.uploads == [] and world.keeper.static_inventory is None and world.keeper.static_inputs is None
 
 
 @pytest.mark.parametrize("change", [{"observations": 2}, {"observation": b"{}"}, {"capability": "static_sessions"}])
@@ -432,7 +433,7 @@ def test_inventario_so_liquida_com_uma_observacao_amarrada_aos_insumos(monkeypat
     world = _inventory_world(monkeypatch, **change)
     with pytest.raises(ValueError):
         world.handlers["observer-bootstrap"](world.keeper, dict(world.github.reference))
-    assert world.uploads == [] and world.keeper.static_inventory is None
+    assert world.uploads == [] and world.keeper.static_inventory is None and world.keeper.static_inputs is None
 
 
 def test_prepared_recusa_sem_o_inventario_liquidado_do_keeper(monkeypatch):
@@ -441,6 +442,32 @@ def test_prepared_recusa_sem_o_inventario_liquidado_do_keeper(monkeypatch):
     with pytest.raises(ValueError, match="^prepared=inventory_unsettled$"):
         world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
     assert world.events == []
+
+
+def test_prepared_autentica_o_static_plan_do_portador_antes_do_close_drain(monkeypatch):
+    from test_cnesdata_stage_events import PREPARED_REFERENCE, RUN, _stage_world
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    (requested,) = world.static_plan_requests
+    assert type(requested.pop("guard")) is ag.KeeperGuard
+    assert requested == {"keeper": world.keeper, "owner": world.owner, "api": world.api, "run": RUN, "now": 1100,
+                         "terraform": c.loads(world.raw_carrier, canonical=True)["terraform"]}
+
+
+def test_static_plan_recusado_no_prepared_nunca_fecha_a_janela(monkeypatch):
+    from test_cnesdata_stage_events import PREPARED_REFERENCE, _stage_world
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    before = world.store.get()[0]["lifecycle"]
+
+    def refused(**kwargs):
+        raise ValueError("static_inputs=static_plan_binding")
+    monkeypatch.setattr(ag, "static_plan_source", refused)
+    with pytest.raises(ValueError, match="^static_inputs=static_plan_binding$"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.events == ["fence_prepared_payload"] and world.invoke == []
+    assert world.store.get()[0]["lifecycle"] == before and before["close"] is None
 
 
 def test_inventario_observado_so_e_aceito_amarrado_aos_insumos_do_inventory():
@@ -453,30 +480,43 @@ def test_inventario_observado_so_e_aceito_amarrado_aos_insumos_do_inventory():
             si.inventory_observation(raw, values.inputs)
 
 
-def _production_world(monkeypatch, mutation=None):
-    from test_cnesdata_stage_events import ARTIFACTS, JOBS, _api_world
+_CALLER_MUTATIONS = {
+    "candidate": {"candidate.json": _values().candidate.replace(b'"schema_version":1', b'"schema_version":3')},
+    "archive": {"archive.tgz": _archive(source_sha="c" * 40)},
+    "static-baseline": {"static-baseline.json": _baseline(schema="cnesdata.static-baseline/v2")},
+}
+_RETAINED_MUTATIONS = {
+    "retained-candidate": {"candidate": _values().candidate + b" "},
+    "retained-dashboard": {"dashboard-artifact": _values().dist + bytes(512)},
+}
+
+
+def _production_base(monkeypatch, mutation=None):
+    """Stage world before prepared: caller artifacts, pinned dashboard, retained inventory inputs, real plan source."""
+    from test_cnesdata_stage_events import ARTIFACTS, JOBS, _stage_world
     from test_cnesdata_delivery_lifecycle import _envelope_case
-    from test_cnesdata_static_stage import _install_static
     from tools.cnesdata_delivery import application_gate as ag
-    values = _values()
-    inventory = values.inventory
+    values, real = _values(), ag.static_plan_source
 
     def carrier(owner, window):
         binding = _binding(owner, values.plan, **({"release_id": "r" + "0" * 31} if mutation == "binding" else {}))
         return c.canonical(_envelope_case(owner=owner, window=window, terraform=_terraform(binding))[1])
     ready = {"handoff": {"closed_ready_sha256": "0" * 64}} if mutation == "host-receipt" else None
-    world = _api_world(monkeypatch, carrier=carrier, static_inventory=None if mutation == "inventory" else inventory,
-                       ready=ready)
+    world = _stage_world(monkeypatch, carrier=carrier, ready=ready,
+                         static_inventory=None if mutation == "inventory" else values.inventory)
+    monkeypatch.setattr(ag, "static_plan_source", real)
     world.values = values
     world.governance["release"] = _release(values.candidate)
     world.governance.update({key: value for key, value in EVIDENCE_GOVERNANCE.items() if key not in world.governance})
-    candidate = values.candidate.replace(b'"schema_version":1', b'"schema_version":3') if mutation == "candidate" else \
-        values.candidate
-    plan = _plan(inventory, multipart_keys=["assets/x.js"]) if mutation == "static-plan" else values.plan
+    world.keeper.static_inputs = {"candidate": values.candidate, "dashboard-artifact": values.dist} \
+        | _RETAINED_MUTATIONS.get(mutation, {})
+    plan = _plan(values.inventory, multipart_keys=["assets/x.js"]) if mutation == "static-plan" else values.plan
     members = {"cnesdata-static-inputs-4242-1": (601, 86, ag.STATIC_INPUTS_JOB, {
-                   "candidate.json": candidate, "archive.tgz": values.inputs["archive"],
-                   "static-baseline.json": values.inputs["static-baseline"]}),
+                   "candidate.json": values.candidate, "archive.tgz": values.inputs["archive"],
+                   "static-baseline.json": values.inputs["static-baseline"]} | _CALLER_MUTATIONS.get(mutation, {})),
                "cnesdata-static-plan-4242-1": (602, 85, ag.INVENTORY_PROBE, {"static-plan.json": plan})}
+    if mutation == "caller":
+        del members["cnesdata-static-inputs-4242-1"]
     listing, artifacts = world.github.responses[JOBS], world.github.responses[ARTIFACTS]
     for name, (artifact_id, job_id, job_name, files) in members.items():
         archive = _zip(files)
@@ -495,20 +535,62 @@ def _production_world(monkeypatch, mutation=None):
         _dashboard_metadata(values)
     world.github.responses.update({f"{REPO}/artifacts/{DASHBOARD_ID}": dashboard,
                                    f"{REPO}/artifacts/{DASHBOARD_ID}/zip": values.artifact})
+    return world
+
+
+def _production_world(monkeypatch, mutation=None):
+    from test_cnesdata_stage_events import B_REFERENCE, PREPARED_REFERENCE
+    from test_cnesdata_static_stage import _install_static
+    world = _production_base(monkeypatch, mutation)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    world.clock.value = 1130
+    world.keeper.tick()
+    world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    world.clock.value = 1200
+    world.keeper.tick()
     return _install_static(monkeypatch, world, {"capability": "real", "source": "production", "versions": ()})
+
+
+def test_insumos_de_producao_do_inventory_vem_do_artefato_static_inputs_e_do_dashboard_fixado(monkeypatch):
+    from test_cnesdata_stage_events import RUN
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _production_base(monkeypatch)
+    inputs = ag.inventory_input_source(api=world.api, governance=world.governance, run=dict(RUN), owner=world.owner,
+                                       guard=_Guard(), now=1100)
+    assert inputs == world.values.inputs
 
 
 @pytest.mark.parametrize("mutation, message", [
     ("candidate", "static_inputs=candidate_digest"), ("dashboard-artifact", "static_inputs=dashboard_artifact"),
-    ("static-plan", "static_inputs=static_plan_binding"), ("inventory", "prepared=inventory_unsettled"),
+    ("archive", "static_inputs=archive_binding"), ("static-baseline", "static_inputs=baseline"),
+    ("caller", "static_inputs=caller_artifact job=static-inputs")])
+def test_cada_insumo_do_inventory_recusa_fonte_nao_autenticada(monkeypatch, mutation, message):
+    from test_cnesdata_stage_events import RUN
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _production_base(monkeypatch, mutation)
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        ag.inventory_input_source(api=world.api, governance=world.governance, run=dict(RUN), owner=world.owner,
+                                  guard=_Guard(), now=1100)
+
+
+@pytest.mark.parametrize("mutation, message", [("static-plan", "static_inputs=static_plan_binding"),
+                                               ("inventory", "prepared=inventory_unsettled")])
+def test_static_plan_de_producao_so_entra_no_prepared_amarrado_ao_portador_e_ao_inventario(monkeypatch, mutation, message):
+    from test_cnesdata_stage_events import PREPARED_REFERENCE
+    world = _production_base(monkeypatch, mutation)
+    before = world.store.get()[0]["lifecycle"]
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert "close_drain_capability" not in world.events and world.invoke == []
+    assert world.store.get()[0]["lifecycle"] == before and world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("mutation, message", [
+    ("retained-candidate", "static_inputs=candidate_digest"), ("retained-dashboard", "static_inputs=dashboard_sha256"),
     ("host-receipt", "host handoff accepted for the keeper closed-ready"),
     ("binding", "static_binding=carrier_mismatch field=release_id")])
 def test_cada_insumo_do_publish_static_recusa_fonte_nao_autenticada_e_nunca_roda_o_child(monkeypatch, mutation, message):
     from test_cnesdata_stage_events import HOST_REFERENCE
-    if mutation == "inventory":
-        with pytest.raises(ValueError, match=f"^{message}$"):
-            _production_world(monkeypatch, mutation)
-        return
     world = _production_world(monkeypatch, mutation)
     with pytest.raises(ValueError, match=f"^{message}$"):
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
@@ -520,9 +602,11 @@ def test_execute_de_producao_nao_para_mais_em_source_unconnected_e_chega_ao_unit
     from test_cnesdata_stage_events import HOST_REFERENCE
     from tools.cnesdata_delivery import application_gate as ag
     world = _production_world(monkeypatch)
+    reads = list(world.github.reads)
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     lifecycle = world.store.get()[0]["lifecycle"]
     assert lifecycle["stage"] == "unit" and world.store.get()[0]["status"] == "held"
+    assert world.github.reads == reads
     (journal,) = [item for item in world.keeper._contexts if type(item) is ag.AdapterJournal
                   and item._request["operation"] == "publish-static"]
     assert journal._inputs["inventory"] == world.values.inventory and journal._inputs["static-plan"] == world.values.plan

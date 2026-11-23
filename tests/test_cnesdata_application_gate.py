@@ -5767,7 +5767,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "static_session", "static_sessions", "s3_put_body", "s3_body_value", "static_plan",
                "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready",
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
-               "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source"}
+               "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
+               "static_plan_source"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5809,6 +5810,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "execute", "keeper_loop"),
         (gate, "prepared", "KeeperGuard"),                                      # stage_handlers' own handlers
         (gate, "prepared", "close_expirations"),
+        (gate, "prepared", "static_plan_source"),
         (gate, "prepared", "close_drain_capability"),
         (gate, "prepared", "infra_expiration_bound"),
         (gate, "prepared", "close_window"),
