@@ -25,7 +25,8 @@ def required_checks(purpose, role):
 
 
 def artifact_names(source, role, run, attempt):
-    return {"drift": f"delivery-drift-{source[:8]}-{run}-{attempt}",
+    return {"drift": f"delivery-drift-{role}-{source[:8]}-{run}-{attempt}",
+            "observed": f"delivery-observed-{role}-{run}-{attempt}",
             "admission": f"delivery-admission-{role}-{run}-{attempt}"}
 
 
