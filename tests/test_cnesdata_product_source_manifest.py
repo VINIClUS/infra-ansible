@@ -258,7 +258,8 @@ def _plan_admission(monkeypatch, mutation):
     from fixtures import cnesdata_lifecycle_objects as objects
     gov, caller_api, run, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", "plan")
     inline = gov.pop("application_product_source_manifest")
-    step.update(role="plan", purpose="application-prepare", input_jobs={})
+    step.pop("caller_job")
+    step.update(role="plan", purpose="application-prepare", input_jobs={}, mode="observer-bootstrap", direction="advance")
     catalog = objects.install(gov, inline, {"keeper": step})
     world, world_api, _ = manifest_world(inline, source="b" * 40)
     gov["application_product_source_manifest_artifact"] = world["application_product_source_manifest_artifact"]

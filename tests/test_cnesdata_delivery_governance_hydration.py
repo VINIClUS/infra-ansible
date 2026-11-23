@@ -34,12 +34,14 @@ def world_manifest(closure=None):
 
 def catalog_steps():
     return {"keeper": {"role": "plan", "purpose": "application-prepare", "job_name": "promote / keeper",
-                       "producer_job": "keeper", "input_jobs": {},
+                       "producer_job": "keeper", "input_jobs": {}, "mode": "observer-bootstrap", "direction": "advance",
                        "admission_steps": ["Authenticate original caller", "Issue credentials"]},
             "operational-audit": {"role": "audit", "purpose": "application-prepare", "job_name": "audit / audit",
-                                  "input_jobs": {}},
-            "phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "operational",
-                                "job_name": "phase-b / execute", "input_jobs": {}}}
+                                  "producer_job": "audit", "input_jobs": {}, "mode": "operational", "direction": "advance",
+                                  "admission_steps": ["Issue credentials"]},
+            "phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "initial",
+                                "job_name": "phase-b / execute", "producer_job": "execute", "input_jobs": {},
+                                "admission_steps": ["Issue credentials"]}}
 
 
 class Contents:
@@ -212,7 +214,8 @@ def admission_case(monkeypatch, *, steps=None, step_name="keeper", inline=None):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     from tools.cnesdata_delivery.provenance import application_caller
     gov, caller_api, run, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", "plan")
-    step.update(role="plan", purpose="application-prepare", input_jobs={})
+    step.pop("caller_job")
+    step.update(role="plan", purpose="application-prepare", input_jobs={}, mode="observer-bootstrap", direction="advance")
     manifest = gov.pop("application_product_source_manifest")
     catalog = copy.deepcopy(steps) if steps else {"keeper": step}
     served = {"catalog": objects.install(gov, manifest, catalog)}
@@ -308,7 +311,9 @@ def test_leitores_recebem_o_catalogo_e_a_closure_hidratados(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     _, _, _, keeper, _, _ = _application_caller_fixture(monkeypatch, "promotion", "plan")
     steps = catalog_steps()
-    steps["keeper"] = keeper | {"role": "plan", "purpose": "application-prepare", "input_jobs": {}}
+    keeper.pop("caller_job")
+    steps["keeper"] = keeper | {"role": "plan", "purpose": "application-prepare", "input_jobs": {},
+                                "mode": "observer-bootstrap", "direction": "advance"}
     lr, gov, _, _ = admission_case(monkeypatch, steps=steps)
     governance = lr.admission("plan")[0]
     assert governance["lifecycle_steps"] == steps
@@ -420,6 +425,7 @@ def receipt_case(receipts, marker=None):
     steps = catalog_steps()
     steps["operational-plan"] = {"role": "plan", "purpose": "application-prepare", "direction": "advance",
                                  "mode": "operational", "job_name": "operational-plan / execute", "input_jobs": {},
+                                 "producer_job": "execute", "admission_steps": ["Issue credentials"],
                                  "activation_selection": MARKER if marker is None else marker}
     manifest = world_manifest()
     governance = {"source_sha": SOURCE, "account_id": ACCOUNT}

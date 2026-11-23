@@ -103,6 +103,26 @@ def source_closure(manifest):
 ACTIVATION_MARKER = canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
 
 
+STEP_COMMON = "role purpose job_name producer_job admission_steps input_jobs"
+STEP_OPTIONAL = ("historical_entry", "activation_selection")
+
+
+def closed_lifecycle_step(value):
+    """Args: one catalog step. Raises: ValueError when its key set is not the closed one for its role."""
+    require(type(value) is dict, "lifecycle step shape")
+    infra = value.get("role") != "application"
+    optional = "".join(" " + key for key in STEP_OPTIONAL if infra and key in value)
+    closed(value, STEP_COMMON + (" mode direction" if infra else "") + optional)
+
+
+def admitted_lifecycle_step(value):
+    """Args: one closed catalog step. Raises: ValueError on a converge direction or a delta the lifecycle refuses."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    if value["role"] != "application":
+        require(value["direction"] == "advance", "lifecycle converge custody unavailable")
+        lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
+
+
 def _compose_receipts(governance, steps):
     from tools.cnesdata_delivery import ext2_transport
     receipts = governance.get("activation_receipts", {})
@@ -134,6 +154,9 @@ def lifecycle_objects(api, governance, manifest):
     steps = loads(raw, canonical=True, limit=LIFECYCLE_STEPS_LIMIT)
     require(type(steps) is dict and 1 <= len(steps) <= 256 and all(type(step) is dict for step in steps.values()),
             "lifecycle steps catalog")
+    for step in steps.values():
+        closed_lifecycle_step(step)
+        admitted_lifecycle_step(step)
     _compose_receipts(governance, steps)
     return {"lifecycle_steps": steps, "source_closure": closure}
 

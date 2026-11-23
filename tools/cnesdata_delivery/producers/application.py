@@ -11,9 +11,6 @@ from tools.cnesdata_delivery.producers import governance_assembly
 STEP_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
 ACTIVATION_MARKER = c.canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-COMMON = "role purpose job_name producer_job admission_steps input_jobs"
-INFRA = COMMON + " mode direction"
-OPTIONAL = ("historical_entry", "activation_selection")
 ROLES = ("plan", "deploy", "audit", "application")
 PIECES = frozenset("""
     lifecycle_steps_sha256 source_closure_sha256 lifecycle_predecessor predecessor_read application_configuration
@@ -169,8 +166,7 @@ def _activation_selection(value):
 def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
-    c.require(value["direction"] == "advance", "lifecycle converge custody unavailable")
-    lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
+    provenance.admitted_lifecycle_step(value)
     _historical_entry(value)
     _activation_selection(value)
 
@@ -186,7 +182,7 @@ def step(role, purpose, *, job_name, producer_job, admission_steps, input_jobs=N
 
 def _validate_step(value):
     infra = value.get("role") != "application"
-    c.closed(value, (INFRA if infra else COMMON) + "".join(" " + key for key in OPTIONAL if infra and key in value))
+    provenance.closed_lifecycle_step(value)
     c.require(value["role"] in ROLES and (value["purpose"] in lc.PURPOSES or not infra), "step role/purpose")
     c.require(value["purpose"] == "application-prepare" or infra, "application step purpose")
     c.require(type(value["job_name"]) is str and 1 <= len(value["job_name"]) <= 256

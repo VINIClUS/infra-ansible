@@ -3041,6 +3041,7 @@ def _application_entry_case(monkeypatch, tmp_path, steps=None):
     gov = chain.gov | current
     from test_cnesdata_product_source_manifest import manifest_world
     inline = gov.pop("application_product_source_manifest")
+    step.pop("caller_job")
     step.update(role="application", purpose="application-prepare", input_jobs={})
     catalog = objects.install(gov, inline, steps or {"keeper": step})
     manifest_governance, manifest_api, _ = manifest_world(inline, source=run["head_sha"])
