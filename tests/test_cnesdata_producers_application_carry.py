@@ -156,3 +156,47 @@ def test_catalogo_recusa_a_chave_delete_resources_como_chave_desconhecida():
     with pytest.raises(ValueError) as refused:
         application.catalog(steps)
     assert "step delete resources" not in str(refused.value)
+
+
+@pytest.mark.parametrize("purpose, direction, mode", [
+    ("application-prepare", "advance", "observer-bootstrap"), ("application-prepare", "advance", "operational"),
+    ("phase-b", "advance", "initial"), ("phase-b", "advance", "established"),
+    ("phase-c-recovery", "advance", "initial"), ("phase-c-recovery", "advance", "established"),
+    ("phase-c-audit", "advance", "initial"), ("static-maintenance", "advance", "post-open"),
+])
+def test_regra_unica_de_delta_admite_a_combinacao(purpose, direction, mode):
+    lc.admitted_delta(purpose, direction, mode)
+
+
+@pytest.mark.parametrize("purpose, direction, mode, reason", [
+    ("application-prepare", "converge", "operational", "prepare mode"),
+    ("application-prepare", "advance", "phase-b", "prepare mode"),
+    ("phase-b", "advance", "phase-b", "B checkpoint mode"),
+    ("phase-c-recovery", "advance", "recovery", "C checkpoint mode"),
+    ("phase-c-audit", "advance", "audit", "C checkpoint mode"),
+    ("static-maintenance", "advance", "static", "maintenance after OPEN"),
+    ("static-maintenance", "converge", "post-open", "maintenance after OPEN"),
+])
+def test_regra_unica_de_delta_recusa_a_combinacao(purpose, direction, mode, reason):
+    with pytest.raises(ValueError, match=reason):
+        lc.admitted_delta(purpose, direction, mode)
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda s: s["phase-b-deploy"].update(mode="phase-b"), "B checkpoint mode"),
+    (lambda s: s["recovery-deploy"].update(mode="recovery"), "C checkpoint mode"),
+    (lambda s: s["operational-plan"].update(mode="initial"), "prepare mode"),
+], ids=["phase-b-modo-do-passo", "recovery-modo-do-passo", "prepare-modo-fora-do-conjunto"])
+def test_catalogo_recusa_a_combinacao_que_validate_delta_recusa(change, reason):
+    with pytest.raises(ValueError, match=reason):
+        application.catalog(mutated(change))
+
+
+def test_catalogo_admite_a_cadeia_de_primeira_aceitacao_toda_advance():
+    steps = {}
+    for purpose, mode in (("phase-b", "initial"), ("phase-c-recovery", "initial"), ("phase-c-audit", "initial")):
+        plan, audit, deploy = (f"{purpose}-{kind}" for kind in ("plan", "audit", "deploy"))
+        steps[plan] = infra("plan", purpose, f"{plan} / execute", mode=mode)
+        steps[audit] = infra("audit", purpose, f"{audit} / audit", mode=mode)
+        steps[deploy] = infra("deploy", purpose, f"{deploy} / execute", mode=mode)
+    application.catalog(steps)
