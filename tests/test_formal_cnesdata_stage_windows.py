@@ -51,11 +51,15 @@ def underscored(names):
     return [name.replace("-", "_") for name in names]
 
 
-def code_stages():
+def code_constant(name):
     tree = ast.parse(CONTRACT)
     node = next(item for item in tree.body if isinstance(item, ast.Assign)
-                and getattr(item.targets[0], "id", "") == "STAGES")
+                and getattr(item.targets[0], "id", "") == name)
     return ast.literal_eval(node.value)
+
+
+def code_stages():
+    return code_constant("STAGES")
 
 
 def function_source(text, name):
@@ -64,9 +68,19 @@ def function_source(text, name):
     return text[start:end if end > 0 else None]
 
 
+CLOSED_PHASE_ANCHOR = 'duration, later = windows["stages"][window["stage"]]'
+
+
 def closed_phase_branch():
     capacity = function_source(CONTRACT, "phase_capacity")
-    return capacity[capacity.index("duration, later = STAGES"):]
+    return capacity[capacity.index(CLOSED_PHASE_ANCHOR):]
+
+
+def code_later(durations):
+    namespace = {"STAGES": code_stages()}
+    exec(function_source(CONTRACT, "later_seconds"), namespace)
+    windows = {"stages": dict(zip(STAGE_NAMES, durations, strict=True))}
+    return [namespace["later_seconds"](windows, name) for name in STAGE_NAMES]
 
 
 def code_modes():
@@ -193,19 +207,26 @@ def table(name, cfg_name):
 def test_duracoes_e_reservas_do_codigo_igualam_a_tabela_de_estagios_do_modelo():
     stages = code_stages()
     assert list(stages) == STAGE_NAMES
-    durations = model_tuple("CodeDur")
-    assert durations == [duration for duration, _ in stages.values()]
-    assert [later for _, later in stages.values()] == [sum(durations[index + 1:])
-                                                       for index in range(len(durations))]
+    durations, governed = model_tuple("CodeDur"), model_tuple("E2Dur")
+    assert durations == [low for low, _ in stages.values()]
+    assert all(low <= seconds <= high for seconds, (low, high) in zip(governed, stages.values(), strict=True))
+    assert sum(governed) <= code_constant("STAGE_SUM_CEILING")
+    for table_durations in (durations, governed):
+        assert code_later(table_durations) == [sum(table_durations[index + 1:])
+                                               for index in range(len(table_durations))]
 
 
 def test_janela_fixa_e_reserva_final_do_modelo_igualam_o_codigo():
+    reserve = code_constant("FINAL_RESERVE")
+    assert reserve == int(re.search(r"^FinalReserve == (\d+)", MODEL, re.M).group(1))
+    for name, cfg_name in (("CodeDur", "StageWindows"), ("E2Dur", "StageWindowsE2")):
+        assert int(cfg_values(CONFIGS[cfg_name])["FixedWindow"]) == sum(model_tuple(name)) + reserve
+    assert re.findall(r"fixed == total \+ (\w+)(.)", function_source(CONTRACT, "governed_windows")) == [("FINAL_RESERVE", ",")]
+    assert 'min(close + windows["fixed_deadline_seconds"], input_deadline)' in function_source(CONTRACT, "fixed_deadline")
     capacity = function_source(CONTRACT, "phase_capacity")
-    assert set(re.findall(r"min\(close \+ (\d+), window\[\"input_deadline\"\]\)", capacity)) == {
-        cfg_values(CONFIGS["StageWindows"])["FixedWindow"]}
+    assert 'fixed == fixed_deadline(close, window["input_deadline"], windows)' in capacity
     branch = closed_phase_branch()
-    assert re.findall(r"fixed - now >= max\(0, deadline - now\) \+ later \+ (\d+)", branch) == [
-        str(re.search(r"^FinalReserve == (\d+)", MODEL, re.M).group(1))]
+    assert re.findall(r"fixed - now >= max\(0, deadline - now\) \+ later \+ (\w+)", branch) == ["FINAL_RESERVE"]
 
 
 def test_margem_da_fase_fechada_liga_a_linha_propria_com_operador_e_termo():
@@ -217,7 +238,7 @@ def test_margem_da_fase_fechada_liga_a_linha_propria_com_operador_e_termo():
 
 def test_margem_do_ramo_de_recuperacao_tambem_e_ligada():
     capacity = function_source(CONTRACT, "phase_capacity")
-    recovery = capacity[:capacity.index("duration, later = STAGES")]
+    recovery = capacity[:capacity.index(CLOSED_PHASE_ANCHOR)]
     found = re.findall(r"now \+ operation_seconds \+ (\d+) (<=?) window\[\"deadline\"\]", recovery)
     assert found == [(cfg_values(CONFIGS["StageWindows"])["AdmitMargin"], "<")]
 
