@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import io
+import tarfile
 from datetime import datetime, timezone
 from email.utils import formatdate
 from types import SimpleNamespace
@@ -36,8 +37,18 @@ def _metadata(status=200):
     return {"RequestId": "native-request", "HTTPStatusCode": status, "HTTPHeaders": {"date": formatdate(usegmt=True)}}
 
 
-def _static_inputs(source, *, rollback=(), retire=0, plan=None):
-    dashboard = b"synthetic-dist-tar"
+def _dist(files=None):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for key, raw in sorted((BODIES if files is None else files).items()):
+            info = tarfile.TarInfo("./" + key)
+            info.size, info.mtime, info.mode = len(raw), 0, 0o644
+            archive.addfile(info, io.BytesIO(raw))
+    return buffer.getvalue()
+
+
+def _static_inputs(source, *, rollback=(), retire=0, plan=None, dashboard=None):
+    dashboard = _dist() if dashboard is None else dashboard
     inventory = c.canonical({"fixture": "inventory"})
     candidate = c.canonical({"repository": c.REPOSITORY, "source_sha": source, "release_id": f"candidate-{source}-4242-1",
                              "dashboard_sha256": c.sha(dashboard)})
@@ -57,11 +68,11 @@ class _Guard:
         self.checks.append(seconds)
 
 
-def _journal(*, rollback=(), retire=0, plan=None, receipt=None, guard=None):
+def _journal(*, rollback=(), retire=0, plan=None, receipt=None, guard=None, dashboard=None):
     from test_cnesdata_application_gate import _adapter_case
     from tools.cnesdata_delivery import application_gate as ag
     _, owner, window, _ = _adapter_case("publish-static")
-    inputs = _static_inputs(owner["source_sha"], rollback=rollback, retire=retire, plan=plan)
+    inputs = _static_inputs(owner["source_sha"], rollback=rollback, retire=retire, plan=plan, dashboard=dashboard)
     inputs["host-receipt"] = receipt or c.canonical({"fixture": "host-receipt"})
     request = ag._operation_request("publish-static", owner=owner, window=window, inputs=inputs, activation=ACTIVATION)
     journal = ag.AdapterJournal(request, operation="publish-static", owner=owner, window=window, inputs=inputs,
@@ -148,7 +159,8 @@ def _frame(role, service, operation, parameters):
 
 def _put(key):
     content_type, cache = TYPES[key]
-    parameters = {"Bucket": BUCKET, "Key": key, "Body": {"base64": _b64(BODIES[key])}, "ContentType": content_type,
+    parameters = {"Bucket": BUCKET, "Key": key, "Body": {"member": key, "size": len(BODIES[key]), "sha256": c.sha(BODIES[key])},
+                  "ContentType": content_type,
                   "CacheControl": cache, "ChecksumSHA256": _b64(hashlib.sha256(BODIES[key]).digest())}
     return ("normal", "s3", "PutObject", parameters | ({} if key in ("index.html", "theme-init.js") else {"IfNoneMatch": "*"}))
 
@@ -198,7 +210,7 @@ def test_broker_estatico_le_o_get_object_como_base64_e_cria_a_invalidacao_no_end
     ag, broker, journal, clients, evidence = _broker_case()
     ag._adapter_message(_frame(*_put("index.html")), journal)
     reply, _ = ag._adapter_message(_frame("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": "index.html"}), journal)
-    assert reply["value"] == {"Body": {"base64": _b64(BODIES["index.html"])}, "VersionId": "New.1",
+    assert reply["value"] == {"Body": {"sha256": c.sha(BODIES["index.html"]), "size": len(BODIES["index.html"])}, "VersionId": "New.1",
                               "ContentType": "text/html", "CacheControl": "no-cache"}
     reply, _ = ag._adapter_message(_frame(*INVALIDATION), journal)
     assert reply["value"] == {"Invalidation": {"Id": "I2SYNTH"}}
@@ -371,7 +383,8 @@ def test_capability_recusa_o_plano_de_43_retire_versions_antes_do_sts():
     minted = []
     with pytest.raises(ValueError, match="^static_plan=retire_versions_unsupported count=43$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
-                             operation_session=lambda *a: minted.append(a), clock=lambda: 1505)
+                             operation_session=lambda *a: minted.append(a), clock=lambda: 1505,
+                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal))
     assert minted == [] and journal._failed and {"kind": "context-failed"} in keeper.uncertainty()
     assert getattr(journal, "_broker", None) is None and store.get()[0]["status"] == "held"
 
@@ -388,7 +401,7 @@ def test_capability_recusa_plano_fora_do_inventario_do_bucket_ou_da_conta_antes_
     minted = []
     with pytest.raises(ValueError, match=message):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE | {"account_id": account}, journal=journal, keeper=keeper,
-                             credential_limit=6000,
+                             credential_limit=6000, carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal),
                              operation_session=lambda *a: minted.append(a), clock=lambda: 1505)
     assert minted == [] and journal._failed and journal in keeper._contexts
 
@@ -436,7 +449,7 @@ def test_unit_window_so_segue_o_estagio_static_fechado(change):
 def test_gatilho_static_e_interno_e_o_event_source_nunca_o_consulta():
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
     assert lc.STAGE_TRIGGERS["static"] == ("publish-static", "unit")
-    assert "publish-static" not in ag.KEEPER_EVENTS and ag.KEEPER_EVENTS == ("prepared", "phase-b", "host")
+    assert "publish-static" not in ag.KEEPER_EVENTS and ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host")
     assert ag.BROKERS == (ag.ClosedReadyBroker, ag.StaticBroker)
 
 
@@ -451,8 +464,25 @@ def test_fabrica_de_sessao_de_operacao_serve_o_publish_static_com_observer_e_nor
         factory("publish-static", {"observer": sessions["observer"]}, stage)
 
 
+def _static_carrier(rollback=()):
+    """Operational inputs carrier whose static_promotion.binding is the #498 binding of the static stage fixtures."""
+    from test_cnesdata_delivery_lifecycle import _envelope_case
+
+    def carrier(owner, window):
+        values = _static_inputs(owner["source_sha"], rollback=rollback)
+        release = c.loads(values["candidate"], canonical=True)["release_id"]
+        binding = {"release_id": "r" + hashlib.sha256(release.encode()).hexdigest()[:31], "run_id": owner["run_id"],
+                   "run_attempt": owner["run_attempt"], "generation": owner["generation"],
+                   "product_source_sha": owner["source_sha"], "shared_source_sha": GATE_SHA,
+                   "static_plan_sha256": c.sha(values["static-plan"])}
+        terraform = c.canonical({"canary_release_id": "r1", "static_promotion": {"mode": "operational", "binding": binding}})
+        return c.canonical(_envelope_case(owner=owner, window=window, terraform=terraform)[1])
+    return carrier
+
+
 def _static_world(monkeypatch, *, static=None, **flags):
     from test_cnesdata_stage_events import _api_world
+    flags.setdefault("carrier", _static_carrier((static or {}).get("rollback", ())))
     return _install_static(monkeypatch, _api_world(monkeypatch, **flags), static)
 
 
@@ -460,7 +490,8 @@ def _install_static(monkeypatch, world, static=None):
     """Static-stage boundaries on a _stage_world: input source, capability (or STS only), child and native S3/CloudFront."""
     from tools.cnesdata_delivery import application_gate as ag
     static = {"capability": "fake", "capability_error": None, "capability_seconds": 5, "observation": {}, "observations": 1,
-              "pending": False, "child_seconds": 10, "rollback": (), "versions": (), "latency": 0, "inputs": None} | (static or {})
+              "pending": False, "child_seconds": 10, "rollback": (), "versions": (), "latency": 0, "inputs": None,
+              "source": "fake"} | (static or {})
     world.governance.update({key: value for key, value in EVIDENCE_GOVERNANCE.items() if key not in world.governance})
     world.static = static
     world.static_values = _static_inputs(world.owner["source_sha"], rollback=static["rollback"])
@@ -470,7 +501,8 @@ def _install_static(monkeypatch, world, static=None):
         world.events.append("static_inputs")
         world.static_requests.append(kwargs)
         return dict(static["inputs"] if static["inputs"] is not None else world.static_values)
-    monkeypatch.setattr(ag, "static_input_source", source)
+    if static["source"] == "fake":
+        monkeypatch.setattr(ag, "static_input_source", source)
     if static["capability"] == "fake":
         def capability(**kwargs):
             world.events.append("static_capability")
@@ -582,11 +614,12 @@ def test_host_handler_roda_o_publish_static_e_avanca_de_static_para_unit(monkeyp
     assert world.keeper.uncertainty() == [] and world.store.get()[0]["status"] == "held"
 
 
-def test_host_handler_sem_fonte_dos_insumos_estaticos_recusa_fail_closed_no_estagio_static(monkeypatch):
-    """Producao hoje: candidate, dashboard, plano e inventario nao tem fonte autenticada no keeper; o lease fica retido."""
+def test_host_handler_sem_o_artefato_dos_insumos_do_caller_recusa_fail_closed_no_estagio_static(monkeypatch):
+    """P15b: a fonte de producao exige o artefato do job static-inputs do caller; sem ele o lease fica retido."""
     from test_cnesdata_stage_events import HOST_REFERENCE, _api_world
-    world = _api_world(monkeypatch)
-    with pytest.raises(ValueError, match="^static_inputs=source_unconnected$"):
+    world = _api_world(monkeypatch, carrier=_static_carrier())
+    world.governance.update({key: value for key, value in EVIDENCE_GOVERNANCE.items() if key not in world.governance})
+    with pytest.raises(ValueError, match="^static_inputs=caller_artifact job=static-inputs$"):
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     assert _lifecycle(world)["stage"] == "static" and world.store.get()[0]["status"] == "held"
     assert [item for item in world.invoke if item["journal"]._request["operation"] == "publish-static"] == []

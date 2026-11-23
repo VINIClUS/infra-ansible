@@ -348,10 +348,13 @@ def _window(stage, **changes):
     return _close() | {"stage": stage, "sequence": 2} | changes
 
 
+SETTLED = SimpleNamespace(static_inventory=c.canonical({"fixture": "inventory"}))
+
+
 def _source(api, *, clock=lambda: 1300, guard=None):
     from tools.cnesdata_delivery import application_gate as ag
     return ag.stage_event_source(api=api, governance=GOVERNANCE, run=dict(RUN), owner=dict(OWNER),
-                                 guard=_Guard() if guard is None else guard, clock=clock)
+                                 guard=_Guard() if guard is None else guard, keeper=SETTLED, clock=clock)
 
 
 _TRIGGERS = {"application-prepare": ("prepared", "application-prepare-operational / execute", "application-prepare-operational"),
@@ -456,7 +459,7 @@ def test_stage_event_source_needs_the_unique_protected_phase_b_advance_step(step
     from tools.cnesdata_delivery import application_gate as ag
     api = _GitHub("phase-b / execute", "phase-b-advance")
     source = ag.stage_event_source(api=api, governance={"lifecycle_steps": steps}, run=dict(RUN), owner=dict(OWNER),
-                                   guard=_Guard(), clock=lambda: 1300)
+                                   guard=_Guard(), keeper=SETTLED, clock=lambda: 1300)
     with pytest.raises(ValueError, match="unique protected phase-b advance step"):
         source(_window("phase-b"))
     assert api.reads == []
@@ -632,7 +635,7 @@ def _api_stage_fakes(monkeypatch, world, ready, probe):
 def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
                  observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
                  omit_earliest=False, noncanonical=(), github_mutation=None, real_broker=False, child_error=None,
-                 probe="in_progress", ready=None):
+                 probe="in_progress", ready=None, static_inventory=c.canonical({"fixture": "inventory"})):
     """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes.
 
     ready holds the API-stage fakes: closed-ready capability, child, artifact upload and host handoff."""
@@ -643,6 +646,7 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
     from tools.cnesdata_delivery.session_owner import Authority
     keeper, store = _prepare_stage_keeper()
+    keeper.static_inventory = static_inventory
     clock = _Clock(1100)
     keeper.clock = keeper.lease.clock = keeper.monotonic = keeper.lease.monotonic = clock
     record = keeper.lease.check()
@@ -1321,7 +1325,7 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
     put = world.store.put
     world.store.put = lambda value, etag: statuses.append(value["status"]) or put(value, etag)
     real = ag.stage_event_source(api=world.api, governance=world.governance, run=dict(RUN), owner=world.owner,
-                                 guard=_Guard(), clock=world.clock)
+                                 guard=_Guard(), keeper=world.keeper, clock=world.clock)
     triggers = {"application-prepare": {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)},
                 "phase-b": {"kind": "phase-b", "reference": dict(B_REFERENCE)},
                 "api": {"kind": "host", "reference": dict(HOST_REFERENCE)}}
