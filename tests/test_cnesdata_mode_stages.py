@@ -8,18 +8,20 @@ from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 
 PRODUCT_MODE_ORIGIN = {
-    "commit": "c7b1ece1b030073570a63f8327b7c9bb13142acb",
+    "commit": "33ae80fb15628248d6b771a081dc96c2923e09ca",
     "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
-    "scripts/promotion/promote_mode.py": "991d30a3f8e3589f64c906a3c2c796d98da76d40d75d2c066d2b0707815b2370"}
-VENDORED_MODE_SHA256 = "67b826fdb5e7ee4be25dedfc0421f0a3f32cfab68426226bc5648a6249513e90"
+    "scripts/promotion/promote_mode.py": "991d30a3f8e3589f64c906a3c2c796d98da76d40d75d2c066d2b0707815b2370",
+    "scripts/promotion/promote_mode_effects.py": "7bdd5f793aa40434531875ce4c68af5935da1dc84d9f41b0602ffeff8578b8db"}
+VENDORED_MODE_SHA256 = "f4d8b2a338730203edb1f1dec784c8f344c2b09a05d1192e091e0e25ae106c8e"
 MODES = ("unit", "recovery", "audit")
 MODE_STAGE = {"unit": "unit", "recovery": "phase-c-recovery", "audit": "phase-c-audit"}
 MODE_WINDOWS = {"unit": (1720, 1900), "phase-c-recovery": (1900, 2230), "phase-c-audit": (2230, 2560)}
 
 
 def _product_mode_abi():
-    """Vendored from CnesData c7b1ece1: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
-    MODE_OBSERVATION_FIELDS, and promote_mode._observation (canonical of _api_static_records)."""
+    """Vendored from CnesData 33ae80fb: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
+    MODE_OBSERVATION_FIELDS, MODE_EFFECT_CALLS/STEPS/METHODS, the handler of each operation in promote_mode and
+    promote_mode_effects, promote_mode_effects.SDK_OPERATIONS and promote_mode._observation."""
     operations = {
         "unit-seed": ("unit", "unit"), "unit-start": ("unit", "unit"), "unit-observe": ("unit", "unit"),
         "recovery-seed": ("recovery", "phase-c-recovery"), "recovery-start": ("recovery", "phase-c-recovery"),
@@ -35,6 +37,23 @@ def _product_mode_abi():
     observations = {name: "mode-seed" if name.endswith("-seed") else "mode-result" if name.endswith("-start")
                     else "mode" for name in operations}
     fields = frozenset({"version", "kind", "accepted", "checks", "commitments"})
+    handlers = {name: "promote_mode" if name.endswith("-observe") else "promote_mode_effects" for name in operations}
+    seed_calls = frozenset({("mode_seed", "dynamodb", "put_item"), ("mode_seed", "dynamodb", "get_item"),
+                            ("mode_seed", "s3", "put_object"), ("mode_seed", "s3", "get_object")})
+    calls = {"unit-seed": seed_calls, "recovery-seed": seed_calls, "unit-start": frozenset(),
+             "recovery-start": frozenset({("mode_dispatch", "ecs", "run_task"), ("mode_dispatch", "ecs", "describe_tasks")}),
+             "audit-start": frozenset({("mode_audit_launch", "ecs", "run_task"),
+                                       ("mode_audit_launch", "ecs", "describe_tasks")})}
+    steps = {"unit-seed": frozenset(), "recovery-seed": frozenset(),
+             "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
+             "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"})}
+    methods = {"unit-seed": frozenset(), "recovery-seed": frozenset(),
+               "unit-start": frozenset({"dispatch_unit", "mode_readbacks"}),
+               "recovery-start": frozenset({"ledger_admit_effect", "ledger_mark_unknown", "ledger_settle", "mode_readbacks"}),
+               "audit-start": frozenset({"mode_readbacks"})}
+    sdk = {"dynamodb:PutItem": ("dynamodb", "put_item"), "dynamodb:GetItem": ("dynamodb", "get_item"),
+           "s3:PutObject": ("s3", "put_object"), "s3:GetObject": ("s3", "get_object"),
+           "ecs:RunTask": ("ecs", "run_task"), "ecs:DescribeTasks": ("ecs", "describe_tasks")}
 
     def canonical(value):
         return (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -45,7 +64,8 @@ def _product_mode_abi():
         return canonical({"version": 1, "kind": kind, "accepted": not checks, "checks": sorted(checks),
                           "commitments": commitments})
     return {"operations": operations, "inputs": inputs, "observations": observations, "fields": fields,
-            "observation": observation}
+            "observation": observation, "handlers": handlers, "calls": calls, "steps": steps, "methods": methods,
+            "sdk": sdk}
 
 
 PRODUCT = _product_mode_abi()
@@ -53,7 +73,8 @@ PRODUCT = _product_mode_abi()
 
 def test_copia_vendorizada_do_abi_de_modo_so_muda_junto_com_a_origem_registrada():
     """infra-ansible CI cannot import CnesData: a refresh of the vendored tables updates its origin and this digest."""
-    assert set(PRODUCT_MODE_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py", "scripts/promotion/promote_mode.py"}
+    assert set(PRODUCT_MODE_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py", "scripts/promotion/promote_mode.py",
+                                        "scripts/promotion/promote_mode_effects.py"}
     assert c.sha(inspect.getsource(_product_mode_abi).encode()) == VENDORED_MODE_SHA256
 
 
@@ -62,6 +83,22 @@ def test_tabelas_de_adapter_do_keeper_batem_com_o_abi_de_modo_do_produto(operati
     assert set(lc.ADAPTER_INPUTS[operation].split()) == PRODUCT["inputs"][operation]
     assert lc.ADAPTER_STAGES[operation] == {PRODUCT["operations"][operation][1]}
     assert lc.ADAPTER_OBSERVATIONS[operation] == PRODUCT["observations"][operation]
+
+
+def test_as_oito_operacoes_de_modo_do_produto_tem_handler_e_tabelas_completas_no_keeper():
+    mode = {name for name in lc.ADAPTER_INPUTS if name in PRODUCT["operations"]}
+    assert mode == set(PRODUCT["operations"]) == set(PRODUCT["handlers"]) and len(mode) == 8
+    assert {name for name, module in PRODUCT["handlers"].items() if module == "promote_mode_effects"} == set(PRODUCT["calls"])
+    assert set(PRODUCT["calls"]) == set(PRODUCT["steps"]) == set(PRODUCT["methods"])
+    assert all(name in lc.ADAPTER_STAGES and name in lc.ADAPTER_OBSERVATIONS for name in mode)
+
+
+@pytest.mark.parametrize("operation", sorted(PRODUCT["calls"]))
+def test_chamadas_sdk_de_cada_efeito_do_produto_usam_so_a_sessao_de_promotion_do_keeper(operation):
+    _, alias, context, _ = lc.MODE_SESSION_OPERATIONS[operation]
+    assert context == "promotion"
+    assert {call[0] for call in PRODUCT["calls"][operation]} <= {alias}
+    assert {call[1:] for call in PRODUCT["calls"][operation]} <= set(PRODUCT["sdk"].values())
 
 
 def test_oito_sessoes_de_promotion_sao_as_operacoes_de_modo_do_produto():
