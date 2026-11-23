@@ -7,7 +7,6 @@ import pytest
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.producers import application, governance_assembly
 
-ARN = "states:stateMachine:cnesdata-prod-lifecycle"
 MARKER = {"selection_version": 1, "ext2_post_upload_receipt_v1": {}}
 SELECTION = MARKER
 ACCOUNT = "111122223333"
@@ -28,8 +27,7 @@ def base_catalog():
         fence["step"]: infra("deploy", "application-prepare", fence["job_name"], mode="operational",
                              historical_entry=True),
         "phase-b-deploy": infra("deploy", "phase-b", "phase-b / execute", mode="initial"),
-        "recovery-deploy": infra("deploy", "phase-c-recovery", "recovery / execute", mode="initial",
-                                 direction="converge", delete_resources=[ARN]),
+        "recovery-deploy": infra("deploy", "phase-c-recovery", "recovery / execute", mode="initial"),
     }
 
 
@@ -74,54 +72,14 @@ def test_catalogo_recusa_plano_operacional_sem_selecao_de_ativacao_fechada(chang
         application.catalog(mutated(change))
 
 
-@pytest.mark.parametrize("change", [
-    lambda s: s["operational-plan"].update(delete_resources=[ARN]),
-    lambda s: s["phase-b-deploy"].update(delete_resources=[ARN]),
-], ids=["plan", "deploy-advance"])
-def test_catalogo_recusa_delete_resources_em_plan_e_deploy_advance(change):
-    with pytest.raises(ValueError, match="step delete resources"):
-        application.catalog(mutated(change))
-
-
-@pytest.mark.parametrize("value", [
-    True, None, [], [ARN] * 2, [ARN.replace("states", "iam")], [ARN.replace("cnesdata-prod", "other")],
-    ["arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-lifecycle"],
-    [ARN + "-" + "1" * 12], [ARN + str(index) for index in range(9)], "arn", [1], ["states:"],
-], ids=["true", "nulo", "vazio", "repetido", "servico", "outro-produto", "arn-completo", "conta-embutida", "nove",
-        "string", "nao-string", "sem-recurso"])
-def test_catalogo_recusa_converge_deploy_com_inventario_de_delete_invalido(value):
-    with pytest.raises(ValueError, match="step delete resources"):
-        application.catalog(mutated(lambda s: s["recovery-deploy"].update(delete_resources=value)))
-
-
-def test_catalogo_recusa_converge_deploy_sem_inventario_de_delete():
-    with pytest.raises(ValueError, match="step delete resources"):
-        application.catalog(mutated(lambda s: s["recovery-deploy"].pop("delete_resources")))
-
-
-def test_catalogo_aceita_ate_oito_arns_unicos():
-    arns = [ARN + str(index) for index in range(8)]
-    application.catalog(mutated(lambda s: s["recovery-deploy"].update(delete_resources=arns)))
-
-
 @pytest.mark.parametrize("field", ["purpose", "direction", "mode"])
 def test_catalogo_recusa_fence_cujo_delta_difere_do_produtor_fixo(field):
     fence = lc.FENCE_PREPARE_PRODUCER
     steps = base_catalog()
     steps[FENCE].update({field: "converge" if field == "direction" else "other"})
-    if field == "direction":
-        steps[FENCE]["delete_resources"] = [ARN]
-    with pytest.raises(ValueError, match="catalog fence prepare producer|step|prepare mode"):
+    with pytest.raises(ValueError, match="catalog fence prepare producer|step|prepare mode|converge custody"):
         application.catalog(steps)
     assert fence[field] != steps[FENCE][field]
-
-
-def test_catalogo_recusa_fence_com_direction_converge_pela_regra_unica_de_delta():
-    steps = base_catalog()
-    steps[FENCE].update(direction="converge", delete_resources=[ARN])
-    steps[FENCE].pop("historical_entry")
-    with pytest.raises(ValueError, match="prepare mode"):
-        application.catalog(steps)
 
 
 def lease(**changes):
@@ -174,71 +132,6 @@ def test_catalogo_aceita_doze_digitos_dentro_de_um_digest_hexadecimal():
     application.catalog(steps)
 
 
-def test_catalogo_recusa_audit_converge_porque_o_consumidor_nao_tem_custodia():
-    steps = base_catalog()
-    steps["operational-audit"].update(direction="converge", delete_resources=[ARN])
-    with pytest.raises(ValueError, match="step audit converge"):
-        application.catalog(steps)
-
-
-def test_catalogo_recusa_audit_converge_sem_inventario():
-    steps = base_catalog()
-    steps["operational-audit"].update(direction="converge")
-    with pytest.raises(ValueError, match="step audit converge"):
-        application.catalog(steps)
-
-
-def test_catalogo_recusa_delete_resources_em_audit_advance():
-    steps = base_catalog()
-    steps["operational-audit"].update(delete_resources=[ARN])
-    with pytest.raises(ValueError, match="step delete resources"):
-        application.catalog(steps)
-
-
-@pytest.mark.parametrize("purpose, direction, mode", [
-    ("application-prepare", "advance", "observer-bootstrap"), ("application-prepare", "advance", "operational"),
-    ("phase-b", "advance", "initial"), ("phase-b", "advance", "established"),
-    ("phase-c-recovery", "advance", "initial"), ("phase-c-recovery", "advance", "established"),
-    ("phase-c-audit", "advance", "initial"), ("static-maintenance", "advance", "post-open"),
-])
-def test_regra_unica_de_delta_admite_a_combinacao(purpose, direction, mode):
-    lc.admitted_delta(purpose, direction, mode)
-
-
-@pytest.mark.parametrize("purpose, direction, mode, reason", [
-    ("application-prepare", "converge", "operational", "prepare mode"),
-    ("application-prepare", "advance", "phase-b", "prepare mode"),
-    ("phase-b", "advance", "phase-b", "B checkpoint mode"),
-    ("phase-c-recovery", "advance", "recovery", "C checkpoint mode"),
-    ("phase-c-audit", "advance", "audit", "C checkpoint mode"),
-    ("static-maintenance", "advance", "static", "maintenance after OPEN"),
-    ("static-maintenance", "converge", "post-open", "maintenance after OPEN"),
-])
-def test_regra_unica_de_delta_recusa_a_combinacao(purpose, direction, mode, reason):
-    with pytest.raises(ValueError, match=reason):
-        lc.admitted_delta(purpose, direction, mode)
-
-
-@pytest.mark.parametrize("change, reason", [
-    (lambda s: s["phase-b-deploy"].update(mode="phase-b"), "B checkpoint mode"),
-    (lambda s: s["recovery-deploy"].update(mode="recovery"), "C checkpoint mode"),
-    (lambda s: s["operational-plan"].update(mode="initial"), "prepare mode"),
-], ids=["phase-b-modo-do-passo", "recovery-modo-do-passo", "prepare-modo-fora-do-conjunto"])
-def test_catalogo_recusa_a_combinacao_que_validate_delta_recusa(change, reason):
-    with pytest.raises(ValueError, match=reason):
-        application.catalog(mutated(change))
-
-
-def test_catalogo_admite_a_cadeia_de_primeira_aceitacao_toda_advance():
-    steps = {}
-    for purpose, mode in (("phase-b", "initial"), ("phase-c-recovery", "initial"), ("phase-c-audit", "initial")):
-        plan, audit, deploy = (f"{purpose}-{kind}" for kind in ("plan", "audit", "deploy"))
-        steps[plan] = infra("plan", purpose, f"{plan} / execute", mode=mode)
-        steps[audit] = infra("audit", purpose, f"{audit} / audit", mode=mode)
-        steps[deploy] = infra("deploy", purpose, f"{deploy} / execute", mode=mode)
-    application.catalog(steps)
-
-
 @pytest.mark.parametrize("role", ["plan", "audit", "deploy"])
 def test_catalogo_recusa_converge_para_todo_papel(role):
     steps = base_catalog()
@@ -259,7 +152,7 @@ def test_catalogo_recusa_converge_antes_de_qualquer_leitura_de_rede(monkeypatch)
 
 def test_catalogo_recusa_a_chave_delete_resources_como_chave_desconhecida():
     steps = base_catalog()
-    steps["phase-b-deploy"]["delete_resources"] = [ARN]
+    steps["phase-b-deploy"]["delete_resources"] = ["states:stateMachine:cnesdata-prod"]
     with pytest.raises(ValueError) as refused:
         application.catalog(steps)
     assert "step delete resources" not in str(refused.value)

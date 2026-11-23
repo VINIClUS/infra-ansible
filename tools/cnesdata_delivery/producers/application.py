@@ -13,7 +13,7 @@ ACTIVATION_MARKER = c.canonical({"selection_version": 1, "ext2_post_upload_recei
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMON = "role purpose job_name producer_job admission_steps input_jobs"
 INFRA = COMMON + " mode direction"
-OPTIONAL = ("historical_entry", "activation_selection", "delete_resources")
+OPTIONAL = ("historical_entry", "activation_selection")
 ROLES = ("plan", "deploy", "audit", "application")
 PIECES = frozenset("""
     lifecycle_steps_sha256 source_closure_sha256 lifecycle_predecessor predecessor_read application_configuration
@@ -166,25 +166,13 @@ def _activation_selection(value):
         c.require(c.canonical(value["activation_selection"]) == ACTIVATION_MARKER, "step activation selection")
 
 
-def _delete_resources(value):
-    inventory = value.get("delete_resources")
-    if value["direction"] == "advance" or value["role"] in {"plan", "audit"}:
-        c.require(inventory is None and "delete_resources" not in value, "step delete resources")
-        return
-    c.require(type(inventory) is list and 1 <= len(inventory) <= 8 and len(set(inventory)) == len(inventory)
-              and all(type(item) is str and provenance.RESOURCE_IDENTIFIER.fullmatch(item) is not None
-                      and "cnesdata-prod" in item and c.ACCOUNT_LIKE.search(item) is None
-                      for item in inventory), "step delete resources")
-
-
 def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
-    c.require((value["role"], value["direction"]) != ("audit", "converge"), "step audit converge")
+    c.require(value["direction"] == "advance", "lifecycle converge custody unavailable")
     lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
     _historical_entry(value)
     _activation_selection(value)
-    _delete_resources(value)
 
 
 def step(role, purpose, *, job_name, producer_job, admission_steps, input_jobs=None, **infra):
