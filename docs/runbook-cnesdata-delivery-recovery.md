@@ -140,8 +140,8 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 
 | Item | Estado | Observacao |
 |---|---|---|
-| DR1 (R21): dois tokens OIDC no mesmo job | rodou | resultado registrado so no registro privado do dono; nao verificavel por este arquivo |
-| DR2 (R24): secret de environment ate o reusable por nome | rodou | a O18 (custodia do DD-6) continua aberta ate o dono registrar a resposta |
+| DR1 (R21): dois tokens OIDC no mesmo job | rodou | passou; registrado no comentario 7050257778 do #55 (emenda de escopo ratificada) |
+| DR2 (R24): secret de environment ate o reusable por nome | rodou | passou em 2026-11-19; O18 (custodia do DD-6) fechada pelo comentario 7050257778 do #55, por decisao delegada da coordenadora |
 | DR3: `referenced_workflows` com varias chamadas do mesmo reusable | rodou | dependencia declarada: o numero de chamadas de plan e deploy por run depende do DR3 (spec de integracao do application); o resultado medido nao e reproduzido aqui |
 | Sonda O2: teto do secret | rodou (2026-11-20) | maior aceito 47 952 B (HTTP 422 em 47 953 B); job sem environment recebeu 0 B |
 | DR4: leituras cross-repo com `github.token` no job assemble do infra-ansible (runs e attempts do CnesData, artefatos, zip, compare, check-runs) | pendente, nao rodou | a lista das leituras e a do proprio item; auditoria do P18 no #98 |
