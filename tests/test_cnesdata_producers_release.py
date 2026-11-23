@@ -469,3 +469,20 @@ def test_render_do_cli_recusa_o_manifesto_inline_pelo_cruzamento(tmp_path, capsy
     assert render_cli(tmp_path, document_with(application_product_source_manifest={"files": {}})) == 1
     seen = capsys.readouterr()
     assert seen.out == "" and seen.err == "refused reason=governance key=application_product_source_manifest\n"
+
+
+def test_sessoes_da_cadeia_de_expiracao_incluem_o_audit_com_o_inicio_do_plan():
+    assert governance_assembly.SESSION_ROLES == ("plan", "deploy", "audit", "application")
+    pins = {"plan": pin_at(), "deploy": pin_at(), "audit": pin_at()}
+    governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
+
+
+@pytest.mark.parametrize("audit", [
+    pin_at(observed_at="2026-11-20T12:00:01Z"),
+    pin_at(expires_at="2026-11-20T14:59:59Z"),
+    pin_at(frozen_until="2026-11-20T15:59:59Z"),
+], ids=["inicio-diferente-do-plan", "expira-antes-da-prova", "congela-antes-do-fim"])
+def test_cruzamento_recusa_pin_do_audit_fora_da_cadeia_de_expiracao(audit):
+    pins = {"plan": pin_at(), "audit": audit}
+    with pytest.raises(ValueError, match="expiry chain violated element=pin role=audit"):
+        governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
