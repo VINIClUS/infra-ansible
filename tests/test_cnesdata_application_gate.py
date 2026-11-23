@@ -4897,20 +4897,24 @@ def _phase_b_material(**changes):
 
 
 PRODUCT_CLOSED_READY_ORIGIN = {
-    "commit": "b52bece9a3f1756acb148c57dbb02842a67813ec",
-    "scripts/promotion/promote_ready.py": "9ad21a169af0c4654985e78e9631d05c12f2219e7842b7e95bab57697751960b",
-    "scripts/promotion/_closed_ready.py": "d36d6d48b226b3157bd1ec45ccca2ff96a2b6b263c634c7cde372497d60311af",
-    "scripts/promotion/_adapter_abi.py": "f14d7becdaff7c00d7d2bdbb1fb9f6b2f27f8702380e22d6e046fb3b8aa112bc"}
-VENDORED_CLOSED_READY_SHA256 = "5df000fa1fe97ccdfd173a3ef5c82e33b6e5e12759ff6ba2083451f5d5cdbcf0"
+    "commit": "c7b1ece1b030073570a63f8327b7c9bb13142acb",
+    "scripts/promotion/promote_ready.py": "940dbb3f889c4d846eccc523dfdc40346e78ecd838dbc626ab1ccf7695c0eae2",
+    "scripts/promotion/_closed_ready.py": "c2b9e1111e297f7b84f047bc1e2e7117c07ee8a7bd3064b87f7d7bd0f658b25b",
+    "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
+    "scripts/promotion/_stage_windows.py": "2a8ae63dccf35b32d2954384c3ada2a7c6d393113f04d7e4924fd860c75fa412"}
+VENDORED_CLOSED_READY_SHA256 = "6abda86ea52acde970817ff449f41a114b0c51691e141e465b1876f0dc5b7c32"
 
 
-def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadline):
-    """Vendored from CnesData b52bece9: promote_ready.closed_ready field checks (_adapter_abi document/closed/versioned/
-    frozen_members, membership and binding) and _closed_ready.build_closed_ready kind/close_hash/common/stage_deadline."""
+def _product_closed_ready_fields(inputs, *, activation_sha256, windows, admitted, deadline):
+    """Vendored from CnesData c7b1ece1: promote_ready.closed_ready field checks (_adapter_abi document/closed/versioned/
+    close_drain_document/frozen_members, membership and binding), _stage_windows governed_windows/later_seconds and
+    _closed_ready.build_closed_ready kind/close_hash/common/stage_deadline."""
     import json
     from datetime import datetime
     from test_cnesdata_stage_events import (PRODUCT_CLOSE_DRAIN_FIELDS, PRODUCT_FROZEN_MEMBER_FIELDS, PRODUCT_MEMBERSHIP_FIELDS,
                                             PRODUCT_PHASE_B_FIELDS)
+    bounds = {"phase-b": (360, 720), "api": (180, 360), "static": (180, 360), "unit": (120, 360),
+              "phase-c-recovery": (240, 660), "phase-c-audit": (240, 660), "final": (60, 180)}
 
     def canonical(value):
         return (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -4938,9 +4942,32 @@ def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadlin
             raise ValueError(f"closed_ready=kind name={name}")
         return value
 
+    def governed_windows(value):
+        if not isinstance(value, dict) or set(value) != {"stages", "fixed_deadline_seconds"}:
+            raise ValueError("windows=fields")
+        stages, fixed = value["stages"], value["fixed_deadline_seconds"]
+        if not isinstance(stages, dict) or set(stages) != set(bounds):
+            raise ValueError("windows=stages")
+        for name, (low, high) in bounds.items():
+            if type(stages[name]) is not int or not low <= stages[name] <= high:
+                raise ValueError(f"windows=stage stage={name} value={stages[name]} min={low} max={high}")
+        if sum(stages.values()) > 1830:
+            raise ValueError(f"windows=sum sum={sum(stages.values())} ceiling=1830")
+        if type(fixed) is not int or fixed != sum(stages.values()) + 420:
+            raise ValueError(f"windows=fixed value={fixed} expected={sum(stages.values()) + 420}")
+        return value
+
+    def close_drain_document(raw):
+        value = closed(document(raw, "close-drain"), PRODUCT_CLOSE_DRAIN_FIELDS, "close-drain")
+        if type(value["version"]) is not int or value["version"] != 2 or value["kind"] != "close-drain":
+            raise ValueError("closed_ready=kind name=close-drain")
+        if governed_windows(value["windows"]) != windows:
+            raise ValueError("closed_ready=windows")
+        return value
+
     def moment(text):
         return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-    close = versioned(inputs["close-drain"], "close-drain", PRODUCT_CLOSE_DRAIN_FIELDS)
+    close = close_drain_document(inputs["close-drain"])
     phase = versioned(inputs["phase-b"], "phase-b", PRODUCT_PHASE_B_FIELDS)
     membership = closed(document(inputs["membership"], "membership"), PRODUCT_MEMBERSHIP_FIELDS, "membership")
     if not isinstance(membership["members"], list) or membership["frozen_membership_sha256"] != c.sha(canonical(membership["members"])):
@@ -4956,8 +4983,10 @@ def _product_closed_ready_fields(inputs, *, activation_sha256, admitted, deadlin
         raise ValueError("closed_ready=close_hash")
     if common != phase["common"]:
         raise ValueError("closed_ready=original_exclusion")
+    stages, order = close["windows"]["stages"], list(bounds)
+    api, later = stages["api"], sum(stages[name] for name in order[order.index("api") + 1:])
     fixed, after = moment(close["fixed_deadline"]), moment(phase["observed_at"])
-    if not (after <= admitted < deadline <= min(fixed, admitted + 180) and fixed - admitted >= 1440):
+    if not (after <= admitted < deadline <= min(fixed, admitted + api) and fixed - admitted >= api + later + 420):
         raise ValueError("closed_ready=stage_deadline")
     return phase
 
@@ -4966,7 +4995,7 @@ def test_copia_vendorizada_do_closed_ready_do_produto_so_muda_junto_com_a_origem
     """infra-ansible CI cannot import CnesData: a refresh of the vendored check updates its origin and this digest together."""
     import inspect
     assert set(PRODUCT_CLOSED_READY_ORIGIN) == {"commit", "scripts/promotion/promote_ready.py", "scripts/promotion/_closed_ready.py",
-                                                "scripts/promotion/_adapter_abi.py"}
+                                                "scripts/promotion/_adapter_abi.py", "scripts/promotion/_stage_windows.py"}
     assert c.sha(inspect.getsource(_product_closed_ready_fields).encode()) == VENDORED_CLOSED_READY_SHA256
 
 
@@ -4981,7 +5010,8 @@ def test_produto_recusa_o_checkpoint_do_lifecycle_que_a_base_pinava_como_phase_b
     world = _phase_b_material()
     with pytest.raises(ValueError, match="^closed_ready=fields name=phase-b$"):
         _product_closed_ready_fields(_product_inputs(world, world.arguments["published"]["checkpoint.json"]),
-                                     activation_sha256=world.close["common"]["activation_sha256"], admitted=960, deadline=1140)
+                                     activation_sha256=world.close["common"]["activation_sha256"], windows=WINDOWS,
+                                     admitted=960, deadline=1140)
 
 
 def test_bytes_phase_b_do_keeper_passam_na_checagem_de_campos_do_closed_ready_do_produto():
@@ -4989,9 +5019,28 @@ def test_bytes_phase_b_do_keeper_passam_na_checagem_de_campos_do_closed_ready_do
     world = _phase_b_material()
     raw = ag.api_phase_b_evidence(**world.arguments)
     phase = _product_closed_ready_fields(_product_inputs(world, raw), activation_sha256=world.close["common"]["activation_sha256"],
-                                         admitted=960, deadline=1140)
+                                         windows=WINDOWS, admitted=960, deadline=1140)
     assert phase["observed_at"] == c.utc(950) and phase["apply_sha256"] == c.sha(world.arguments["published"]["checkpoint.json"])
     assert phase["audit_sha256"] == c.sha(world.arguments["published"]["approval.json"])
+
+
+API_179 = {"stages": WINDOWS["stages"] | {"api": 179}, "fixed_deadline_seconds": 2069}
+ABSENT = object()
+
+
+@pytest.mark.parametrize(("change", "windows", "reason"), [
+    pytest.param({"version": 1}, WINDOWS, "^closed_ready=kind name=close-drain$", id="close-drain-v1"),
+    pytest.param({"windows": ABSENT}, WINDOWS, "^closed_ready=fields name=close-drain$", id="close-drain-v2-sem-janelas"),
+    pytest.param({}, MINIMUM_WINDOWS, "^closed_ready=windows$", id="janelas-diferentes-das-do-request"),
+    pytest.param({"windows": API_179}, API_179, "^windows=stage stage=api value=179 min=180 max=360$", id="api-abaixo-do-minimo"),
+])
+def test_closed_ready_do_produto_so_aceita_close_drain_v2_com_as_janelas_governadas_do_request(change, windows, reason):
+    world = _phase_b_material()
+    close = {key: value for key, value in (world.close | change).items() if value is not ABSENT}
+    inputs = {"close-drain": world.g.canonical(close), "phase-b": b"", "membership": b""}
+    with pytest.raises(ValueError, match=reason):
+        _product_closed_ready_fields(inputs, activation_sha256=close["common"]["activation_sha256"], windows=windows,
+                                     admitted=960, deadline=1140)
 
 
 def test_evidencia_phase_b_do_keeper_passa_no_validate_closed_ready_do_host_gate():

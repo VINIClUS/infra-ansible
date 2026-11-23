@@ -505,7 +505,7 @@ PRODUCT_FROZEN_MEMBER_FIELDS = frozenset({"dispatch_id", "request_sha256", "gene
                                           "resolution", "proof_sha256", "observed_at", "send_disabled_at"})
 PRODUCT_CLOSE_DRAIN_FIELDS = frozenset({"version", "kind", "common", "fence", "close_confirmed_at", "drain_observed_at",
                                         "frozen_membership_sha256", "members", "proofs", "permit", "input_expirations",
-                                        "fixed_deadline", "decision"})
+                                        "fixed_deadline", "decision", "windows"})
 PRODUCT_PHASE_B_FIELDS = frozenset({"version", "kind", "common", "close_drain_sha256", "before", "after", "plan_sha256",
                                     "audit_sha256", "apply_sha256", "routes", "observed_at"})
 PRIOR_ARTIFACT = (c.REPOSITORY, 31)
@@ -1043,7 +1043,8 @@ def test_phase_b_handler_roda_o_closed_ready_no_estagio_api_com_os_insumos_que_o
     assert inputs["activation"] == world.activation and request["activation_sha256"] == c.sha(world.activation)
     assert inputs["close-drain"] == world.close_raw
     close = c.loads(inputs["close-drain"], canonical=True)
-    assert set(close) == PRODUCT_CLOSE_DRAIN_FIELDS
+    assert set(close) == PRODUCT_CLOSE_DRAIN_FIELDS and (close["version"], close["kind"]) == (2, "close-drain")
+    assert close["windows"] == request["stage"]["windows"]
     membership = c.loads(inputs["membership"], canonical=True)
     assert set(membership) == PRODUCT_MEMBERSHIP_FIELDS and membership["members"] == close["members"] == FROZEN
     assert membership["frozen_membership_sha256"] == close["frozen_membership_sha256"] == c.sha(c.canonical(FROZEN))
