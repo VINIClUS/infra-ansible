@@ -189,3 +189,20 @@ def test_assemble_do_deploy_nao_baixa_o_artefato_de_observacao_do_proprio_run(do
     steps = document["jobs"]["assemble"]["steps"]
     download = next(step for step in steps if step["name"].startswith("Download the observations"))
     assert "inputs.role" in download["if"] and "audit" in download["if"] and "deploy" not in download["if"]
+
+
+def artifact_names_of(document):
+    names = []
+    for job in document["jobs"].values():
+        for step in job["steps"]:
+            name = (step.get("with") or {}).get("name")
+            if type(name) is str and name.startswith("delivery-"):
+                names.append(name)
+    return names
+
+
+def test_nomes_dos_artefatos_do_observe_e_do_assemble_levam_o_role_para_plan_e_audit_nao_colidirem(document):
+    names = artifact_names_of(document)
+    assert names and all("${{ inputs.role }}" in name for name in names)
+    rendered = {role: {name.replace("${{ inputs.role }}", role) for name in names} for role in ("plan", "audit")}
+    assert rendered["plan"].isdisjoint(rendered["audit"])
