@@ -23,7 +23,8 @@ descendente vivo, leitura de readback divergente): TTL nunca e takeover (`coordi
 ou se esta `released` e `previous_success(value)` e verdadeiro. Para lifecycle v1 isso chama
 `previous_terminal` (`application_gate.py`), que autentica o terminal publicado e exige
 `promotion_status == "accepted"`; um terminal `failed` recusa com "failed terminal requires exact
-reviewed recovery acceptance". Para o fluxo legado, `previous_success` (`runtime.py`) autentica recibo,
+reviewed recovery acceptance" dentro de `previous_terminal`; como `previous_success` engole a excecao
+(`runtime.py`), o acquire em si falha com "held/recovery_required". Para o fluxo legado, `previous_success` (`runtime.py`) autentica recibo,
 envelope, evidencia do lease e checkpoint do run anterior, e qualquer excecao devolve falso ("retain
 coordinator and demand reviewed recovery").
 
@@ -58,9 +59,10 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 1. Revisao pelo dono, por escrito (data, run, causa, evidencia retida, decisao), antes de mexer no lease.
    Se o estado e `held`/`recovery_required` ou ha duvida sobre o estado da fence ou das rotas, a
    recuperacao do ambiente (host, rotas, restauracao) vem antes e fora deste runbook.
-2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente**. Condicoes: escrita
-   condicional (precondicao no etag lido no passo 1), uma escrita, aprovada pelo dono, sem nenhum run em
-   andamento, e leitura de volta confirmando a ausencia. Efeito colateral a decidir na revisao: o acquire
+2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente**. Nao ha caminho de
+   remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do dono. Condicoes:
+   precondicao no etag lido no passo 1 quando o mecanismo a suportar, uma escrita, aprovada pelo dono,
+   sem nenhum run em andamento, e leitura de volta confirmando a ausencia. Efeito colateral a decidir na revisao: o acquire
    seguinte com objeto ausente parte da geracao 1 (`previous_generation = 0`), e o lifecycle
    (`generation` do predecessor, `predecessor_read`) pode exigir que o proximo run se encadeie ao
    predecessor original; confirmar na governanca antes do reset.
@@ -102,11 +104,12 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 3. **O CLI entrega a um environment por chamada e `rotate` gera uma chave nova a cada chamada.** Nao
    repita `rotate` para o `cnesdata-observer`: os dois environments teriam chaves diferentes e o gate
    recusaria o relatorio do observador. Entregue a mesma chave ao observador pelo pipe, sem argv:
-   `secret-tool lookup service cnesdata-delivery kind report_hmac_key | gh secret set REPORT_HMAC_KEY
-   --repo <repo> --env cnesdata-observer`. Uma melhoria do CLI (entregar a chave local a um segundo
+   `secret-tool lookup service cnesdata-delivery kind report_hmac_key | tr -d '\n' | gh secret set
+   REPORT_HMAC_KEY --repo <repo> --env cnesdata-observer` (o CLI grava a chave sem quebra de linha;
+   o `tr` remove qualquer uma que o `secret-tool` acrescente, e o valor entregue tem 64 caracteres). Uma melhoria do CLI (entregar a chave local a um segundo
    environment) fica como item aberto, nao como requisito.
 4. Quarto lugar: gravar a mesma chave no store privado de evidencia por stdin (por exemplo
-   `secret-tool lookup ... | <upload do dono lendo stdin>`), com criptografia do store; a quarta copia nao
+   `secret-tool lookup ... | tr -d '\n' | <upload do dono lendo stdin>`), com criptografia do store; a quarta copia nao
    tem comando no CLI.
 5. Governanca: renderizar de novo o documento com `report_hmac_key` igual a chave nova (`render` roda
    `crosscheck`, recusa chave fora de 64 hex e teto acima de 40 960 B; o teto de escrita do GitHub e
@@ -117,8 +120,8 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 
 ### 2.3 Verificacao (sem expor a chave)
 
-- Presenca: `secret-tool lookup service cnesdata-delivery kind report_hmac_key | wc -c` (64 mais a
-  quebra de linha) e `gh secret list --repo <repo> --env <environment>` mostram `REPORT_HMAC_KEY` com data
+- Presenca: `secret-tool lookup service cnesdata-delivery kind report_hmac_key | tr -d '\n' | wc -c`
+  (esperado: 64) e `gh secret list --repo <repo> --env <environment>` mostram `REPORT_HMAC_KEY` com data
   de atualizacao nova nos dois environments. Nunca imprima o valor.
 - Igualdade entre os quatro lugares: comparar sha256 de cada copia obtida por stdin, nunca o valor.
 - Relatorio: o gate recomputa `_facts` e aceita o relatorio do observador; um relatorio produzido com a
@@ -126,15 +129,22 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
 - Higiene: grep dos logs do run e dos artefatos por 64 hex derivado da chave e por `report_hmac_key` com
   valor; zero ocorrencias.
 
+### 2.4 Notas do ambiente do dono
+
+- O venv do dono precisa de PyYAML: `release_guard` importa `yaml` no nivel do modulo, inclusive para
+  `render` e `key`.
+- Pins em modo CI exigem uma execucao local do observador pelo dono, com a mesma versao de policy padrao.
+- Para o job assemble so "Re-run all jobs" pode ter sucesso.
+
 ## 3. Registro dos drills (registro, nao gate)
 
 | Item | Estado | Observacao |
 |---|---|---|
-| DR1 (R21): dois tokens OIDC no mesmo job | rodou | resultado nos registros de decisao do #55 |
-| DR2 (R24): secret de environment ate o reusable por nome | rodou | fecha a decisao O18 da custodia do DD-6 |
-| DR3: `referenced_workflows` com varias chamadas do mesmo reusable | rodou | limita chamadas de plan e deploy por run |
+| DR1 (R21): dois tokens OIDC no mesmo job | rodou | resultado registrado so no registro privado do dono; nao verificavel por este arquivo |
+| DR2 (R24): secret de environment ate o reusable por nome | rodou | a O18 (custodia do DD-6) continua aberta ate o dono registrar a resposta |
+| DR3: `referenced_workflows` com varias chamadas do mesmo reusable | rodou | dependencia declarada: o numero de chamadas de plan e deploy por run depende do DR3 (spec de integracao do application); o resultado medido nao e reproduzido aqui |
 | Sonda O2: teto do secret | rodou (2026-11-20) | maior aceito 47 952 B (HTTP 422 em 47 953 B); job sem environment recebeu 0 B |
-| DR4: leituras cross-repo com `github.token` no job assemble do infra-ansible (runs e attempts do CnesData, artefatos, zip, compare, check-runs) | pendente, nao rodou | lista em `p18-audit3/verdict.md` |
+| DR4: leituras cross-repo com `github.token` no job assemble do infra-ansible (runs e attempts do CnesData, artefatos, zip, compare, check-runs) | pendente, nao rodou | a lista das leituras e a do proprio item; auditoria do P18 no #98 |
 | Presenca dos revisores (R22) | pendente, na janela | avisar os revisores; o caller inicia o job do application primeiro |
 
 Aprovacoes de environment (decisao do dono, 2026-11-21): a coordenadora as faz por `gh api` com o token do
@@ -142,6 +152,7 @@ dono e para se houver recusa; nao se tenta outro caminho.
 
 Ordem na janela de ~24 h contada a partir da Phase A: (1) apply do `predecessor_read` na raiz de entrega;
 (2) escrita 3 da governanca (o documento carrega `predecessor_read`, entao depende do apply); (3) `execute`
-do application. Todo o conjunto cabe dentro das ~24 h da Phase A; se estourar, o predecessor deixa de ser
-aceito e a Phase A se refaz. Se os revisores perderem o alvo, o ciclo falha fechado, o lease fica preso e
+do application, sem nenhum run de gate no meio. Todo o conjunto cabe dentro das ~24 h da Phase A; se
+estourar, o predecessor deixa de ser aceito e a Phase A se refaz. Depois do reset da secao 1.4, uma nova
+Phase A reinicia o relogio de ~24 h. Se os revisores perderem o alvo, o ciclo falha fechado, o lease fica preso e
 a recuperacao e a da secao 1.
