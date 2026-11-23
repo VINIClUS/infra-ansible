@@ -27,8 +27,8 @@ def base_catalog():
         "operational-audit": infra("audit", "application-prepare", "operational-audit / audit", mode="operational"),
         fence["step"]: infra("deploy", "application-prepare", fence["job_name"], mode="operational",
                              historical_entry=True),
-        "phase-b-deploy": infra("deploy", "phase-b", "phase-b / execute", mode="phase-b"),
-        "recovery-deploy": infra("deploy", "phase-c-recovery", "recovery / execute", mode="recovery",
+        "phase-b-deploy": infra("deploy", "phase-b", "phase-b / execute", mode="initial"),
+        "recovery-deploy": infra("deploy", "phase-c-recovery", "recovery / execute", mode="initial",
                                  direction="converge", delete_resources=[ARN]),
     }
 
@@ -111,7 +111,7 @@ def test_catalogo_recusa_fence_cujo_delta_difere_do_produtor_fixo(field):
     steps[FENCE].update({field: "converge" if field == "direction" else "other"})
     if field == "direction":
         steps[FENCE]["delete_resources"] = [ARN]
-    with pytest.raises(ValueError, match="catalog fence prepare producer|step"):
+    with pytest.raises(ValueError, match="catalog fence prepare producer|step|prepare mode"):
         application.catalog(steps)
     assert fence[field] != steps[FENCE][field]
 
@@ -193,3 +193,47 @@ def test_catalogo_recusa_delete_resources_em_audit_advance():
     steps["operational-audit"].update(delete_resources=[ARN])
     with pytest.raises(ValueError, match="step delete resources"):
         application.catalog(steps)
+
+
+@pytest.mark.parametrize("purpose, direction, mode", [
+    ("application-prepare", "advance", "observer-bootstrap"), ("application-prepare", "advance", "operational"),
+    ("phase-b", "advance", "initial"), ("phase-b", "advance", "established"),
+    ("phase-c-recovery", "advance", "initial"), ("phase-c-recovery", "advance", "established"),
+    ("phase-c-audit", "advance", "initial"), ("static-maintenance", "advance", "post-open"),
+])
+def test_regra_unica_de_delta_admite_a_combinacao(purpose, direction, mode):
+    lc.admitted_delta(purpose, direction, mode)
+
+
+@pytest.mark.parametrize("purpose, direction, mode, reason", [
+    ("application-prepare", "converge", "operational", "prepare mode"),
+    ("application-prepare", "advance", "phase-b", "prepare mode"),
+    ("phase-b", "advance", "phase-b", "B checkpoint mode"),
+    ("phase-c-recovery", "advance", "recovery", "C checkpoint mode"),
+    ("phase-c-audit", "advance", "audit", "C checkpoint mode"),
+    ("static-maintenance", "advance", "static", "maintenance after OPEN"),
+    ("static-maintenance", "converge", "post-open", "maintenance after OPEN"),
+])
+def test_regra_unica_de_delta_recusa_a_combinacao(purpose, direction, mode, reason):
+    with pytest.raises(ValueError, match=reason):
+        lc.admitted_delta(purpose, direction, mode)
+
+
+@pytest.mark.parametrize("change, reason", [
+    (lambda s: s["phase-b-deploy"].update(mode="phase-b"), "B checkpoint mode"),
+    (lambda s: s["recovery-deploy"].update(mode="recovery"), "C checkpoint mode"),
+    (lambda s: s["operational-plan"].update(mode="initial"), "prepare mode"),
+], ids=["phase-b-modo-do-passo", "recovery-modo-do-passo", "prepare-modo-fora-do-conjunto"])
+def test_catalogo_recusa_a_combinacao_que_validate_delta_recusa(change, reason):
+    with pytest.raises(ValueError, match=reason):
+        application.catalog(mutated(change))
+
+
+def test_catalogo_admite_a_cadeia_de_primeira_aceitacao_toda_advance():
+    steps = {}
+    for purpose, mode in (("phase-b", "initial"), ("phase-c-recovery", "initial"), ("phase-c-audit", "initial")):
+        plan, audit, deploy = (f"{purpose}-{kind}" for kind in ("plan", "audit", "deploy"))
+        steps[plan] = infra("plan", purpose, f"{plan} / execute", mode=mode)
+        steps[audit] = infra("audit", purpose, f"{audit} / audit", mode=mode)
+        steps[deploy] = infra("deploy", purpose, f"{deploy} / execute", mode=mode)
+    application.catalog(steps)
