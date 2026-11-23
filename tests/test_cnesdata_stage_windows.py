@@ -176,13 +176,26 @@ def test_prazo_fixo_segue_a_governanca_e_o_input_deadline_continua_limitando():
 def test_close_drain_com_janelas_diferentes_das_do_keeper_e_recusado():
     windows, noon = vector(), 1_000_000
     other = vector(INITIAL | {"api": 240})
-    with pytest.raises(ValueError, match="close-drain windows"):
+    with pytest.raises(ValueError, match="^close-drain windows differ from keeper windows changed=api,fixed_deadline_seconds$"):
         lc.close_window(_prepared(windows, noon), c.canonical(_close_drain(noon, other, noon + 10**5)),
                         checkpoint_sha256="f" * 64, infra_bound=noon + 10**5, now=noon)
     legacy = _close_drain(noon, windows, noon + 10**5) | {"version": 1}
     legacy.pop("windows")
     with pytest.raises(ValueError):
         lc.close_window(_prepared(windows, noon), c.canonical(legacy), checkpoint_sha256="f" * 64,
+                        infra_bound=noon + 10**5, now=noon)
+
+
+ALL_WINDOW_FIELDS = "phase-b,api,static,unit,phase-c-recovery,phase-c-audit,final,fixed_deadline_seconds"
+
+
+@pytest.mark.parametrize(("observed", "changed"), [("extra", "other"), ("not-a-vector", ALL_WINDOW_FIELDS)])
+def test_recusa_do_close_drain_nomeia_os_campos_que_diferem_do_vetor_do_keeper(observed, changed):
+    windows, noon = vector(), 1_000_000
+    close = _close_drain(noon, windows, noon + 10**5)
+    close["windows"] = windows | {"extra": 1} if observed == "extra" else "x"
+    with pytest.raises(ValueError, match=f"^close-drain windows differ from keeper windows changed={changed}$"):
+        lc.close_window(_prepared(windows, noon), c.canonical(close), checkpoint_sha256="f" * 64,
                         infra_bound=noon + 10**5, now=noon)
 
 
@@ -193,7 +206,7 @@ def test_checkpoint_sem_janelas_ou_com_janelas_trocadas_e_recusado():
     with pytest.raises(ValueError):
         lc.checkpoint_transition(None, bare)
     swapped = previous | {"sequence": 1, "windows": vector(INITIAL | {"api": 240})}
-    with pytest.raises(ValueError, match="original stage windows"):
+    with pytest.raises(ValueError, match="^original stage windows cannot change changed=api,fixed_deadline_seconds$"):
         lc.checkpoint_transition(previous, swapped)
     out_of_bounds = previous | {"windows": {"stages": INITIAL | {"final": 30}, "fixed_deadline_seconds": 2010}}
     with pytest.raises(ValueError, match="stage window stage=final"):
@@ -302,6 +315,7 @@ HOST_REFUSALS = {
     "fixed-seconds": "^fixed_deadline_seconds value=2131 expected=2130$",
     "close-drain-v1-com-janelas": "^canonical original ClosedReady$",
     "close-drain-v2-sem-janelas": "^closed object fields$",
+    "janelas-sem-final": "^stage_windows keys=api,phase-b,phase-c-audit,phase-c-recovery,static,unit$",
 }
 
 
@@ -327,6 +341,8 @@ def test_host_gate_recusa_closed_ready_fora_das_janelas_governadas(mutation):
         close["version"] = 1
     elif mutation == "close-drain-v2-sem-janelas":
         close.pop("windows")
+    elif mutation == "janelas-sem-final":
+        windows["stages"].pop("final")
     if mutation in {"bounds", "sum", "fixed-seconds"}:
         order = list(lc.STAGES)
         close["fixed_deadline"] = g.utc(min(660 + windows["fixed_deadline_seconds"], 3600))

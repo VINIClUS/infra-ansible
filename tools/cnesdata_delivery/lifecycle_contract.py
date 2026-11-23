@@ -1466,6 +1466,15 @@ def _window_keys(value):
     return ",".join(map(str, value)) if type(value) is dict else type(value).__name__
 
 
+def _window_changes(before, after):
+    def fields(value):
+        value = value if type(value) is dict else {}
+        stages = value.get("stages") if type(value.get("stages")) is dict else {}
+        return {**{name: stages.get(name) for name in STAGES}, "fixed_deadline_seconds": value.get("fixed_deadline_seconds")}
+    old, new = fields(before), fields(after)
+    return ",".join(name for name in new if old[name] != new[name]) or "other"
+
+
 def governed_windows(value):
     """Args: windows vector. Returns: the same vector. Raises: ValueError outside the code bounds."""
     c.closed(value, "stages fixed_deadline_seconds")
@@ -1521,7 +1530,8 @@ def checkpoint_transition(previous, current):
         c.require(current["sequence"] == previous["sequence"] + 1
                   and current["preparation_deadline"] == previous["preparation_deadline"],
                   "checkpoint sequence/preparation rearm")
-        c.require(current["windows"] == previous["windows"], "original stage windows cannot change")
+        c.require(current["windows"] == previous["windows"],
+                  "original stage windows cannot change changed=" + _window_changes(previous["windows"], current["windows"]))
         if previous["close"] is not None:
             c.require(all(current[k] == previous[k] for k in ("close", "fixed_deadline", "input_deadline")),
                       "original fence cannot rearm")
@@ -1553,7 +1563,8 @@ def close_window(previous, raw, *, checkpoint_sha256, infra_bound, now):
     value = c.closed(c.loads(raw, canonical=True, limit=1024**2), CLOSE_DRAIN_FIELDS)
     c.require(type(value["version"]) is int and value["version"] == 2 and value["kind"] == "close-drain",
               "close-drain observation version/kind")
-    c.require(value["windows"] == governed_windows(previous["windows"]), "close-drain windows differ from keeper windows")
+    c.require(value["windows"] == governed_windows(previous["windows"]),
+              "close-drain windows differ from keeper windows changed=" + _window_changes(previous["windows"], value["windows"]))
     c.require(value["permit"] is None and value["decision"] is None, "original idle permit/decision")
     expirations = value["input_expirations"]
     c.require(type(expirations) is list and expirations, "original input expirations")

@@ -124,7 +124,8 @@ def governed_windows(value):
     stages, fixed = value["stages"], value["fixed_deadline_seconds"]
     require(
         type(stages) is dict and set(stages) == set(STAGE_WINDOW_BOUNDS),
-        "stage_windows keys",
+        "stage_windows keys="
+        + (",".join(map(str, stages)) if type(stages) is dict else type(stages).__name__),
     )
     for name, (low, high) in STAGE_WINDOW_BOUNDS.items():
         seconds = stages[name]
