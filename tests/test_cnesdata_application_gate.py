@@ -4522,7 +4522,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None):
             return body | {"ResponseMetadata": {"RequestId": f"req-{len(calls)}", "HTTPStatusCode": 200,
                                                 "HTTPHeaders": {"date": formatdate(now[0], usegmt=True)}}}
     class Guard:
-        window = {"admitted_at": 1000, "preparation_deadline": 1900}
+        window = {"admitted_at": 1000, "preparation_deadline": 1900, "windows": MINIMUM_WINDOWS}
         def check(self, seconds=0): pass
     kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
         authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
@@ -4700,10 +4700,11 @@ def _closed_ready_capability_case(monkeypatch, mutation=None):
     b_files = {"checkpoint.json": c.canonical(b_checkpoint), "approval.json": c.canonical(b_approval)}
     members = scope["members"]
     membership = {"frozen_membership_sha256": c.sha(c.canonical(members)), "members": members}
-    close_raw = c.canonical({"version": 1, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
+    close_raw = c.canonical({"version": 2, "kind": "close-drain", "common": {"activation_sha256": c.sha(activation)}, "fence": {},
                              "close_confirmed_at": c.utc(1000), "drain_observed_at": c.utc(1010), "members": members,
                              "frozen_membership_sha256": membership["frozen_membership_sha256"], "proofs": [], "permit": None,
-                             "input_expirations": [], "fixed_deadline": c.utc(2800), "decision": None})
+                             "input_expirations": [], "fixed_deadline": c.utc(2800), "decision": None,
+                             "windows": MINIMUM_WINDOWS})
     if mutation == "membership": membership["frozen_membership_sha256"] = "0" * 64
     prepared_at = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]["admitted_at"]
     admitted = prepared_at if mutation == "admitted" else 1300
