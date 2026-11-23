@@ -117,6 +117,7 @@ jobs:
               "session_owner.py",
               "session_policy.py",
               "signing_gate.py",
+              "static_inputs.py",
               "runtime-requirements.txt"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
@@ -234,7 +235,8 @@ jobs:
               "session_grouping.py",
               "session_owner.py",
               "session_policy.py",
-              "signing_gate.py"
+              "signing_gate.py",
+              "static_inputs.py"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
             for (const name of modules) {

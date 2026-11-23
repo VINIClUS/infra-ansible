@@ -246,47 +246,40 @@ def static_sessions(binding, operation):
     return {alias: static_session(binding, name) for alias, name in STATIC_SESSION_OPERATIONS[operation].items()}
 
 
-def s3_body_bytes(body):
-    """Queue item 3d (CnesData 9cdd452f publish_dashboard.b64): {"base64": canonical padded standard base64}."""
-    c.closed(body, "base64")
-    text = body["base64"]
-    c.require(type(text) is str and text.isascii(), "S3 Body base64 text")
-    try:
-        raw = base64.b64decode(text, validate=True)
-    except ValueError as error:
-        raise ValueError("S3 Body base64 text") from error
-    c.require(base64.b64encode(raw).decode("ascii") == text, "S3 Body canonical base64")
-    return raw
+STATIC_MEMBER_LIMIT = 8 * 1024**2
 
 
 def s3_put_body(parameters):
-    """PutObject bytes for the native call; ChecksumSHA256 is base64(sha256(bytes)) as the product sends it.
+    """PutObject Body as the dist.tar member reference {member, size, sha256}; member is the Key (P15b).
 
-    The journal's canonical request limit bounds the text; this codec adds no size of its own.
+    ChecksumSHA256 is base64 of that sha256, as the product sends it; the broker reads and checks the bytes.
     """
-    c.require(type(parameters) is dict and "Body" in parameters and type(parameters.get("ChecksumSHA256")) is str,
-              "S3 Body PutObject parameters")
-    raw = s3_body_bytes(parameters["Body"])
-    c.require(parameters["ChecksumSHA256"] == base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii"),
+    c.require(type(parameters) is dict and type(parameters.get("ChecksumSHA256")) is str, "S3 Body PutObject parameters")
+    body = c.closed(parameters.get("Body"), "member size sha256")
+    c.require(body["member"] == parameters.get("Key"), "S3 Body member")
+    c.integer(body["size"], 0, STATIC_MEMBER_LIMIT)
+    c.digest(body["sha256"])
+    c.require(parameters["ChecksumSHA256"] == base64.b64encode(bytes.fromhex(body["sha256"])).decode("ascii"),
               "S3 Body ChecksumSHA256")
-    return raw
+    return dict(body)
 
 
 def s3_body_value(stream, *, maximum):
-    """GetObject Body -> {"base64": ...}; reads at most maximum + 1 bytes and refuses past maximum."""
+    """GetObject Body -> {"sha256", "size"}; reads at most maximum + 1 bytes and refuses past maximum."""
     c.integer(maximum, 0)
-    chunks, size = [], 0
+    digest, size = hashlib.sha256(), 0
     while size <= maximum:
         chunk = stream.read(maximum + 1 - size)
         c.require(type(chunk) is bytes, "S3 Body stream bytes")
         if not chunk:
             break
-        chunks.append(chunk)
+        digest.update(chunk)
         size += len(chunk)
     c.require(size <= maximum, "S3 Body bound")
-    return {"base64": base64.b64encode(b"".join(chunks)).decode("ascii")}
+    return {"sha256": digest.hexdigest(), "size": size}
 
 
+STATIC_BUCKET = "cnesdata-prod-static-web"
 STATIC_PLAN_SCHEMA = "cnesdata.static-plan/v1"
 STATIC_PLAN_FIELDS = "schema bucket distribution_arn inventory_sha256 candidate_keys rollback_versions retire_versions multipart_keys"
 STATIC_ENTRYPOINTS = ("index.html", "theme-init.js")
@@ -601,7 +594,7 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                      "runtime-requirements.txt")
+                      "static_inputs.py", "runtime-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))
 
@@ -1230,6 +1223,7 @@ STAGES = {"phase-b": (360, 1020), "api": (180, 840), "static": (180, 660),
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
 STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static"),
                   "static": ("publish-static", "unit")}
+OPERATION_TRIGGERS = {"inventory": ("application-prepare", "observer-bootstrap")}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision")
 CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})

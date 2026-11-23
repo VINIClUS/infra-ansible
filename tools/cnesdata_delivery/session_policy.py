@@ -123,14 +123,16 @@ STATIC_SESSION_ACTIONS = {
 
 
 def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline):
-    """Publish-static session of one #498 static role: the IAM actions of its product calls, until the stage deadline.
+    """Static session of one #498 static role: the IAM actions of its product calls, until the stage deadline.
 
     Bucket, object and distribution actions in that order; the role policy still narrows keys and versions.
+    The observer has no distribution action, so inventory (no plan yet) passes distribution_arn None.
     """
     c.require(alias in STATIC_SESSION_ACTIONS, "static session alias")
     c.require(type(bucket_arn) is str and re.fullmatch(r"arn:aws:s3:::cnesdata-prod-[a-z0-9-]+", bucket_arn), "static session bucket")
-    c.require(type(distribution_arn) is str and re.fullmatch(r"arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+",
-                                                             distribution_arn), "static session distribution")
+    c.require((alias == "observer" and distribution_arn is None)
+              or (type(distribution_arn) is str and re.fullmatch(r"arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+",
+                                                                 distribution_arn) is not None), "static session distribution")
     c.integer(deadline)
     condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
     resources = (bucket_arn, bucket_arn + "/*", distribution_arn)
