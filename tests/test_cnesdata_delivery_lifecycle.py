@@ -364,7 +364,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     from pathlib import Path
     from types import SimpleNamespace
     from fixtures.cnesdata_delivery_lifecycle import mode_source_case
-    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, iam_boundary, session_owner, runtime
+    from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr, iam_boundary, session_owner, runtime, drift_catalog
     from test_cnesdata_application_gate import _phase_a_carrier_case
     carrier, _ = _phase_a_carrier_case()
     historical = lc.phase_a_originals(carrier)
@@ -468,7 +468,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(lr.shutil, "which", lambda _: str(tofu))
     monkeypatch.setattr(runtime, "_environment", lambda: {})
     monkeypatch.setattr(c, "validate_cost", lambda *args, **kwargs: None)
-    monkeypatch.setattr(c, "drift_coverage", lambda *args, **kwargs: None)
+    coverage_calls = []
+    monkeypatch.setattr(c, "drift_coverage", lambda *args, **kwargs: coverage_calls.append((args, kwargs)))
     commands, produced, published = [], [], []
     after_apply = step.pop("after_apply", False)
     if after_apply:
@@ -512,6 +513,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     elif after_apply:
         lr.execute("deploy")
         assert commands == ["init", "show", "apply"] and len(produced) == len(published) == 1
+        assert [(args[5], kwargs["specs"]) for args, kwargs in coverage_calls] == [("before", []), ("after", [])]
+        assert all(kwargs["envelope"] is drift_catalog.LIFECYCLE_ENVELOPE for _, kwargs in coverage_calls)
         kwargs = produced[0]
         assert kwargs["inputs_raw"] == payload["inputs.json"] and kwargs["terraform_raw"] == c.canonical(inputs)
         assert kwargs["previous_raw"] == payload["checkpoint.json"] and kwargs["approval_raw"] == payload["approval.json"]
