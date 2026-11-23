@@ -100,6 +100,18 @@ def source_closure(manifest):
     return closure
 
 
+RESOURCE_IDENTIFIER = re.compile(r"(states|scheduler|events|cloudwatch):[A-Za-z0-9_./:-]+")
+INVENTORY_REGION = "us-east-2"
+
+
+def _composed_inventory(governance, identifiers):
+    account = governance["account_id"]
+    require(type(identifiers) is list and all(type(item) is str and RESOURCE_IDENTIFIER.fullmatch(item)
+                                              for item in identifiers), "lifecycle steps delete resources")
+    return [f"arn:aws:{item.partition(':')[0]}:{INVENTORY_REGION}:{account}:{item.partition(':')[2]}"
+            for item in identifiers]
+
+
 def lifecycle_objects(api, governance, manifest):
     """DD-6 (a): catalog and source closure from the authenticated manifest; governance pins only sha256."""
     require("lifecycle_steps" not in governance and "source_closure" not in governance, "inline lifecycle objects")
@@ -116,6 +128,9 @@ def lifecycle_objects(api, governance, manifest):
     steps = loads(raw, canonical=True, limit=LIFECYCLE_STEPS_LIMIT)
     require(type(steps) is dict and 1 <= len(steps) <= 256 and all(type(step) is dict for step in steps.values()),
             "lifecycle steps catalog")
+    for step in steps.values():
+        if "delete_resources" in step:
+            step["delete_resources"] = _composed_inventory(governance, step["delete_resources"])
     return {"lifecycle_steps": steps, "source_closure": closure}
 
 

@@ -152,7 +152,8 @@ def test_crosscheck_recusa_o_manifesto_inline():
 
 @pytest.mark.parametrize("change", [
     lambda s: s["operational-plan"].update(job_name="plan 111122223333 / execute"),
-    lambda s: s["phase-b-deploy"]["input_jobs"].update(x={"name": "job 123456789012", "step": "operational-plan"}),
+    lambda s: (s["operational-plan"].update(job_name="job 123456789012"),
+               s["phase-b-deploy"]["input_jobs"].update(x={"name": "job 123456789012", "step": "operational-plan"})),
     lambda s: s["operational-plan"]["activation_selection"].update(ext2_post_upload_receipt_v1={"id": "9" * 12}),
 ], ids=["job-name", "input-job", "selecao"])
 def test_catalogo_recusa_numero_de_conta_em_qualquer_lugar(change):

@@ -9,7 +9,7 @@ from tools.cnesdata_delivery import session_policy
 from tools.cnesdata_delivery.producers import governance_assembly
 
 STEP_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
-SAME_PRODUCT_ARN = re.compile(r"arn:aws:(?:states|scheduler|events|cloudwatch):us-east-2:\d{12}:[A-Za-z0-9_./:-]+")
+ACCOUNT_NUMBER = re.compile(r"\d{12}")
 ACTIVATION_REFERENCE = "ext2_post_upload_receipt_v1"
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 COMMON = "role purpose job_name producer_job admission_steps input_jobs"
@@ -176,8 +176,9 @@ def _delete_resources(value):
         c.require(inventory is None and "delete_resources" not in value, "step delete resources")
         return
     c.require(type(inventory) is list and 1 <= len(inventory) <= 8 and len(set(inventory)) == len(inventory)
-              and all(type(arn) is str and SAME_PRODUCT_ARN.fullmatch(arn) and "cnesdata-prod" in arn
-                      for arn in inventory), "step delete resources")
+              and all(type(item) is str and provenance.RESOURCE_IDENTIFIER.fullmatch(item) is not None
+                      and "cnesdata-prod" in item and ACCOUNT_NUMBER.search(item) is None
+                      for item in inventory), "step delete resources")
 
 
 def _infra(value):
@@ -237,6 +238,7 @@ def catalog(steps):
         c.require(type(name) is str and STEP_NAME.fullmatch(name) is not None, "catalog step name")
         _validate_step(value)
     _cross(steps)
+    c.require(ACCOUNT_NUMBER.search(c.canonical(steps).decode()) is None, "catalog account number")
     return c.loads(c.canonical(steps), canonical=True)
 
 
