@@ -619,6 +619,26 @@ def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_
     assert {"kind": "context-failed"} in world.keeper.uncertainty()
 
 
+@pytest.mark.parametrize("purpose", ["phase-c-recovery", "phase-c-audit"])
+def test_handler_c_de_producao_sem_nada_falsificado_recusa_primeiro_a_fonte_dos_originais(monkeypatch, purpose):
+    from test_cnesdata_stage_events import B_REFERENCE
+    from tools.cnesdata_delivery import application_gate as ag
+    production = {"mode_capability": ag.mode_capability, "mode_input_source": ag.mode_input_source}
+    world = _through_unit(monkeypatch)
+    if purpose == "phase-c-audit":
+        _c_files(world, "phase-c-recovery")
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    _c_files(world, purpose)
+    for name, function in production.items():
+        monkeypatch.setattr(ag, name, function)
+    before, contexts = _record(world), len(world.keeper._contexts)
+    world.mode.calls.clear()
+    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+        world.handlers[purpose](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls == [] and _record(world) == before and len(world.keeper._contexts) == contexts
+    assert world.store.get()[0]["status"] == "held"
+
+
 def test_capability_de_modo_e_injetada_pelo_handler_e_nao_tem_padrao():
     import inspect
     from tools.cnesdata_delivery import application_gate as ag
