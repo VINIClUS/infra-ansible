@@ -1,5 +1,4 @@
 """Guardas do broker, do STS e do handler estaticos e a publicacao contra os recibos do journal (#55, P15 rodada 1)."""
-import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -8,7 +7,7 @@ import pytest
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_stage import (ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, INVALIDATION, PAIR, ROLES,
-                                        _Evidence, _Native, _b64, _broker_case, _frame, _journal, _lifecycle, _metadata,
+                                        _Evidence, _Native, _broker_case, _frame, _journal, _lifecycle, _metadata,
                                         _publish_journal, _put, _session, _static_world)
 
 LIST = ("observer", "s3", "ListObjectVersions", {"Bucket": BUCKET})
@@ -90,23 +89,17 @@ def test_publicacao_com_tipo_de_campo_errado_recusa_pela_forma(monkeypatch, obse
     assert _lifecycle(world)["stage"] == "static"
 
 
-@pytest.mark.parametrize("length, accepted", [(96528, True), (96529, False), (97243, False), (98064, False),
-                                              (125138, False), (310126, False)])
-def test_put_object_acima_do_orcamento_recusa_com_tamanho_e_limite_antes_de_evidencia_ou_io(length, accepted):
-    ag, broker, journal, clients, evidence = _broker_case()
+@pytest.mark.parametrize("length", [96528, 96529, 97243, 98064, 125138, 310126])
+def test_put_object_dos_tamanhos_que_o_p15_recusava_passa_pelo_digest_com_pedido_abaixo_do_limite(length):
+    from test_cnesdata_static_inputs import _digest_broker, _digest_put
     body = (bytes(range(256)) * 1212)[:length]
-    role, service, operation, parameters = _put("assets/app.js")
-    parameters = parameters | {"Body": {"base64": _b64(body)}, "ChecksumSHA256": _b64(hashlib.sha256(body).digest())}
-    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters},
-                           limit=2 * 1024**2))
-    frame = _frame(role, service, operation, parameters)
-    if accepted:
-        ag._adapter_message(frame, journal)
-        assert size <= 129024 and len(clients["normal"].calls) == 1 and evidence.writes
-        return
-    with pytest.raises(ValueError, match=f"^static request size={size} limit=129024$"):
-        ag._adapter_message(frame, journal)
-    assert clients["normal"].calls == [] and evidence.writes == []
+    ag, broker, journal, clients, evidence = _digest_broker({"assets/app.js": body, "index.html": b"<html></html>\n",
+                                                             "theme-init.js": b"theme()\n"})
+    role, service, operation, parameters = _digest_put("assets/app.js", body)
+    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}))
+    ag._adapter_message(_frame(role, service, operation, parameters), journal)
+    (call,) = clients["normal"].calls
+    assert size < 1024 < ag.STATIC_REQUEST_LIMIT and call[3]["Body"] == body and evidence.writes
 
 
 def test_politica_estatica_e_exatamente_o_documento_esperado_por_alias():
@@ -207,7 +200,7 @@ def test_broker_estatico_exige_o_status_nativo_exato_de_cada_operacao(call, stat
     assert len(clients["normal"].calls) == 1 and journal.unknown
 
 
-@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (128 * 1024 + 1, False)])
+@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (8 * 1024**2 + 1, False)])
 def test_get_object_acima_do_limite_do_corpo_e_recusado(size, accepted):
     ag, broker, journal, clients, evidence = _broker_case()
     ag._adapter_message(_frame(*_put("index.html")), journal)
@@ -215,7 +208,7 @@ def test_get_object_acima_do_limite_do_corpo_e_recusado(size, accepted):
     frame = _frame("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": "index.html"})
     if accepted:
         reply, _ = ag._adapter_message(frame, journal)
-        assert reply["value"]["Body"] == {"base64": _b64(b"x" * size)}
+        assert reply["value"]["Body"] == {"sha256": c.sha(b"x" * size), "size": size}
         return
     with pytest.raises(ValueError, match="^S3 Body bound$"):
         ag._adapter_message(frame, journal)
@@ -336,7 +329,8 @@ def test_capability_recusa_recibo_do_host_sem_o_closed_ready_do_keeper_antes_do_
     minted = []
     with pytest.raises(ValueError, match="^publish-static host-receipt closed-ready binding$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
-                             operation_session=lambda *args: minted.append(args), clock=lambda: 1505)
+                             operation_session=lambda *args: minted.append(args), clock=lambda: 1505,
+                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal))
     assert minted == [] and journal._failed and store.get()[0]["status"] == "held"
 
 
