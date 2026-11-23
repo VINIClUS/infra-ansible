@@ -428,6 +428,15 @@ def digest(value, length=64):
     return value
 
 
+def gate_sha(governance, role):
+    """Args: governance, role. Returns: the reviewed reusable sha. Raises: ValueError absent, malformed or sentinel."""
+    shas = governance.get("gate_shas")
+    require(type(shas) is dict and role in shas, f"gate_shas role absent role={role}")
+    value = digest(shas[role], 40)
+    require(value != "0" * 40, f"gate_shas sentinel role={role}")
+    return value
+
+
 def integer(value, minimum=1, maximum=2**53 - 1):
     require(type(value) is int and minimum <= value <= maximum, "integer range")
     return value

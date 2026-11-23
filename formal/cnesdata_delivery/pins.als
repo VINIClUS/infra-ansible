@@ -31,7 +31,7 @@ one sig github_delivery_plan_workflow_sha, github_delivery_deploy_workflow_sha,
 one sig host_gate_workflow_sha, ext2_workflow_sha, observer_workflow_sha extends TrustPin {}
 
 abstract sig Papel {}
-one sig Plan, Deploy, Application extends Papel {}
+one sig Plan, Deploy, Application, Audit extends Papel {}
 
 one sig Governanca {
   gate_shas: Papel -> one Commit,
@@ -188,6 +188,21 @@ check mutant_diff_toca_superficie {
 check mutant_um_trust_divergente {
   (base and (some t: TrustPin | trusts_em_x_exceto[t]) and cli_x_ancestral_de_k
     and cli_k_diferente_de_x and cli_uses_do_caller_igual_a_x and cli_faixa_nao_toca_superficie
+    and caller_em_k_cita_commit_que_ja_existia) implies superficie_executada_igual_a_x
+} for 6
+
+pred base_sem_audit {
+  all p: Papel - Audit | CnesData.uses[p] = Governanca.gate_shas[p]
+  CnesData.PRODUCER_SHA = CnesData.PRODUCER
+  CnesData.HOST_GATE_SHA = CnesData.PRODUCER
+  CnesData.uses[Papel - Audit] = CnesData.PRODUCER
+  Governanca.gate_shas[Papel - Audit] = Janela.x
+  Governanca.proof_producers = Janela.k
+}
+
+check mutant_audit_fora_dos_pinos {
+  (base_sem_audit and apply_unico_da_raiz and cli_x_ancestral_de_k and cli_k_diferente_de_x
+    and cli_uses_do_caller_igual_a_x and cli_faixa_nao_toca_superficie
     and caller_em_k_cita_commit_que_ja_existia) implies superficie_executada_igual_a_x
 } for 6
 

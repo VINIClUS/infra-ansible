@@ -17,12 +17,15 @@ MUTANTES_EXIGIDOS = {
     "mutant_k_igual_x",
     "mutant_diff_toca_superficie",
     "mutant_um_trust_divergente",
+    "mutant_audit_fora_dos_pinos",
 }
 JOB_WORKFLOW_REF = re.compile(r'"token\.actions\.githubusercontent\.com:job_workflow_ref"\s*=\s*"([^"]*)"')
 INTERPOLACAO = re.compile(r"\$\{([^}]*)\}")
 VARIAVEL = re.compile(r"var(?:\.\w+)+")
 EACH_VALUE = re.compile(r"each\.value\.(\w+)")
 FOR_EACH_LOCAL = re.compile(r"for_each\s*=\s*local\.(\w+)")
+REUSABLES = ROOT / ".github/workflows"
+GATE_DE_INFRA = re.compile(r"reusable-cnesdata-infra-([a-z]+)-gate\.yml")
 SIG = re.compile(r"\b(abstract\s+)?(?:one\s+|lone\s+|some\s+)?sig\s+([\w\s,]+?)\s+extends\s+(\w+)")
 
 
@@ -125,6 +128,16 @@ def test_modelo_declara_os_mutantes_exigidos_e_runs_sat():
     texto = _modelo()
     assert MUTANTES_EXIGIDOS <= set(re.findall(r"^check\s+(mutant_\w+)", texto, re.MULTILINE))
     assert re.findall(r"^run\s+(sat_\w+)", texto, re.MULTILINE)
+
+
+def test_papeis_do_modelo_sao_os_reusables_que_leem_gate_shas():
+    infra = {achado.group(1) for arquivo in REUSABLES.glob("reusable-cnesdata-infra-*-gate.yml")
+             if (achado := GATE_DE_INFRA.fullmatch(arquivo.name))}
+    papeis = {nome.strip().lower() for sig in SIG.finditer(_modelo()) if sig.group(3) == "Papel"
+              for nome in sig.group(2).split(",")}
+    assert (REUSABLES / "reusable-cnesdata-application-gate.yml").is_file()
+    assert infra == {"plan", "deploy", "audit"}
+    assert papeis == infra | {"application"}
 
 
 def test_resolve_each_value_pelo_local_do_for_each():

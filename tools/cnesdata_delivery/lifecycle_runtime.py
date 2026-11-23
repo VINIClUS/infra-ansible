@@ -39,7 +39,7 @@ def source_admission(governance, api, role, source, run_id, attempt):
               and run["status"] == "in_progress", "original live manual attempt")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
-    pin = c.digest(governance["gate_shas"][role], 40)
+    pin = c.gate_sha(governance, role)
     refs = [x for x in run.get("referenced_workflows", []) if x["path"].startswith(path + "@")]
     c.require(len(refs) == 1 and refs[0]["path"] == path + "@" + pin and refs[0]["sha"] == pin, "immutable reusable")
     comparison = api.read(f"repos/{c.REPOSITORY}/compare/{source}...main")
@@ -1547,7 +1547,7 @@ def oidc_credentials(governance, role, restriction, run, *, duration=3600):
     c.require(type(duration) is int and duration in (900, 3600), "OIDC session duration")
     path = ("VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-application-gate.yml" if role == "application"
             else f"VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-{role}-gate.yml")
-    workflow = path + "@" + governance["gate_shas"][role]
+    workflow = path + "@" + c.gate_sha(governance, role)
     caller = governance["authenticated_application_caller"]
     c.closed(caller, lc.CALLER_BINDING_FIELDS)
     lc.application_caller_binding(caller | {"event": "workflow_dispatch", "fragment_version": 4},
