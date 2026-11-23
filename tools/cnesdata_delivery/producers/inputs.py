@@ -57,6 +57,9 @@ def _phase_a(request, observations):
             "oci-promotion-byte-integrity": observations["oci-promotion-byte-integrity"]}
 
 
+OBSERVED_ROLES = ("plan", "audit")
+
+
 def _plan_index(members, request):
     index = c.loads(_member(members["planned"], INDEX_MEMBER), canonical=True, limit=32768)
     expected = {"status": "planned", "source_sha": request["source_sha"], "purpose": request["purpose"]}
@@ -167,7 +170,7 @@ def request_from(environment):
     value = c.loads(environment["REQUEST"].encode())
     caller = producer(environment)
     references = value["references"]
-    if environment["ROLE"] == "plan":
+    if environment["ROLE"] in OBSERVED_ROLES:
         references = references | {"drift": _own_drift(environment, caller)}
     return value | {"purpose": environment["PURPOSE"], "role": environment["ROLE"],
                     "source_sha": environment["SOURCE_SHA"], "x_star": environment["X_STAR"], "producer": caller,
