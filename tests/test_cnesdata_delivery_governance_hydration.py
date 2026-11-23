@@ -462,3 +462,29 @@ def test_hidratacao_recusa_marcador_que_ja_carrega_recibo():
         {"operational-plan": RECEIPT}, {"selection_version": 1, "ext2_post_upload_receipt_v1": RECEIPT})
     with pytest.raises(ValueError, match="lifecycle steps activation receipt"):
         provenance().lifecycle_objects(api, governance, manifest)
+
+
+def valid_step(**changes):
+    return {"role": "deploy", "purpose": "phase-b", "direction": "advance", "mode": "initial", "job_name": "phase-b / execute",
+            "producer_job": "execute", "admission_steps": ["Issue credentials"], "input_jobs": {}} | changes
+
+
+def hydrate(steps):
+    manifest, governance = world_manifest(), {"source_sha": SOURCE}
+    api = Contents(objects.install(governance, manifest, steps))
+    return provenance().lifecycle_objects(api, governance, manifest)
+
+
+def test_hidratacao_admite_o_passo_que_o_produtor_admitiria():
+    assert hydrate({"phase-b-deploy": valid_step()})["lifecycle_steps"] == {"phase-b-deploy": valid_step()}
+
+
+@pytest.mark.parametrize("change, reason", [
+    ({"direction": "converge"}, "lifecycle converge custody unavailable"),
+    ({"delete_resources": ["aws_ecs_task_definition.processor"]}, "closed object fields"),
+    ({"mode": "phase-b"}, "B checkpoint mode"),
+    ({"surprise": 1}, "closed object fields"),
+], ids=["converge", "delete-resources", "modo-fora-da-regra", "chave-extra"])
+def test_hidratacao_recusa_catalogo_com_sha_igual_que_o_produtor_recusaria(change, reason):
+    with pytest.raises(ValueError, match=reason):
+        hydrate({"phase-b-deploy": valid_step(**change)})
