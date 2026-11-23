@@ -224,7 +224,7 @@ def test_membro_do_dist_tar_so_sai_com_o_tamanho_e_o_sha_da_referencia():
         si.tar_member(dist, reference | {"size": len(BIG) - 1})
     with pytest.raises(ValueError, match="^static_body=member_absent key=assets/none.js$"):
         si.tar_member(dist, reference | {"member": "assets/none.js"})
-    assert lc.STATIC_MEMBER_LIMIT == 8 * 1024**2
+    assert lc.STATIC_MEMBER_LIMIT == 1024**2
 
 
 def _digest_put(key, raw):
@@ -275,7 +275,7 @@ def test_referencia_com_sha_diferente_do_membro_e_recusada_antes_da_evidencia_e_
 @pytest.mark.parametrize("body", [{"base64": _b64(b"console.log(1)\n")},
                                   {"member": "assets/app.js", "size": 15},
                                   {"member": "assets/other.js", "size": 15, "sha256": c.sha(b"console.log(1)\n")},
-                                  {"member": "assets/app.js", "size": 8 * 1024**2 + 1, "sha256": c.sha(b"x")}])
+                                  {"member": "assets/app.js", "size": 1024**2 + 1, "sha256": c.sha(b"x")}])
 def test_put_object_so_aceita_a_referencia_do_membro_com_o_teto_por_arquivo(body):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     raw = b"console.log(1)\n"
@@ -289,6 +289,7 @@ def test_put_object_so_aceita_a_referencia_do_membro_com_o_teto_por_arquivo(body
 
 def test_binding_divergente_do_portador_e_recusado_antes_do_sts(monkeypatch):
     from test_cnesdata_application_gate import _prepare_stage_keeper
+    from test_cnesdata_static_roles import role_files
     from test_cnesdata_static_stage import _journal
     from tools.cnesdata_delivery import application_gate as ag
     keeper, store = _prepare_stage_keeper()
@@ -299,7 +300,7 @@ def test_binding_divergente_do_portador_e_recusado_antes_do_sts(monkeypatch):
     with pytest.raises(ValueError, match="^static_binding=carrier_mismatch field=release_id$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
                              operation_session=lambda *args: pytest.fail("no STS before the binding check"),
-                             clock=lambda: 1505, carrier=binding | {"release_id": "r" + "0" * 31})
+                             clock=lambda: 1505, carrier=binding | {"release_id": "r" + "0" * 31}, prepared=role_files())
     assert sessions == [] and journal._failed is True and journal in keeper._contexts
     assert store.get()[0]["status"] == "held"
 
@@ -362,7 +363,14 @@ def _inventory_world(monkeypatch, *, probe="in_progress", observation=None, obse
                                               "name": ag.INVENTORY_PROBE, "status": probe, "conclusion": None,
                                               "started_at": c.utc(1001), "completed_at": None}]
         listing["total_count"] += 1
-    world.inventory_requests, world.inventory_capability = [], []
+    world.inventory_requests, world.inventory_capability, world.observer_publication = [], [], []
+
+    def publication(*args):
+        from test_cnesdata_static_roles import role_files
+        world.events.append("observer_publication")
+        world.observer_publication.append(args)
+        return role_files(("observer",))
+    monkeypatch.setattr(ag, "_observer_publication", publication)
 
     def source(**kwargs):
         world.events.append("inventory_inputs")
@@ -379,7 +387,7 @@ def _inventory_world(monkeypatch, *, probe="in_progress", observation=None, obse
             kwargs["keeper"].attach(journal)
             raise ValueError(capability)
         broker = ag.StaticBroker.__new__(ag.StaticBroker)
-        broker.aws, broker.evidence, broker.journal = "operation-client", [], journal
+        broker.aws, broker.evidence, broker.journal, broker.child_deadline = "operation-client", [], journal, None
         broker.session = SimpleNamespace(clients={"observer": "observer-client"}, evidence="operation-client")
         journal._broker = broker
         kwargs["keeper"].attach(broker)
@@ -407,7 +415,10 @@ def test_observer_bootstrap_roda_o_inventory_e_publica_o_resultado_para_os_input
     world = _inventory_world(monkeypatch)
     before = world.store.get()[0]["lifecycle"]
     world.handlers["observer-bootstrap"](world.keeper, dict(world.github.reference))
-    assert world.events == ["inventory_inputs", "inventory_capability", "invoke_adapter", "upload", "verify_upload"]
+    from test_cnesdata_static_roles import role_files
+    assert world.events == ["inventory_inputs", "observer_publication", "inventory_capability", "invoke_adapter", "upload",
+                            "verify_upload"]
+    assert world.inventory_capability[0]["publication"] == role_files(("observer",))
     assert world.uploads == [("cnesdata-inventory-4242-1", {"inventory.json": world.values.inventory})]
     assert world.keeper.static_inventory == world.values.inventory
     assert world.keeper.static_inputs == {name: world.values.inputs[name] for name in ("candidate", "dashboard-artifact")}
@@ -657,8 +668,10 @@ def test_sessao_do_inventory_assume_so_o_observer_sp_i_ate_o_prazo_da_preparacao
     def factory(name, role, stage):
         factory_calls.append((name, dict(role), dict(stage)))
         return operation
+    from test_cnesdata_static_roles import ROLE_FACTS
     session = ag._assume_static_session(governance=EVIDENCE_GOVERNANCE, journal=journal, binding=binding, credential_limit=2000,
-                                        operation_session=factory, clock=lambda: 1100)
+                                        operation_session=factory, clock=lambda: 1100,
+                                        roles={"observer": ROLE_FACTS["observer"]})
     stage = journal._request["stage"]
     assert factory_calls == [("inventory", {"observer": names["observer"]}, stage)]
     policy = session_policy.static_session_policy("observer", bucket_arn="arn:aws:s3:::" + BUCKET, distribution_arn=None,
@@ -712,10 +725,12 @@ def test_capability_do_inventory_assume_o_sp_i_sem_plano_e_falha_fechada_retendo
         seen.append(kwargs)
         return ag._StaticSession({"observer": _Native("observer")}, "9" * 64, {"account": ACCOUNT, "bucket": BUCKET, "plan": None},
                                  1900, c.sha(c.canonical(journal._request)), "operation-client")
+    from test_cnesdata_static_roles import ROLE_FACTS, role_files
     monkeypatch.setattr(ag, "_assume_static_session", assume)
     broker = ag.inventory_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=2000,
-                                     operation_session="factory", clock=lambda: 1100)
+                                     operation_session="factory", clock=lambda: 1100, publication=role_files(("observer",)))
     (call,) = seen
+    assert call["roles"] == {"observer": ROLE_FACTS["observer"]}
     assert call["binding"] == ag._static_binding(EVIDENCE_GOVERNANCE, journal) and call["binding"]["static_plan_sha256"] is None
     assert call["operation_session"] == "factory" and call["credential_limit"] == 2000
     assert type(broker) is ag.StaticBroker and broker in keeper._contexts and journal._broker is broker
@@ -723,7 +738,7 @@ def test_capability_do_inventory_assume_o_sp_i_sem_plano_e_falha_fechada_retendo
     monkeypatch.setattr(ag, "_assume_static_session", lambda **kwargs: (_ for _ in ()).throw(ValueError("static STS refused")))
     with pytest.raises(ValueError, match="^static STS refused$"):
         ag.inventory_capability(governance=EVIDENCE_GOVERNANCE, journal=other, keeper=keeper, credential_limit=2000,
-                                operation_session="factory", clock=lambda: 1100)
+                                operation_session="factory", clock=lambda: 1100, publication=role_files(("observer",)))
     assert other._failed is True and other in keeper._contexts and store.get()[0]["status"] == "held"
 
 

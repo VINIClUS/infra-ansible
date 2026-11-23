@@ -8,6 +8,8 @@ import pytest
 
 from tools.cnesdata_delivery import contract as c
 
+from test_cnesdata_static_roles import role_readbacks
+
 IDENTITY = {"application_purpose": "promotion", "context_kind": "promotion", "caller_binding_sha256": "c" * 64}
 MINIMUM_WINDOWS = {"stages": {"phase-b": 360, "api": 180, "static": 180, "unit": 120, "phase-c-recovery": 240,
                               "phase-c-audit": 240, "final": 60}, "fixed_deadline_seconds": 1800}
@@ -490,9 +492,10 @@ def test_phase_b_publication_reads_only_the_b_checkpoint_and_approval():
 PLAN_STEP = {"role": "plan", "purpose": "application-prepare", "mode": "operational", "direction": "advance",
              "job_name": "application-prepare-plan / execute"}
 PREPARED_REFERENCE = {"job_id": 71, "artifact_id": 72, "artifact_digest": "sha256:" + "8" * 64}
+ROLE_SPECS, ROLE_REPORTS = role_readbacks()
 PREPARED_CHECKPOINT = c.canonical({"state": {"lineage": "original-lineage", "serial": 3, "state_sha256": "8" * 64},
                                    "state_object": {"status": "present", "version_id": "v3", "etag_sha256": "4" * 64},
-                                   "purpose": "application-prepare"})
+                                   "purpose": "application-prepare", "readbacks": ROLE_REPORTS})
 B_REFERENCE = {"job_id": 91, "artifact_id": 92, "artifact_digest": "sha256:" + "6" * 64}
 HOST_REFERENCE = {"job_id": 93}
 MACHINE_ARN = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
@@ -669,7 +672,8 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     prepared = lr.PreparedFence({
         "fence-prepared.json": dump("fence-prepared.json", {"activation_sha256": c.sha(activation)} | (manifest or {})),
         "fence-origins.json": dump("fence-origins.json", {"current_plan": current_plan}),
-        "approval.json": dump("approval.json", {"inputs_sha256": c.sha(raw_carrier)} | (approval or {})),
+        "approval.json": dump("approval.json", {"inputs_sha256": c.sha(raw_carrier),
+                                                "readbacks": {"before": [], "after": ROLE_SPECS}} | (approval or {})),
         "checkpoint.json": PREPARED_CHECKPOINT})
     governance = GOVERNANCE | {"lifecycle_steps": GOVERNANCE["lifecycle_steps"] | ({"application-prepare-plan": plan_step} if plan_step else {}),
         "evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "context_kind": "promotion",

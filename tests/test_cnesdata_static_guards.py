@@ -10,6 +10,8 @@ from test_cnesdata_static_stage import (ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_
                                         _Evidence, _Native, _broker_case, _frame, _journal, _lifecycle, _metadata,
                                         _publish_journal, _put, _session, _static_world)
 
+from test_cnesdata_static_roles import ROLE_FACTS, role_files
+
 LIST = ("observer", "s3", "ListObjectVersions", {"Bucket": BUCKET})
 
 
@@ -111,10 +113,12 @@ def test_politica_estatica_e_exatamente_o_documento_esperado_por_alias():
         return {"Effect": "Allow", "Action": actions, "Resource": resource, "Condition": condition}
     expected = {"observer": [allow(["s3:ListBucketVersions", "s3:ListBucketMultipartUploads"], bucket),
                              allow(["s3:GetObjectVersion", "s3:ListMultipartUploadParts"], bucket + "/*")],
-                "normal": [allow(["s3:PutObject", "s3:GetObject"], bucket + "/*"),
+                "normal": [allow(["s3:PutObject", "s3:GetObject"], [bucket + "/assets/app.js", bucket + "/index.html"]),
                            allow(["cloudfront:CreateInvalidation"], DISTRIBUTION)]}
+    keys = {"observer": None, "normal": ["assets/app.js", "index.html"]}
     for alias, statements in expected.items():
-        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000)
+        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000,
+                                                      keys=keys[alias])
         assert policy == {"Version": "2012-10-17", "Statement": statements}
 
 
@@ -200,7 +204,7 @@ def test_broker_estatico_exige_o_status_nativo_exato_de_cada_operacao(call, stat
     assert len(clients["normal"].calls) == 1 and journal.unknown
 
 
-@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (8 * 1024**2 + 1, False)])
+@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (1024**2, True), (1024**2 + 1, False)])
 def test_get_object_acima_do_limite_do_corpo_e_recusado(size, accepted):
     ag, broker, journal, clients, evidence = _broker_case()
     ag._adapter_message(_frame(*_put("index.html")), journal)
@@ -258,7 +262,7 @@ def _sts(monkeypatch, *, now, credential_limit, expiry=900, governance=EVIDENCE_
         return Operation()
 
     def assume():
-        return ag._assume_static_session(governance=governance, journal=journal, binding=binding,
+        return ag._assume_static_session(governance=governance, journal=journal, binding=binding, roles=ROLE_FACTS,
                                          credential_limit=credential_limit, operation_session=factory, clock=lambda: now)
     return assume, window, minted
 
@@ -330,7 +334,7 @@ def test_capability_recusa_recibo_do_host_sem_o_closed_ready_do_keeper_antes_do_
     with pytest.raises(ValueError, match="^publish-static host-receipt closed-ready binding$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
                              operation_session=lambda *args: minted.append(args), clock=lambda: 1505,
-                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal))
+                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal), prepared=role_files())
     assert minted == [] and journal._failed and store.get()[0]["status"] == "held"
 
 

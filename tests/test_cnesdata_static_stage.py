@@ -317,7 +317,8 @@ def _sts_case(monkeypatch, mutation=None):
                              "UserId": "AROA" + alias.upper().ljust(17, "X") + ":" + names[alias]}
     monkeypatch.setattr(aws_boundary, "AWS", Delegated)
     clock = (lambda: window["deadline"] - 40) if mutation == "late" else (lambda: 1505)
-    args = dict(governance=EVIDENCE_GOVERNANCE, journal=journal, binding=binding, credential_limit=1505 + 900,
+    from test_cnesdata_static_roles import ROLE_FACTS
+    args = dict(governance=EVIDENCE_GOVERNANCE, journal=journal, binding=binding, roles=ROLE_FACTS, credential_limit=1505 + 900,
                 operation_session=factory, clock=clock)
     return ag, args, names, calls, factory_calls, built, operation
 
@@ -331,7 +332,8 @@ def test_sessao_estatica_assume_observer_e_normal_com_os_nomes_do_498_e_a_politi
     assert [(item[0], item[1]) for item in calls] == [("sts", "assume_role"), ("sts", "assume_role")]
     for (_, _, parameters), alias in zip(calls, ("observer", "normal")):
         policy = session_policy.static_session_policy(alias, bucket_arn="arn:aws:s3:::" + BUCKET,
-                                                      distribution_arn=DISTRIBUTION, deadline=stage["deadline"])
+                                                      distribution_arn=DISTRIBUTION, deadline=stage["deadline"],
+                                                      keys=sorted(KEYS) if alias == "normal" else None)
         assert parameters == {"RoleArn": ROLES[alias], "RoleSessionName": names[alias], "DurationSeconds": 900,
                               "Policy": c.canonical(policy).decode().strip()}
         assert len(parameters["Policy"]) <= 2048
@@ -362,7 +364,8 @@ def test_politica_de_sessao_estatica_concede_so_as_acoes_das_chamadas_do_produto
               ("cloudfront:CreateInvalidation", DISTRIBUTION + "X"), ("s3:AbortMultipartUpload", bucket + "/assets/a.js")]
     role = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
     for alias, grants in allowed.items():
-        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000)
+        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000,
+                                                      keys=["assets/a.js", "index.html"] if alias == "normal" else None)
         others = [grant for name, items in allowed.items() if name != alias for grant in items]
         for action, resource in grants:
             assert effective_iam(role, [policy], action, resource, {"aws:CurrentTime": c.utc(1999)}), (alias, action)
@@ -381,10 +384,11 @@ def test_capability_recusa_o_plano_de_43_retire_versions_antes_do_sts():
     journal, _, _, _ = _journal(retire=count)
     keeper.attach(journal)
     minted = []
+    from test_cnesdata_static_roles import role_files
     with pytest.raises(ValueError, match="^static_plan=retire_versions_unsupported count=43$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
                              operation_session=lambda *a: minted.append(a), clock=lambda: 1505,
-                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal))
+                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal), prepared=role_files())
     assert minted == [] and journal._failed and {"kind": "context-failed"} in keeper.uncertainty()
     assert getattr(journal, "_broker", None) is None and store.get()[0]["status"] == "held"
 
@@ -399,10 +403,11 @@ def test_capability_recusa_plano_fora_do_inventario_do_bucket_ou_da_conta_antes_
     account = plan.pop("account", ACCOUNT)
     journal, _, _, _ = _journal(plan=plan)
     minted = []
+    from test_cnesdata_static_roles import role_files
     with pytest.raises(ValueError, match=message):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE | {"account_id": account}, journal=journal, keeper=keeper,
                              credential_limit=6000, carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal),
-                             operation_session=lambda *a: minted.append(a), clock=lambda: 1505)
+                             operation_session=lambda *a: minted.append(a), clock=lambda: 1505, prepared=role_files())
     assert minted == [] and journal._failed and journal in keeper._contexts
 
 
@@ -521,7 +526,7 @@ def _install_static(monkeypatch, world, static=None):
                 kwargs["keeper"].attach(journal)
                 raise ValueError(static["capability_error"])
             broker = ag.StaticBroker.__new__(ag.StaticBroker)
-            broker.aws, broker.evidence, broker.journal = "operation-client", [], journal
+            broker.aws, broker.evidence, broker.journal, broker.child_deadline = "operation-client", [], journal, None
             broker.session = SimpleNamespace(clients={"observer": "observer-client", "normal": "normal-client"},
                                              evidence="operation-client")
             journal._broker = broker
@@ -690,9 +695,12 @@ def test_host_handler_recusa_sem_capacidade_depois_da_capability_e_nunca_roda_o_
 @pytest.mark.parametrize("rollback, versions", [((), ()), (PAIR, PAIR + (("assets/old.js", "Old-1"),))],
                          ids=["primeira-publicacao", "par-presente"])
 def test_publicacao_de_um_candidato_cabe_nos_180_s_do_static_pela_regra_real_de_admissao(monkeypatch, rollback, versions):
-    """Broker, evidencia duravel e capability reais; so STS, S3/CloudFront nativos e o child sao fakes (10 s por chamada)."""
+    """Broker, evidencia duravel e capability reais; so STS, S3/CloudFront nativos e o child sao fakes (4 s por chamada).
+
+    O bloco das raizes reserva 100 s (5 chamadas de 20 s): com 4 s por chamada o primeiro put de raiz ainda tem folga.
+    """
     from test_cnesdata_stage_events import HOST_REFERENCE
-    world = _static_world(monkeypatch, static={"capability": "real", "rollback": rollback, "versions": versions, "latency": 10})
+    world = _static_world(monkeypatch, static={"capability": "real", "rollback": rollback, "versions": versions, "latency": 4})
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     journal = _publish_journal(world)
     calls = _product_calls(versions)
@@ -701,6 +709,6 @@ def test_publicacao_de_um_candidato_cabe_nos_180_s_do_static_pela_regra_real_de_
     assert all(start + 20 < 1380 for start in world.native_starts) and len(world.native_starts) == len(calls)
     assert [call[1] for client in world.clients.values() for call in client.calls].count("put_object") == 3
     window = _lifecycle(world)
-    assert window["stage"] == "unit" and window["admitted_at"] == 1205 + 10 * len(calls) + 7 < 1380 - 37
+    assert window["stage"] == "unit" and window["admitted_at"] == 1205 + 4 * len(calls) + 7 < 1380 - 37
     assert world.store.get()[0]["status"] == "held"
     assert (journal._broker.aws, journal._broker.session.clients) == (None, None)

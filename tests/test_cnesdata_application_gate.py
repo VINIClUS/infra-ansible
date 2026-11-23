@@ -5826,7 +5826,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready",
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
                "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
-               "static_plan_source"}
+               "static_plan_source", "static_role_facts", "_observer_publication"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5880,11 +5880,13 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "publish_closed_ready", "KeeperGuard"),
         (gate, "observer_bootstrap", "KeeperGuard"),
         (gate, "observer_bootstrap", "inventory_input_source"),
+        (gate, "observer_bootstrap", "_observer_publication"),
         (gate, "observer_bootstrap", "run_inventory"),
         (gate, "capability", "inventory_capability"),
         (gate, "observer_bootstrap", "publish_inventory"),
         (gate, "run_inventory", "KeeperGuard"),
         (gate, "publish_inventory", "KeeperGuard"),
+        (gate, "inventory_capability", "static_role_facts"),
         (gate, "inventory_capability", "_assume_static_session"),
         (gate, "inventory_capability", "StaticBroker"),
         (gate, "host", "KeeperGuard"),
@@ -5898,6 +5900,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "run_publish_static", "KeeperGuard"),
         (gate, "static_capability", "static_plan"),
         (gate, "static_capability", "publish_static_closed_ready"),
+        (gate, "static_capability", "static_role_facts"),
         (gate, "static_capability", "_assume_static_session"),
         (gate, "static_capability", "StaticBroker"),
         (gate, "_assume_static_session", "static_plan"),
@@ -7238,7 +7241,7 @@ def test_s3_put_body_atravessa_o_broker_so_como_referencia_do_membro(raw):
 @pytest.mark.parametrize("body", [{"base64": "QQ=="}, None, "QQ==", {}, {"member": "index.html", "size": 1},
                                   {"member": "index.html", "size": -1, "sha256": c.sha(b"A")},
                                   {"member": "index.html", "size": True, "sha256": c.sha(b"A")},
-                                  {"member": "index.html", "size": 8 * 1024**2 + 1, "sha256": c.sha(b"A")},
+                                  {"member": "index.html", "size": 1024**2 + 1, "sha256": c.sha(b"A")},
                                   {"member": "index.html", "size": 1, "sha256": c.sha(b"A").upper()},
                                   {"member": "index.html", "size": 1, "sha256": c.sha(b"A"), "base64": "QQ=="},
                                   {"member": "theme-init.js", "size": 1, "sha256": c.sha(b"A")}])
