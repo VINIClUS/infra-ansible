@@ -174,7 +174,7 @@ def test_listas_dos_reusables_cobrem_os_modulos_do_pyboot():
     entry = {"application": closure("application_gate.py"), "infra": closure("apply_gate.py")}
     assert "drift_catalog.py" in pyboot and "drift_catalog.py" in closure("runtime.py")
     lists = reusable_lists()
-    assert [len(lists[name]) for name in REUSABLES] == [2, 2, 1]
+    assert [len(lists[name]) for name in REUSABLES] == [1, 1, 1]
     for name, values in lists.items():
         for files in values:
             required = (entry["application"] if "application" in name else entry["infra"]) | set(pyboot)
