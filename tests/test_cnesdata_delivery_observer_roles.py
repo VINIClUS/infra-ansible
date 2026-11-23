@@ -1,12 +1,15 @@
 """Roles do observador (X_R) e do escritor de phase-inputs da raiz de entrega, renderizados nativamente."""
 import copy
 import json
+import re
 
 import pytest
 
 from fixtures.cnesdata_iam_evaluation import allowed, decision
 from test_cnesdata_delivery_oidc import application_values, native, render, variables
 from tools.cnesdata_delivery.contract import REPOSITORY as CNESDATA
+from tools.cnesdata_delivery.coordination_lease import KEY as LEASE_KEY
+from tools.cnesdata_delivery.lifecycle_runtime import namespace
 from tools.cnesdata_delivery.producers import observer as producer, phase_inputs
 from tools.cnesdata_delivery.producers.pins import REPOSITORY as INFRA
 from tools.cnesdata_delivery.producers.release_guard import OBSERVER as OBSERVER_REUSABLE
@@ -19,6 +22,12 @@ DEADLINE = "2030-01-01T00:00:00Z"
 OBSERVER_ROLE, OBSERVER_POLICY = "aws_iam_role.observer[0]", "aws_iam_role_policy.observer[0]"
 WRITER_ROLE, WRITER_POLICY = "aws_iam_role.phase_inputs_writer[0]", "aws_iam_role_policy.phase_inputs_writer[0]"
 WRITER_NAME = "cnesdata-prod-phase-inputs-writer"
+AUDIT_NAME = "cnesdata-test-audit"
+AUDIT_ROLE, AUDIT_POLICY = 'aws_iam_role.delivery["audit"]', "aws_iam_role_policy.delivery_audit[0]"
+AUDIT_SESSION = 'aws_iam_policy.delivery_session["audit"]'
+AUDIT_REUSABLE = f"{INFRA}/.github/workflows/reusable-cnesdata-infra-audit-gate.yml"
+AUDIT_ACTIONS = {"iam:GetPolicy", "iam:GetPolicyVersion", "s3:GetObject", "s3:ListBucket", "s3:PutObject",
+                 "kms:Decrypt", "kms:GenerateDataKey"}
 OBSERVER_SUB = f"repo:{INFRA}:environment:cnesdata-observer"
 WRITER_SUB = f"repo:{CNESDATA}:environment:production"
 WRITER_REF = f"{CNESDATA}/.github/workflows/phase-a-prepare.yml@refs/heads/main"
@@ -69,6 +78,12 @@ def writer_values():
     return values
 
 
+def audit_values(sha=X):
+    values = variables()
+    values["audit"] = {"role_name": AUDIT_NAME, "workflow_sha": sha}
+    return values
+
+
 def host_gate(sha):
     return {"workflow_sha": sha,
             "objects": [{"arn": "arn:aws:s3:::synthetic-evidence/cnesdata/platform.json", "version": "exact-version"}],
@@ -90,12 +105,13 @@ def every_trust(shas):
     values["ext2"] = copy.deepcopy(ext2_variables(True)["ext2"]) | {"workflow_sha": shas["ext2"]}
     values["observer"] = observer_values(shas["observer"])["observer"]
     values["phase_inputs_writer_enabled"] = True
+    values["audit"] = audit_values(shas["audit"])["audit"]
     return values
 
 
 TRUST_ROLES = {"plan": 'aws_iam_role.delivery["plan"]', "deploy": 'aws_iam_role.delivery["deploy"]',
                "application": "aws_iam_role.application[0]", "host": "aws_iam_role.host_gate[0]",
-               "ext2": "aws_iam_role.ext2_gate[0]", "observer": OBSERVER_ROLE}
+               "ext2": "aws_iam_role.ext2_gate[0]", "observer": OBSERVER_ROLE, "audit": AUDIT_ROLE}
 
 
 def statement_of(resources, address):
@@ -309,7 +325,7 @@ def test_trusts_sao_entradas_separadas_que_o_apply_pode_igualar_a_x(native):
         assert statement["Condition"]["StringEquals"][f"{OIDC}:job_workflow_ref"].endswith("@" + X), role
     _, writer = statement_of(resources, WRITER_ROLE)
     assert writer["Condition"]["StringEquals"][f"{OIDC}:job_workflow_ref"] == WRITER_REF
-    distinct = dict(zip(TRUST_ROLES, ("a" * 40, "b" * 40, "c" * 40, "d" * 40, "f" * 40, "1" * 40)))
+    distinct = dict(zip(TRUST_ROLES, ("a" * 40, "b" * 40, "c" * 40, "d" * 40, "f" * 40, "1" * 40, "2" * 40)))
     resources, _ = render(native, every_trust(distinct), "trusts-distinct")
     for role, address in TRUST_ROLES.items():
         _, statement = statement_of(resources, address)
@@ -318,7 +334,8 @@ def test_trusts_sao_entradas_separadas_que_o_apply_pode_igualar_a_x(native):
 
 SHA_FIELDS = {"plan": ("github_delivery", "plan_workflow_sha"), "deploy": ("github_delivery", "deploy_workflow_sha"),
               "application": ("application_promotion", "workflow_sha"), "host": ("host_gate", "workflow_sha"),
-              "ext2": ("ext2", "workflow_sha"), "observer": ("observer", "workflow_sha")}
+              "ext2": ("ext2", "workflow_sha"), "observer": ("observer", "workflow_sha"),
+              "audit": ("audit", "workflow_sha")}
 
 
 @pytest.mark.parametrize("role", sorted(SHA_FIELDS))
@@ -362,9 +379,10 @@ def test_observador_e_escritor_exigem_o_provider_compartilhado(native, name):
 
 
 @pytest.mark.parametrize("target", ["product", "pass"])
-@pytest.mark.parametrize("role", [WRITER_NAME, "cnesdata-delivery-observer"])
-def test_permissoes_de_produto_nunca_alcancam_observador_nem_escritor(native, target, role):
+@pytest.mark.parametrize("role", [WRITER_NAME, "cnesdata-delivery-observer", AUDIT_NAME])
+def test_permissoes_de_produto_nunca_alcancam_observador_escritor_nem_audit(native, target, role):
     values = writer_values()
+    values["audit"] = audit_values()["audit"]
     arn = f"arn:aws:iam::{ACCOUNT}:role/{role}"
     if target == "product":
         values["github_delivery"]["product_permissions"] = [{"actions": ["iam:PutRolePolicy"], "resources": [arn]}]
@@ -377,10 +395,140 @@ def test_permissoes_de_produto_nunca_alcancam_observador_nem_escritor(native, ta
 @pytest.mark.parametrize("target", ["product", "pass"])
 def test_permissoes_de_produto_seguem_aceitas_para_role_do_produto(native, target):
     values = writer_values()
+    values["audit"] = audit_values()["audit"]
     arn = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-api"
     if target == "product":
         values["github_delivery"]["product_permissions"] = [{"actions": ["iam:PutRolePolicy"], "resources": [arn]}]
     else:
         values["github_delivery"]["pass_roles"] = [{"arn": arn, "service": "ecs-tasks.amazonaws.com"}]
     resources, _ = render(native, values, "reach-control-" + target)
-    assert WRITER_ROLE in resources
+    assert WRITER_ROLE in resources and AUDIT_ROLE in resources
+
+
+def lifecycle_keys():
+    governance = {"evidence_prefix": CONFIG["evidence_prefix"]}
+    request = {"source_sha": "a" * 40, "step": "observer-bootstrap-audit"}
+    run = {"id": 42, "run_attempt": 1}
+    return {"keeper": evidence(namespace(governance, {"source_sha": "a" * 40, "step": "keeper"}, run) + "checkpoint.json"),
+            "payload": evidence(namespace(governance, request, run, "observer-bootstrap-plan") + "plan.bin"),
+            "own": evidence(namespace(governance, request, run) + "approval.json")}
+
+
+def test_audit_fica_ausente_por_padrao(native):
+    resources, _ = render(native, variables(), "observer-writer-closed")
+    assert not any("audit" in address for address in resources)
+    assert {a for a in resources if a.startswith("aws_iam_role_policy.delivery")} == {
+        'aws_iam_role_policy.delivery["plan"]', 'aws_iam_role_policy.delivery["deploy"]'}
+
+
+def test_trust_do_audit_espelha_plan_deploy_com_sha_proprio_e_prazo(native):
+    resources, _ = render(native, audit_values(), "audit-trust")
+    role = resources[AUDIT_ROLE]
+    trust, statement = statement_of(resources, AUDIT_ROLE)
+    assert role["name"] == AUDIT_NAME and role["max_session_duration"] == 3600
+    assert statement["Effect"] == "Allow" and statement["Action"] == "sts:AssumeRoleWithWebIdentity"
+    assert statement["Principal"] == {"Federated": variables()["github_delivery"]["provider_arn"]}
+    assert statement["Condition"] == {
+        "StringEquals": {f"{OIDC}:aud": "sts.amazonaws.com", f"{OIDC}:sub": WRITER_SUB,
+                         f"{OIDC}:job_workflow_ref": f"{AUDIT_REUSABLE}@{X}"},
+        "DateLessThan": {"aws:CurrentTime": DEADLINE}}
+    assert not any(char in value for value in condition_values(statement) for char in "*?")
+    _, plan = statement_of(resources, TRUST_ROLES["plan"])
+    assert set(plan["Condition"]) == set(statement["Condition"])
+    assert plan["Condition"]["StringEquals"][f"{OIDC}:sub"] == statement["Condition"]["StringEquals"][f"{OIDC}:sub"]
+    good = oidc_context(WRITER_SUB, f"{AUDIT_REUSABLE}@{X}")
+    assert allowed(trust, "sts:AssumeRoleWithWebIdentity", "*", good)
+    for change in ({f"{OIDC}:job_workflow_ref": AUDIT_REUSABLE.replace("-audit-", "-plan-") + "@" + X},
+                   {f"{OIDC}:job_workflow_ref": f"{AUDIT_REUSABLE}@{'a' * 40}"},
+                   {f"{OIDC}:job_workflow_ref": f"{AUDIT_REUSABLE}@refs/heads/main"},
+                   {f"{OIDC}:sub": f"repo:{CNESDATA}:ref:refs/heads/main"},
+                   {"aws:CurrentTime": DEADLINE}):
+        assert not allowed(trust, "sts:AssumeRoleWithWebIdentity", "*", good | change), change
+
+
+def test_audit_tem_politica_de_sessao_gerenciada_no_nome_que_o_runtime_deriva(native):
+    resources, _ = render(native, audit_values(), "audit-trust")
+    assert re.fullmatch(rf"arn:aws:iam::{ACCOUNT}:role/cnesdata-[a-z0-9-]+-audit",
+                        f"arn:aws:iam::{ACCOUNT}:role/{resources[AUDIT_ROLE]['name']}")
+    assert resources[AUDIT_SESSION]["name"] == AUDIT_NAME + "-session"
+
+
+def test_politica_do_audit_le_estado_lease_e_lifecycle_e_so_publica_no_proprio_lifecycle(native):
+    resources, _ = render(native, audit_values(), "audit-trust")
+    policy = json.loads(resources[AUDIT_POLICY]["policy"])
+    allows = [s for s in policy["Statement"] if s["Effect"] == "Allow"]
+    denies = [s for s in policy["Statement"] if s["Effect"] == "Deny"]
+    assert {action for s in allows for action in s["Action"]} == AUDIT_ACTIONS
+    assert {"Effect": "Deny", "Action": STS_DENIES, "Resource": "*"} in denies
+    assert {"Effect": "Deny", "NotAction": sorted(AUDIT_ACTIONS), "Resource": "*"} in denies
+    lifecycle = evidence(CONFIG["evidence_prefix"] + "lifecycle/*")
+    assert {"Effect": "Deny", "Action": ["s3:PutObject"], "NotResource": lifecycle} in denies
+    keys = lifecycle_keys()
+    state, lease = STATE_BUCKET + "/" + producer.STATE_KEY, STATE_BUCKET + "/" + LEASE_KEY
+    tflock = state + ".tflock"
+    for obj in (state, lease):
+        assert allowed(policy, "s3:GetObject", obj)
+        assert allowed(policy, "kms:Decrypt", STATE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": obj})
+    for obj in keys.values():
+        assert allowed(policy, "s3:GetObject", obj)
+        assert allowed(policy, "kms:Decrypt", EVIDENCE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": obj})
+    assert allowed(policy, "s3:PutObject", keys["own"], {"s3:if-none-match": "*"})
+    assert not allowed(policy, "s3:PutObject", keys["own"])
+    assert allowed(policy, "kms:GenerateDataKey", EVIDENCE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": keys["own"]})
+    assert allowed(policy, "s3:ListBucket", STATE_BUCKET, {"s3:prefix": producer.STATE_KEY})
+    assert allowed(policy, "iam:GetPolicyVersion", f"arn:aws:iam::{ACCOUNT}:policy/{AUDIT_NAME}-session")
+    assert not allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-test-plan-session")
+    phase_inputs_key = evidence(phase_inputs.prefix(CONFIG) + producer.REHEARSAL)
+    other = evidence(CONFIG["evidence_prefix"] + "a" * 40 + "/42/1/planned/envelope.json")
+    for obj in (tflock, phase_inputs_key, other):
+        assert not allowed(policy, "s3:GetObject", obj), obj
+    assert not allowed(policy, "kms:Decrypt", STATE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": tflock})
+    assert not allowed(policy, "kms:Decrypt", EVIDENCE_KMS,
+                       {"kms:ViaService": "ec2.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": keys["own"]})
+    assert not allowed(policy, "kms:GenerateDataKey", STATE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": lease})
+    assert not allowed(policy, "s3:ListBucket", EVIDENCE_BUCKET, {"s3:prefix": CONFIG["evidence_prefix"]})
+    for action, resource, context in (
+            ("s3:PutObject", state, {"s3:if-none-match": "*"}), ("s3:PutObject", lease, {"s3:if-none-match": "*"}),
+            ("s3:PutObject", tflock, {"s3:if-none-match": "*"}), ("s3:PutObject", phase_inputs_key, {"s3:if-none-match": "*"}),
+            ("s3:DeleteObject", keys["own"], {}), ("s3:DeleteObject", tflock, {}), ("kms:Encrypt", EVIDENCE_KMS, {}),
+            ("iam:PutRolePolicy", f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-api", {}),
+            ("states:StartExecution", "*", {}), ("sts:AssumeRole", "*", {}), ("sts:AssumeRoleWithWebIdentity", "*", {})):
+        assert decision(policy, action, resource, context) == "Deny", (action, resource)
+
+
+def test_plan_e_deploy_ficam_identicos_com_o_audit(native):
+    closed, _ = render(native, variables(), "observer-writer-closed")
+    opened, _ = render(native, audit_values(), "audit-trust")
+    for role in ("plan", "deploy"):
+        for address in (f'aws_iam_role.delivery["{role}"]', f'aws_iam_role_policy.delivery["{role}"]',
+                        f'aws_iam_policy.delivery_session["{role}"]'):
+            assert opened[address] == closed[address], address
+    assert {a for a in opened if a.startswith("aws_iam_role_policy.delivery[")} == {
+        'aws_iam_role_policy.delivery["plan"]', 'aws_iam_role_policy.delivery["deploy"]'}
+
+
+def test_observador_le_a_politica_de_sessao_do_audit_quando_existe(native):
+    values = observer_values()
+    values["audit"] = audit_values()["audit"]
+    resources, _ = render(native, values, "observer-audit")
+    policy = json.loads(resources[OBSERVER_POLICY]["policy"])
+    assert allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/{AUDIT_NAME}-session")
+
+
+@pytest.mark.parametrize("index,change", list(enumerate([
+    {"role_name": "cnesdata-test-plan"}, {"role_name": "limnopulse-audit"}, {"role_name": "cnesdata-*-audit"},
+    {"role_name": "audit"}, {"workflow_sha": "main"}, {"workflow_sha": "E" * 40}, {"workflow_sha": "e" * 39},
+    {"workflow_sha": "refs/heads/main"},
+])))
+def test_audit_recusa_nome_fora_do_padrao_ou_sha_que_nao_e_quarenta_hex(native, index, change):
+    values = audit_values()
+    values["audit"] |= change
+    code, _, errors = native.plan(values, f"audit-invalid-{index}")
+    assert code != 0 and any(item["severity"] == "error" for item in errors), errors
+
+
+def test_audit_exige_o_provider_compartilhado(native):
+    values = audit_values()
+    values["github_delivery"] = None
+    code, _, errors = native.plan(values, "no-provider-audit")
+    assert code != 0 and any(item["severity"] == "error" for item in errors), errors

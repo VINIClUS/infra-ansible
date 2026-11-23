@@ -387,3 +387,30 @@ variable "phase_inputs_writer_enabled" {
     error_message = "The phase-inputs writer reuses the shared GitHub provider and evidence prefix."
   }
 }
+
+variable "audit" {
+  description = "Independent lifecycle audit role (DD-5); null creates no role. Its trust pins the audit reusable to its own X* commit."
+  type = object({
+    role_name    = string
+    workflow_sha = string
+  })
+  default = null
+  validation {
+    condition = var.audit == null ? true : try(
+      var.github_delivery != null &&
+      can(regex("^cnesdata-[a-z0-9-]+-audit$", var.audit.role_name)) && length(var.audit.role_name) <= 64 &&
+    can(regex("^[0-9a-f]{40}$", var.audit.workflow_sha)), false)
+    error_message = "Audit requires the shared provider, a cnesdata-*-audit role name and an immutable audit reusable commit."
+  }
+  validation {
+    condition = var.audit == null ? true : try(!contains(concat(
+      flatten([for statement in var.github_delivery.product_permissions : statement.resources]),
+      [for role in var.github_delivery.pass_roles : role.arn]
+    ), "arn:aws:iam::${var.account_id}:role/${var.audit.role_name}"), false)
+    error_message = "Product permissions and pass roles never reach the audit role."
+  }
+  validation {
+    condition     = var.audit == null ? true : try(!can(regex("^0{40}$", var.audit.workflow_sha)), false)
+    error_message = "Audit workflow_sha cannot be the 40-zero sentinel; use the reviewed X* commit."
+  }
+}

@@ -27,7 +27,7 @@ abstract sig TrustPin {
 }
 abstract sig delivery extends TrustPin {}
 one sig github_delivery_plan_workflow_sha, github_delivery_deploy_workflow_sha,
-  application_promotion_workflow_sha extends delivery {}
+  application_promotion_workflow_sha, audit_workflow_sha extends delivery {}
 one sig host_gate_workflow_sha, ext2_workflow_sha, observer_workflow_sha extends TrustPin {}
 
 abstract sig Papel {}
