@@ -4,6 +4,7 @@ import re
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
+from tools.cnesdata_delivery import provenance
 from tools.cnesdata_delivery import session_policy
 from tools.cnesdata_delivery.producers import governance_assembly
 
@@ -14,8 +15,8 @@ INFRA = COMMON + " mode direction"
 OPTIONAL = ("historical_entry", "activation_selection", "delete_resources")
 ROLES = ("plan", "deploy", "audit", "application")
 PIECES = frozenset("""
-    lifecycle_steps lifecycle_predecessor predecessor_read application_configuration application_fragment
-    application_delegations application_coordination_policy release
+    lifecycle_steps_sha256 source_closure_sha256 lifecycle_predecessor predecessor_read application_configuration
+    application_fragment application_delegations application_coordination_policy release
 """.split())
 
 
@@ -204,8 +205,19 @@ def catalog(steps):
     return c.loads(c.canonical(steps), canonical=True)
 
 
-def document(base, pieces):
-    """Args: base governance, application pieces. Returns: the application document. Raises: ValueError.
+def catalog_member(steps):
+    """Args: {step name: step}. Returns: canonical catalog member bytes and its governance reference."""
+    raw = c.canonical(catalog(steps), limit=provenance.LIFECYCLE_STEPS_LIMIT)
+    return raw, {"lifecycle_steps_sha256": c.sha(raw)}
+
+
+def source_closure_reference(manifest):
+    """Args: product source manifest. Returns: the source_closure_sha256 reference the gate recomputes."""
+    return {"source_closure_sha256": c.sha(c.canonical(provenance.source_closure(manifest)))}
+
+
+def document(base, pieces, catalog_raw):
+    """Args: base governance, application pieces, catalog member bytes. Returns: the document. Raises: ValueError.
 
     New governed keys enter through governance_assembly.GOVERNANCE_KEYS, never through this function.
     """
@@ -220,5 +232,8 @@ def document(base, pieces):
               f"application purpose={purpose} context={merged['context_kind']}")
     application_gate.application_release_sha256(merged)
     lifecycle_runtime.validate_predecessor_reference(merged)
-    catalog(merged["lifecycle_steps"])
+    governance_assembly.references(merged)
+    c.require(type(catalog_raw) is bytes and c.sha(catalog_raw) == merged["lifecycle_steps_sha256"],
+              "lifecycle steps member")
+    catalog_member(c.loads(catalog_raw, canonical=True, limit=provenance.LIFECYCLE_STEPS_LIMIT))
     return merged

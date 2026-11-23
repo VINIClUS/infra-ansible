@@ -19,13 +19,15 @@ GOVERNANCE_KEYS = frozenset("""
     baseline_artifacts bootstrap_checkpoint caller_allowlist consumer contract_sha256 cost cost_handoff
     context_kind credentials crypto dependencies drift_handoff drift_matrix ecr_repository evidence_bucket
     evidence_kms_key_arn evidence_prefix ext2 gate_shas history host images lifecycle_authority
-    lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps lifecycle_terminal_job
+    lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps_sha256 lifecycle_terminal_job
     phase_a_inputs phase_input_objects plan_run_id policy_evaluator_sha256 policy_sha256 predecessor_read
     principal_sha256 product_inputs promotion_sha256 proof_producers provenance readbacks region release
     report_hmac_key required_checks role roles runner runtime_contract_sha256 runtime_probes runtime_sha256
     session_duration_seconds session_owner_references session_policy_pins signing signing_spki_pem_sha256
-    source_closure source_files source_sha state_bucket state_kms_key_arn storage workflows
+    source_closure_sha256 source_files source_sha state_bucket state_kms_key_arn storage workflows
 """.split())
+HYDRATED_KEYS = frozenset(("lifecycle_steps", "source_closure"))
+REFERENCES = ("lifecycle_steps_sha256", "source_closure_sha256")
 
 
 def render(document, ceiling=CLI_CEILING):
@@ -70,6 +72,15 @@ def _expiry_chain(document):
         c.require(ok, "expiry chain violated element=cloudfront")
 
 
+def references(document):
+    """Args: governance document. Raises: ValueError on an inline hydrated object or a malformed reference."""
+    for key in HYDRATED_KEYS:
+        c.require(key not in document, f"governance key={key}")
+    for key in REFERENCES:
+        if key in document:
+            c.digest(document[key])
+
+
 def crosscheck(document, commitments):
     """Args: governance document, public commitments. Raises: ValueError on any hash or format mismatch."""
     _closed_keys(document)
@@ -82,6 +93,7 @@ def crosscheck(document, commitments):
         c.digest(pin["source_sha"], 40)
     if "drift_handoff" in document:
         drift_handoff.pin(document)
+    references(document)
     _cost_stage(document)
 
 
@@ -94,6 +106,17 @@ def _render(args):
     commitments = c.loads(Path(args.commitments).read_bytes())
     crosscheck(document, commitments)
     sys.stdout.buffer.write(render(document))
+
+
+def _lifecycle_objects(args):
+    from tools.cnesdata_delivery.producers import application
+    output = Path(args.output)
+    c.require(output.name == "lifecycle-steps.json" and not output.exists(), f"catalog member output={output.name}")
+    raw, reference = application.catalog_member(c.loads(Path(args.steps).read_bytes()))
+    manifest = c.loads(Path(args.manifest).read_bytes(), canonical=True, limit=4 * 1024**2)
+    pinned = reference | application.source_closure_reference(manifest)
+    output.write_bytes(raw)
+    sys.stdout.buffer.write(c.canonical(pinned))
 
 
 def _baseline_inputs(args):
@@ -122,6 +145,10 @@ def parser():
     for name in ("--document", "--commitments"):
         document.add_argument(name, required=True)
     document.set_defaults(run=_render)
+    objects = commands.add_parser("lifecycle-objects")
+    for name in ("--steps", "--manifest", "--output"):
+        objects.add_argument(name, required=True)
+    objects.set_defaults(run=_lifecycle_objects)
     inputs = commands.add_parser("baseline-inputs")
     inputs.add_argument("--private", required=True)
     inputs.set_defaults(run=_baseline_inputs)

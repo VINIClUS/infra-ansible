@@ -87,6 +87,38 @@ def product_source_manifest(api, governance, now):
     return manifest
 
 
+LIFECYCLE_STEPS_PATH = ".github/delivery/lifecycle-steps.json"
+LIFECYCLE_STEPS_LIMIT = 65536
+SOURCE_CLOSURE_PREFIX = "infra/opentofu/"
+
+
+def source_closure(manifest):
+    """Args: product source manifest. Returns: its infra/opentofu/ subset. Raises: ValueError."""
+    closed(manifest, "version source_sha files")
+    closure = {path: value for path, value in manifest["files"].items() if path.startswith(SOURCE_CLOSURE_PREFIX)}
+    require(0 < len(closure) <= 4096, "source closure inventory")
+    return closure
+
+
+def lifecycle_objects(api, governance, manifest):
+    """DD-6 (a): catalog and source closure from the authenticated manifest; governance pins only sha256."""
+    require("lifecycle_steps" not in governance and "source_closure" not in governance, "inline lifecycle objects")
+    source = digest(manifest["source_sha"], 40)
+    require(source == governance["source_sha"], "lifecycle objects source")
+    closure = source_closure(manifest)
+    require(sha(canonical(closure)) == digest(governance["source_closure_sha256"]), "source closure hash")
+    pinned = digest(governance["lifecycle_steps_sha256"])
+    require(manifest["files"].get(LIFECYCLE_STEPS_PATH) == pinned, "lifecycle steps manifest hash")
+    document = api.read(f"repos/{REPOSITORY}/contents/{LIFECYCLE_STEPS_PATH}?ref={source}", maximum=2 * 1024**2)
+    require(document.get("encoding") == "base64", "lifecycle steps encoding")
+    raw = base64.b64decode(document["content"].replace("\n", ""), validate=True)
+    require(len(raw) <= LIFECYCLE_STEPS_LIMIT and sha(raw) == pinned, "lifecycle steps hash")
+    steps = loads(raw, canonical=True, limit=LIFECYCLE_STEPS_LIMIT)
+    require(type(steps) is dict and 1 <= len(steps) <= 256 and all(type(step) is dict for step in steps.values()),
+            "lifecycle steps catalog")
+    return {"lifecycle_steps": steps, "source_closure": closure}
+
+
 def application_caller(api, governance, run, role, step, *, include_job=False):
     """Original caller source and running job, independent of future receipts."""
     import base64
