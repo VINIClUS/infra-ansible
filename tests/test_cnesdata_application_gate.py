@@ -5558,7 +5558,7 @@ def test_operation_session_factory_mints_the_exact_delegation_in_process_and_nev
 
 
 @pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", "other", "promotion", ""])
-def test_operation_session_factory_serves_only_the_two_fence_operations(monkeypatch, operation):
+def test_operation_session_factory_serves_only_the_fence_and_publish_static_operations(monkeypatch, operation):
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
     with pytest.raises(ValueError, match="^operation session operation$"):
         factory(operation, {"session_name": "promotion-fence-r1"}, stage)
