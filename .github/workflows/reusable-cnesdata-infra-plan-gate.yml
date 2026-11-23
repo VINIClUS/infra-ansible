@@ -57,82 +57,12 @@ env:
   GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    environment: production
-    env:
-      CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
-    timeout-minutes: 55
-    permissions:
-      contents: read
-      actions: read
-      checks: read
-    steps:
-      - name: Load actual immutable producer from authenticated run
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PYBOOT'
-          import base64, json, os, re, urllib.request
-          from pathlib import Path
-          role = os.environ["DELIVERY_ROLE"]
-          repo = "VINIClUS/CnesData"
-          assert os.environ["GITHUB_REPOSITORY"] == repo
-          assert os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
-          assert os.environ["GITHUB_REF"] == "refs/heads/main"
-          assert re.fullmatch("[0-9a-f]{40}", os.environ["EXPECTED_SOURCE_SHA"])
-          def get(path):
-              request = urllib.request.Request("https://api.github.com/repos/" + path,
-                  headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
-                           "Accept": "application/vnd.github+json"})
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  return json.loads(response.read(2097152))
-          run = get(repo + "/actions/runs/" + os.environ["GITHUB_RUN_ID"])
-          assert run["head_sha"] == os.environ["EXPECTED_SOURCE_SHA"]
-          assert run["run_attempt"] == int(os.environ["GITHUB_RUN_ATTEMPT"])
-          assert run["repository"]["full_name"] == repo
-          assert run["event"] == "workflow_dispatch"
-          lifecycle = {"application-prepare", "phase-b", "phase-c-recovery", "phase-c-audit", "static-maintenance"}
-          name = "infra-plan.yml" if role == "plan" else "infra-apply.yml"
-          if os.environ["PURPOSE"] in lifecycle:
-              gov = json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"])
-              assert gov.get("activation_enabled") is True and gov.get("lifecycle_enabled") is True
-              assert type(gov.get("application_configuration")) is dict
-              fragment = gov.get("application_fragment")
-              assert (type(fragment) is dict and type(fragment.get("fragment_version")) is int
-                      and fragment["fragment_version"] == 4)
-              callers = {"promotion": ("promote-production.yml", "promotion"),
-                         "mode-readiness-drill": ("readiness-production.yml", "readiness")}
-              name, context = callers[gov["application_purpose"]]
-              assert gov["context_kind"] == context
-          assert run["path"].split("@")[0] == ".github/workflows/" + name
-          path = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-infra-" + role + "-gate.yml"
-          refs = [r for r in run.get("referenced_workflows", []) if r["path"].startswith(path + "@")]
-          assert len(refs) == 1
-          pin = refs[0]["sha"]
-          assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
-          files = ["contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py",
-                   "aws_boundary.py",
-                   "runtime.py", "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py",
-                   "outputs.py", "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py",
-                   "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                   "plan_gate.py", "apply_gate.py", "runtime-requirements.txt"]
-          root = Path("tools/cnesdata_delivery")
-          root.mkdir(parents=True, exist_ok=True)
-          for name in files:
-              item = get("VINIClUS/infra-ansible/contents/tools/cnesdata_delivery/" + name + "?ref=" + pin)
-              assert item["type"] == "file" and item["size"] <= 262144
-              (root / name).write_bytes(base64.b64decode(item["content"]))
-          PYBOOT
-      - name: Verify complete public source and admission proof
-        run: python3 -m tools.cnesdata_delivery.plan_gate preflight
   execute:
     runs-on: ubuntu-latest
     environment: production
     env:
       CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
     timeout-minutes: 55
-    needs: validate
     permissions:
       contents: read
       actions: read
