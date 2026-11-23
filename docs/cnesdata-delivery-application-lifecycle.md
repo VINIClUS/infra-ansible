@@ -252,7 +252,7 @@ Its digest commits the inner product-canonical UTF-8 bytes with one trailing LF,
 not the wrapper. The complete generated request remains bounded to 131072 bytes.
 Semantic validation checks all fifteen manifest fields against the protected
 originals and current owner/purpose, preserves the original predecessor and
-900-second promotion or 14400-second readiness context deadline, and derives
+1200-second promotion or 14400-second readiness context deadline, and derives
 the exact eight promotion or six readiness sessions. The fourteen session
 algorithms retain their separate ASCII canonical codec. This pure validator
 does not authenticate its producer arguments or authorize STS/apply.

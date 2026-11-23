@@ -1,8 +1,6 @@
 """Owner CLI guard: X* strict ancestor of K, caller pinned to X*, no pinned surface drift in X*..K."""
 import subprocess
 
-import yaml
-
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.producers.pins import PINNED_SURFACE, on_surface
 
@@ -28,6 +26,8 @@ def _surface(repo, x_star, k):
 
 
 def _job_uses(text):
+    import yaml
+
     try:
         root = yaml.safe_load(text) or {}
     except yaml.YAMLError:

@@ -85,6 +85,8 @@ def admission(role):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
+    if role == "application":
+        lc.stage_windows(governance)
     c.require("application_product_source_manifest" not in governance, "inline product source manifest")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
@@ -546,7 +548,8 @@ def fence_evaluation_scope(*, governance, role, control_table_arn, owner, checkp
     return scope, prefix
 
 
-def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at):
+def fence_evaluation_documents(*, governance, pin, fragment, owner, role, control_table_arn, execution_prefix, observed_at,
+                               api_seconds):
     """Six evaluation documents from protected sources (amendment 2026-11-13 item 3)."""
     from tools.cnesdata_delivery import session_owner, session_policy
     c.integer(observed_at)
@@ -561,7 +564,7 @@ def fence_evaluation_documents(*, governance, pin, fragment, owner, role, contro
         "application_session": c.loads(session["Policy"].encode()),
         "fence_identity": role["policy"],
         "fence_session": session_policy.fence_session_policy(control_table_arn=control_table_arn,
-            execution_prefix=execution_prefix, deadline=int(min(observed_at + 180, frozen))),
+            execution_prefix=execution_prefix, deadline=int(min(observed_at + api_seconds, frozen))),
         "freeze": {"frozen_until": c.utc(frozen), "application_fragment_sha256": c.sha(c.canonical(fragment)),
                    "owner_policy_sha256": c.digest(pin["document_sha256"])},
     }
@@ -684,7 +687,8 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     scope, execution_prefix = fence_evaluation_scope(governance=governance, role=role,
         control_table_arn=terraform["shared_outputs"]["control_table_arn"], owner=owner, checkpoint_sha256=c.sha(checkpoint_raw))
     documents = fence_evaluation_documents(governance=governance, pin=authority.pin, fragment=fragment, owner=owner, role=role,
-        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"])
+        control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"],
+        api_seconds=lc.governed_windows(window["windows"])["stages"]["api"])
     evaluation = fence_effective_evaluation(documents, scope, evaluator_source_sha=producer["workflow_sha"],
                                             observed_at=c.utc(preparation["observed_at"]))
     origins = {"schema_version": 1, "phase_a": fence_phase_a_origin(history, projection["source_files"]),

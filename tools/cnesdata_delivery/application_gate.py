@@ -151,7 +151,8 @@ def _terminal_sources(kind, source, observations, authenticated=None):
 
 def _versioned(value, kind, fields):
     c.closed(value, fields)
-    c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == kind,
+    version = 2 if kind == "close-drain" else 1
+    c.require(type(value["version"]) is int and value["version"] == version and value["kind"] == kind,
               f"terminal source kind={kind}")
     return value
 
@@ -188,6 +189,7 @@ def membership_terminal_validator(source, *, owner, window, observations):
     """Membership resolution: frozen close-drain members against the terminal-readback members."""
     found = _terminal_sources("membership", source, observations)
     close = _versioned(found["close-drain"], "close-drain", lc.CLOSE_DRAIN_FIELDS)
+    lc.governed_windows(close["windows"])
     readback = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
     frozen, final = close["members"], readback["members"]
     c.require(type(frozen) is list and type(final) is list
@@ -737,8 +739,10 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
                   and clock() + 900 <= credential_limit, "fence original preparation/credential window")
     else:
         deadline = stage["deadline"]
-        c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + 180)
-                  and stage["fixed_deadline"] - stage["admitted_at"] >= 1440
+        windows = lc.governed_windows(stage["windows"])
+        api = windows["stages"]["api"]
+        c.require(stage["stage"] == "api" and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + api)
+                  and stage["fixed_deadline"] - stage["admitted_at"] >= api + lc.later_seconds(windows, "api") + lc.FINAL_RESERVE
                   and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
                   and clock() + 900 <= credential_limit, "fence original API/credential window")
     c.closed(scope, "account control_table_arn machine_arn" + ("" if close else " members"))
@@ -1642,12 +1646,13 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
                   "capability scope recomputed from prepared policy")
         # Item 3: the evaluated fence_session is the shared constructor at the preparation deadline
-        # min(observed_at + 180, frozen_until); _assume_fence_session builds the API session with the same
+        # min(observed_at + api window, frozen_until); _assume_fence_session builds the API session with the same
         # constructor and scope, so the two differ only in DateLessThan and its effective_iam checks stay live.
         from tools.cnesdata_delivery.session_policy import fence_session_policy
         frozen = c.instant(cases["freeze-expired"]["context"]["aws:CurrentTime"])
         prepared_session = fence_session_policy(control_table_arn=table, execution_prefix=prefix,
-                                                deadline=int(min(manifest["preparation"]["observed_at"] + 180, frozen)))
+                                                deadline=int(min(manifest["preparation"]["observed_at"]
+                                                                 + lc.governed_windows(stage["windows"])["stages"]["api"], frozen)))
         c.require(evaluation["documents"]["fence_session"] == c.sha(c.canonical(prepared_session)),
                   "prepared fence session equals API session except DateLessThan")
         described = [row["observed"] for row in b_checkpoint["readbacks"]
@@ -1845,7 +1850,8 @@ class Keeper:
             "close": None, "fixed_deadline": None, "input_deadline": None,
             "stage": "application-prepare", "admitted_at": now, "deadline": preparation_deadline,
             "decision": None, "checkpoint_sha256": c.sha(self.predecessor["raw"]),
-            "predecessor_sha256": c.sha(c.canonical(self.predecessor["reference"])), **identity}
+            "predecessor_sha256": c.sha(c.canonical(self.predecessor["reference"])),
+            "windows": lc.stage_windows(self.governance), **identity}
         self.lease.checkpoint(initial)
         self.last_renewed = self.monotonic()
         owner = lc.owner_binding(self.lease.check())
@@ -2223,12 +2229,13 @@ class _ArtifactTap:
 
 
 def _operation_request(operation, *, owner, window, inputs, activation=None):
-    """The ABI2 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts.
+    """The ABI3 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts.
 
     activation is the keeper activation for an operation without that input (publish-static).
     """
     activation = inputs["activation"] if activation is None else activation
-    return c.canonical({"abi_version": 2, "operation": operation, "repository": c.REPOSITORY, "source_sha": owner["source_sha"],
+    return c.canonical({"abi_version": lc.ADAPTER_ABI_VERSION, "operation": operation, "repository": c.REPOSITORY,
+                        "source_sha": owner["source_sha"],
                         "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
                         "checkpoint_sha256": window["checkpoint_sha256"], "activation_sha256": c.sha(activation),
                         "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()},
@@ -2236,7 +2243,7 @@ def _operation_request(operation, *, owner, window, inputs, activation=None):
 
 
 def _close_drain_journal(*, guard, owner, window, activation, expirations):
-    """The close-drain ABI2 request, bound to the keeper window exactly as it is at the prepared event."""
+    """The close-drain ABI3 request, bound to the keeper window exactly as it is at the prepared event."""
     inputs = {"activation": activation, "expirations": expirations}
     return AdapterJournal(_operation_request("close-drain", owner=owner, window=window, inputs=inputs), operation="close-drain",
                           owner=owner, window=window, inputs=inputs, activation_sha256=c.sha(activation), guard=guard)
@@ -2270,10 +2277,7 @@ def _plan_activation(*, aws, api, governance, request, run, prepared, owner, win
 
 def _close_drain_seconds(window, credential_limit, now):
     """Largest whole-second timeout that phase_capacity still admits; sampled right before the child starts."""
-    seconds = int(min(window["deadline"] - now - 158, credential_limit - now - 121))
-    c.require(seconds >= 1, "close-drain capacity")
-    lc.phase_capacity(window, now=now, credential_deadline=credential_limit, operation_seconds=seconds)
-    return seconds
+    return lc.adapter_seconds(window, now=now, credential_deadline=credential_limit, operation="close-drain")
 
 
 CLOSED_READY_PUBLICATION_SECONDS = 20
