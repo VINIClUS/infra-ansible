@@ -181,6 +181,7 @@ def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
     c.require((value["role"], value["direction"]) != ("audit", "converge"), "step audit converge")
+    lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
     _historical_entry(value)
     _activation_selection(value)
     _delete_resources(value)
@@ -225,7 +226,6 @@ def _cross(steps):
     c.require(prepared in ([], [fence["step"]]) and named, "catalog fence prepare producer")
     if fence["step"] in steps:
         c.require(prepared == [fence["step"]], "catalog fence prepare producer")
-        c.require(steps[fence["step"]]["direction"] == fence["direction"], "catalog fence prepare delta")
 
 
 def catalog(steps):

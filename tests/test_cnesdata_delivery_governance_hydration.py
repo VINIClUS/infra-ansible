@@ -358,7 +358,7 @@ def test_produtor_do_catalogo_emite_membro_canonico_e_referencia():
     steps = {"keeper": application.step("application", "application-prepare", job_name="promote / keeper",
                                          producer_job="keeper", admission_steps=["Authenticate original caller"])}
     steps["phase-b"] = application.step("deploy", "phase-b", job_name="phase-b / execute", producer_job="execute",
-                                        admission_steps=["Repeat source gate"], mode="phase-b", direction="advance")
+                                        admission_steps=["Repeat source gate"], mode="initial", direction="advance")
     raw, reference = application.catalog_member(steps)
     assert raw == c.canonical(application.catalog(steps))
     assert reference == {"lifecycle_steps_sha256": c.sha(raw)}
@@ -393,7 +393,7 @@ def test_cli_do_dono_emite_o_membro_do_catalogo_e_as_referencias(tmp_path, capsy
     steps = {"keeper": application.step("application", "application-prepare", job_name="promote / keeper",
                                          producer_job="keeper", admission_steps=["Authenticate original caller"]),
              "phase-b": application.step("deploy", "phase-b", job_name="phase-b / execute", producer_job="execute",
-                                         admission_steps=["Repeat source gate"], mode="phase-b", direction="advance")}
+                                         admission_steps=["Repeat source gate"], mode="initial", direction="advance")}
     (tmp_path / "steps.json").write_text(json.dumps(steps))
     (tmp_path / "manifest.json").write_bytes(c.canonical(world_manifest()))
     member = tmp_path / "lifecycle-steps.json"

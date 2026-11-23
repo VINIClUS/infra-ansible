@@ -116,11 +116,11 @@ def test_catalogo_recusa_fence_cujo_delta_difere_do_produtor_fixo(field):
     assert fence[field] != steps[FENCE][field]
 
 
-def test_catalogo_recusa_fence_com_direction_converge_com_razao_propria():
+def test_catalogo_recusa_fence_com_direction_converge_pela_regra_unica_de_delta():
     steps = base_catalog()
     steps[FENCE].update(direction="converge", delete_resources=[ARN])
     steps[FENCE].pop("historical_entry")
-    with pytest.raises(ValueError, match="catalog fence prepare delta"):
+    with pytest.raises(ValueError, match="prepare mode"):
         application.catalog(steps)
 
 
