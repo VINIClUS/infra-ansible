@@ -96,7 +96,8 @@ def _terminal_required(kind, window):
 # sha256 map; a journal role selects observation bytes of its own kind, an artifact role only the
 # factory's authenticated bytes, and the result commits to the map. TERMINAL_VALIDATORS registers them.
 TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
-                         "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision"}
+                         "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision",
+                         "unit": "mode", "recovery": "mode", "audit": "mode"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
 # SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
@@ -110,6 +111,8 @@ FROZEN_MEMBER_FIELDS = MEMBER_IDENTITY + " proof_sha256 observed_at send_disable
 MEMBER_RESOLVED = frozenset({"TERMINAL", "ABSENT_PROVEN", "CANCEL_BEFORE_SEND"})
 CLOSED_READY_FIELDS = ("version kind common close_drain_sha256 phase_b_sha256 fence permit members proofs observed_at "
                        "exclusion stage decision")
+# CnesData c7b1ece1 _adapter_abi.MODE_OBSERVATION_FIELDS, built by promote_mode._observation (DD-4).
+MODE_OBSERVATION_FIELDS = "version kind accepted checks commitments"
 # CnesData 9cdd452f scripts/promotion/_api_static_records.py PUBLICATION_SCHEMA/PUBLICATION_FIELDS;
 # field types of publish_dashboard.PublicationReceipt.
 PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
@@ -1897,10 +1900,48 @@ def _handoff_validator(role):
     return provider
 
 
+def _mode_journal(keeper, mode):
+    journals = [item.journal if type(item) is ClosedReadyBroker else item for item in keeper._contexts]
+    found = [journal for journal in journals if journal._request["operation"] == mode + "-observe"]
+    c.require(len(found) == 1, f"terminal mode journal mode={mode}")
+    return found[0]
+
+
+def mode_observation(keeper, mode, owner):
+    """DD-4: the single observation of the mode's observe journal: shape, original commitments, product verdict."""
+    journal = _mode_journal(keeper, mode)
+    request = journal._request
+    c.require(request["owner"]["owner_sha256"] == owner["owner_sha256"], "terminal mode owner")
+    entries = journal._observations
+    c.require(len(entries) == 1 and entries[0]["kind"] == "mode", "terminal mode source")
+    raw = journal._observation_bytes[entries[0]["sha256"]]
+    value = _versioned(c.loads(raw, canonical=True, limit=1024**2), mode, MODE_OBSERVATION_FIELDS)
+    checks = value["checks"]
+    c.require(type(checks) is list and all(type(item) is str for item in checks) and checks == sorted(checks)
+              and type(value["accepted"]) is bool and value["accepted"] is (checks == []), "terminal mode verdict")
+    expected = {"owner": owner["owner_sha256"]} | {name: item["sha256"] for name, item in request["inputs"].items()}
+    c.require(value["commitments"] == expected, "terminal mode commitments")
+    return c.sha(raw), value["accepted"]
+
+
+def _mode_validator(mode):
+    """The three observe operations share the journal kind `mode`, so each validator reads its own
+    operation's journal (one observe per mode) instead of the latest-by-kind map of disposition 3d."""
+    def provider(keeper):
+        def validator(source, *, owner, window, observations):
+            c.closed(source, TERMINAL_SOURCE_ROLES[mode])
+            digest, accepted = mode_observation(keeper, mode, owner)
+            c.require(source["mode"] == digest, "terminal mode source")
+            return {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": accepted}}
+        return validator
+    return provider
+
+
 # Closed production registries. They are code constants, never read from governance, environment or
-# request. Each kind maps to a SYNTHETIC label (R3: the product has no routing or terminal-readback
-# handler) and a provider that builds the validator for one keeper. Only six kinds exist; unit,
-# recovery, audit and restoration stay without a validator, so finish() refuses their terminals.
+# request. Each kind maps to a label and a provider that builds the validator for one keeper: SYNTHETIC
+# where the product has no handler (R3: routing, terminal-readback), product-mode where the DD-4
+# observation comes from the product observe handler. restoration stays without a validator, so
+# finish() refuses the failed-* terminals.
 TERMINAL_VALIDATORS = {
     "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
     "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
@@ -1908,6 +1949,7 @@ TERMINAL_VALIDATORS = {
     "quiescence": ("synthetic-quiescence", _quiescence_validator),
     "host": ("synthetic-host", _handoff_validator("host-handoff")),
     "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+    **{mode: ("product-mode-" + mode, _mode_validator(mode)) for mode in ("unit", "recovery", "audit")},
 }
 KEEPER_EVENT_SOURCE = stage_event_source
 

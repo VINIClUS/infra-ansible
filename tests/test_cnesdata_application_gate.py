@@ -5426,7 +5426,7 @@ def test_run_closed_ready_admite_a_capability_e_so_entao_mede_o_tempo_do_child(m
 ])
 def test_execute_refuses_an_incomplete_registry_or_event_source_before_any_effect(monkeypatch, validators, events, message):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
     monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
@@ -5871,7 +5871,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
     assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
 
 
 TERMINAL_MEMBER_IDENTITY = ("dispatch_id", "request_sha256", "generation", "initial_state", "execution_ref", "resolution")
@@ -6295,6 +6295,8 @@ HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH
                   "Publish only the closed public handoff projection",
                   "Fail only after the original recovery handoff is available")
 SIX_VALIDATORS = {"routing", "static", "membership", "quiescence", "host", "decision"}
+MODE_VALIDATORS = {"unit", "recovery", "audit"}
+NINE_VALIDATORS = SIX_VALIDATORS | MODE_VALIDATORS
 HOST_OWNER = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
 
 
@@ -6536,15 +6538,15 @@ def test_register_terminal_validators_refuses_a_foreign_keeper_registry_or_kind(
         ag.register_terminal_validators(keeper, registry)
 
 
-def test_production_terminal_validator_registry_is_the_six_synthetic_kinds():
+def test_production_terminal_validator_registry_is_six_synthetic_and_three_product_mode_kinds():
     from tools.cnesdata_delivery import application_gate as ag
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS
-    assert all(type(label) is str and label.startswith("synthetic-") and callable(provider)
-               for label, provider in ag.TERMINAL_VALIDATORS.values())
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS
+    assert all(type(label) is str and callable(provider) and label == ("product-mode-" if kind in MODE_VALIDATORS else "synthetic-") + kind
+               for kind, (label, provider) in ag.TERMINAL_VALIDATORS.items())
     keeper, _ = _accepted_terminal_case()
     keeper._terminal_validators.clear()
     ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
-    assert set(keeper._terminal_validators) == SIX_VALIDATORS
+    assert set(keeper._terminal_validators) == NINE_VALIDATORS
     assert {kind: label for kind, (label, _) in keeper._terminal_validators.items()} == {
         kind: label for kind, (label, _) in ag.TERMINAL_VALIDATORS.items()}
     with pytest.raises(ValueError, match="closed terminal validator registry"):
@@ -7590,10 +7592,9 @@ def _terminal_window_case(kind):
     return ag, keeper, store
 
 
-@pytest.mark.parametrize("kind, missing", [("accepted-open", {"unit", "recovery", "audit"}), ("failed-closed-quiescent", {"restoration"}),
-                                          ("failed-prepare-quiescent", {"restoration"})])
+@pytest.mark.parametrize("kind, missing", [("failed-closed-quiescent", {"restoration"}), ("failed-prepare-quiescent", {"restoration"})])
 def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
-    """The registry has no unit/recovery/audit/restoration validator: finish refuses every terminal kind, so API is the only end."""
+    """The registry has no restoration validator: finish refuses both failed-* terminal kinds."""
     ag, keeper, store = _terminal_window_case(kind)
     window = store.get()[0]["lifecycle"]
     required = ag._terminal_required(kind, window)
@@ -7602,3 +7603,21 @@ def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
     with pytest.raises(ValueError, match="^terminal validator unavailable; lifecycle disabled$"):
         keeper.finish({"kind": kind, "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
     assert store.get() == before and before[0]["status"] == "held"
+
+
+def test_r15_accepted_open_tem_registro_completo_mas_so_fecha_com_as_observacoes_originais_e_sem_call_site_de_finish():
+    """P16 fills unit/recovery/audit (DD-4): synthetic sources still refuse at the first mode validator, and no production
+    path calls finish, so API stays the only end until the terminal producer (PR-6)."""
+    import ast
+    import pathlib
+    ag, keeper, store = _terminal_window_case("accepted-open")
+    window = store.get()[0]["lifecycle"]
+    required = ag._terminal_required("accepted-open", window)
+    assert required <= set(ag.TERMINAL_VALIDATORS) and required & MODE_VALIDATORS == MODE_VALIDATORS
+    before = store.get()
+    with pytest.raises(ValueError, match="^closed object fields$"):
+        keeper.finish({"kind": "accepted-open", "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
+    assert store.get() == before and before[0]["status"] == "held"
+    calls = [node for path in (pathlib.Path(__file__).resolve().parents[1] / "tools").rglob("*.py") for node in ast.walk(ast.parse(path.read_text()))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "finish"]
+    assert calls == []

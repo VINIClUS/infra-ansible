@@ -197,6 +197,14 @@ ADAPTER_INPUTS = {
     "reopen": "activation routing canaries membership",
     "terminal-readback": "routing membership host-receipt static-receipt decision",
     "retire-static": "static-plan inventory publication routing",
+    "unit-seed": "record mode-start fixture-manifest fixture-cnes-local fixture-cnes-nacional",
+    "recovery-seed": "record mode-start fixture-manifest fixture-cnes-local fixture-cnes-nacional",
+    "unit-start": "record readbacks previous mode-seed mode-start",
+    "recovery-start": "record readbacks previous mode-seed mode-start",
+    "audit-start": "record readbacks previous mode-seed mode-start audit-event-ids",
+    "unit-observe": "activation close-drain record mode-result readbacks observed",
+    "recovery-observe": "activation network close-drain phase-b phase-c mode-result readbacks",
+    "audit-observe": "activation network close-drain phase-b phase-c mode-result readbacks recovery-result recovery-readbacks",
 }
 # Amendment 6886977054 decision 5 put retire-static in final; 6963763481 decision 1 (R16) admits it in no
 # stage in this slice, because the final budget does not fit it. The remedy belongs to the post-API amendment.
@@ -204,11 +212,17 @@ ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
     "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": set(),
+    **{name: {"unit"} for name in ("unit-seed", "unit-start", "unit-observe")},
+    **{name: {"phase-c-recovery"} for name in ("recovery-seed", "recovery-start", "recovery-observe")},
+    **{name: {"phase-c-audit"} for name in ("audit-start", "audit-observe")},
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
     "publish-static": "publication", "rollback-api-static": "rollback", "reopen": "routing", "terminal-readback": "terminal",
     "retire-static": "retirement",
+    **{name: "mode-seed" for name in ("unit-seed", "recovery-seed")},
+    **{name: "mode-result" for name in ("unit-start", "recovery-start", "audit-start")},
+    **{name: "mode" for name in ("unit-observe", "recovery-observe", "audit-observe")},
 }
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
