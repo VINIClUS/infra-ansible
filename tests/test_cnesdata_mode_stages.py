@@ -382,7 +382,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         return {name: c.canonical({"fixture_original": name, "operation": operation}) for name in names}
     monkeypatch.setattr(ag, "mode_input_source", mode_input_source)
 
-    def mode_capability(*, journal, keeper):
+    def mode_capability(*, journal, keeper, guard):
+        assert guard is journal._guard
         world.events.append(("capability", journal._request["operation"]))
         world.mode.capabilities.append(journal)
         if world.mode.capability is not None:
@@ -422,8 +423,10 @@ def _unit_stage(world, **extra):
 
     def invoke(*, journal, timeout):
         return ag.invoke_adapter(journal=journal, timeout=timeout)
-    return ag.mode_stage(world.keeper, "unit", known=_known(world) | extra, invoke=invoke, credential_limit=6000,
-                         clock=world.clock)
+    def capability(**kwargs):
+        return ag.mode_capability(**kwargs)
+    return ag.mode_stage(world.keeper, "unit", known=_known(world) | extra, invoke=invoke, capability=capability,
+                         credential_limit=6000, clock=world.clock)
 
 
 def test_estagio_unit_roda_seed_start_observe_encadeados_e_avanca_com_o_unit_aceito(monkeypatch):
@@ -492,11 +495,14 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
 
 
 def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker():
+    from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         ag.mode_input_source(keeper=None, owner={}, window={}, operation="unit-seed", names=["record"])
+    journal = SimpleNamespace(_failed=False)
     with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
-        ag.mode_capability(journal=None, keeper=None)
+        ag.mode_capability(journal=journal, keeper=None, guard=None)
+    assert journal._failed is True
 
 
 def _c_files(world, purpose, **changes):
@@ -554,6 +560,35 @@ def test_handler_do_c_audit_leva_o_resultado_do_recovery_e_avanca_para_o_final(m
                               "checkpoint_sha256": c.sha(files["checkpoint.json"]),
                               "deadline": min(before["fixed_deadline"], world.clock.value + before["windows"]["stages"]["final"])}
     assert world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("purpose", ["phase-c-recovery", "phase-c-audit"])
+def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_lease_retido(monkeypatch, purpose):
+    from test_cnesdata_stage_events import B_REFERENCE
+    from tools.cnesdata_delivery import application_gate as ag
+    production = ag.mode_capability
+    world = _through_unit(monkeypatch)
+    if purpose == "phase-c-audit":
+        _c_files(world, "phase-c-recovery")
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    _c_files(world, purpose)
+    monkeypatch.setattr(ag, "mode_capability", production)
+    before = _record(world)
+    world.mode.calls.clear()
+    with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
+        world.handlers[purpose](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls == [] and _record(world) == before
+    assert world.store.get()[0]["status"] == "held"
+    assert {"kind": "context-failed"} in world.keeper.uncertainty()
+
+
+def test_capability_de_modo_e_injetada_pelo_handler_e_nao_tem_padrao():
+    import inspect
+    from tools.cnesdata_delivery import application_gate as ag
+    for function in (ag.run_mode_operation, ag.mode_stage):
+        parameter = inspect.signature(function).parameters["capability"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is inspect.Parameter.empty
+    assert list(inspect.signature(ag.mode_capability).parameters) == ["journal", "keeper", "guard"]
 
 
 C_REFUSALS = {

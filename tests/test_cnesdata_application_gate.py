@@ -5869,7 +5869,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "mode_stage", "run_mode_operation"),
         (gate, "mode_stage", "mode_stage_window"),
         (gate, "run_mode_operation", "KeeperGuard"),
-        (gate, "run_mode_operation", "mode_capability"),
+        (gate, "capability", "mode_capability"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
         ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call

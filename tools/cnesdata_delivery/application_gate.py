@@ -2222,21 +2222,25 @@ def mode_input_source(*, keeper, owner, window, operation, names):
     raise ValueError("mode_inputs=source_unconnected")
 
 
-def mode_capability(*, journal, keeper):
-    """The mode broker (mode_seed, mode_dispatch, mode_audit_launch and mode_observe sessions) is not in this slice."""
+def mode_capability(*, journal, keeper, guard):
+    """Production mode broker (mode_seed, mode_dispatch, mode_audit_launch and mode_observe sessions): not connected
+    in this slice, so the attached journal fails and the lease stays held. Raises: ValueError."""
+    journal._failed = True
     raise ValueError("mode_broker=unconnected")
 
 
-def run_mode_operation(keeper, operation, *, inputs, activation, invoke, credential_limit, clock):
-    """One mode operation: journal under the keeper guard, capability before the child, timeout window - now - 38."""
+def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capability, credential_limit, clock):
+    """One mode operation: journal under the keeper guard, the injected capability before the child, timeout
+    window - now - 38. Returns: the single observation bytes. Raises: ValueError."""
     record = keeper.lease.check()
     window, owner = record["lifecycle"], lc.owner_binding(record)
     c.closed(inputs, lc.ADAPTER_INPUTS[operation])
+    guard = KeeperGuard(keeper)
     journal = AdapterJournal(_operation_request(operation, owner=owner, window=window, inputs=inputs, activation=activation),
                              operation=operation, owner=owner, window=window, inputs=inputs,
-                             activation_sha256=c.sha(activation), guard=KeeperGuard(keeper))
+                             activation_sha256=c.sha(activation), guard=guard)
     keeper.attach(journal)
-    broker = mode_capability(journal=journal, keeper=keeper)
+    broker = capability(journal=journal, keeper=keeper, guard=guard)
     try:
         invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
                                                             operation=operation))
@@ -2249,7 +2253,7 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, credent
     return journal._observation_bytes[observed[0]["sha256"]]
 
 
-def mode_stage(keeper, mode, *, known, invoke, credential_limit, clock, checkpoint_sha256=None):
+def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None):
     """DD-3/DD-4: the mode operations in order, each fed by the previous observations, the accepted observe,
     then the next stage window. Returns the observation bytes by kind (mode-seed, mode-result, mode)."""
     produced = {}
@@ -2262,7 +2266,7 @@ def mode_stage(keeper, mode, *, known, invoke, credential_limit, clock, checkpoi
             inputs |= dict(mode_input_source(keeper=keeper, owner=lc.owner_binding(record), window=record["lifecycle"],
                                              operation=operation, names=missing))
         produced[lc.ADAPTER_OBSERVATIONS[operation]] = run_mode_operation(
-            keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke,
+            keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke, capability=capability,
             credential_limit=credential_limit, clock=clock)
     _, accepted = mode_observation(keeper, mode, lc.owner_binding(keeper.lease.check()))
     c.require(accepted is True, f"{mode} mode accepted")
@@ -2390,8 +2394,11 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             return invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
                                   manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal,
                                   timeout=timeout)
-        produced = mode_stage(current, name, known=known, invoke=invoke, credential_limit=credential_limit, clock=clock,
-                              checkpoint_sha256=checkpoint_sha256)
+
+        def capability(*, journal, keeper, guard):
+            return mode_capability(journal=journal, keeper=keeper, guard=guard)
+        produced = mode_stage(current, name, known=known, invoke=invoke, capability=capability,
+                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256)
         if name == "recovery":
             state["recovery-result"] = produced["mode-result"]
 
