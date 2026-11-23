@@ -158,7 +158,8 @@ def test_produtor_do_predecessor_recusa_entrada_incoerente(history, change):
 def entry(monkeypatch, tmp_path):
     from test_cnesdata_application_gate import _application_entry_case
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    gov, request, run, job, configure, store, reads = _application_entry_case(monkeypatch, tmp_path)
+    gov, request, run, job, configure, store, reads = _application_entry_case(
+        monkeypatch, tmp_path, steps=producer().catalog(full_catalog()))
     gov["application_fragment"].update(trust_sha256=digest_of(TRUST), policy_sha256=digest_of(POLICY))
     configuration, fragment = gov.pop("application_configuration"), gov.pop("application_fragment")
     for key in ("application_delegations", "application_coordination_policy"):
@@ -498,13 +499,14 @@ def test_governanca_montada_pelos_produtores_passa_na_admissao_real_do_applicati
     previous, _ = entry.store.get()
     selector = entry.gov.pop("predecessor_read")
     entry.gov.pop("lifecycle_predecessor")
-    entry.gov.pop("lifecycle_steps")
+    for key in ("lifecycle_steps_sha256", "source_closure_sha256"):
+        entry.gov.pop(key)
     objects = originals(entry.store.aws, entry.gov, selector)
     predecessor = producer().predecessor(entry.api, entry.gov, selector, lease=previous, job=PREDECESSOR_JOB,
                                          objects=objects)
-    pieces = predecessor | entry.section | {"lifecycle_steps": producer().catalog(full_catalog()),
-                                            "release": produced_release()}
-    document = producer().document(entry.gov, pieces)
+    catalog_raw, catalog_reference = producer().catalog_member(full_catalog())
+    pieces = predecessor | entry.section | catalog_reference | closure_reference() | {"release": produced_release()}
+    document = producer().document(entry.gov, pieces, catalog_raw)
     binding, binding_sha256 = producer().caller_binding(document, entry.run)
     raw, _ = producer().descriptor(binding_sha256, source_sha=entry.run["head_sha"], step="keeper", payloads={},
                                    purpose=document["application_purpose"])
@@ -517,23 +519,43 @@ def test_governanca_montada_pelos_produtores_passa_na_admissao_real_do_applicati
     assert admitted[1]["caller_binding_sha256"] == binding_sha256
     assert admitted[0]["authenticated_application_caller"] == binding
     assert admitted[0]["lifecycle_predecessor"] == predecessor["lifecycle_predecessor"]
-    assert len(governance_assembly.render(document, ceiling=governance_assembly.SECRET_CEILING)) > 0
+    assert len(governance_assembly.render(document)) <= governance_assembly.CLI_CEILING - 4096
+
+
+def closure_reference():
+    from fixtures.cnesdata_lifecycle_objects import CLOSURE
+    return producer().source_closure_reference({"version": 1, "source_sha": "b" * 40, "files": dict(CLOSURE)})
 
 
 def document_inputs(entry):
     base = copy.deepcopy(entry.gov)
-    pieces = copy.deepcopy(entry.section) | {"lifecycle_steps": producer().catalog(full_catalog()),
-                                             "release": produced_release()}
-    return base, pieces | {key: base.pop(key) for key in ("predecessor_read", "lifecycle_predecessor")}
+    raw, reference = producer().catalog_member(full_catalog())
+    pieces = copy.deepcopy(entry.section) | reference | closure_reference() | {"release": produced_release()}
+    return base, pieces | {key: base.pop(key) for key in ("predecessor_read", "lifecycle_predecessor")}, raw
 
 
 @pytest.mark.parametrize("change", [None, "missing-piece", "inline-manifest", "unknown-key", "context", "release",
-                                    "predecessor"])
+                                    "predecessor", "inline-catalog", "inline-closure", "catalog-member",
+                                    "catalog-refused", "missing-closure"])
 def test_montagem_do_documento_do_application_recusa_pecas_incompletas_ou_fora_do_conjunto(entry, change):
-    base, pieces = document_inputs(entry)
+    base, pieces, raw = document_inputs(entry)
     if change is None:
-        assert producer().document(base, pieces) == base | pieces
+        assert producer().document(base, pieces, raw) == base | pieces
         return
+    if change == "inline-catalog":
+        pieces["lifecycle_steps"] = producer().catalog(full_catalog())
+    if change == "inline-closure":
+        pieces["source_closure"] = {"infra/opentofu/env/prod/main.tf": "1" * 64}
+    if change == "catalog-member":
+        raw = raw.replace(b"promote / keeper", b"promote / keeper2")
+    if change == "catalog-refused":
+        steps = full_catalog()
+        steps["phase-b-deploy"]["direction"] = "sideways"
+        raw = c.canonical(steps)
+        pieces["lifecycle_steps_sha256"] = c.sha(raw)
+    if change == "missing-closure":
+        pieces.pop("source_closure_sha256")
+        base.pop("source_closure_sha256")
     if change == "missing-piece":
         pieces.pop("application_fragment")
     if change == "inline-manifest":
@@ -547,14 +569,14 @@ def test_montagem_do_documento_do_application_recusa_pecas_incompletas_ou_fora_d
     if change == "predecessor":
         pieces["lifecycle_predecessor"]["run_id"] += 1
     with pytest.raises(ValueError):
-        producer().document(base, pieces)
+        producer().document(base, pieces, raw)
 
 
 def test_novas_chaves_do_conjunto_fechado_entram_na_montagem_sem_mudar_o_produtor(entry, monkeypatch):
     from tools.cnesdata_delivery.producers import governance_assembly
-    base, pieces = document_inputs(entry)
+    base, pieces, raw = document_inputs(entry)
     pieces["stage_windows_probe"] = {"b": 360}
     with pytest.raises(ValueError, match="governance key=stage_windows_probe"):
-        producer().document(base, pieces)
+        producer().document(base, pieces, raw)
     monkeypatch.setattr(governance_assembly, "GOVERNANCE_KEYS", governance_assembly.GOVERNANCE_KEYS | {"stage_windows_probe"})
-    assert producer().document(base, pieces)["stage_windows_probe"] == {"b": 360}
+    assert producer().document(base, pieces, raw)["stage_windows_probe"] == {"b": 360}

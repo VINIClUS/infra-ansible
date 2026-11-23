@@ -339,8 +339,10 @@ def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem()
     for path in (ROOT / "tools/cnesdata_delivery").glob("*.py"):
         if path.name not in {"host_gate.py", "signing_gate.py"}:
             read |= {first or second for first, second in pattern.findall(path.read_text())}
-    assert "account_id" in read and read <= governance_assembly.GOVERNANCE_KEYS, sorted(
-        read - governance_assembly.GOVERNANCE_KEYS)
+    closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS
+    assert "account_id" in read and read <= closed, sorted(read - closed)
+    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure"}
+    assert governance_assembly.HYDRATED_KEYS.isdisjoint(governance_assembly.GOVERNANCE_KEYS)
 
 
 def test_render_do_cli_valida_antes_de_emitir(tmp_path, capsys):
