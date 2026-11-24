@@ -59,6 +59,11 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 1. Revisao pelo dono, por escrito (data, run, causa, evidencia retida, decisao), antes de mexer no lease.
    Se o estado e `held`/`recovery_required` ou ha duvida sobre o estado da fence ou das rotas, a
    recuperacao do ambiente (host, rotas, restauracao) vem antes e fora deste runbook.
+   Falha do `unit-start` depois da reserva: o keeper nunca roda o `cancel_reserved` do produto (o papel
+   `mode_dispatch` nao tem `ConditionCheckItem` no SEMAPHORE), entao ficam um dispatch de unidade
+   `RESERVED`, o permit do `ENV#prod#SEMAPHORE` (`UNIT`) e o slot do `ENV#prod#ATTEMPTS` que ele
+   consumiu. A recuperacao revisada limpa os tres antes da proxima promocao, depois da evidencia do
+   passo 1 e com a mesma aprovacao escrita.
 2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente**. Nao ha caminho de
    remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do dono. Condicoes:
    precondicao no etag lido no passo 1 quando o mecanismo a suportar, uma escrita, aprovada pelo dono,
