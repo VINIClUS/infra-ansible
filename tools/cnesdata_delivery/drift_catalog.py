@@ -337,6 +337,8 @@ OMITTED = {
         "period": (0, None), "statistic": ("", None), "threshold": (0, None),
         "threshold_metric_id": ("", None), "unit": ("", None)},
     "aws_cloudfront_response_headers_policy": {"comment": ("", None)},
+    "aws_ecs_task_definition": {
+        "enable_fault_injection": (False, None), "ipc_mode": ("", None), "pid_mode": ("", None)},
 }
 NO_CHANGE = (["no-op"], ["read"])
 
