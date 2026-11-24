@@ -35,7 +35,7 @@ PRODUCT_FRAMES_ORIGIN = {
         (None, "tests/fixtures/cnesdata_mode_canary_frames_vector.json",
          "78bd01cb66caf12b86fc762078eee10d217f96a1bc416ad849cf4bc7b31ccade")}
 VENDORED = [value for key, value in PRODUCT_FRAMES_ORIGIN.items() if key != "commit" and value[0] is not None]
-REUSABLE_LISTS = {"application-gate": 1, "infra-audit-gate": 1, "infra-deploy-gate": 1, "infra-plan-gate": 1, "observer": 2}
+REUSABLE_LISTS = {"application-gate": 1, "infra-audit-gate": 1, "infra-deploy-gate": 1, "infra-plan-gate": 1, "observer": 0}
 Holder = collections.namedtuple("Holder", "dispatch_id run_id tenant_id")
 
 
@@ -141,7 +141,8 @@ def test_formatos_do_produto_carregam_uma_vez_por_processo():
 
 
 @pytest.mark.parametrize("vendored", VENDORED, ids=[item[1] for item in VENDORED])
-def test_formatos_vendorizados_entram_no_pyboot_e_nas_seis_listas_dos_reusables(vendored):
+def test_formatos_vendorizados_entram_no_pyboot_e_nas_quatro_listas_dos_gates_mas_nao_na_closure_do_observador(vendored):
+    """The observer lists are its exact AST import closure; the frames load by exec, only in the keeper."""
     name = vendored[1]
     assert name in lc.APPLICATION_PYBOOT
     assert "tools/cnesdata_delivery/" + name in lc.APPLICATION_CLOSURE_PATHS

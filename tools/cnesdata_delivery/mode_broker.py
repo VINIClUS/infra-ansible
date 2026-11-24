@@ -1,5 +1,8 @@
 """Mode SDK broker, fence-read broker and mode readbacks of the promotion mode stages (P16b)."""
+import importlib.util
+import pathlib
 import re
+import sys
 import time
 
 from tools.cnesdata_delivery import contract as c
@@ -18,9 +21,48 @@ MODE_KEY_FRAMES = {
     "ledger-unknown": frozenset({("ticket", "put"), ("ticket", "get")}),
     "ledger-settle": frozenset({("ticket", "put"), ("ticket", "get")}),
 }
+PRODUCT_FRAMES = (
+    ("cnes_infra.control_plane.dynamodb_keys", "product_dynamodb_keys.py",
+     "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"),
+    ("cnes_domain.orchestration.mode_canary", "product_mode_canary.py",
+     "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2"),
+    ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
+     "250343666e0b199ae1ddbd29fb030de144d92d8fa18f576a27fa55b3d314d881"))
+_PRODUCT = {}
 _RUN = re.compile(r"[a-z0-9-]{1,64}")
 _DISPATCH = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _MANIFEST = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _load_product_frames(folder):
+    verified = []
+    for name, file, digest in PRODUCT_FRAMES:
+        raw = (folder / file).read_bytes()
+        c.require(c.sha(raw) == digest, f"mode product frames sha256 file={file}")
+        verified.append((name, str(folder / file), raw))
+    saved = {name: sys.modules.get(name) for name, _, _ in verified}
+    try:
+        for name, origin, raw in verified:
+            module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader=None, origin=origin))
+            sys.modules[name] = module
+            exec(compile(raw, origin, "exec"), module.__dict__)
+        return sys.modules[PRODUCT_FRAMES[-1][0]]
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
+def product_frames():
+    """C2 vendored product ledger builders (ruling 3): the pinned product bytes, run under their product module names.
+
+    Returns: the cnes_infra.aws.mode_canary_frames module. Raises: ValueError on any byte drift, before executing.
+    """
+    if "frames" not in _PRODUCT:
+        _PRODUCT["frames"] = _load_product_frames(pathlib.Path(__file__).resolve().parent)
+    return _PRODUCT["frames"]
 
 
 def _hex(value):
