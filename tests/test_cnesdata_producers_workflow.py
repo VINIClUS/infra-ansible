@@ -249,3 +249,24 @@ def test_observe_mascara_tambem_os_textos_do_shared_outputs(text):
 def test_lista_de_modulos_do_observe_inclui_o_limite_de_subprocesso(text):
     assert "producers/rehearsal_plan.py" in listed(text)[0]
     assert "producers/rehearsal_plan.py" not in listed(text)[1]
+
+
+def _script(document, name):
+    step = next(item for item in document["jobs"]["observe"]["steps"] if item["name"] == name)
+    return step["run"].split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
+
+
+def test_mascara_executada_cobre_texto_aninhado_do_shared_outputs_e_ignora_o_curto(document):
+    import json
+    text_value = "Zq7 shared output plain text"
+    settings = {"account_id": "111122223333", "roles": {"plan": "role-plan-x"},
+                "shared_outputs": {"a": {"b": [text_value, "short"]}}}
+    done = subprocess.run([sys.executable, "-I", "-c", _script(document, "Mask every value of the private observer configuration")],
+                          env={"OBSERVER_CONFIG": json.dumps(settings)}, capture_output=True, text=True, check=True)
+    masked = {line.removeprefix("::add-mask::") for line in done.stdout.splitlines()}
+    assert text_value in masked and "short" not in masked
+
+
+def test_tofu_instalado_entra_no_path_dos_passos_seguintes(document):
+    step = next(item for item in document["jobs"]["observe"]["steps"] if item["name"] == "Install pinned OpenTofu")
+    assert 'echo "${RUNNER_TEMP}/observer-bin" >> "${GITHUB_PATH}"' in step["run"]

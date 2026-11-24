@@ -499,10 +499,12 @@ def test_hidratacao_recusa_catalogo_com_sha_igual_que_o_produtor_recusaria(chang
         hydrate({"phase-b-deploy": valid_step(**change)})
 
 
-@pytest.mark.parametrize("change", [{"mode": {}}, {"mode": 3}, {"purpose": 7}, {"purpose": ["phase-b"]}],
-                         ids=["modo-dict", "modo-inteiro", "proposito-inteiro", "proposito-lista"])
-def test_hidratacao_recusa_proposito_ou_modo_que_nao_e_texto_com_value_error(change):
-    with pytest.raises(ValueError, match="lifecycle step text fields"):
+@pytest.mark.parametrize("change, field, kind", [
+    ({"mode": {}}, "mode", "dict"), ({"mode": 3}, "mode", "int"),
+    ({"purpose": 7}, "purpose", "int"), ({"purpose": ["phase-b"]}, "purpose", "list")],
+    ids=["modo-dict", "modo-inteiro", "proposito-inteiro", "proposito-lista"])
+def test_hidratacao_recusa_proposito_ou_modo_que_nao_e_texto_com_value_error(change, field, kind):
+    with pytest.raises(ValueError, match=f"^lifecycle step text fields {field}_type={kind}$"):
         hydrate({"phase-b-deploy": valid_step(**change)})
 
 

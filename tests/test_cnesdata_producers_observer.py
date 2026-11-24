@@ -314,7 +314,7 @@ def test_main_recusa_recusas_do_contrato_so_com_a_classe(cli, monkeypatch, capsy
 @pytest.mark.parametrize("change", [lambda v: v | {"extra": "x"}, lambda v: {k: x for k, x in v.items() if k != "ecr_repository"},
                                     lambda v: {k: x for k, x in v.items() if k != "shared_outputs"}],
                          ids=["chave-extra", "sem-ecr", "sem-shared-outputs"])
-def test_main_recusa_configuracao_com_chaves_diferentes_das_sete(cli, monkeypatch, capsys, change):
+def test_main_recusa_configuracao_com_chaves_diferentes_das_do_observador(cli, monkeypatch, capsys, change):
     monkeypatch.setenv("OBSERVER_CONFIG", json.dumps(change(config())))
     assert observer.main(cli) != 0
     assert "refused reason=ValueError" in capsys.readouterr().err
@@ -343,3 +343,63 @@ def test_observador_fecha_roles_da_configuracao_com_o_audit(monkeypatch):
     monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(without).decode())
     with pytest.raises(ValueError):
         observer._config()
+
+
+@pytest.mark.parametrize("name", observer.CONFIG_KEYS.split())
+def test_observador_recusa_configuracao_sem_chave_nomeando_a_chave(monkeypatch, name):
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical({k: v for k, v in config().items() if k != name}).decode())
+    with pytest.raises(ValueError, match=f"^observer config missing key={name}$"):
+        observer._config()
+
+
+def test_observador_recusa_configuracao_com_chave_extra_nomeando_a_chave(monkeypatch):
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(config() | {"surprise": 1}).decode())
+    with pytest.raises(ValueError, match="^observer config extra key=surprise$"):
+        observer._config()
+
+
+@pytest.mark.parametrize("change", [
+    {"toolchain": "x"}, {"toolchain": {"lock_sha256": "0" * 64}},
+    {"toolchain": {"lock_sha256": "zz", "providers": ["registry.opentofu.org/hashicorp/aws"]}},
+    {"toolchain": {"lock_sha256": "0" * 64, "providers": []}},
+    {"toolchain": {"lock_sha256": "0" * 64, "providers": [3]}}],
+    ids=["texto", "sem-providers", "sha-invalido", "providers-vazio", "provider-nao-texto"])
+def test_observador_recusa_toolchain_malformado_na_configuracao(monkeypatch, change):
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(config() | change).decode())
+    with pytest.raises(ValueError, match="observer toolchain|closed object fields|digest"):
+        observer._config()
+
+
+TEXT = "Zq7 shared output plain text"
+
+
+@pytest.mark.parametrize("value", [{"name": TEXT}, {"names": [TEXT]}, {"deep": {"inner": [{"leaf": TEXT}]}}],
+                         ids=["texto", "lista", "aninhado"])
+def test_varredura_de_vazamento_pega_texto_do_shared_outputs_que_nao_e_arn(value):
+    settings = config()
+    settings["shared_outputs"] = settings["shared_outputs"] | value
+    leaked = {"drift-handoff.json": c.canonical({"note": "x " + TEXT + " y"}), "observations.json": c.canonical({})}
+    with pytest.raises(ValueError, match="configuration value in a public file"):
+        observer._sanitize(leaked, settings, KEY_HEX, {})
+
+
+def test_varredura_ignora_texto_curto_do_shared_outputs():
+    settings = config()
+    settings["shared_outputs"] = settings["shared_outputs"] | {"short": "abc"}
+    clean = {"drift-handoff.json": c.canonical({"note": "abc"}), "observations.json": c.canonical({})}
+    observer._sanitize(clean, settings, KEY_HEX, {})
+
+
+@pytest.mark.parametrize("value", [{}, "texto", ["a"]], ids=["vazio", "texto", "lista"])
+def test_observador_recusa_shared_outputs_vazio_ou_que_nao_e_objeto(monkeypatch, value):
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(config() | {"shared_outputs": value}).decode())
+    with pytest.raises(ValueError, match="observer shared_outputs"):
+        observer._config()
+
+
+def test_sha_do_plano_de_ensaio_e_o_dos_bytes_crus_do_show_e_nao_o_da_forma_canonica(chain, monkeypatch):
+    raw = json.dumps(chain.replay.plan, indent=2).encode()
+    assert raw != c.canonical(chain.replay.plan)
+    monkeypatch.setattr(rehearsal_plan, "plan", lambda *args: raw)
+    _, result, _ = run(chain)
+    assert observations(result)["drift-baseline"]["rehearsal_plan_sha256"] == c.sha(raw)
