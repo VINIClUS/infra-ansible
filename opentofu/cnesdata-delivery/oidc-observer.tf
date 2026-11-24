@@ -57,7 +57,7 @@ resource "aws_iam_role_policy" "observer" {
       { Effect = "Allow", Action = ["ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"], Resource = var.observer.repository_arn },
       { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" },
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.github_delivery.state_kms_arn,
-      Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" } } },
+      Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = ["${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate", var.github_delivery.state_bucket_arn] } } },
       { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}phase-inputs/*" },
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.evidence_bucket_arn, Condition = { StringLike = { "s3:prefix" = "${var.github_delivery.evidence_prefix}phase-inputs/*" } } },
       { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.github_delivery.evidence_kms_arn,
