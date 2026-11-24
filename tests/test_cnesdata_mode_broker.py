@@ -282,3 +282,132 @@ def test_politica_da_sessao_do_observe_recusa_escopo_inexato(change, message):
     from tools.cnesdata_delivery import session_policy as sp
     with pytest.raises(ValueError, match=message):
         sp.fence_observe_session_policy(**{"control_table_arn": _scope()["control_table_arn"], "deadline": 1900} | change)
+
+
+def _observe_session_case(monkeypatch, *, operation="unit-observe", mutation=None):
+    from test_cnesdata_application_gate import _fence_sdk_boundary_case
+    from test_cnesdata_mode_stages import _mode_case
+    _, args, calls, native = _fence_sdk_boundary_case(monkeypatch)
+    request, owner, window, inputs = _mode_case(operation)
+    window.update(admitted_at=1500, deadline=min(window["fixed_deadline"], 1500 + window["windows"]["stages"][window["stage"]]))
+    request["stage"] = {key: value for key, value in window.items() if key not in lc.application_identity(owner)}
+    now = window["admitted_at"] + 30 - (mutation == "future-admission") * 31
+    now = window["deadline"] - 40 if mutation == "late" else now
+    monkeypatch.setattr(ag.time, "time", lambda: now)
+
+    class Guard:
+        def check(self, seconds=0):
+            return None
+    journal = ag.AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    stage = journal._request["stage"]
+    if mutation == "deadline":
+        stage["deadline"] -= 1
+    if mutation == "other-stage":
+        stage["stage"] = "phase-c-recovery" if operation == "unit-observe" else "unit"
+    if mutation == "open":
+        stage["close"] = None
+    if mutation == "decision":
+        stage["decision"] = {"choice_at": now}
+    scope = {key: args["scope"][key] for key in ("account", "control_table_arn", "machine_arn")}
+    if mutation == "members":
+        scope["members"] = []
+    if mutation == "no-get-grant":
+        args["role"]["policy"]["Statement"].pop(0)
+    args.update(journal=journal, scope=scope, clock=lambda: now, credential_limit=now + 899 if mutation == "credential" else 3000)
+    return args, calls, native, stage
+
+
+OBSERVE_SESSION_REFUSALS = {
+    "late": "^fence original mode stage/credential window$", "deadline": "^fence original mode stage/credential window$",
+    "future-admission": "^fence original mode stage/credential window$",
+    "credential": "^fence original mode stage/credential window$",
+    "other-stage": "^fence original mode stage/credential window$", "open": "^fence original mode stage/credential window$",
+    "decision": "^fence original mode stage/credential window$", "members": "^closed object fields$",
+    "no-get-grant": "^fence original effective strong-read grant$"}
+
+
+@pytest.mark.parametrize("operation", OBSERVES)
+def test_sessao_do_fence_do_observe_e_so_leitura_ate_o_prazo_do_estagio_do_modo(monkeypatch, operation):
+    from tools.cnesdata_delivery import session_policy as sp
+    args, calls, native, stage = _observe_session_case(monkeypatch, operation=operation)
+    session = ag._assume_fence_session(**args)
+    assert session.scope == args["scope"] and session.deadline == stage["deadline"] and len(calls) == len(native) == 1
+    expected = sp.fence_observe_session_policy(control_table_arn=args["scope"]["control_table_arn"], deadline=stage["deadline"])
+    assert calls[0][2] == {"RoleArn": args["role"]["role_arn"], "RoleSessionName": args["role"]["session_name"],
+                           "DurationSeconds": 900, "Policy": c.canonical(expected).decode().strip()}
+    assert args["operation_session"].calls == [(operation, args["role"]["session_name"], stage)]
+
+
+@pytest.mark.parametrize("mutation", sorted(OBSERVE_SESSION_REFUSALS))
+def test_sessao_do_fence_do_observe_recusa_fora_da_janela_ou_do_escopo_sem_sts(monkeypatch, mutation):
+    args, calls, native, _ = _observe_session_case(monkeypatch, mutation=mutation)
+    with pytest.raises(ValueError, match=OBSERVE_SESSION_REFUSALS[mutation]):
+        ag._assume_fence_session(**args)
+    assert calls == native == [] and args["operation_session"].calls == []
+
+
+class _Evidence:
+    def __init__(self):
+        self.objects, self.events = {}, []
+
+    def get(self, bucket, key, *, maximum, absent=False):
+        return self.objects.get(key), "etag"
+
+    def put(self, bucket, key, raw):
+        assert key not in self.objects
+        self.events.append(key.rsplit("-", 1)[1])
+        self.objects[key] = raw
+
+
+def _fence_read_broker(monkeypatch):
+    import time
+    from email.utils import formatdate
+    args, _, _, stage = _observe_session_case(monkeypatch)
+    session = ag._assume_fence_session(**args)
+    evidence, native = _Evidence(), []
+    metadata = {"RequestId": "native-id", "HTTPStatusCode": 200, "HTTPHeaders": {"date": formatdate(time.time(), usegmt=True)}}
+
+    def sdk(service, operation, **parameters):
+        native.append((service, operation, parameters))
+        return {"Item": {"pk": {"S": parameters["Key"]["pk"]["S"]}, "state": {"S": "CLOSED"}}, "ResponseMetadata": metadata}
+    session.client.call = sdk
+    broker = _mode_broker_module().FenceReadBroker(evidence, args["governance"], args["journal"], session,
+                                                   prepared_sha256="3" * 64, clock=args["clock"])
+    return broker, args["journal"], evidence, native
+
+
+@pytest.mark.parametrize("pk, sk", FENCE_READS)
+def test_broker_do_observe_faz_a_leitura_forte_com_evidencia_duravel(monkeypatch, pk, sk):
+    broker, journal, evidence, native = _fence_read_broker(monkeypatch)
+    frame = _fence_read(pk, sk) | {"kind": "call"}
+    frame["parameters"]["TableName"] = "cnesdata-prod-control"
+    reply, result = ag._adapter_message(c.canonical(frame), journal)
+    assert result is None and reply == {"kind": "sdk-result", "value": {"Item": {"pk": {"S": pk}, "state": {"S": "CLOSED"}}}}
+    assert evidence.events == ["intent.json", "response.json", "receipt.json"] and len(native) == 1
+    assert len(journal.call_receipts) == 1 and broker.uncertainty == [] and journal.unknown == []
+    assert type(broker) in ag._brokers() and type(broker) is not ag.ClosedReadyBroker
+
+
+@pytest.mark.parametrize("change", ["describe", "eventual", "update"])
+def test_broker_do_observe_recusa_chamada_fora_da_leitura_forte_antes_de_qualquer_io(monkeypatch, change):
+    broker, journal, evidence, native = _fence_read_broker(monkeypatch)
+    frame = _fence_read(*FENCE_READS[0]) | {"kind": "call"}
+    frame["parameters"]["TableName"] = "cnesdata-prod-control"
+    if change == "describe":
+        frame |= {"service": "stepfunctions", "operation": "describe_execution",
+                  "parameters": {"executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:" + "a" * 16,
+                                 "includedData": "METADATA_ONLY"}}
+    if change == "eventual":
+        frame["parameters"]["ConsistentRead"] = False
+    if change == "update":
+        frame["operation"] = "update_item"
+    with pytest.raises(ValueError, match="^mode observe (finite SDK operation|strong fence read)$"):
+        ag._adapter_message(c.canonical(frame), journal)
+    assert native == [] and evidence.objects == {} and journal.call_receipts == []
+
+
+def test_clientes_do_broker_do_observe_sao_descartados(monkeypatch):
+    broker, _, _, _ = _fence_read_broker(monkeypatch)
+    ag._drop_operation_clients(broker)
+    assert (broker.aws, broker.session.client, broker.session.evidence) == (None, None, None)
