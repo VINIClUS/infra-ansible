@@ -2963,10 +2963,11 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     carrier, close-drain, close window.
     phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
     and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window, then the static
-    operation publish-static and, on its settled publication, the unit window (internal, DD-3). phase-c-recovery
-    and phase-c-audit (DD-3, external): the C deploy publication, child of the keeper checkpoint, then the mode run
-    and its acceptance (DD-4), the next window with the C deploy checkpoint. unit -> phase-c-recovery is internal:
-    `mode(current, "unit", None)` runs in the unit window; nothing runs it in this slice, so the unit stage ends it.
+    operation publish-static and, on its settled publication, the unit window (internal, DD-3) and in it the unit
+    mode run (record, seed, start, observe); its acceptance opens the phase-c-recovery window (internal, DD-3); a
+    refusal or a lapse ends held. phase-c-recovery and phase-c-audit (DD-3, external): the C deploy publication,
+    child of the keeper checkpoint, then the mode run and its acceptance (DD-4), the next window with the C deploy
+    checkpoint.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     state = {}
@@ -3098,6 +3099,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
         current.lease.checkpoint(lc.static_window(window, now=admitted))
         publish_static(current, raw)
+        mode(current, "unit", None)
 
     def publish_static(current, receipt):
         from tools.cnesdata_delivery.static_inputs import carrier_binding
