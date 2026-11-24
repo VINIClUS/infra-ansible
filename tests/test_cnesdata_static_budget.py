@@ -56,25 +56,27 @@ def test_prazo_do_child_e_fixado_uma_vez_e_nunca_alarga_o_prazo_do_estagio():
     assert clients["observer"].calls == []
 
 
+@pytest.mark.parametrize("root", ["theme-init.js", "index.html"])
 @pytest.mark.parametrize("remaining, admitted", [(101, True), (100, False)])
-def test_primeiro_put_de_raiz_so_entra_com_folga_para_os_dois_pares_e_a_invalidacao(remaining, admitted):
+def test_primeiro_put_de_raiz_so_entra_com_folga_para_os_dois_pares_e_a_invalidacao(remaining, admitted, root):
     ag, broker, journal, clients, evidence, clock = _broker(child=1505 + remaining)
     assert ag.STATIC_ROOT_BLOCK_SECONDS == 5 * 20
     if admitted:
-        ag._adapter_message(_frame(*_put("index.html")), journal)
+        ag._adapter_message(_frame(*_put(root)), journal)
         assert [call[1] for call in clients["normal"].calls] == ["put_object"]
         return
     with pytest.raises(ValueError, match=f"^static_roots=window_short remaining={remaining} required=100$"):
-        ag._adapter_message(_frame(*_put("index.html")), journal)
+        ag._adapter_message(_frame(*_put(root)), journal)
     assert clients["normal"].calls == [] and evidence.writes == [] and journal.call_receipts == []
 
 
-def test_depois_do_primeiro_put_de_raiz_o_bloco_segue_a_admissao_por_chamada():
+@pytest.mark.parametrize("first, second", [("theme-init.js", "index.html"), ("index.html", "theme-init.js")])
+def test_depois_do_primeiro_put_de_raiz_o_bloco_segue_a_admissao_por_chamada(first, second):
     ag, broker, journal, clients, evidence, clock = _broker(child=1505 + 101)
-    ag._adapter_message(_frame(*_put("index.html")), journal)
+    ag._adapter_message(_frame(*_put(first)), journal)
     clock.value = 1606 - 21
-    for call in (("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": "index.html"}), _put("theme-init.js"),
-                 ("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": "theme-init.js"}), INVALIDATION):
+    for call in (("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": first}), _put(second),
+                 ("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": second}), INVALIDATION):
         ag._adapter_message(_frame(*call), journal)
     assert [call[1] for call in clients["normal"].calls] == ["put_object", "get_object", "put_object", "get_object",
                                                              "create_invalidation"]

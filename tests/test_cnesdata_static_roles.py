@@ -5,6 +5,7 @@ import itertools
 import pytest
 
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import lifecycle_runtime as lr
 
 from test_cnesdata_static_stage import ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, KEYS, ROLES, _journal
 
@@ -24,7 +25,7 @@ ROLE_POLICIES = {
          "Resource": DISTRIBUTION, "Condition": EXPIRY}]},
 }
 ROLE_FACTS = {alias: {"role_arn": ROLES[alias], "role_name": ROLES[alias].rsplit("/", 1)[1],
-                      "role_id": "AROA" + alias.upper().ljust(17, "X"), "policy_name": "cnesdata-prod-static-" + alias,
+                      "role_id": "AROA" + alias.upper().ljust(17, "X"), "policy_name": ROLES[alias].rsplit("/", 1)[1] + "-runtime",
                       "policy": ROLE_POLICIES[alias]} for alias in ROLES}
 FENCE_NAME = "cnesdata-prod-promotion-fence-operator"
 
@@ -33,12 +34,11 @@ def _rows(name_part, facts):
     role = "module.runtime_iam.aws_iam_role." + name_part + "[0]"
     policy = "module.runtime_iam.aws_iam_role_policy." + name_part + "[0]"
     name = facts["role_name"]
-    return [({"service": "iam", "operation": "get_role", "address": role, "parameters": {"RoleName": name}, "absent": False},
+    return [({"service": "iam", "operation": "get_role", "address": role, "absent": False},
              {"service": "iam", "operation": "get_role", "observed": {"Role": {
                  "Arn": facts["role_arn"], "RoleName": name, "RoleId": facts["role_id"], "Path": "/",
                  "MaxSessionDuration": 3600, "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": []}}}}),
-            ({"service": "iam", "operation": "get_role_policy", "address": policy,
-              "parameters": {"RoleName": name, "PolicyName": facts["policy_name"]}, "absent": False},
+            ({"service": "iam", "operation": "get_role_policy", "address": policy, "absent": False},
              {"service": "iam", "operation": "get_role_policy", "observed": {
                  "RoleName": name, "PolicyName": facts["policy_name"], "PolicyDocument": facts["policy"]}})]
 
@@ -78,8 +78,11 @@ def test_politicas_do_fixture_sao_as_static_policies_do_498_para_as_candidate_ke
     assert {alias: json.loads(text) for alias, text in _static_policies(BUCKET_ARN, plan).items()} == ROLE_POLICIES
 
 
-def test_fatos_do_role_estatico_vem_do_readback_pos_apply_amarrado_ao_endereco():
+def test_fatos_do_role_estatico_vem_do_readback_pos_apply_com_specs_na_forma_governada_do_approval():
     from tools.cnesdata_delivery import static_inputs as si
+    specs, _ = role_readbacks()
+    assert [lr._spec_fields(spec) for spec in specs] == [False] * 6
+    assert all(set(spec) == {"service", "operation", "address", "absent"} for spec in specs)
     files = role_files()
     facts = si.static_role_facts(files["checkpoint.json"], files["approval.json"], governance=EVIDENCE_GOVERNANCE,
                                  aliases=("observer", "normal"))
@@ -110,18 +113,15 @@ def _report(alias, operation, change):
     return mutate
 
 
-def _named(alias, operation, **names):
-    def mutate(specs, reports):
-        index = _index(specs, alias, operation)
-        specs[index]["parameters"].update(names)
-        reports[index]["observed"].update(names)
-    return mutate
-
-
 @pytest.mark.parametrize("mutate, message", [
-    (_drop("normal", "get_role"), "static_role=readback_absent alias=normal operation=get_role"),
-    (_drop("observer", "get_role_policy"), "static_role=readback_absent alias=observer operation=get_role_policy"),
-    (_twice("normal", "get_role"), "static_role=readback_absent alias=normal operation=get_role"),
+    (_drop("normal", "get_role"), "static_role=readback_shape alias=normal operation=get_role"),
+    (_drop("observer", "get_role_policy"), "static_role=readback_shape alias=observer operation=get_role_policy"),
+    (_twice("normal", "get_role"), "static_role=readback_shape alias=normal operation=get_role"),
+    (_twice("observer", "get_role_policy"), "static_role=readback_shape alias=observer operation=get_role_policy"),
+    (lambda specs, reports: _second_policy(specs, reports),
+     "static_role=readback_shape alias=normal operation=get_role_policy"),
+    (_report("normal", "get_role_policy", lambda report: report["observed"].update(PolicyName="cnesdata-prod-static-normal")),
+     "static_role=readback_shape alias=normal operation=get_role_policy"),
     (lambda specs, reports: reports.pop(), "static_role=readbacks_unaligned"),
     (_report("normal", "get_role", lambda report: report.update(operation="get_role_policy")),
      "static_role=readback_shape alias=normal operation=get_role"),
@@ -129,7 +129,8 @@ def _named(alias, operation, **names):
         Arn=f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-static-other")), "static_role=identity alias=observer"),
     (_report("observer", "get_role", lambda report: report["observed"]["Role"].update(RoleId="")),
      "static_role=identity alias=observer"),
-    (_named("normal", "get_role_policy", RoleName="cnesdata-prod-static-observer"), "static_role=policy alias=normal"),
+    (_report("normal", "get_role_policy", lambda report: report["observed"].update(RoleName="cnesdata-prod-static-observer")),
+     "static_role=readback_shape alias=observer operation=get_role_policy"),
     (_report("normal", "get_role_policy", lambda report: report["observed"].update(PolicyDocument="{}")),
      "static_role=policy alias=normal")])
 def test_fatos_do_role_estatico_recusam_readback_ausente_duplicado_desalinhado_ou_fora_da_governanca(mutate, message):
@@ -142,20 +143,20 @@ def test_fatos_do_role_estatico_recusam_readback_ausente_duplicado_desalinhado_o
 
 def _second_policy(specs, reports):
     name = ROLE_FACTS["normal"]["role_name"]
-    names = {"RoleName": name, "PolicyName": name + "-extra"}
-    specs.append({"service": "iam", "operation": "get_role_policy", "absent": False, "parameters": dict(names),
+    specs.append({"service": "iam", "operation": "get_role_policy", "absent": False,
                   "address": "module.runtime_iam.aws_iam_role_policy.static_normal_extra[0]"})
     reports.append({"service": "iam", "operation": "get_role_policy",
-                    "observed": names | {"PolicyDocument": ROLE_POLICIES["observer"]}})
+                    "observed": {"RoleName": name, "PolicyName": name + "-extra", "PolicyDocument": ROLE_POLICIES["observer"]}})
 
 
-def test_transposicao_de_relatorios_nunca_entrega_fato_trocado_e_recusa_como_readback_shape():
+@pytest.mark.parametrize("mutate, expected", [
+    (None, ROLE_FACTS), (_second_policy, "static_role=readback_shape alias=normal operation=get_role_policy")])
+def test_transposicao_de_relatorios_com_specs_governados_nunca_entrega_fato_trocado(mutate, expected):
     from tools.cnesdata_delivery import static_inputs as si
-    specs, reports = role_readbacks(mutate=_second_policy)
+    specs, reports = role_readbacks(mutate=mutate)
+    assert all(lr._spec_fields(spec) is False for spec in specs)
     approval = c.canonical({"version": 1, "readbacks": {"before": [], "after": specs}})
-    order = [(alias, operation) for alias in ("observer", "normal") for operation in ("get_role", "get_role_policy")]
-    rows = {_index(specs, alias, operation): (alias, operation) for alias, operation in order}
-    outcomes, expected = {}, {}
+    outcomes = {}
     for first, second in itertools.combinations(range(len(specs)), 2):
         swapped = copy.deepcopy(reports)
         swapped[first], swapped[second] = swapped[second], swapped[first]
@@ -165,11 +166,8 @@ def test_transposicao_de_relatorios_nunca_entrega_fato_trocado_e_recusa_como_rea
                                                            aliases=("observer", "normal"))
         except ValueError as error:
             outcomes[first, second] = str(error)
-        touched = sorted((rows[index] for index in (first, second) if index in rows), key=order.index)
-        expected[first, second] = (f"static_role=readback_shape alias={touched[0][0]} operation={touched[0][1]}"
-                                   if touched else ROLE_FACTS)
-    assert len(specs) == 7 and len(rows) == 4
-    assert outcomes == expected
+    assert len(outcomes) == len(specs) * (len(specs) - 1) // 2 in (15, 21)
+    assert outcomes == dict.fromkeys(outcomes, expected)
 
 
 def test_politica_da_sessao_normal_restringe_os_objetos_as_candidate_keys_autenticadas():
