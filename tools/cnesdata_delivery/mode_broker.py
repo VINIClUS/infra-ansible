@@ -205,6 +205,7 @@ def ledger_write(frame, *, table, binding, reads, read, build, execute):
     (operation, request) or None once applied, execute(operation, request) -> receipted response (raises if unknown).
     Returns: native writes made. Raises: ValueError (C1, shape, ledger_cancel reason=, ledger_contended attempts=).
     """
+    c.require(frame in MODE_KEY_FRAMES, "mode key outside frame")
     attempts = product_frames().ATTEMPTS
     for key in reads:
         admit_mode_key(frame, "get", key, binding=binding)
