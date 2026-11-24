@@ -302,7 +302,7 @@ def test_capability_do_publish_static_le_os_roles_do_checkpoint_operacional_e_re
     keeper, store = _prepare_stage_keeper()
     journal, _, _, _ = _journal()
     minted = []
-    with pytest.raises(ValueError, match="^static_role=readback_absent alias=normal operation=get_role$"):
+    with pytest.raises(ValueError, match="^static_role=readback_shape alias=normal operation=get_role$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
                              operation_session=lambda *args: minted.append(args), clock=lambda: 1505,
                              carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal),
@@ -317,7 +317,7 @@ def test_capability_do_inventory_le_o_observer_do_deploy_observer_bootstrap_e_re
     keeper, store = _prepare_stage_keeper()
     journal = _inventory_journal()[0]
     minted = []
-    with pytest.raises(ValueError, match="^static_role=readback_absent alias=observer operation=get_role$"):
+    with pytest.raises(ValueError, match="^static_role=readback_shape alias=observer operation=get_role$"):
         ag.inventory_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=2000,
                                 operation_session=lambda *args: minted.append(args), clock=lambda: 1100,
                                 publication=role_files(()))
