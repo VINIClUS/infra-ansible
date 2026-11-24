@@ -492,6 +492,50 @@ FENCE_EVALUATION_CASES = {
     "probe-own": "states:DescribeExecution", "probe-foreign": "states:DescribeExecution", "write-own-evidence": "s3:PutObject",
     "put-lease": "s3:PutObject", "freeze-expired": "dynamodb:GetItem",
 }
+_MODE_CASE_ACTIONS = {
+    "us": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
+           "put-foreign-tenant": "dynamodb:PutItem", "put-other-mode-run": "dynamodb:PutItem", "get-fence": "dynamodb:GetItem",
+           "put-output": "s3:PutObject"},
+    "ux": {"put-ticket": "dynamodb:PutItem", "put-binding": "dynamodb:PutItem", "start-execution": "states:StartExecution",
+           "describe-own-task": "ecs:DescribeTasks", "update-control": "dynamodb:UpdateItem", "run-task": "ecs:RunTask",
+           "stop-execution": "states:StopExecution", "put-recovery-run": "dynamodb:PutItem",
+           "describe-foreign-cluster-task": "ecs:DescribeTasks"},
+    "uo": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-output": "s3:GetObject"},
+    "rs": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
+           "put-foreign-tenant": "dynamodb:PutItem", "put-other-mode-run": "dynamodb:PutItem", "get-fence": "dynamodb:GetItem",
+           "put-output": "s3:PutObject"},
+    "rx": {"run-recovery": "ecs:RunTask", "pass-recovery-role": "iam:PassRole", "put-ticket": "dynamodb:PutItem",
+           "run-audit-revision": "ecs:RunTask", "run-other-cluster": "ecs:RunTask", "pass-unit-role": "iam:PassRole",
+           "put-run-partition": "dynamodb:PutItem", "start-execution": "states:StartExecution"},
+    "ro": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-own-schedule": "scheduler:GetSchedule",
+           "describe-own-alarm": "cloudwatch:DescribeAlarms", "get-audit-schedule": "scheduler:GetSchedule",
+           "get-output": "s3:GetObject"},
+    "ax": {"run-audit": "ecs:RunTask", "pass-audit-role": "iam:PassRole", "run-recovery-revision": "ecs:RunTask",
+           "pass-other-role": "iam:PassRole", "get-tenant": "dynamodb:GetItem"},
+    "ao": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-own-schedule": "scheduler:GetSchedule",
+           "describe-own-alarm": "cloudwatch:DescribeAlarms", "get-recovery-schedule": "scheduler:GetSchedule",
+           "get-output": "s3:GetObject"},
+}
+
+
+def _mode_evaluation_cases():
+    cases = {}
+    for code, actions in _MODE_CASE_ACTIONS.items():
+        cases |= {f"assume-{code}": (code, "sts:AssumeRole"), f"assume-{code}-other-session": (code, "sts:AssumeRole")}
+        cases |= {f"{code}-{name}": (code, action) for name, action in actions.items()}
+        cases[f"{code}-expired"] = (code, next(iter(actions.values())))
+    return cases
+
+
+MODE_EVALUATION_CASES = _mode_evaluation_cases()
+MODE_EVALUATION_DOCUMENTS = frozenset({"application_identity", "application_managed",
+                                       *(f"{kind}.{code}" for code in _MODE_CASE_ACTIONS for kind in ("application_session", "session")),
+                                       *(f"role.{alias}" for alias in MODE_ALIASES)})
+MODE_EVALUATION_CONTEXT = frozenset({"aws:CurrentTime", "sts:RoleSessionName", "dynamodb:LeadingKeys", "ecs:cluster",
+                                     "iam:PassedToService"})
 FENCE_SCHEMAS = {
     "fence-prepared.json": "schema_version proof_kind operation application_purpose context_kind owner caller_binding_sha256 activation_sha256 application_fragment_sha256 producer preparation files outcome",
     "fence-role.json": "schema_version role_arn role_name role_id policy_name release_id session_name trust policy max_session_duration tags original_projection_sha256 current_projection_sha256",
@@ -869,6 +913,41 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
                 c.require(type(value) is str and 1 <= len(value) <= 128, "fence finite IAM context value")
         seen.add(case["case_id"])
     return manifest
+
+
+def validate_mode_evaluation(evaluation):
+    """Closed mode-evaluation.json (P16b ruling 4 item 2): the fence-evaluation shape over MODE_EVALUATION_CASES.
+
+    Raises: ValueError mode evaluation.
+    """
+    c.require(type(evaluation) is dict and set(evaluation) == {"schema_version", "evaluator_source_sha", "documents", "cases"}
+              and type(evaluation["schema_version"]) is int and evaluation["schema_version"] == 1
+              and type(evaluation["evaluator_source_sha"]) is str
+              and re.fullmatch(r"[0-9a-f]{40}", evaluation["evaluator_source_sha"]) is not None
+              and type(evaluation["documents"]) is dict and set(evaluation["documents"]) == MODE_EVALUATION_DOCUMENTS
+              and all(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                      for value in evaluation["documents"].values())
+              and type(evaluation["cases"]) is list and len(evaluation["cases"]) == len(MODE_EVALUATION_CASES)
+              and all(_mode_evaluation_case(case) for case in evaluation["cases"])
+              and len({case["case_id"] for case in evaluation["cases"]}) == len(MODE_EVALUATION_CASES), "mode evaluation")
+
+
+def _mode_evaluation_case(case):
+    if type(case) is not dict or set(case) != {"case_id", "action", "resource", "context", "expected", "observed"}:
+        return False
+    context = case["context"]
+    return (type(case["case_id"]) is str and case["case_id"] in MODE_EVALUATION_CASES
+            and case["action"] == MODE_EVALUATION_CASES[case["case_id"]][1]
+            and type(case["resource"]) is str and 1 <= len(case["resource"]) <= 2048
+            and type(case["expected"]) is bool and case["expected"] is case["observed"]
+            and type(context) is dict and "aws:CurrentTime" in context and set(context) <= MODE_EVALUATION_CONTEXT
+            and all(_mode_context_value(key, value) for key, value in context.items()))
+
+
+def _mode_context_value(key, value):
+    if key == "dynamodb:LeadingKeys":
+        return type(value) is list and 1 <= len(value) <= 2 and all(type(item) is str and 1 <= len(item) <= 256 for item in value)
+    return type(value) is str and 1 <= len(value) <= 2048
 
 
 def validate_adapter_request(raw, *, operation, owner, window, inputs, activation_sha256):

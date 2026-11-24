@@ -145,16 +145,25 @@ def test_sessao_avaliada_e_a_do_construtor_no_prazo_preparado():
         _prepare(documents)
 
 
-@pytest.mark.parametrize("change", [
-    {"deadline": DEADLINE - 300}, {"deadline": str(DEADLINE)}, {"owner_sha256": "b" * 64},
-    {"role_arns": {alias: arn for alias, arn in ROLE_ARNS.items() if alias != "mode_observe"}},
-    {"session_names": NAMES | {"ux": "mc-ux-" + "0" * 39}}, {"session_names": NAMES | {"ux": NAMES["rx"]}},
-    {"role_arns": ROLE_ARNS | {"mode_seed": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-*"}}, {"extra": 1}],
-    ids=["prazo-no-observado", "prazo-texto", "outro-owner", "sem-papel", "nome-curto", "nome-de-outra-sessao",
-         "papel-curinga", "campo-extra"])
-def test_escopo_fora_da_forma_recusa_a_preparacao(change):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("change, message", [
+    ({"deadline": str(DEADLINE)}, "integer range"), ({"owner_sha256": "b" * 64}, "mode session runs"),
+    ({"role_arns": {alias: arn for alias, arn in ROLE_ARNS.items() if alias != "mode_observe"}}, "closed object fields"),
+    ({"session_names": NAMES | {"ux": "mc-ux-" + "0" * 39}}, "mode evaluation scope"),
+    ({"session_names": NAMES | {"ux": NAMES["rx"]}}, "mode evaluation scope"),
+    ({"role_arns": ROLE_ARNS | {"mode_seed": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-*"}}, "mode evaluation scope"),
+    ({"role_arns": ROLE_ARNS | {"mode_seed": ROLE_ARNS["mode_dispatch"]}}, "mode evaluation scope"),
+    ({"extra": 1}, "closed object fields")],
+    ids=["prazo-texto", "outro-owner", "sem-papel", "nome-curto", "nome-de-outra-sessao", "papel-curinga", "papel-trocado",
+         "campo-extra"])
+def test_escopo_fora_da_forma_recusa_a_preparacao(change, message):
+    with pytest.raises(ValueError, match=f"^{message}$"):
         _prepare(scope=SCOPE | change)
+
+
+@pytest.mark.parametrize("deadline", [DEADLINE - 300, DEADLINE - 301])
+def test_preparacao_observa_antes_do_prazo_da_sessao(deadline):
+    with pytest.raises(ValueError, match="^mode evaluation before session deadline$"):
+        _prepare(_documents(deadline=deadline), SCOPE | {"deadline": deadline})
 
 
 def test_documentos_fora_do_conjunto_fechado_recusam():
