@@ -13,6 +13,7 @@ FORMAL = ROOT / "formal/cnesdata_delivery"
 MODEL = (FORMAL / "StageWindows.tla").read_text(encoding="utf-8")
 CONTRACT = (CODE / "lifecycle_contract.py").read_text(encoding="utf-8")
 RUNTIME = (CODE / "lifecycle_runtime.py").read_text(encoding="utf-8")
+GATE = (CODE / "application_gate.py").read_text(encoding="utf-8")
 CONFIGS = {name: (FORMAL / f"{name}.cfg").read_text(encoding="utf-8")
            for name in ("StageWindows", "StageWindowsE2", "StageWindowsOverrun", "StageWindowsCodeAudit",
                         "StageWindowsCodeFinal", "StageWindowsCeiling")}
@@ -180,7 +181,7 @@ def stage_ops(stage, bounds, cfg):
 
 
 def tail_names(stage):
-    return {2: ["api_effect", "api_observe"], 3: ["static_effect", "static_observe"],
+    return {2: ["api_effect", "api_observe"], 3: ["static_publish", "static_settle"],
             7: ["reopen", "terminal_readback"]}[stage]
 
 
@@ -291,6 +292,26 @@ def test_limites_do_modelo_sao_admissiveis_e_maximais_pelas_reservas_do_codigo(n
             raised = dict(bounds) | {key: bounds[key] + 1}
             assert not admissible(stage, durations, raised, cfg), (name, stage, key)
     assert infeasible == ({5, 6} if name == "Code" else set())
+
+
+def static_shape():
+    exit_seconds = int(re.search(r"^ADAPTER_EXIT_SECONDS = (\d+)$", GATE, re.M).group(1))
+    assert re.search(r"^STATIC_RESERVE_SECONDS = ADAPTER_EXIT_SECONDS$", GATE, re.M)
+    source = function_source(GATE, "_static_seconds")
+    margin = re.findall(r'window\["deadline"\] - now - (\d+)', source)
+    assert len(margin) == 1 and "- STATIC_RESERVE_SECONDS" in source
+    return int(margin[0]), exit_seconds
+
+
+def test_linha_static_do_modelo_e_o_child_do_publish_static_na_abertura_mais_a_saida_do_adapter():
+    """P15: the static stage runs one publish-static child of W - 38 - reserve at stage open, then the 7 s adapter exit."""
+    margin, exit_seconds = static_shape()
+    assert margin == int(cfg_values(CONFIGS["StageWindows"])["AdmitMargin"]) + 1
+    assert re.search(r'^      \[\] s = 3 -> <<"static_publish", "static_settle">>$', MODEL, re.M)
+    for name in ("Code", "E2", "Ceiling"):
+        window = model_tuple(name + "Dur")[2]
+        assert model_records(name + "Var")[2] == {"static_publish": window - margin - exit_seconds,
+                                                  "static_settle": exit_seconds}, name
 
 
 def test_estouro_difere_do_e2_so_no_excesso_de_duracao():

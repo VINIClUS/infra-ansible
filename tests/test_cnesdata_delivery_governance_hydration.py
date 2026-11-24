@@ -314,18 +314,21 @@ def test_leitores_recebem_o_catalogo_e_a_closure_hidratados(monkeypatch, tmp_pat
     keeper.pop("caller_job")
     steps["keeper"] = keeper | {"role": "plan", "purpose": "application-prepare", "input_jobs": {},
                                 "mode": "observer-bootstrap", "direction": "advance"}
+    steps["observer-bootstrap"] = steps["phase-b-advance"] | {"purpose": "application-prepare", "mode": "observer-bootstrap",
+                                                              "job_name": "application-prepare-observer-bootstrap / execute"}
     lr, gov, _, _ = admission_case(monkeypatch, steps=steps)
     governance = lr.admission("plan")[0]
     assert governance["lifecycle_steps"] == steps
     lr.admit_approval_origin(governance, "deploy", {"approval.json": "operational-audit"})
     assert ag._phase_b_step(governance) == ("phase-b-advance", steps["phase-b-advance"])
+    assert ag._observer_step(governance) == ("observer-bootstrap", steps["observer-bootstrap"])
     assert c.sha(c.canonical(governance["source_closure"])) == gov["source_closure_sha256"]
 
 
 READERS = {("lifecycle_runtime.py", "admission"), ("lifecycle_runtime.py", "current_checkpoint_chain"),
            ("lifecycle_runtime.py", "fence_prepare_package"), ("lifecycle_runtime.py", "execute"),
            ("lifecycle_runtime.py", "admit_approval_origin"), ("application_gate.py", "_phase_b_step"),
-           ("application_gate.py", "_plan_activation")}
+           ("application_gate.py", "_plan_activation"), ("application_gate.py", "_observer_step")}
 
 
 def _readers():
