@@ -1,0 +1,695 @@
+"""P16: mode adapter operations, DD-4 unit/recovery/audit validators and the post-static stage triggers."""
+import inspect
+import json
+
+import pytest
+
+from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import lifecycle_contract as lc
+
+PRODUCT_MODE_ORIGIN = {
+    "commit": "33ae80fb15628248d6b771a081dc96c2923e09ca",
+    "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
+    "scripts/promotion/promote_mode.py": "991d30a3f8e3589f64c906a3c2c796d98da76d40d75d2c066d2b0707815b2370",
+    "scripts/promotion/promote_mode_effects.py": "7bdd5f793aa40434531875ce4c68af5935da1dc84d9f41b0602ffeff8578b8db"}
+VENDORED_MODE_SHA256 = "f4d8b2a338730203edb1f1dec784c8f344c2b09a05d1192e091e0e25ae106c8e"
+MODES = ("unit", "recovery", "audit")
+MODE_STAGE = {"unit": "unit", "recovery": "phase-c-recovery", "audit": "phase-c-audit"}
+MODE_WINDOWS = {"unit": (1720, 1900), "phase-c-recovery": (1900, 2230), "phase-c-audit": (2230, 2560)}
+
+
+def _product_mode_abi():
+    """Vendored from CnesData 33ae80fb: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
+    MODE_OBSERVATION_FIELDS, MODE_EFFECT_CALLS/STEPS/METHODS, the handler of each operation in promote_mode and
+    promote_mode_effects, promote_mode_effects.SDK_OPERATIONS and promote_mode._observation."""
+    operations = {
+        "unit-seed": ("unit", "unit"), "unit-start": ("unit", "unit"), "unit-observe": ("unit", "unit"),
+        "recovery-seed": ("recovery", "phase-c-recovery"), "recovery-start": ("recovery", "phase-c-recovery"),
+        "recovery-observe": ("recovery", "phase-c-recovery"),
+        "audit-start": ("audit", "phase-c-audit"), "audit-observe": ("audit", "phase-c-audit")}
+    scheduled = frozenset({"activation", "network", "close-drain", "phase-b", "phase-c", "mode-result", "readbacks"})
+    seed = frozenset({"record", "mode-start", "fixture-manifest", "fixture-cnes-local", "fixture-cnes-nacional"})
+    start = frozenset({"record", "readbacks", "previous", "mode-seed", "mode-start"})
+    inputs = {"unit-seed": seed, "recovery-seed": seed, "unit-start": start, "recovery-start": start,
+              "audit-start": start | {"audit-event-ids"},
+              "unit-observe": frozenset({"activation", "close-drain", "record", "mode-result", "readbacks", "observed"}),
+              "recovery-observe": scheduled, "audit-observe": scheduled | {"recovery-result", "recovery-readbacks"}}
+    observations = {name: "mode-seed" if name.endswith("-seed") else "mode-result" if name.endswith("-start")
+                    else "mode" for name in operations}
+    fields = frozenset({"version", "kind", "accepted", "checks", "commitments"})
+    handlers = {name: "promote_mode" if name.endswith("-observe") else "promote_mode_effects" for name in operations}
+    seed_calls = frozenset({("mode_seed", "dynamodb", "put_item"), ("mode_seed", "dynamodb", "get_item"),
+                            ("mode_seed", "s3", "put_object"), ("mode_seed", "s3", "get_object")})
+    calls = {"unit-seed": seed_calls, "recovery-seed": seed_calls, "unit-start": frozenset(),
+             "recovery-start": frozenset({("mode_dispatch", "ecs", "run_task"), ("mode_dispatch", "ecs", "describe_tasks")}),
+             "audit-start": frozenset({("mode_audit_launch", "ecs", "run_task"),
+                                       ("mode_audit_launch", "ecs", "describe_tasks")})}
+    steps = {"unit-seed": frozenset(), "recovery-seed": frozenset(),
+             "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
+             "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"})}
+    methods = {"unit-seed": frozenset(), "recovery-seed": frozenset(),
+               "unit-start": frozenset({"dispatch_unit", "mode_readbacks"}),
+               "recovery-start": frozenset({"ledger_admit_effect", "ledger_mark_unknown", "ledger_settle", "mode_readbacks"}),
+               "audit-start": frozenset({"mode_readbacks"})}
+    sdk = {"dynamodb:PutItem": ("dynamodb", "put_item"), "dynamodb:GetItem": ("dynamodb", "get_item"),
+           "s3:PutObject": ("s3", "put_object"), "s3:GetObject": ("s3", "get_object"),
+           "ecs:RunTask": ("ecs", "run_task"), "ecs:DescribeTasks": ("ecs", "describe_tasks")}
+
+    def canonical(value):
+        return (json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+    def observation(kind, checks, request, originals):
+        commitments = {"owner": request["owner"]["owner_sha256"]}
+        commitments |= {name: c.sha(raw) for name, raw in originals.items()}
+        return canonical({"version": 1, "kind": kind, "accepted": not checks, "checks": sorted(checks),
+                          "commitments": commitments})
+    return {"operations": operations, "inputs": inputs, "observations": observations, "fields": fields,
+            "observation": observation, "handlers": handlers, "calls": calls, "steps": steps, "methods": methods,
+            "sdk": sdk}
+
+
+PRODUCT = _product_mode_abi()
+
+
+def test_copia_vendorizada_do_abi_de_modo_so_muda_junto_com_a_origem_registrada():
+    """infra-ansible CI cannot import CnesData: a refresh of the vendored tables updates its origin and this digest."""
+    assert set(PRODUCT_MODE_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py", "scripts/promotion/promote_mode.py",
+                                        "scripts/promotion/promote_mode_effects.py"}
+    assert c.sha(inspect.getsource(_product_mode_abi).encode()) == VENDORED_MODE_SHA256
+
+
+@pytest.mark.parametrize("operation", sorted(PRODUCT["operations"]))
+def test_tabelas_de_adapter_do_keeper_batem_com_o_abi_de_modo_do_produto(operation):
+    assert set(lc.ADAPTER_INPUTS[operation].split()) == PRODUCT["inputs"][operation]
+    assert lc.ADAPTER_STAGES[operation] == {PRODUCT["operations"][operation][1]}
+    assert lc.ADAPTER_OBSERVATIONS[operation] == PRODUCT["observations"][operation]
+
+
+def test_as_oito_operacoes_de_modo_do_produto_tem_handler_e_tabelas_completas_no_keeper():
+    mode = {name for name in lc.ADAPTER_INPUTS if name in PRODUCT["operations"]}
+    assert mode == set(PRODUCT["operations"]) == set(PRODUCT["handlers"]) and len(mode) == 8
+    assert {name for name, module in PRODUCT["handlers"].items() if module == "promote_mode_effects"} == set(PRODUCT["calls"])
+    assert set(PRODUCT["calls"]) == set(PRODUCT["steps"]) == set(PRODUCT["methods"])
+    assert all(name in lc.ADAPTER_STAGES and name in lc.ADAPTER_OBSERVATIONS for name in mode)
+
+
+@pytest.mark.parametrize("operation", sorted(PRODUCT["calls"]))
+def test_chamadas_sdk_de_cada_efeito_do_produto_usam_so_a_sessao_de_promotion_do_keeper(operation):
+    _, alias, context, _ = lc.MODE_SESSION_OPERATIONS[operation]
+    assert context == "promotion"
+    assert {call[0] for call in PRODUCT["calls"][operation]} <= {alias}
+    assert {call[1:] for call in PRODUCT["calls"][operation]} <= set(PRODUCT["sdk"].values())
+
+
+def test_oito_sessoes_de_promotion_sao_as_operacoes_de_modo_do_produto():
+    from fixtures.cnesdata_delivery_lifecycle import MODE_SESSION_VECTORS
+    promotion = {name: phase for name, (_, _, context, phase) in lc.MODE_SESSION_OPERATIONS.items() if context == "promotion"}
+    assert promotion == {name: mode for name, (mode, _) in PRODUCT["operations"].items()}
+    vectors = {vector["operation"]: vector for vector in MODE_SESSION_VECTORS if vector["operation"] in promotion}
+    assert set(vectors) == set(promotion)
+    for name, vector in vectors.items():
+        assert lc.mode_session(vector["binding"], "promotion")["session_name"] == vector["session_name"]
+        assert vector["binding"]["phase"] == promotion[name]
+
+
+def _mode_case(operation, *, stage=None):
+    from test_cnesdata_application_gate import _adapter_case
+    request, owner, window, _ = _adapter_case("closed-ready")
+    start, deadline = MODE_WINDOWS[stage or PRODUCT["operations"][operation][1]]
+    window.update(stage=stage or PRODUCT["operations"][operation][1], admitted_at=start, deadline=deadline)
+    inputs = {name: c.canonical({"fixture_only": name}) for name in sorted(PRODUCT["inputs"][operation])}
+    request |= {"operation": operation,
+                "stage": {key: value for key, value in window.items() if key not in lc.application_identity(owner)},
+                "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+    return request, owner, window, inputs
+
+
+def _validate_request(request, owner, window, inputs):
+    return lc.validate_adapter_request(c.canonical(request), operation=request["operation"], owner=owner, window=window,
+                                       inputs=inputs, activation_sha256=request["activation_sha256"])
+
+
+@pytest.mark.parametrize("operation", sorted(PRODUCT["operations"]))
+def test_request_de_modo_e_aceito_so_no_estagio_do_proprio_modo(operation):
+    request, owner, window, inputs = _mode_case(operation)
+    assert _validate_request(request, owner, window, inputs) == request
+    other = next(stage for stage in MODE_WINDOWS if stage != window["stage"])
+    request, owner, window, inputs = _mode_case(operation, stage=other)
+    with pytest.raises(ValueError, match="^adapter original stage$"):
+        _validate_request(request, owner, window, inputs)
+
+
+def _mode_journal(mode, *, checks=(), change=None):
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    request, owner, window, inputs = _mode_case(mode + "-observe")
+
+    class Guard:
+        def check(self, seconds=0):
+            return None
+    journal = AdapterJournal(c.canonical(request), operation=request["operation"], owner=owner, window=window,
+                             inputs=inputs, activation_sha256=request["activation_sha256"], guard=Guard())
+    raw = PRODUCT["observation"](mode, list(checks), request, inputs)
+    if change is not None:
+        value = json.loads(raw)
+        change(value)
+        raw = c.canonical(value)
+    journal.observe("mode", raw)
+    return journal, owner, raw
+
+
+def _keeper(*journals):
+    from test_cnesdata_application_gate import _accepted_terminal_case
+    keeper, _ = _accepted_terminal_case()
+    for journal in journals:
+        keeper.attach(journal)
+    return keeper
+
+
+def _mode_validator(keeper, mode):
+    from tools.cnesdata_delivery import application_gate as ag
+    return ag.TERMINAL_VALIDATORS[mode][1](keeper)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_validador_de_modo_aceita_so_a_observacao_original_do_journal_do_observe(mode):
+    journal, owner, raw = _mode_journal(mode)
+    source = {"mode": c.sha(raw)}
+    result = _mode_validator(_keeper(journal), mode)(source, owner=owner, window={"stage": "final"}, observations={})
+    assert result == {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": True}}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_validador_de_modo_reporta_a_recusa_do_produto_sem_inventar_aceite(mode):
+    journal, owner, raw = _mode_journal(mode, checks=["canary=schema"])
+    result = _mode_validator(_keeper(journal), mode)({"mode": c.sha(raw)}, owner=owner, window={}, observations={})
+    assert result["facts"] == {"accepted": False}
+
+
+def test_cada_modo_le_o_proprio_journal_embora_os_tres_observes_tenham_o_mesmo_kind():
+    found = {mode: _mode_journal(mode) for mode in MODES}
+    keeper = _keeper(*(journal for journal, _, _ in found.values()))
+    latest = keeper._latest_observation_bytes()
+    assert [c.sha(raw) for _, _, raw in found.values() if c.sha(raw) in latest] == [c.sha(found["audit"][2])]
+    for mode, (_, owner, raw) in found.items():
+        facts = _mode_validator(keeper, mode)({"mode": c.sha(raw)}, owner=owner, window={}, observations=latest)["facts"]
+        assert facts == {"accepted": True}
+
+
+def _drop_input(value):
+    value["commitments"].pop("readbacks")
+
+
+MUTATIONS = {
+    "extra-field": (lambda v: v.update(freeze=True), "^closed object fields$"),
+    "missing-field": (lambda v: v.pop("checks"), "^closed object fields$"),
+    "version-bool": (lambda v: v.update(version=True), "^terminal source kind=unit$"),
+    "version-2": (lambda v: v.update(version=2), "^terminal source kind=unit$"),
+    "other-mode": (lambda v: v.update(kind="recovery"), "^terminal source kind=unit$"),
+    "accepted-with-checks": (lambda v: v.update(checks=["canary=schema"]), "^terminal mode verdict$"),
+    "refused-without-checks": (lambda v: v.update(accepted=False), "^terminal mode verdict$"),
+    "accepted-type": (lambda v: v.update(accepted="true", checks=[]), "^terminal mode verdict$"),
+    "checks-unsorted": (lambda v: v.update(accepted=False, checks=["b", "a"]), "^terminal mode verdict$"),
+    "checks-type": (lambda v: v.update(accepted=False, checks=[1]), "^terminal mode verdict$"),
+    "commitment-input": (lambda v: v["commitments"].update(readbacks="0" * 64), "^terminal mode commitments$"),
+    "commitment-missing": (_drop_input, "^terminal mode commitments$"),
+    "commitment-extra": (lambda v: v["commitments"].update(foreign="0" * 64), "^terminal mode commitments$"),
+    "commitment-owner": (lambda v: v["commitments"].update(owner="0" * 64), "^terminal mode commitments$"),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(MUTATIONS))
+def test_validador_de_modo_recusa_observacao_fora_da_forma_ou_dos_compromissos(mutation):
+    change, message = MUTATIONS[mutation]
+    journal, owner, raw = _mode_journal("unit", change=change)
+    with pytest.raises(ValueError, match=message):
+        _mode_validator(_keeper(journal), "unit")({"mode": c.sha(raw)}, owner=owner, window={}, observations={})
+
+
+@pytest.mark.parametrize("case", ["no-journal", "two-journals", "other-bytes", "source-fields", "owner"])
+def test_validador_de_modo_recusa_fonte_que_nao_e_o_original_unico_do_journal(case):
+    journal, owner, raw = _mode_journal("unit")
+    journals, source = [journal], {"mode": c.sha(raw)}
+    if case == "no-journal":
+        journals = [_mode_journal("recovery")[0]]
+    if case == "two-journals":
+        journals.append(_mode_journal("unit", checks=["canary=schema"])[0])
+    if case == "other-bytes":
+        source = {"mode": c.sha(raw + b" ")}
+    if case == "source-fields":
+        source |= {"extra": c.sha(raw)}
+    if case == "owner":
+        owner = owner | {"owner_sha256": "0" * 64}
+    message = {"no-journal": "^terminal mode journal mode=unit$", "two-journals": "^terminal mode journal mode=unit$",
+               "other-bytes": "^terminal mode source$", "source-fields": "^closed object fields$",
+               "owner": "^terminal mode owner$"}[case]
+    with pytest.raises(ValueError, match=message):
+        _mode_validator(_keeper(*journals), "unit")(source, owner=owner, window={}, observations={})
+
+
+def test_registro_de_producao_tem_os_validadores_de_modo_com_rotulo_do_produto():
+    from tools.cnesdata_delivery import application_gate as ag
+    assert {kind: ag.TERMINAL_VALIDATORS[kind][0] for kind in MODES} == {kind: "product-mode-" + kind for kind in MODES}
+    assert {kind: ag.TERMINAL_SOURCE_ROLES[kind] for kind in MODES} == dict.fromkeys(MODES, "mode")
+
+
+def _unit_window(**changes):
+    from test_cnesdata_stage_events import _api
+    static = lc.static_window(_api(), now=1350)
+    return static | {"sequence": static["sequence"] + 1, "stage": "unit", "admitted_at": 1500,
+                     "deadline": min(static["fixed_deadline"], 1500 + static["windows"]["stages"]["unit"])} | changes
+
+
+def _recovery_window():
+    return lc.mode_stage_window(_unit_window(), "phase-c-recovery", now=1600)
+
+
+def _audit_window():
+    return lc.mode_stage_window(_recovery_window(), "phase-c-audit", now=1800, checkpoint_sha256="8" * 64)
+
+
+def test_tabela_de_gatilhos_tem_as_tres_linhas_do_dd3_depois_do_unit():
+    assert {stage: lc.STAGE_TRIGGERS[stage] for stage in ("unit", "phase-c-recovery", "phase-c-audit")} == {
+        "unit": ("unit", "phase-c-recovery"), "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
+        "phase-c-audit": ("phase-c-audit", "final")}
+    assert lc.STAGE_TRIGGERS["static"] == ("publish-static", "unit") and "final" not in lc.STAGE_TRIGGERS
+
+
+def test_janela_do_c_recovery_segue_o_unit_aceito_sem_mudar_o_checkpoint():
+    unit = _unit_window()
+    current = lc.mode_stage_window(dict(unit), "phase-c-recovery", now=1600.9)
+    assert current == unit | {"sequence": unit["sequence"] + 1, "stage": "phase-c-recovery", "admitted_at": 1600,
+                              "deadline": min(unit["fixed_deadline"], 1600 + unit["windows"]["stages"]["phase-c-recovery"])}
+    lc.checkpoint_transition(unit, current)
+    lc.phase_capacity(current, now=1600, credential_deadline=9000, operation_seconds=20)
+
+
+@pytest.mark.parametrize("stage, previous, now", [("phase-c-audit", _recovery_window, 1800), ("final", _audit_window, 1990)])
+def test_janelas_do_c_audit_e_do_final_levam_o_checkpoint_do_deploy_c_do_estagio_anterior(stage, previous, now):
+    before = previous()
+    current = lc.mode_stage_window(dict(before), stage, now=now, checkpoint_sha256="7" * 64)
+    assert current == before | {"sequence": before["sequence"] + 1, "stage": stage, "admitted_at": now,
+                                "checkpoint_sha256": "7" * 64,
+                                "deadline": min(before["fixed_deadline"], now + before["windows"]["stages"][stage])}
+    lc.checkpoint_transition(before, current)
+
+
+def test_prazo_da_janela_de_modo_vem_do_vetor_governado_e_nao_de_constante():
+    from test_cnesdata_application_gate import WINDOWS
+    unit = _unit_window(windows=WINDOWS, fixed_deadline=9999)
+    assert lc.mode_stage_window(unit, "phase-c-recovery", now=1600)["deadline"] == 1600 + 330
+    assert lc.mode_stage_window(_unit_window(fixed_deadline=1700), "phase-c-recovery", now=1600)["deadline"] == 1700
+
+
+@pytest.mark.parametrize("case, message", [
+    ("stage-static", "^mode stage window stage=static$"), ("stage-recovery", "^mode stage window stage=recovery$"),
+    ("skip", "^phase-c-audit follows the closed phase-c-recovery stage$"),
+    ("open", "^phase-c-recovery follows the closed unit stage$"),
+    ("decision", "^phase-c-recovery follows the closed unit stage$"),
+    ("retreat", "^phase-c-recovery follows the closed unit stage$"),
+    ("recovery-checkpoint", "^phase-c-recovery checkpoint$"), ("audit-no-checkpoint", "^phase-c-audit checkpoint$"),
+    ("final-no-checkpoint", "^final checkpoint$"), ("checkpoint-digest", "^digest$")])
+def test_janela_de_modo_recusa_salto_retrocesso_ou_checkpoint_fora_da_regra(case, message):
+    unit = _unit_window()
+    calls = {"stage-static": (unit, "static", {}), "stage-recovery": (unit, "recovery", {}),
+             "skip": (unit, "phase-c-audit", {"checkpoint_sha256": "7" * 64}),
+             "open": (unit | {"close": None}, "phase-c-recovery", {}),
+             "decision": (unit | {"decision": {"choice_at": 1550}}, "phase-c-recovery", {}),
+             "retreat": (unit | {"admitted_at": 1601}, "phase-c-recovery", {}),
+             "recovery-checkpoint": (unit, "phase-c-recovery", {"checkpoint_sha256": "7" * 64}),
+             "audit-no-checkpoint": (_recovery_window(), "phase-c-audit", {}),
+             "final-no-checkpoint": (_audit_window(), "final", {}),
+             "checkpoint-digest": (_recovery_window(), "phase-c-audit", {"checkpoint_sha256": "x"})}
+    previous, stage, extra = calls[case]
+    with pytest.raises(ValueError, match=message):
+        lc.mode_stage_window(previous, stage, now=max(1600, _unit_window()["admitted_at"] if case == "retreat"
+                                                      else previous["admitted_at"]), **extra)
+
+
+C_STEPS = {}
+for _purpose in ("phase-c-recovery", "phase-c-audit"):
+    _common = {"purpose": _purpose, "direction": "advance", "mode": "initial"}
+    C_STEPS |= {f"{_purpose}-plan": _common | {"role": "plan", "job_name": f"{_purpose}-plan / execute"},
+                f"{_purpose}-audit": _common | {"role": "audit", "job_name": f"{_purpose}-audit / audit"},
+                f"{_purpose}-deploy": _common | {"role": "deploy", "job_name": f"{_purpose} / execute"}}
+
+
+def _c_governance(change=None):
+    from test_cnesdata_stage_events import GOVERNANCE
+    steps = dict(GOVERNANCE["lifecycle_steps"]) | {name: dict(step) for name, step in C_STEPS.items()}
+    if change is not None:
+        change(steps)
+    return {"lifecycle_steps": steps}
+
+
+def _c_source(api, governance):
+    from types import SimpleNamespace
+
+    from test_cnesdata_stage_events import OWNER, RUN, _Guard
+    from tools.cnesdata_delivery import application_gate as ag
+    return ag.stage_event_source(api=api, governance=governance, run=dict(RUN), owner=dict(OWNER), guard=_Guard(),
+                                 keeper=SimpleNamespace(static_inventory=b"settled"), clock=lambda: 1300)
+
+
+@pytest.mark.parametrize("stage", ["phase-c-recovery", "phase-c-audit"])
+def test_evento_externo_do_c_e_o_deploy_advance_do_catalogo_com_a_publicacao_do_proprio_run(stage):
+    from test_cnesdata_stage_events import _GitHub, _window
+    api = _GitHub(f"{stage} / execute", f"{stage}-deploy")
+    assert _c_source(api, _c_governance())(_window(stage)) == {"kind": stage, "reference": api.reference}
+
+
+@pytest.mark.parametrize("change", ["absent", "two", "converge-only"])
+def test_evento_do_c_recusa_catalogo_sem_um_unico_deploy_advance(change):
+    from test_cnesdata_stage_events import _GitHub, _window
+
+    def mutate(steps):
+        deploy = steps.pop("phase-c-recovery-deploy")
+        if change == "two":
+            steps["phase-c-recovery-deploy"], steps["phase-c-recovery-again"] = deploy, dict(deploy)
+        if change == "converge-only":
+            steps["phase-c-recovery-converge"] = deploy | {"direction": "converge"}
+    api = _GitHub("phase-c-recovery / execute", "phase-c-recovery-deploy")
+    with pytest.raises(ValueError, match="^unique protected phase-c-recovery advance step$"):
+        _c_source(api, _c_governance(mutate))(_window("phase-c-recovery"))
+    assert api.reads == []
+
+
+def test_gatilho_interno_do_unit_nao_e_evento_do_produtor():
+    from test_cnesdata_stage_events import _GitHub, _window
+    api = _GitHub("phase-c-recovery / execute", "phase-c-recovery-deploy")
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
+        _c_source(api, _c_governance())(_window("unit"))
+    assert api.reads == []
+
+
+def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
+    from tools.cnesdata_delivery import application_gate as ag
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
+
+
+def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False):
+    """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
+    fakes: source, capability, child."""
+    from types import SimpleNamespace
+
+    from test_cnesdata_stage_events import HOST_REFERENCE
+    from test_cnesdata_static_stage import _static_world
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _static_world(monkeypatch)
+    world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
+                                 capability=capability, observations=observations, pending=pending, publications=[])
+
+    def invoke_adapter(**kwargs):
+        journal = kwargs["journal"]
+        operation = journal._request["operation"]
+        assert operation in PRODUCT["operations"], operation
+        world.events.append(("child", operation))
+        world.mode.calls.append((operation, kwargs["timeout"], world.clock.value, dict(journal._inputs)))
+        kind = lc.ADAPTER_OBSERVATIONS[operation]
+        mode = PRODUCT["operations"][operation][0]
+        raw = (PRODUCT["observation"](mode, world.mode.checks.get(mode, []), journal._request, journal._inputs)
+               if kind == "mode" else c.canonical({"fixture_child": operation}))
+        for _ in range(world.mode.observations):
+            journal._observations.append({"kind": kind, "sha256": c.sha(raw), "size": len(raw)})
+        journal._observation_bytes[c.sha(raw)] = raw
+        journal._pending = [{"kind": "sdk-call", "reference_sha256": "f" * 64}] if world.mode.pending else []
+        world.clock.value += 5
+    monkeypatch.setattr(ag, "invoke_adapter", invoke_adapter)
+
+    def mode_input_source(*, keeper, owner, window, operation, names):
+        world.events.append(("source", operation))
+        world.mode.sources.append((operation, list(names), window["stage"]))
+        return {name: c.canonical({"fixture_original": name, "operation": operation}) for name in names}
+    monkeypatch.setattr(ag, "mode_input_source", mode_input_source)
+
+    def mode_capability(*, journal, keeper, guard):
+        assert guard is journal._guard
+        world.events.append(("capability", journal._request["operation"]))
+        world.mode.capabilities.append(journal)
+        if world.mode.capability is not None:
+            journal._failed = True
+            raise ValueError(world.mode.capability)
+        broker = SimpleNamespace(aws="operation-client", evidence=[], session=SimpleNamespace(client="c", evidence="e"))
+        world.mode.dropped.append(broker)
+        return broker
+    monkeypatch.setattr(ag, "mode_capability", mode_capability)
+
+    def deploy_publication(api, aws, governance, request, run, owner, guard, now, purpose):
+        world.mode.publications.append((purpose, owner, type(guard).__name__, now))
+        return world.c_files[purpose], {}
+    monkeypatch.setattr(ag, "_deploy_publication", deploy_publication)
+    world.c_files = {}
+    return world
+
+
+def _record(world):
+    return world.store.get()[0]["lifecycle"]
+
+
+def _enter_unit(world, at=1250):
+    assert _record(world)["stage"] == "unit"
+    world.clock.value = max(world.clock.value, at)
+    world.keeper.tick()
+
+
+def _known(world):
+    return {"activation": world.activation, "close-drain": world.close_raw}
+
+
+def _unit_stage(world, **extra):
+    from tools.cnesdata_delivery import application_gate as ag
+
+    def invoke(*, journal, timeout):
+        return ag.invoke_adapter(journal=journal, timeout=timeout)
+    def capability(**kwargs):
+        return ag.mode_capability(**kwargs)
+    return ag.mode_stage(world.keeper, "unit", known=_known(world) | extra, invoke=invoke, capability=capability,
+                         credential_limit=6000, clock=world.clock)
+
+
+def test_estagio_unit_roda_seed_start_observe_encadeados_e_avanca_com_o_unit_aceito(monkeypatch):
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    before = _record(world)
+    _unit_stage(world)
+    operations = [call[0] for call in world.mode.calls]
+    assert operations == ["unit-seed", "unit-start", "unit-observe"]
+    assert [event for event in world.events if type(event) is tuple] == [
+        (step, operation) for operation in operations for step in ("source", "capability", "child")]
+    seed, start, observe = (call[3] for call in world.mode.calls)
+    seed_raw = c.canonical({"fixture_child": "unit-seed"})
+    assert start["mode-seed"] == seed_raw and observe["mode-result"] == c.canonical({"fixture_child": "unit-start"})
+    assert observe["activation"] == world.activation and observe["close-drain"] == world.close_raw
+    assert [(operation, names) for operation, names, _ in world.mode.sources] == [
+        ("unit-seed", sorted(PRODUCT["inputs"]["unit-seed"])),
+        ("unit-start", sorted(PRODUCT["inputs"]["unit-start"] - {"mode-seed"})),
+        ("unit-observe", ["observed", "readbacks", "record"])]
+    for operation, timeout, now, _ in world.mode.calls:
+        assert timeout == before["deadline"] - now - 38
+    assert len(world.mode.dropped) == 3 and all(broker.aws is None for broker in world.mode.dropped)
+    after = _record(world)
+    assert after == before | {"sequence": before["sequence"] + 1, "stage": "phase-c-recovery", "admitted_at": world.clock.value,
+                              "deadline": world.clock.value + before["windows"]["stages"]["phase-c-recovery"]}
+    assert world.store.get()[0]["status"] == "held" and world.keeper.uncertainty() == []
+
+
+def test_estagio_unit_recusa_unit_que_o_produto_nao_aceitou_e_mantem_o_lease(monkeypatch):
+    world = _mode_world(monkeypatch, checks={"unit": ["canary=schema"]})
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match="^unit mode accepted$"):
+        _unit_stage(world)
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
+def test_operacao_de_modo_nunca_roda_o_child_quando_a_capability_recusa(monkeypatch):
+    world = _mode_world(monkeypatch, capability="mode broker refused")
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match="^mode broker refused$"):
+        _unit_stage(world)
+    assert world.mode.calls == [] and _record(world) == before
+    assert {"kind": "context-failed"} in world.keeper.uncertainty()
+
+
+@pytest.mark.parametrize("flags", [{"observations": 2}, {"observations": 0}, {"pending": True}])
+def test_operacao_de_modo_exige_uma_observacao_e_nenhuma_incerteza(monkeypatch, flags):
+    world = _mode_world(monkeypatch, **flags)
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match="^unit-seed single observation without uncertainty$"):
+        _unit_stage(world)
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
+def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeypatch):
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    window = _record(world)
+    world.clock.value = window["deadline"] - 38
+    with pytest.raises(ValueError, match="^unit-seed capacity seconds=0$"):
+        _unit_stage(world)
+    assert world.mode.calls == [] and _record(world) == window
+
+
+def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker():
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+        ag.mode_input_source(keeper=None, owner={}, window={}, operation="unit-seed", names=["record"])
+    journal = SimpleNamespace(_failed=False)
+    with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
+        ag.mode_capability(journal=journal, keeper=None, guard=None)
+    assert journal._failed is True
+
+
+def _c_files(world, purpose, **changes):
+    window = _record(world)
+    checkpoint = {"state": {"lineage": "original-lineage", "serial": 9, "state_sha256": "4" * 64},
+                  "state_object": {"status": "present", "version_id": "v9", "etag_sha256": "3" * 64},
+                  "owner": world.owner, "purpose": purpose, "plan_sha256": "2" * 64, "readbacks": []} | changes.get("checkpoint", {})
+    approval = {"checkpoint_sha256": window["checkpoint_sha256"], "plan_sha256": "2" * 64, "purpose": purpose,
+                "direction": "advance"} | changes.get("approval", {})
+    world.c_files[purpose] = {"checkpoint.json": c.canonical(checkpoint), "approval.json": c.canonical(approval)}
+    return world.c_files[purpose]
+
+
+def _through_unit(monkeypatch, **flags):
+    world = _mode_world(monkeypatch, **flags)
+    _enter_unit(world)
+    _unit_stage(world)
+    return world
+
+
+def test_handler_do_c_recovery_autentica_o_deploy_roda_o_modo_e_avanca_com_o_checkpoint_do_deploy(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    files = _c_files(world, "phase-c-recovery")
+    before = _record(world)
+    world.mode.calls.clear()
+    world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    (purpose, owner, guard, _), = world.mode.publications
+    assert (purpose, owner, guard) == ("phase-c-recovery", world.owner, "KeeperGuard")
+    assert [call[0] for call in world.mode.calls] == ["recovery-seed", "recovery-start", "recovery-observe"]
+    observe = world.mode.calls[-1][3]
+    from test_cnesdata_stage_events import _ready_journal
+    assert observe["phase-b"] == _ready_journal(world)._inputs["phase-b"]
+    assert observe["activation"] == world.activation and observe["close-drain"] == world.close_raw
+    after = _record(world)
+    assert after == before | {"sequence": before["sequence"] + 1, "stage": "phase-c-audit", "admitted_at": world.clock.value,
+                              "checkpoint_sha256": c.sha(files["checkpoint.json"]),
+                              "deadline": world.clock.value + before["windows"]["stages"]["phase-c-audit"]}
+
+
+def test_handler_do_c_audit_leva_o_resultado_do_recovery_e_avanca_para_o_final(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    _c_files(world, "phase-c-recovery")
+    world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    recovery_result = c.canonical({"fixture_child": "recovery-start"})
+    files = _c_files(world, "phase-c-audit")
+    before = _record(world)
+    world.mode.calls.clear()
+    world.handlers["phase-c-audit"](world.keeper, dict(B_REFERENCE))
+    assert [call[0] for call in world.mode.calls] == ["audit-start", "audit-observe"]
+    assert world.mode.calls[-1][3]["recovery-result"] == recovery_result
+    after = _record(world)
+    assert after == before | {"sequence": before["sequence"] + 1, "stage": "final", "admitted_at": world.clock.value,
+                              "checkpoint_sha256": c.sha(files["checkpoint.json"]),
+                              "deadline": min(before["fixed_deadline"], world.clock.value + before["windows"]["stages"]["final"])}
+    assert world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("purpose", ["phase-c-recovery", "phase-c-audit"])
+def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_lease_retido(monkeypatch, purpose):
+    from test_cnesdata_stage_events import B_REFERENCE
+    from tools.cnesdata_delivery import application_gate as ag
+    production = ag.mode_capability
+    world = _through_unit(monkeypatch)
+    if purpose == "phase-c-audit":
+        _c_files(world, "phase-c-recovery")
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    _c_files(world, purpose)
+    monkeypatch.setattr(ag, "mode_capability", production)
+    before = _record(world)
+    world.mode.calls.clear()
+    with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
+        world.handlers[purpose](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls == [] and _record(world) == before
+    assert world.store.get()[0]["status"] == "held"
+    assert {"kind": "context-failed"} in world.keeper.uncertainty()
+
+
+@pytest.mark.parametrize("purpose", ["phase-c-recovery", "phase-c-audit"])
+def test_handler_c_de_producao_sem_nada_falsificado_recusa_primeiro_a_fonte_dos_originais(monkeypatch, purpose):
+    from test_cnesdata_stage_events import B_REFERENCE
+    from tools.cnesdata_delivery import application_gate as ag
+    production = {"mode_capability": ag.mode_capability, "mode_input_source": ag.mode_input_source}
+    world = _through_unit(monkeypatch)
+    if purpose == "phase-c-audit":
+        _c_files(world, "phase-c-recovery")
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    _c_files(world, purpose)
+    for name, function in production.items():
+        monkeypatch.setattr(ag, name, function)
+    before, contexts = _record(world), len(world.keeper._contexts)
+    world.mode.calls.clear()
+    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+        world.handlers[purpose](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls == [] and _record(world) == before and len(world.keeper._contexts) == contexts
+    assert world.store.get()[0]["status"] == "held"
+
+
+def test_capability_de_modo_e_injetada_pelo_handler_e_nao_tem_padrao():
+    import inspect
+    from tools.cnesdata_delivery import application_gate as ag
+    for function in (ag.run_mode_operation, ag.mode_stage):
+        parameter = inspect.signature(function).parameters["capability"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is inspect.Parameter.empty
+    assert list(inspect.signature(ag.mode_capability).parameters) == ["journal", "keeper", "guard"]
+
+
+C_REFUSALS = {
+    "approval-checkpoint": {"approval": {"checkpoint_sha256": "5" * 64}},
+    "approval-plan": {"approval": {"plan_sha256": "5" * 64}},
+    "purpose": {"checkpoint": {"purpose": "phase-b"}},
+    "owner": {"checkpoint": {"owner": {"generation": 99}}},
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(C_REFUSALS))
+def test_handler_do_c_recusa_deploy_que_nao_e_filho_do_checkpoint_do_keeper(monkeypatch, mutation):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    _c_files(world, "phase-c-recovery", **C_REFUSALS[mutation])
+    before = _record(world)
+    world.mode.calls.clear()
+    with pytest.raises(ValueError, match="^phase-c-recovery checkpoint ancestry$"):
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls == [] and _record(world) == before
+
+
+def test_handler_do_c_recusa_modo_nao_aceito_sem_avancar(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    world.mode.checks["recovery"] = ["phase_c=evidence"]
+    _c_files(world, "phase-c-recovery")
+    before = _record(world)
+    with pytest.raises(ValueError, match="^recovery mode accepted$"):
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
+def test_handler_do_c_recusa_keeper_que_nao_rodou_o_closed_ready(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE, _stage_world
+    world = _stage_world(monkeypatch)
+    with pytest.raises(ValueError, match="^phase-c-recovery follows the closed-ready run of this keeper$"):
+        world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+
+
+def test_handlers_do_keeper_sao_exatamente_os_eventos_externos(monkeypatch):
+    from test_cnesdata_stage_events import _stage_world
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    assert set(world.handlers) == set(ag.KEEPER_EVENTS) and all(callable(item) for item in world.handlers.values())

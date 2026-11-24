@@ -343,6 +343,7 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
 @pytest.mark.parametrize("step_change,delta_change,allowed", [
     ({"mode": "mode-canary"}, {}, False),
     ({"mode": "mode-canary"}, {"mode": "mode-canary"}, False),
+    ({"mode": "mode-canary", "mode_only": True}, {"mode": "mode-canary"}, True),
     ({"mode": "observer-bootstrap"}, {}, False),
     ({"purpose": "phase-b"}, {}, False),
     ({"direction": "converge"}, {}, False),
@@ -357,6 +358,8 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({"approval_other": "inputs_sha256"}, {}, False),
     ({"approval_other": "checkpoint_sha256"}, {}, False),
     ({"approval_other": "owner"}, {}, False),
+    ({"audit_role": "admit"}, {}, True),
+    ({"audit_role": "refuse"}, {}, False),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
     """Unit regression for execute's step/delta checks, not operational admission.
@@ -375,15 +378,20 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     plan, sources, inputs = mode_source_case()
     original_phase = historical["envelope"]["plan"]["phase_a_inputs"]
     inputs.update({key: original_phase[key] for key in ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")})
-    plan["resource_changes"] = [row for row in plan["resource_changes"] if ".mode_seed[0]" in row["address"]]
-    configured = plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"]
-    plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"] = [
-        row for row in configured if row["address"].endswith(".mode_seed")]
-    plan = json.loads(json.dumps(plan).replace("mode_seed", "static_normal"))
-    sources["infra/opentofu/modules/runtime-iam/static-promotion.tf"] = sources.pop(
-        "infra/opentofu/modules/runtime-iam/mode-canary.tf").replace(b"mode_seed", b"static_normal")
     step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance",
             "input_jobs": {"prepared": {"step": "prepared"}, "audit": {"step": "audited"}}, **step_change}
+    audit_role = step.pop("audit_role", None)
+    if audit_role:
+        step["input_jobs"].pop("audit")
+    if not step.pop("mode_only", False):
+        configured = plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"]
+        plan["resource_changes"] += json.loads(json.dumps(
+            [row for row in plan["resource_changes"] if ".mode_seed[0]" in row["address"]]).replace("mode_seed", "static_normal"))
+        configured += json.loads(json.dumps([row for row in configured if row["address"].endswith(".mode_seed")]).replace(
+            "mode_seed", "static_normal"))
+        blocks = sources["infra/opentofu/modules/runtime-iam/mode-canary.tf"].split(b"\n}\n")
+        sources["infra/opentofu/modules/runtime-iam/static-promotion.tf"] = (
+            blocks[0] + b"\n}\n" + blocks[1] + b"\n}").replace(b"mode_seed", b"static_normal")
     approval_flag = next((key for key in ("approval_absent", "approval_from_plan", "approval_parameters",
                                           "approval_other") if key in step), None)
     approval_flag_value = step.pop(approval_flag, None) if approval_flag else None
@@ -453,6 +461,13 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         {"phase_a_originals": copy.deepcopy(carrier)}) or returned["transport"][-1])
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
+    mode_admissions, mode_outputs = [], []
+    def admit_mode(**kwargs):
+        mode_admissions.append(kwargs)
+        c.require(audit_role != "refuse", "fixture mode input refused")
+        return {"fixture": True}
+    monkeypatch.setattr(lr, "mode_canary_admission", admit_mode)
+    monkeypatch.setattr(lr, "mode_canary_output", lambda aws, **kwargs: mode_outputs.append(kwargs) or {"fixture": True})
     def private_payload(*args, **kwargs):
         audit = args[4]["index.json"] == b"audit"
         approval_here = audit != (approval_flag == "approval_from_plan")
@@ -506,7 +521,23 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                 Path(kwargs["output"]).write_bytes(payload["plan.json"])
     monkeypatch.setattr(lr, "LifecycleWatchdog", lambda *args: Guard())
     _isolate_ext2_revalidation(monkeypatch)
-    if plan_operational:
+    if audit_role:
+        built = []
+        monkeypatch.setattr(lr, "build_approval", lambda **kwargs: built.append(kwargs) or {"fixture": "approval"})
+        monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
+        if audit_role == "refuse":
+            with pytest.raises(ValueError, match="fixture mode input refused"):
+                lr.execute("audit")
+            assert published == []
+        else:
+            lr.execute("audit")
+            assert [(args[5], args[9]) for args in published] == [
+                ({"approval.json": c.canonical({"fixture": "approval"})}, "audited")]
+        assert commands == ["init", "show"] and len(built) == 1 and mode_outputs == []
+        assert [call["step_mode"] for call in mode_admissions] == ["operational"]
+        assert mode_admissions[0]["plan"] == plan and mode_admissions[0]["inputs_raw"] == c.canonical(inputs)
+        assert mode_admissions[0]["activation_sha256"] == c.sha(b"p" * 40) and mode_admissions[0]["owner"] == owner
+    elif plan_operational:
         lr.execute("plan")
         assert commands == ["init", "plan", "show"] and len(carriers) == len(published) == 1
         assert carriers[0]["step"] is step and carriers[0]["terraform_raw"] == payload["inputs.json"] == var_files[0]
@@ -529,10 +560,18 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert len(returned["predecessor"]) == len(returned["transport"]) == 1 and len(returned["index"]) == 2
         assert kwargs["plan_index"] is returned["index"][0] and kwargs["predecessor"] is returned["predecessor"][0]
         assert kwargs["carrier"] is returned["transport"][0]["phase_a_originals"]
+        assert [call["step_mode"] for call in mode_admissions] == ["operational"]
+        assert mode_admissions[0]["inputs_raw"] == c.canonical(inputs) and mode_admissions[0]["owner"] == owner
+        assert mode_admissions[0]["activation_sha256"] == c.sha(b"p" * 40)
+        assert mode_admissions[0]["plan"] == plan and mode_admissions[0]["historical"] == historical
+        assert mode_admissions[0]["principal_arn"] == original_phase["canary_trusted_principal_arn"]
+        assert len(mode_outputs) == 1 and mode_outputs[0]["account"] == "111122223333"
     elif allowed:
         with pytest.raises(ApplyBoundary):
             lr.execute("deploy")
         assert commands == ["init", "show", "apply"]
+        assert [call["step_mode"] for call in mode_admissions] == [step["mode"]] and mode_outputs == []
+        assert mode_admissions[0]["activation_sha256"] == (None if step["mode"] == "mode-canary" else c.sha(b"p" * 40))
     elif step.get("bare_inputs"):
         with pytest.raises(ValueError, match="closed object fields"):
             lr.execute("deploy")
@@ -546,7 +585,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
             lr.execute("deploy")
         assert "apply" not in commands
     else:
-        expected_error = ("mode-canary executable oracle unavailable" if step["mode"] == approval["delta"]["mode"]
+        expected_error = ("mode all other resources noop" if step["mode"] == approval["delta"]["mode"]
                           else "independent protected step discriminants")
         if any(step[key] != approval["delta"][key] for key in ("purpose", "direction")):
             expected_error = "independent protected step discriminants"
@@ -669,7 +708,7 @@ def test_mode_prepare_source_boundary_rejects_crossed_or_incomplete_authority(mu
     if mutation == "purpose":
         purpose = "phase-a"
     if mutation == "mode":
-        mode = "operational"
+        mode = "observer-bootstrap"
     if mutation == "fallback":
         sources["infra/opentofu/modules/runtime-iam/canary.tf"] = sources.pop("infra/opentofu/modules/runtime-iam/mode-canary.tf")
     if mutation == "missing":

@@ -160,7 +160,7 @@ def test_catalogo_recusa_a_chave_delete_resources_como_chave_desconhecida():
 
 @pytest.mark.parametrize("purpose, direction, mode", [
     ("application-prepare", "advance", "observer-bootstrap"), ("application-prepare", "advance", "operational"),
-    ("phase-b", "advance", "initial"), ("phase-b", "advance", "established"),
+    ("application-prepare", "advance", "mode-canary"), ("phase-b", "advance", "initial"), ("phase-b", "advance", "established"),
     ("phase-c-recovery", "advance", "initial"), ("phase-c-recovery", "advance", "established"),
     ("phase-c-audit", "advance", "initial"), ("static-maintenance", "advance", "post-open"),
 ])
@@ -170,6 +170,7 @@ def test_regra_unica_de_delta_admite_a_combinacao(purpose, direction, mode):
 
 @pytest.mark.parametrize("purpose, direction, mode, reason", [
     ("application-prepare", "converge", "operational", "prepare mode"),
+    ("application-prepare", "converge", "mode-canary", "prepare mode"),
     ("application-prepare", "advance", "phase-b", "prepare mode"),
     ("phase-b", "advance", "phase-b", "B checkpoint mode"),
     ("phase-c-recovery", "advance", "recovery", "C checkpoint mode"),

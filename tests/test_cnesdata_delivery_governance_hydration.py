@@ -327,8 +327,8 @@ def test_leitores_recebem_o_catalogo_e_a_closure_hidratados(monkeypatch, tmp_pat
 
 READERS = {("lifecycle_runtime.py", "admission"), ("lifecycle_runtime.py", "current_checkpoint_chain"),
            ("lifecycle_runtime.py", "fence_prepare_package"), ("lifecycle_runtime.py", "execute"),
-           ("lifecycle_runtime.py", "admit_approval_origin"), ("application_gate.py", "_phase_b_step"),
-           ("application_gate.py", "_plan_activation"), ("application_gate.py", "_observer_step")}
+            ("lifecycle_runtime.py", "admit_approval_origin"), ("application_gate.py", "_deploy_step"),
+            ("application_gate.py", "_plan_activation"), ("application_gate.py", "_observer_step")}
 
 
 def _readers():

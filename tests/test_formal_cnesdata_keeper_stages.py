@@ -40,11 +40,7 @@ ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-
 TERMINAL_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)">>,?$')
 STAGE_ROW = re.compile(r'^ {4}"([a-z-]+)",?$')
 TRIPLE_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "([a-z-]+)">>,?$')
-EXPECTED_DIFFERENCE = {
-    ("unit", "unit", "internal", "phase-c-recovery"),
-    ("phase-c-recovery", "phase-c-recovery", "external", "phase-c-audit"),
-    ("phase-c-audit", "phase-c-audit", "external", "final"),
-}
+EXPECTED_DIFFERENCE = set()
 TERMINAL_EXIT = ("final", "terminal-readback", "internal", "terminal")
 
 

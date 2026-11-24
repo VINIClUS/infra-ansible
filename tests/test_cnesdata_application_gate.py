@@ -2672,7 +2672,7 @@ def _mode_semantic_context(application_purpose):
                  "shared_source_sha": "2" * 40, "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release",
                  "activation_sha256": "4" * 64, "resources_sha256": "5" * 64, "fixture_manifest_sha256": "6" * 64,
                  "scenario_plan_sha256": "7" * 64, "predecessor_terminal_sha256": "8" * 64,
-                 "admitted_at": 1000, "deadline": 1900 if context == "promotion" else 15400}
+                 "admitted_at": c.utc(1000), "deadline": c.utc(1900 if context == "promotion" else 15400)}
     manifest = {"schema_version": 2, "context_kind": context,
                 "owner": {key: owner[key] for key in ("repository", "run_id", "run_attempt", "generation", "owner_sha256")}, **originals}
     def encode(value):
@@ -2720,7 +2720,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "owner":
         manifest["owner"]["generation"] += 1
     if mutation == "deadline":
-        manifest["deadline"] += 1
+        manifest["deadline"] = c.utc(1901)
     if mutation == "schema-bool":
         manifest["schema_version"] = True
     if mutation == "run-bool":
@@ -2732,7 +2732,7 @@ def test_complete_mode_context_rejects_validly_encoded_but_foreign_semantics(mut
     if mutation == "missing-original":
         originals.pop("resources_sha256")
     if mutation == "duration":
-        originals["deadline"] = manifest["deadline"] = 2201
+        originals["deadline"] = manifest["deadline"] = c.utc(2201)
     if mutation == "caller":
         owner.update(application_purpose="mode-readiness-drill", context_kind="readiness")
     with pytest.raises(ValueError):
@@ -2745,7 +2745,7 @@ def test_mode_context_preserves_original_predecessor_and_unextended_deadline(pur
     manifest, originals, owner, encode = _mode_semantic_context(purpose)
     originals["predecessor_terminal_sha256"] = manifest["predecessor_terminal_sha256"] = predecessor
     if oversize:
-        originals["deadline"] = manifest["deadline"] = 15401
+        originals["deadline"] = manifest["deadline"] = c.utc(15401)
     if purpose == "promotion":
         assert lc.validate_mode_context(encode(manifest), owner=owner, application_purpose=purpose, originals=originals)["manifest"]["predecessor_terminal_sha256"] is None
     else:
@@ -2759,8 +2759,9 @@ def test_mode_context_preserves_original_predecessor_and_unextended_deadline(pur
     ("release_id", "foreign/release"), ("release_id", "ação"), ("release_id", "r" * 33),
     ("activation_sha256", None), ("resources_sha256", True), ("fixture_manifest_sha256", "0"),
     ("scenario_plan_sha256", []), ("predecessor_terminal_sha256", "bad"),
-    ("admitted_at", True), ("admitted_at", 0), ("admitted_at", 1900), ("admitted_at", 1901),
-    ("deadline", True), ("deadline", 2**53),
+    ("admitted_at", True), ("admitted_at", 0), ("admitted_at", 1000), ("admitted_at", "1970-01-01T00:31:40Z"),
+    ("admitted_at", "1970-01-01T00:31:41Z"), ("admitted_at", "1970-01-01 00:16:40Z"),
+    ("deadline", True), ("deadline", 2**53), ("deadline", 1900), ("deadline", "1970-01-01T00:31:40.000Z"),
 ])
 def test_mode_context_rejects_malformed_semantics_even_when_original_values_match(field, value):
     from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -2775,8 +2776,8 @@ def test_mode_context_rejects_incomplete_or_type_confused_originals(mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     manifest, originals, owner, encode = _mode_semantic_context("promotion")
     if mutation == "original-bool":
-        manifest["admitted_at"] = 1
-        manifest["deadline"] = originals["deadline"] = 901
+        manifest["admitted_at"] = c.utc(1)
+        manifest["deadline"] = originals["deadline"] = c.utc(901)
         originals["admitted_at"] = True
     if mutation == "owner-extra":
         manifest["owner"]["source_sha"] = owner["source_sha"]
@@ -5317,10 +5318,11 @@ def _keeper_loop_case():
               "api": [None, {"kind": "host", "reference": {"fixture": "host"}}]}
     def next_event(window):
         seen.append(window["stage"])
-        if window["stage"] not in lc.STAGE_TRIGGERS:
+        if window["stage"] not in lc.STAGE_TRIGGERS or lc.STAGE_TRIGGERS[window["stage"]][0] not in ag.KEEPER_EVENTS:
             raise ValueError(f"stage trigger not connected stage={window['stage']}")
         return events[window["stage"]].pop(0)
-    handlers = {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host}
+    unreached = {name: lambda *a, _name=name: pytest.fail(_name + " before the unit acceptance") for name in ("phase-c-recovery", "phase-c-audit")}
+    handlers = {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host} | unreached
     run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": handlers,
                                                       "sleep": slept.append} | changes))
     return ag, keeper, store, run, seen, handled, slept
@@ -5342,7 +5344,7 @@ def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
     import inspect
     from tools.cnesdata_delivery import application_gate as ag
     assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
-    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host")
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
 
 
 @pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b"), ("prepared", "host"),
@@ -5365,10 +5367,7 @@ def test_keeper_loop_conecta_so_os_quatro_gatilhos_do_keeper(names):
 def test_keeper_loop_refuses_events_outside_the_stage_triggers(event, message):
     ag, keeper, store, run, _, handled, _ = _keeper_loop_case()
     with pytest.raises(ValueError, match=message):
-        run(next_event=lambda window: event, handlers={"observer-bootstrap": lambda *a: pytest.fail("no dispatch"),
-                                                       "prepared": lambda *a: pytest.fail("no dispatch"),
-                                                       "phase-b": lambda *a: pytest.fail("no dispatch"),
-                                                       "host": lambda *a: pytest.fail("no dispatch")})
+        run(next_event=lambda window: event, handlers={name: lambda *a: pytest.fail("no dispatch") for name in ag.KEEPER_EVENTS})
     assert store.get()[0]["status"] == "held" and handled == []
 
 
@@ -5380,7 +5379,7 @@ def test_keeper_loop_handler_failure_holds_the_lease_and_keeps_the_uncertainty()
         journal._failed = True
         raise ValueError("close-drain capability refused before STS")
     with pytest.raises(ValueError, match="capability refused"):
-        run(handlers={"observer-bootstrap": failing, "prepared": failing, "phase-b": failing, "host": failing})
+        run(handlers=dict.fromkeys(ag.KEEPER_EVENTS, failing))
     assert store.get()[0]["status"] == "held" and keeper.uncertainty() == [{"kind": "context-failed"}]
     assert store.get()[0]["lifecycle"]["stage"] == "application-prepare"
 
@@ -5444,7 +5443,7 @@ def test_run_closed_ready_admite_a_capability_e_so_entao_mede_o_tempo_do_child(m
 ])
 def test_execute_refuses_an_incomplete_registry_or_event_source_before_any_effect(monkeypatch, validators, events, message):
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
     monkeypatch.setattr(lr, "AWS", lambda *a, **kw: pytest.fail("execute must refuse before AWS"))
     monkeypatch.setattr(lr, "S3LeaseStore", lambda *a, **kw: pytest.fail("execute must refuse before the lease store"))
     monkeypatch.setattr(lr, "oidc_credentials", lambda *a, **kw: pytest.fail("execute must refuse before STS"))
@@ -5829,7 +5828,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_put_body", "s3_body_value", "static_plan",
-               "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready",
+               "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready", "mode_capability",
+               "run_mode_operation", "mode_stage", "mode_stage_window",
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
                "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
                "static_plan_source", "static_role_facts", "_observer_publication"}
@@ -5897,6 +5897,12 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "inventory_capability", "StaticBroker"),
         (gate, "host", "KeeperGuard"),
         (gate, "host", "static_window"),
+        (gate, "handler", "KeeperGuard"),                                       # phase-c handlers (DD-3)
+        (gate, "mode", "mode_stage"),                                           # stage_handlers' mode run
+        (gate, "mode_stage", "run_mode_operation"),
+        (gate, "mode_stage", "mode_stage_window"),
+        (gate, "run_mode_operation", "KeeperGuard"),
+        (gate, "capability", "mode_capability"),
         (gate, "publish_static", "static_input_source"),
         (gate, "publish_static", "run_publish_static"),
         (gate, "capability", "static_capability"),
@@ -5924,7 +5930,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]
     assert [arg.id for arg in call.args] == ["admitted"] and call.keywords == []
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS and ag.KEEPER_EVENT_SOURCE is ag.stage_event_source
 
 
 TERMINAL_MEMBER_IDENTITY = ("dispatch_id", "request_sha256", "generation", "initial_state", "execution_ref", "resolution")
@@ -6348,6 +6354,8 @@ HOST_JOB_STEPS = ("Repeat source gate before OIDC and exchange exactly three SSH
                   "Publish only the closed public handoff projection",
                   "Fail only after the original recovery handoff is available")
 SIX_VALIDATORS = {"routing", "static", "membership", "quiescence", "host", "decision"}
+MODE_VALIDATORS = {"unit", "recovery", "audit"}
+NINE_VALIDATORS = SIX_VALIDATORS | MODE_VALIDATORS
 HOST_OWNER = {"repository": c.REPOSITORY, "source_sha": "b" * 40, "run_id": 44, "run_attempt": 1}
 
 
@@ -6589,15 +6597,15 @@ def test_register_terminal_validators_refuses_a_foreign_keeper_registry_or_kind(
         ag.register_terminal_validators(keeper, registry)
 
 
-def test_production_terminal_validator_registry_is_the_six_synthetic_kinds():
+def test_production_terminal_validator_registry_is_six_synthetic_and_three_product_mode_kinds():
     from tools.cnesdata_delivery import application_gate as ag
-    assert set(ag.TERMINAL_VALIDATORS) == SIX_VALIDATORS
-    assert all(type(label) is str and label.startswith("synthetic-") and callable(provider)
-               for label, provider in ag.TERMINAL_VALIDATORS.values())
+    assert set(ag.TERMINAL_VALIDATORS) == NINE_VALIDATORS
+    assert all(type(label) is str and callable(provider) and label == ("product-mode-" if kind in MODE_VALIDATORS else "synthetic-") + kind
+               for kind, (label, provider) in ag.TERMINAL_VALIDATORS.items())
     keeper, _ = _accepted_terminal_case()
     keeper._terminal_validators.clear()
     ag.register_terminal_validators(keeper, ag.TERMINAL_VALIDATORS)
-    assert set(keeper._terminal_validators) == SIX_VALIDATORS
+    assert set(keeper._terminal_validators) == NINE_VALIDATORS
     assert {kind: label for kind, (label, _) in keeper._terminal_validators.items()} == {
         kind: label for kind, (label, _) in ag.TERMINAL_VALIDATORS.items()}
     with pytest.raises(ValueError, match="closed terminal validator registry"):
@@ -7646,10 +7654,9 @@ def _terminal_window_case(kind):
     return ag, keeper, store
 
 
-@pytest.mark.parametrize("kind, missing", [("accepted-open", {"unit", "recovery", "audit"}), ("failed-closed-quiescent", {"restoration"}),
-                                          ("failed-prepare-quiescent", {"restoration"})])
+@pytest.mark.parametrize("kind, missing", [("failed-closed-quiescent", {"restoration"}), ("failed-prepare-quiescent", {"restoration"})])
 def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
-    """The registry has no unit/recovery/audit/restoration validator: finish refuses every terminal kind, so API is the only end."""
+    """The registry has no restoration validator: finish refuses both failed-* terminal kinds."""
     ag, keeper, store = _terminal_window_case(kind)
     window = store.get()[0]["lifecycle"]
     required = ag._terminal_required(kind, window)
@@ -7658,3 +7665,21 @@ def test_r15_the_production_registry_closes_no_terminal_kind(kind, missing):
     with pytest.raises(ValueError, match="^terminal validator unavailable; lifecycle disabled$"):
         keeper.finish({"kind": kind, "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
     assert store.get() == before and before[0]["status"] == "held"
+
+
+def test_r15_accepted_open_tem_registro_completo_mas_so_fecha_com_as_observacoes_originais_e_sem_call_site_de_finish():
+    """P16 fills unit/recovery/audit (DD-4): synthetic sources still refuse at the first mode validator, and no production
+    path calls finish, so API stays the only end until the terminal producer (PR-6)."""
+    import ast
+    import pathlib
+    ag, keeper, store = _terminal_window_case("accepted-open")
+    window = store.get()[0]["lifecycle"]
+    required = ag._terminal_required("accepted-open", window)
+    assert required <= set(ag.TERMINAL_VALIDATORS) and required & MODE_VALIDATORS == MODE_VALIDATORS
+    before = store.get()
+    with pytest.raises(ValueError, match="^closed object fields$"):
+        keeper.finish({"kind": "accepted-open", "checkpoint_raw": b"{}", "sources": {name: "synthetic-" + name for name in required}})
+    assert store.get() == before and before[0]["status"] == "held"
+    calls = [node for path in (pathlib.Path(__file__).resolve().parents[1] / "tools").rglob("*.py") for node in ast.walk(ast.parse(path.read_text()))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "finish"]
+    assert calls == []

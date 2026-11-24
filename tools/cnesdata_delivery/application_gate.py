@@ -96,7 +96,8 @@ def _terminal_required(kind, window):
 # sha256 map; a journal role selects observation bytes of its own kind, an artifact role only the
 # factory's authenticated bytes, and the result commits to the map. TERMINAL_VALIDATORS registers them.
 TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-ready", "membership": "close-drain terminal",
-                         "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision"}
+                         "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision",
+                         "unit": "mode", "recovery": "mode", "audit": "mode"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
 # SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
@@ -110,6 +111,8 @@ FROZEN_MEMBER_FIELDS = MEMBER_IDENTITY + " proof_sha256 observed_at send_disable
 MEMBER_RESOLVED = frozenset({"TERMINAL", "ABSENT_PROVEN", "CANCEL_BEFORE_SEND"})
 CLOSED_READY_FIELDS = ("version kind common close_drain_sha256 phase_b_sha256 fence permit members proofs observed_at "
                        "exclusion stage decision")
+# CnesData c7b1ece1 _adapter_abi.MODE_OBSERVATION_FIELDS, built by promote_mode._observation (DD-4).
+MODE_OBSERVATION_FIELDS = "version kind accepted checks commitments"
 # CnesData 9cdd452f scripts/promotion/_api_static_records.py PUBLICATION_SCHEMA/PUBLICATION_FIELDS;
 # field types of publish_dashboard.PublicationReceipt.
 PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
@@ -1583,11 +1586,15 @@ def inventory_capability(*, governance, journal, keeper, credential_limit, opera
         raise
 
 
-def _phase_b_step(governance):
+def _deploy_step(governance, purpose):
     steps = [(name, step) for name, step in governance["lifecycle_steps"].items()
-             if step["role"] == "deploy" and step["purpose"] == "phase-b" and step["direction"] == "advance"]
-    c.require(len(steps) == 1, "unique protected phase-b advance step")
+             if step["role"] == "deploy" and step["purpose"] == purpose and step["direction"] == "advance"]
+    c.require(len(steps) == 1, f"unique protected {purpose} advance step")
     return steps[0]
+
+
+def _phase_b_step(governance):
+    return _deploy_step(governance, "phase-b")
 
 
 SAME_RUN_READ_SECONDS = 20
@@ -1631,14 +1638,18 @@ def _same_run_publication(api, run, owner, job, *, kind, step, guard, now):
     return reference, public, artifact
 
 
-def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
-    """Completed same-run phase-b advance deploy publication (checkpoint + approval) and its authenticated moments."""
+def _deploy_publication(api, aws, governance, request, run, owner, guard, now, purpose):
+    """Completed same-run advance deploy publication of the purpose (checkpoint + approval) and its authenticated moments."""
     from tools.cnesdata_delivery.lifecycle_runtime import private_payload
-    name, step = _phase_b_step(governance)
-    job = _same_run_job(api, run, kind="phase-b", job_name=step["job_name"], guard=guard)
-    _, public, artifact = _same_run_publication(api, run, owner, job, kind="phase-b", step=name, guard=guard, now=now)
+    name, step = _deploy_step(governance, purpose)
+    job = _same_run_job(api, run, kind=purpose, job_name=step["job_name"], guard=guard)
+    _, public, artifact = _same_run_publication(api, run, owner, job, kind=purpose, step=name, guard=guard, now=now)
     files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
     return files, {"artifact_created_at": artifact["created_at"], "job_completed_at": job["completed_at"]}
+
+
+def _phase_b_publication(api, aws, governance, request, run, owner, guard, now):
+    return _deploy_publication(api, aws, governance, request, run, owner, guard, now, "phase-b")
 
 
 def _observer_step(governance):
@@ -1672,7 +1683,7 @@ def _trigger_producer(governance, kind):
         return lc.FENCE_PREPARE_PRODUCER["job_name"], lc.FENCE_PREPARE_PRODUCER["step"]
     if kind == "host":
         return HOST_JOB, None
-    name, step = _observer_step(governance) if kind == "observer-bootstrap" else _phase_b_step(governance)
+    name, step = _observer_step(governance) if kind == "observer-bootstrap" else _deploy_step(governance, kind)
     return step["job_name"], name
 
 
@@ -1690,7 +1701,7 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
     A producer not yet completed-success is no event (the keeper keeps ticking, bounded
     by the stage deadline); a publication that can never be the trigger refuses. The host
     event carries only the job: its handler authenticates the public host handoff (DD-3).
-    An internal trigger (static) is no event: the previous handler advances on its own observation.
+    Internal triggers (static, unit) are no event: the previous handler advances on its own observation.
     In application-prepare the observer-bootstrap deploy publication is the event until the keeper
     holds its settled inventory (P15b); then the prepared publication is.
     """
@@ -2311,10 +2322,48 @@ def _handoff_validator(role):
     return provider
 
 
+def _mode_journal(keeper, mode):
+    journals = [_journal_of(item) for item in keeper._contexts]
+    found = [journal for journal in journals if journal._request["operation"] == mode + "-observe"]
+    c.require(len(found) == 1, f"terminal mode journal mode={mode}")
+    return found[0]
+
+
+def mode_observation(keeper, mode, owner):
+    """DD-4: the single observation of the mode's observe journal: shape, original commitments, product verdict."""
+    journal = _mode_journal(keeper, mode)
+    request = journal._request
+    c.require(request["owner"]["owner_sha256"] == owner["owner_sha256"], "terminal mode owner")
+    entries = journal._observations
+    c.require(len(entries) == 1 and entries[0]["kind"] == "mode", "terminal mode source")
+    raw = journal._observation_bytes[entries[0]["sha256"]]
+    value = _versioned(c.loads(raw, canonical=True, limit=1024**2), mode, MODE_OBSERVATION_FIELDS)
+    checks = value["checks"]
+    c.require(type(checks) is list and all(type(item) is str for item in checks) and checks == sorted(checks)
+              and type(value["accepted"]) is bool and value["accepted"] is (checks == []), "terminal mode verdict")
+    expected = {"owner": owner["owner_sha256"]} | {name: item["sha256"] for name, item in request["inputs"].items()}
+    c.require(value["commitments"] == expected, "terminal mode commitments")
+    return c.sha(raw), value["accepted"]
+
+
+def _mode_validator(mode):
+    """The three observe operations share the journal kind `mode`, so each validator reads its own
+    operation's journal (one observe per mode) instead of the latest-by-kind map of disposition 3d."""
+    def provider(keeper):
+        def validator(source, *, owner, window, observations):
+            c.closed(source, TERMINAL_SOURCE_ROLES[mode])
+            digest, accepted = mode_observation(keeper, mode, owner)
+            c.require(source["mode"] == digest, "terminal mode source")
+            return {"sha256": c.sha(c.canonical(source)), "facts": {"accepted": accepted}}
+        return validator
+    return provider
+
+
 # Closed production registries. They are code constants, never read from governance, environment or
-# request. Each kind maps to a SYNTHETIC label (R3: the product has no routing or terminal-readback
-# handler) and a provider that builds the validator for one keeper. Only six kinds exist; unit,
-# recovery, audit and restoration stay without a validator, so finish() refuses their terminals.
+# request. Each kind maps to a label and a provider that builds the validator for one keeper: SYNTHETIC
+# where the product has no handler (R3: routing, terminal-readback), product-mode where the DD-4
+# observation comes from the product observe handler. restoration stays without a validator, so
+# finish() refuses the failed-* terminals.
 TERMINAL_VALIDATORS = {
     "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
     "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
@@ -2322,6 +2371,7 @@ TERMINAL_VALIDATORS = {
     "quiescence": ("synthetic-quiescence", _quiescence_validator),
     "host": ("synthetic-host", _handoff_validator("host-handoff")),
     "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+    **{mode: ("product-mode-" + mode, _mode_validator(mode)) for mode in ("unit", "recovery", "audit")},
 }
 KEEPER_EVENT_SOURCE = stage_event_source
 
@@ -2414,7 +2464,7 @@ class _ArtifactTap:
 def _operation_request(operation, *, owner, window, inputs, activation=None):
     """The ABI3 request of one keeper operation, bound to the keeper window exactly as it is when the operation starts.
 
-    activation is the keeper activation for an operation without that input (publish-static).
+    activation is the keeper activation for an operation without that input (publish-static, mode seed and start).
     """
     activation = inputs["activation"] if activation is None else activation
     return c.canonical({"abi_version": lc.ADAPTER_ABI_VERSION, "operation": operation, "repository": c.REPOSITORY,
@@ -2777,6 +2827,73 @@ def publish_inventory(*, keeper, api, run, owner, raw, credential_limit, clock=t
                                    files={"inventory.json": raw}, guard=guard, credential_limit=credential_limit, clock=clock)
 
 
+MODE_RUNS = {mode: tuple(name for name, (_, _, context, phase) in lc.MODE_SESSION_OPERATIONS.items()
+                         if context == "promotion" and phase == mode) for mode in ("unit", "recovery", "audit")}
+MODE_NEXT_STAGE = {"unit": "phase-c-recovery", "recovery": "phase-c-audit", "audit": "final"}
+
+
+def mode_input_source(*, keeper, owner, window, operation, names):
+    """Mode originals the keeper journal does not hold: the mode-canary record and fixtures, readbacks, network, the
+    Phase C evidence and the audit event ids. Their producers are unwired (DD-1 1C), so production refuses here."""
+    raise ValueError("mode_inputs=source_unconnected")
+
+
+def mode_capability(*, journal, keeper, guard):
+    """Production mode broker (mode_seed, mode_dispatch, mode_audit_launch and mode_observe sessions): not connected
+    in this slice, so the attached journal fails and the lease stays held. Raises: ValueError."""
+    journal._failed = True
+    raise ValueError("mode_broker=unconnected")
+
+
+def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capability, credential_limit, clock):
+    """One mode operation: journal under the keeper guard, the injected capability before the child, timeout
+    window - now - 38. Returns: the single observation bytes. Raises: ValueError."""
+    record = keeper.lease.check()
+    window, owner = record["lifecycle"], lc.owner_binding(record)
+    c.closed(inputs, lc.ADAPTER_INPUTS[operation])
+    guard = KeeperGuard(keeper)
+    journal = AdapterJournal(_operation_request(operation, owner=owner, window=window, inputs=inputs, activation=activation),
+                             operation=operation, owner=owner, window=window, inputs=inputs,
+                             activation_sha256=c.sha(activation), guard=guard)
+    keeper.attach(journal)
+    broker = capability(journal=journal, keeper=keeper, guard=guard)
+    try:
+        invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
+                                                            operation=operation))
+    finally:
+        _drop_operation_clients(broker)
+    kind = lc.ADAPTER_OBSERVATIONS[operation]
+    observed = [entry for entry in journal._observations if entry["kind"] == kind]
+    c.require(len(journal._observations) == len(observed) == 1 and not keeper.uncertainty(),
+              f"{operation} single observation without uncertainty")
+    return journal._observation_bytes[observed[0]["sha256"]]
+
+
+def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None):
+    """DD-3/DD-4: the mode operations in order, each fed by the previous observations, the accepted observe,
+    then the next stage window. Returns the observation bytes by kind (mode-seed, mode-result, mode)."""
+    produced = {}
+    for operation in MODE_RUNS[mode]:
+        record = keeper.lease.check()
+        names = set(lc.ADAPTER_INPUTS[operation].split())
+        inputs = {name: raw for name, raw in (known | produced).items() if name in names}
+        missing = sorted(names - set(inputs))
+        if missing:
+            inputs |= dict(mode_input_source(keeper=keeper, owner=lc.owner_binding(record), window=record["lifecycle"],
+                                             operation=operation, names=missing))
+        produced[lc.ADAPTER_OBSERVATIONS[operation]] = run_mode_operation(
+            keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke, capability=capability,
+            credential_limit=credential_limit, clock=clock)
+    _, accepted = mode_observation(keeper, mode, lc.owner_binding(keeper.lease.check()))
+    c.require(accepted is True, f"{mode} mode accepted")
+    admitted = clock()
+    window = keeper.lease.check()["lifecycle"]
+    c.require(admitted < lc.terminal_deadline(window), f"{window['stage']} stage deadline elapsed")
+    keeper.lease.checkpoint(lc.mode_stage_window(window, MODE_NEXT_STAGE[mode], now=admitted,
+                                                 checkpoint_sha256=checkpoint_sha256))
+    return produced
+
+
 def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
                    clock=time.time):
     """Handlers of the keeper triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3, P15b).
@@ -2788,8 +2905,10 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     carrier, close-drain, close window.
     phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
     and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window, then the static
-    operation publish-static and, on its settled publication, the unit window (internal, DD-3). The unit stage
-    ends this slice.
+    operation publish-static and, on its settled publication, the unit window (internal, DD-3). phase-c-recovery
+    and phase-c-audit (DD-3, external): the C deploy publication, child of the keeper checkpoint, then the mode run
+    and its acceptance (DD-4), the next window with the C deploy checkpoint. unit -> phase-c-recovery is internal:
+    `mode(current, "unit", None)` runs in the unit window; nothing runs it in this slice, so the unit stage ends it.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     state = {}
@@ -2881,6 +3000,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         phase = api_phase_b_evidence(close_raw=close, prepared=files, published=published, moments=moments,
                                      admitted_at=window["admitted_at"], revisions=state["revisions"])
         inputs = {"activation": state["activation"], "close-drain": close, "membership": _frozen_membership(close), "phase-b": phase}
+        state["phase-b"] = phase
 
         def capability(*, journal, keeper, guard):
             return closed_ready_capability(aws=aws, api=api, governance=governance, request=request, run=run, journal=journal,
@@ -2954,20 +3074,52 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "static stage deadline elapsed")
         current.lease.checkpoint(lc.unit_window(window, now=admitted))
 
-    return {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host}
+    def mode(current, name, checkpoint_sha256):
+        known = {key: state[key] for key in ("activation", "close-drain", "phase-b", "recovery-result") if key in state}
+        owner = lc.owner_binding(current.lease.check())
+
+        def invoke(*, journal, timeout):
+            return invoke_adapter(product=product, source=owner["source_sha"], manifest=governance["application_product_source_manifest"],
+                                  manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal,
+                                  timeout=timeout)
+
+        def capability(*, journal, keeper, guard):
+            return mode_capability(journal=journal, keeper=keeper, guard=guard)
+        produced = mode_stage(current, name, known=known, invoke=invoke, capability=capability,
+                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256)
+        if name == "recovery":
+            state["recovery-result"] = produced["mode-result"]
+
+    def phase_c(purpose):
+        def handler(current, reference):
+            c.require(state.get("closed-ready") is not None, f"{purpose} follows the closed-ready run of this keeper")
+            record = current.lease.check()
+            window, owner = record["lifecycle"], lc.owner_binding(record)
+            published, _ = _deploy_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock(), purpose)
+            checkpoint = c.loads(published["checkpoint.json"], canonical=True)
+            approval = c.loads(published["approval.json"], canonical=True)
+            c.require(approval["checkpoint_sha256"] == window["checkpoint_sha256"] and approval["plan_sha256"] == checkpoint["plan_sha256"]
+                      and checkpoint["purpose"] == purpose and c.canonical(checkpoint["owner"]) == c.canonical(owner),
+                      f"{purpose} checkpoint ancestry")
+            mode(current, purpose.removeprefix("phase-c-"), c.sha(published["checkpoint.json"]))
+        return handler
+
+    return {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host,
+            "phase-c-recovery": phase_c("phase-c-recovery"), "phase-c-audit": phase_c("phase-c-audit")}
 
 
-KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host")
+KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
 
 
 def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over the four external keeper triggers; it never returns.
+    """The single keeper polling loop over the six external keeper triggers; it never returns.
 
     next_event is the authenticated event producer and handlers holds exactly the KEEPER_EVENTS
-    handlers: the three ratified stage triggers and the observer-bootstrap operation trigger (P15b);
-    static -> unit is internal to the host handler (DD-3). At the unit stage the producer
-    refuses and the lease stays held (R18): there is no finish, terminal publication or dispatch
-    here. Any exception leaves the lease held.
+    handlers: the ratified stage triggers (prepared, phase-b, host and the two C rows) and the
+    observer-bootstrap operation trigger (P15b); static -> unit is internal to the host handler and
+    unit -> phase-c-recovery is internal (DD-3). At the unit stage the producer refuses and the lease
+    stays held (R18): there is no finish, terminal publication or dispatch here. Any exception leaves
+    the lease held.
     """
     c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)

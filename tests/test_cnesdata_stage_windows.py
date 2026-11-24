@@ -423,10 +423,10 @@ def test_host_gate_recusa_vao_pos_static_acima_do_contexto_de_promocao(monkeypat
 def test_contexto_de_modo_da_promocao_vai_ate_o_teto_do_contexto_de_promocao(span, accepted):
     from test_cnesdata_application_gate import _mode_semantic_context
     manifest, originals, owner, encode = _mode_semantic_context("promotion")
-    originals["deadline"] = manifest["deadline"] = manifest["admitted_at"] + span
+    originals["deadline"] = manifest["deadline"] = c.utc(c.instant(manifest["admitted_at"]) + span)
     arguments = {"owner": owner, "application_purpose": "promotion", "originals": originals}
     if accepted:
-        assert lc.validate_mode_context(encode(manifest), **arguments)["manifest"]["deadline"] == 1000 + span
+        assert lc.validate_mode_context(encode(manifest), **arguments)["manifest"]["deadline"] == c.utc(1000 + span)
     else:
         with pytest.raises(ValueError, match="^mode context original bounded deadline$"):
             lc.validate_mode_context(encode(manifest), **arguments)
