@@ -21,7 +21,7 @@ BUILT = sorted(name for name, case in CASES.items() if "refusal" not in case)
 REFUSED = sorted(name for name, case in CASES.items() if "refusal" in case)
 FRAMES_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py"
 PRODUCT_FRAMES_ORIGIN = {
-    "commit": "1c5bbd8299d8b97824f36e328f24bd3fc6ae7ba5",
+    "commit": "47b122f5957ccd8ab1e1ca30015ef44f7429e4f0",
     "packages/cnes_infra/src/cnes_infra/control_plane/dynamodb_keys.py":
         ("cnes_infra.control_plane.dynamodb_keys", "product_dynamodb_keys.py",
          "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"),
@@ -30,10 +30,10 @@ PRODUCT_FRAMES_ORIGIN = {
          "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2"),
     FRAMES_PATH:
         ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
-         "250343666e0b199ae1ddbd29fb030de144d92d8fa18f576a27fa55b3d314d881"),
+         "3b95d77a70c9c121c6dc77cea9b71d0cac5fab359fd4b6d655269f3a61a315a6"),
     "tests/production/delivery/mode_canary_frames_vector.json":
         (None, "tests/fixtures/cnesdata_mode_canary_frames_vector.json",
-         "78bd01cb66caf12b86fc762078eee10d217f96a1bc416ad849cf4bc7b31ccade")}
+         "8a6c21bc0514aacee1063a01a446b0e3c13df903b63c3b13a3f6d7ce5c3db440")}
 VENDORED = [value for key, value in PRODUCT_FRAMES_ORIGIN.items() if key != "commit" and value[0] is not None]
 REUSABLE_LISTS = {"application-gate": 1, "infra-audit-gate": 1, "infra-deploy-gate": 1, "infra-plan-gate": 1, "observer": 0}
 Holder = collections.namedtuple("Holder", "dispatch_id run_id tenant_id")
@@ -97,6 +97,11 @@ def test_vetor_vendorizado_e_o_do_produto_e_aponta_para_a_fonte_fixada_dos_forma
                           "ledger-settle-replay", "record-item", "initial-control"}
     assert {CASES[name]["refusal"] for name in REFUSED} == {
         f"reason={reason} field=tenant_id" for reason in ("ticket_conflict", "budget_exhausted", "ticket_settled")}
+
+
+def test_teto_de_tentativas_do_ledger_vem_dos_formatos_vendorizados_e_do_vetor_do_produto():
+    """Ruling 3 item 2: the keeper never hand-writes the bound; it is the vendored product constant."""
+    assert VECTOR["attempts"] == _mb().product_frames().ATTEMPTS == 3
 
 
 @pytest.mark.parametrize("name", BUILT)
