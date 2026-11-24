@@ -668,6 +668,36 @@ def test_estagio_de_modo_recusa_avancar_quando_o_prazo_do_vetor_governado_vence_
     assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
 
+def test_cada_operacao_de_modo_registra_inicio_e_fim_medidos_no_journal(monkeypatch):
+    """Ruling 2 C4: start and stop of every mode operation, so a refused attempt still yields measured durations."""
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    _unit_stage(world)
+    assert [journal._timings for journal in world.mode.capabilities] == [
+        [{"kind": "operation", "operation": operation, "started_at": now, "ended_at": now + 5}]
+        for operation, _, now, _ in world.mode.calls]
+
+
+def test_operacao_de_modo_recusada_ainda_registra_o_tempo_medido(monkeypatch):
+    world = _mode_world(monkeypatch, fail="unit-seed")
+    _enter_unit(world)
+    with pytest.raises(ValueError, match="^fixture child failed$"):
+        _unit_stage(world)
+    _, now = world.mode.calls[-1][0], world.mode.calls[-1][2]
+    assert world.mode.capabilities[-1]._timings == [
+        {"kind": "operation", "operation": "unit-seed", "started_at": now, "ended_at": now}]
+
+
+def test_operacao_de_modo_registra_o_tempo_quando_a_capability_recusa(monkeypatch):
+    world = _mode_world(monkeypatch, capability="mode broker refused")
+    _enter_unit(world)
+    now = world.clock.value
+    with pytest.raises(ValueError, match="^mode broker refused$"):
+        _unit_stage(world)
+    assert world.mode.capabilities[-1]._timings == [
+        {"kind": "operation", "operation": "unit-record", "started_at": now, "ended_at": now}]
+
+
 def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(monkeypatch):
     world = _mode_world(monkeypatch, fail="unit-seed")
     _enter_unit(world)
