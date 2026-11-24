@@ -35,6 +35,7 @@ _MANIFEST = re.compile(r"[A-Za-z0-9._-]{1,128}")
 
 
 def _load_product_frames(folder):
+    c.require(sys.version_info >= (3, 12), "mode_frames=python_version")
     verified = []
     for name, file, digest in PRODUCT_FRAMES:
         raw = (folder / file).read_bytes()
