@@ -2853,8 +2853,9 @@ def publish_inventory(*, keeper, api, run, owner, raw, credential_limit, clock=t
                                    files={"inventory.json": raw}, guard=guard, credential_limit=credential_limit, clock=clock)
 
 
-MODE_RUNS = {mode: tuple(name for name, (_, _, context, phase) in lc.MODE_SESSION_OPERATIONS.items()
-                         if context == "promotion" and phase == mode) for mode in ("unit", "recovery", "audit")}
+MODE_RUNS = {"unit": ("unit-record", "unit-seed", "unit-start", "unit-observe"),
+             "recovery": ("recovery-record", "recovery-seed", "recovery-start", "recovery-observe"),
+             "audit": ("audit-record", "audit-start", "audit-observe")}
 MODE_NEXT_STAGE = {"unit": "phase-c-recovery", "recovery": "phase-c-audit", "audit": "final"}
 
 
@@ -2868,9 +2869,12 @@ ModeContext = namedtuple("ModeContext", "governance authority prepared credentia
 
 
 def mode_capability(*, journal, keeper, guard, context):
-    """Production mode capability per operation class, with the keeper context the stage handler binds: the observes get
-    the prepared-fence FenceReadBroker; the seed and start effect broker is not connected, so their journal fails and
-    the lease stays held. Returns: the admitted broker. Raises: ValueError."""
+    """Production mode capability per operation class, with the keeper context the stage handler binds: the pure record
+    operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; the seed and start effect
+    broker is not connected, so their journal fails and the lease stays held. Returns: the admitted broker or None.
+    Raises: ValueError."""
+    if journal._request["operation"].endswith("-record"):
+        return None
     if journal._request["operation"] in lc.MODE_OBSERVES:
         from tools.cnesdata_delivery import mode_broker
         return mode_broker.fence_observe_capability(
@@ -2920,7 +2924,9 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
 
 def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None):
     """DD-3/DD-4: the mode operations in order, each fed by the previous observations, the accepted observe,
-    then the next stage window. Returns the observation bytes by kind (mode-seed, mode-result, mode)."""
+    then the next stage window. The journaled mode-record yields the record and audit-event-ids inputs.
+    Returns the observation bytes by kind (mode-record, mode-seed, mode-result, mode) and the record inputs."""
+    from tools.cnesdata_delivery.mode_broker import mode_record_inputs
     produced = {}
     for operation in MODE_RUNS[mode]:
         record = keeper.lease.check()
@@ -2930,9 +2936,12 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
         if missing:
             inputs |= dict(mode_input_source(keeper=keeper, owner=lc.owner_binding(record), window=record["lifecycle"],
                                              operation=operation, names=missing))
-        produced[lc.ADAPTER_OBSERVATIONS[operation]] = run_mode_operation(
-            keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke, capability=capability,
-            credential_limit=credential_limit, clock=clock)
+        raw = run_mode_operation(keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke,
+                                 capability=capability, credential_limit=credential_limit, clock=clock)
+        produced[lc.ADAPTER_OBSERVATIONS[operation]] = raw
+        if operation.endswith("-record"):
+            produced |= mode_record_inputs(raw, mode=mode, owner_sha256=lc.owner_binding(record)["owner_sha256"],
+                                           activation_sha256=c.sha(known["activation"]))
     _, accepted = mode_observation(keeper, mode, lc.owner_binding(keeper.lease.check()))
     c.require(accepted is True, f"{mode} mode accepted")
     admitted = clock()

@@ -129,6 +129,30 @@ def admit_mode_key(frame, action, key, *, binding):
     return family
 
 
+MODE_RECORD_FIELDS = "version kind record audit_event_ids"
+
+
+def mode_record_inputs(raw, *, mode, owner_sha256, activation_sha256):
+    """Seed/start inputs from the journaled mode-record of the pure product <mode>-record operation (ruling 2 item 1).
+
+    Args: observation bytes, mode, current owner_sha256, request activation_sha256.
+    Returns: {"record": exact record text bytes} plus {"audit-event-ids": canonical ids} for audit. Raises: ValueError.
+    """
+    value = c.loads(raw, canonical=True, limit=64 * 1024)
+    c.closed(value, MODE_RECORD_FIELDS)
+    text, ids = value["record"], value["audit_event_ids"]
+    c.require(type(value["version"]) is int and value["version"] == 1 and value["kind"] == "mode-record"
+              and type(text) is str and (ids is None) == (mode != "audit")
+              and (ids is None or type(ids) is list and 1 <= len(ids) <= 8
+                   and all(type(item) is str and 1 <= len(item) <= 256 for item in ids)),
+              "mode record observation")
+    record = c.loads(text.encode(), canonical=True, limit=32 * 1024)
+    c.require(type(record) is dict and record.get("mode") == record.get("phase") == mode
+              and record.get("owner_sha256") == owner_sha256 and record.get("activation_sha256") == activation_sha256,
+              "mode record binding")
+    return {"record": text.encode()} | ({} if ids is None else {"audit-event-ids": c.canonical(ids)})
+
+
 class ModeBroker:
     """Finite private SDK dispatcher of one mode seed/start operation, on its own derived mc-* session.
 

@@ -215,6 +215,9 @@ ADAPTER_INPUTS = {
     "unit-observe": "activation close-drain record mode-result readbacks observed",
     "recovery-observe": "activation network close-drain phase-b phase-c mode-result readbacks",
     "audit-observe": "activation network close-drain phase-b phase-c mode-result readbacks recovery-result recovery-readbacks",
+    "unit-record": "activation close-drain fixture-manifest mode-input",
+    "recovery-record": "activation close-drain fixture-manifest mode-input",
+    "audit-record": "activation close-drain fixture-manifest mode-input mode-seed",
 }
 # Amendment 6886977054 decision 5 put retire-static in final; 6963763481 decision 1 (R16) admits it in no
 # stage in this slice, because the final budget does not fit it. The remedy belongs to the post-API amendment.
@@ -222,9 +225,9 @@ ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
     "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": set(),
-    **{name: {"unit"} for name in ("unit-seed", "unit-start", "unit-observe")},
-    **{name: {"phase-c-recovery"} for name in ("recovery-seed", "recovery-start", "recovery-observe")},
-    **{name: {"phase-c-audit"} for name in ("audit-start", "audit-observe")},
+    **{name: {"unit"} for name in ("unit-record", "unit-seed", "unit-start", "unit-observe")},
+    **{name: {"phase-c-recovery"} for name in ("recovery-record", "recovery-seed", "recovery-start", "recovery-observe")},
+    **{name: {"phase-c-audit"} for name in ("audit-record", "audit-start", "audit-observe")},
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
@@ -233,6 +236,7 @@ ADAPTER_OBSERVATIONS = {
     **{name: "mode-seed" for name in ("unit-seed", "recovery-seed")},
     **{name: "mode-result" for name in ("unit-start", "recovery-start", "audit-start")},
     **{name: "mode" for name in ("unit-observe", "recovery-observe", "audit-observe")},
+    **{name: "mode-record" for name in ("unit-record", "recovery-record", "audit-record")},
 }
 ADAPTER_STEPS = {
     "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
