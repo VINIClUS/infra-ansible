@@ -234,7 +234,6 @@ ADAPTER_OBSERVATIONS = {
     **{name: "mode-result" for name in ("unit-start", "recovery-start", "audit-start")},
     **{name: "mode" for name in ("unit-observe", "recovery-observe", "audit-observe")},
 }
-# Product MODE_EFFECT_STEPS: intermediate observations of the start operations; the single ones appear at most once.
 ADAPTER_STEPS = {
     "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
     "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),

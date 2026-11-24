@@ -5835,7 +5835,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
                "static_plan_source", "static_role_facts", "_observer_publication", "ModeBroker", "FenceReadBroker",
                "fence_observe_capability"}
-    broker_module = "tools/cnesdata_delivery/mode_broker.py"  # The gate's broker module, reached only by its call-time imports.
+    broker_module = "tools/cnesdata_delivery/mode_broker.py"
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5930,7 +5930,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         ("tools/cnesdata_delivery/static_inputs.py", "static_plan_bytes", "static_plan"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),
-        (gate, "mode_capability", "fence_observe_capability"),                 # the observe class of the mode capability
+        (gate, "mode_capability", "fence_observe_capability"),
         (broker_module, "fence_observe_capability", "_assume_fence_session"),
         (broker_module, "fence_observe_capability", "FenceReadBroker"),
     }, sites
