@@ -6,6 +6,7 @@ Defaults grant no access.
 """
 import re
 import time
+from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -2861,9 +2862,19 @@ def mode_input_source(*, keeper, owner, window, operation, names):
     raise ValueError("mode_inputs=source_unconnected")
 
 
-def mode_capability(*, journal, keeper, guard):
-    """Production mode broker (mode_seed, mode_dispatch, mode_audit_launch and mode_observe sessions): not connected
-    in this slice, so the attached journal fails and the lease stays held. Raises: ValueError."""
+ModeContext = namedtuple("ModeContext", "governance authority prepared credential_limit operation_session clock")
+
+
+def mode_capability(*, journal, keeper, guard, context):
+    """Production mode capability per operation class, with the keeper context the stage handler binds: the observes get
+    the prepared-fence FenceReadBroker; the seed and start effect broker is not connected, so their journal fails and
+    the lease stays held. Returns: the admitted broker. Raises: ValueError."""
+    if journal._request["operation"] in lc.MODE_OBSERVES:
+        from tools.cnesdata_delivery import mode_broker
+        return mode_broker.fence_observe_capability(
+            governance=context.governance, authority=context.authority, journal=journal, keeper=keeper,
+            prepared=context.prepared, credential_limit=context.credential_limit,
+            operation_session=context.operation_session, clock=context.clock)
     journal._failed = True
     raise ValueError("mode_broker=unconnected")
 
@@ -3117,8 +3128,11 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                   manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal,
                                   timeout=timeout)
 
+        context = ModeContext(governance=governance, authority=authority, prepared=state["prepared"],
+                              credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+
         def capability(*, journal, keeper, guard):
-            return mode_capability(journal=journal, keeper=keeper, guard=guard)
+            return mode_capability(journal=journal, keeper=keeper, guard=guard, context=context)
         produced = mode_stage(current, name, known=known, invoke=invoke, capability=capability,
                               credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256)
         if name == "recovery":

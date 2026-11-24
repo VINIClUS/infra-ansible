@@ -5930,7 +5930,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         ("tools/cnesdata_delivery/static_inputs.py", "static_plan_bytes", "static_plan"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),
-        (broker_module, "fence_observe_capability", "_assume_fence_session"),   # no production caller yet
+        (gate, "mode_capability", "fence_observe_capability"),                 # the observe class of the mode capability
+        (broker_module, "fence_observe_capability", "_assume_fence_session"),
         (broker_module, "fence_observe_capability", "FenceReadBroker"),
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
