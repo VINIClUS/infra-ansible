@@ -400,7 +400,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
-                                 fail=fail, late=late, brokers=brokers or {})
+                                 fail=fail, late=late, brokers=brokers or {}, contexts=[])
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -432,8 +432,9 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         return {name: c.canonical({"fixture_original": name, "operation": operation}) for name in names}
     monkeypatch.setattr(ag, "mode_input_source", mode_input_source)
 
-    def mode_capability(*, journal, keeper, guard):
+    def mode_capability(*, journal, keeper, guard, context):
         assert guard is journal._guard
+        world.mode.contexts.append(context)
         world.events.append(("capability", journal._request["operation"]))
         world.mode.capabilities.append(journal)
         if world.mode.capability is not None:
@@ -492,7 +493,7 @@ def _unit_stage(world, **extra):
     def invoke(*, journal, timeout):
         return ag.invoke_adapter(journal=journal, timeout=timeout)
     def capability(**kwargs):
-        return ag.mode_capability(**kwargs)
+        return ag.mode_capability(**kwargs, context=None)
     return ag.mode_stage(world.keeper, "unit", known=_known(world) | extra, invoke=invoke, capability=capability,
                          credential_limit=6000, clock=world.clock)
 
@@ -599,8 +600,8 @@ def test_operacao_de_modo_recusa_broker_admitido_que_nao_e_o_devolvido_pela_capa
     from tools.cnesdata_delivery import application_gate as ag
     real = ag.mode_capability
 
-    def swapped(*, journal, keeper, guard):
-        real(journal=journal, keeper=keeper, guard=guard)
+    def swapped(*, journal, keeper, guard, context):
+        real(journal=journal, keeper=keeper, guard=guard, context=context)
         return SimpleNamespace(aws="other", evidence=[], session=SimpleNamespace(client="x", evidence="y"))
     monkeypatch.setattr(ag, "mode_capability", swapped)
     with pytest.raises(ValueError, match="^mode broker admitted before adapter$"):
@@ -628,15 +629,32 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
     assert world.mode.calls == [] and _record(world) == window
 
 
-def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker():
+@pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
+def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker_de_efeito(operation):
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
-        ag.mode_input_source(keeper=None, owner={}, window={}, operation="unit-seed", names=["record"])
-    journal = SimpleNamespace(_failed=False)
+        ag.mode_input_source(keeper=None, owner={}, window={}, operation=operation, names=["record"])
+    journal = SimpleNamespace(_failed=False, _request={"operation": operation})
     with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
-        ag.mode_capability(journal=journal, keeper=None, guard=None)
+        ag.mode_capability(journal=journal, keeper=None, guard=None, context=None)
     assert journal._failed is True
+
+
+@pytest.mark.parametrize("operation", ["unit-observe", "recovery-observe", "audit-observe"])
+def test_capability_de_producao_do_observe_e_a_do_fence_preparado_com_o_contexto_do_handler(monkeypatch, operation):
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    from tools.cnesdata_delivery import mode_broker as mb
+    calls = []
+    monkeypatch.setattr(mb, "fence_observe_capability", lambda **kwargs: calls.append(kwargs) or "fence-read-broker")
+    context = ag.ModeContext(governance="g", authority="a", prepared="p", credential_limit=6000, operation_session="o",
+                             clock="k")
+    journal = SimpleNamespace(_failed=False, _request={"operation": operation})
+    assert ag.mode_capability(journal=journal, keeper="keeper", guard="guard", context=context) == "fence-read-broker"
+    assert calls == [{"governance": "g", "authority": "a", "journal": journal, "keeper": "keeper", "prepared": "p",
+                      "credential_limit": 6000, "operation_session": "o", "clock": "k"}]
+    assert journal._failed is False
 
 
 def _c_files(world, purpose, **changes):
@@ -742,7 +760,22 @@ def test_capability_de_modo_e_injetada_pelo_handler_e_nao_tem_padrao():
     for function in (ag.run_mode_operation, ag.mode_stage):
         parameter = inspect.signature(function).parameters["capability"]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is inspect.Parameter.empty
-    assert list(inspect.signature(ag.mode_capability).parameters) == ["journal", "keeper", "guard"]
+    assert list(inspect.signature(ag.mode_capability).parameters) == ["journal", "keeper", "guard", "context"]
+    assert ag.ModeContext._fields == ("governance", "authority", "prepared", "credential_limit", "operation_session", "clock")
+
+
+def test_handler_do_c_entrega_ao_capability_o_contexto_do_keeper_e_o_fence_preparado(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    _c_files(world, "phase-c-recovery")
+    world.mode.contexts.clear()
+    world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    contexts = world.mode.contexts
+    assert len(contexts) == 3 and all(context is contexts[0] for context in contexts)
+    context = contexts[0]
+    assert (context.governance, context.authority, context.credential_limit) == (world.governance, world.authority, 6000)
+    assert context.operation_session is world.operation_session and context.clock is world.clock
+    assert type(context.prepared).__name__ == "PreparedFence"
 
 
 C_REFUSALS = {
