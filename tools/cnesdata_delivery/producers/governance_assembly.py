@@ -9,25 +9,28 @@ from tools.cnesdata_delivery.producers.chain import expiry_chain
 
 CLI_CEILING = 40960
 SECRET_CEILING = 47952
-SESSION_ROLES = ("plan", "deploy", "application")
+SESSION_ROLES = ("plan", "deploy", "audit", "application")
+PLAN_CYCLE_ROLES = ("deploy", "audit")
 GOVERNANCE_KEYS = frozenset("""
-    account_id activation_enabled activation_read admission_reference application_configuration
+    account_id activation_enabled activation_read activation_receipts admission_reference application_configuration
     application_coordination_policy application_delegations application_fragment
-    application_product_source_closure_sha256 application_product_source_manifest
+    application_product_source_closure_sha256
     application_product_source_manifest_artifact application_purpose application_source_closure_sha256
     artifact_purposes artifact_references authenticated_application_caller authority authorization baseline
     baseline_artifacts bootstrap_checkpoint caller_allowlist consumer contract_sha256 cost cost_handoff
     context_kind credentials crypto dependencies drift_handoff drift_matrix ecr_repository evidence_bucket
     evidence_kms_key_arn evidence_prefix ext2 fixed_deadline_seconds gate_shas history host images lifecycle_authority
-    lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps lifecycle_terminal_job
+    lifecycle_contract lifecycle_enabled lifecycle_predecessor lifecycle_steps_sha256 lifecycle_terminal_job
     phase_a_inputs phase_input_objects plan_run_id policy_evaluator_sha256 policy_sha256 predecessor_read
     principal_sha256 product_inputs promotion_sha256 proof_producers provenance readbacks region release
     report_hmac_key required_checks role roles runner runtime_contract_sha256 runtime_probes runtime_sha256
     session_duration_seconds session_owner_references session_policy_pins signing signing_spki_pem_sha256
-    source_closure source_files source_sha stage_windows state_bucket state_kms_key_arn storage workflows
+    source_closure_sha256 source_files source_sha stage_windows state_bucket state_kms_key_arn storage workflows
 """.split())
 INITIAL_STAGE_WINDOWS = {"phase-b": 360, "api": 180, "static": 180, "unit": 180,
-                         "phase-c-recovery": 330, "phase-c-audit": 330, "final": 90}
+                          "phase-c-recovery": 330, "phase-c-audit": 330, "final": 90}
+HYDRATED_KEYS = frozenset(("lifecycle_steps", "source_closure"))
+REFERENCES = ("lifecycle_steps_sha256", "source_closure_sha256")
 
 
 def render(document, ceiling=CLI_CEILING):
@@ -84,12 +87,35 @@ def _expiry_chain(document):
         c.require(type(pin) is dict and {"observed_at", "expires_at", "frozen_until"} <= set(pin),
                   f"session pin fields role={role}")
     for role, pin in pins.items():
-        start = pins["plan"]["observed_at"] if role == "deploy" and "plan" in pins else pin["observed_at"]
+        start = pins["plan"]["observed_at"] if role in PLAN_CYCLE_ROLES and "plan" in pins else pin["observed_at"]
         _pin_chain(role, pin, start)
     cost = document.get("cost")
     if cost and cost.get("cloudfront"):
         ok = c.instant(cost["cloudfront"]["expires_at"]) >= c.instant(cost["expires_at"])
         c.require(ok, "expiry chain violated element=cloudfront")
+
+
+def _activation_receipts(document):
+    from tools.cnesdata_delivery import ext2_transport
+    if "activation_receipts" not in document:
+        return
+    receipts = document["activation_receipts"]
+    c.require(type(receipts) is dict and receipts and all(type(name) is str and name for name in receipts),
+              "activation receipt steps")
+    for reference in receipts.values():
+        try:
+            ext2_transport.validate_reference(reference)
+        except ValueError:
+            c.require(False, "activation receipt")
+
+
+def references(document):
+    """Args: governance document. Raises: ValueError on an inline hydrated object or a malformed reference."""
+    for key in HYDRATED_KEYS:
+        c.require(key not in document, f"governance key={key}")
+    for key in REFERENCES:
+        if key in document:
+            c.digest(document[key])
 
 
 def crosscheck(document, commitments):
@@ -105,6 +131,8 @@ def crosscheck(document, commitments):
         c.digest(pin["source_sha"], 40)
     if "drift_handoff" in document:
         drift_handoff.pin(document)
+    references(document)
+    _activation_receipts(document)
     _cost_stage(document)
 
 
@@ -117,6 +145,17 @@ def _render(args):
     commitments = c.loads(Path(args.commitments).read_bytes())
     crosscheck(document, commitments)
     sys.stdout.buffer.write(render(document))
+
+
+def _lifecycle_objects(args):
+    from tools.cnesdata_delivery.producers import application
+    output = Path(args.output)
+    c.require(output.name == "lifecycle-steps.json" and not output.exists(), f"catalog member output={output.name}")
+    raw, reference = application.catalog_member(c.loads(Path(args.steps).read_bytes()))
+    manifest = c.loads(Path(args.manifest).read_bytes(), canonical=True, limit=4 * 1024**2)
+    pinned = reference | application.source_closure_reference(manifest)
+    output.write_bytes(raw)
+    sys.stdout.buffer.write(c.canonical(pinned))
 
 
 def _stage_windows_render(args):
@@ -149,6 +188,10 @@ def parser():
     for name in ("--document", "--commitments"):
         document.add_argument(name, required=True)
     document.set_defaults(run=_render)
+    objects = commands.add_parser("lifecycle-objects")
+    for name in ("--steps", "--manifest", "--output"):
+        objects.add_argument(name, required=True)
+    objects.set_defaults(run=_lifecycle_objects)
     windows = commands.add_parser("stage-windows")
     windows.add_argument("--window", action="append", default=[])
     windows.set_defaults(run=_stage_windows_render)

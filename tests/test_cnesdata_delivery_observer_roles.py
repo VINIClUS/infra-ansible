@@ -176,7 +176,7 @@ def test_politica_do_observador_tem_so_as_leituras_e_nega_assume_e_escrita(nativ
     assert {"Effect": "Deny", "Action": STS_DENIES, "Resource": "*"} in denies
     assert [s for s in denies if "NotAction" in s] == [
         {"Effect": "Deny", "NotAction": sorted(READS), "Resource": "*"}]
-    phase_inputs_key = evidence(phase_inputs.prefix(CONFIG) + producer.REHEARSAL)
+    phase_inputs_key = evidence(producer.rehearsal_key(CONFIG, ASKED_RUN))
     for action, resource in (("s3:PutObject", phase_inputs_key), ("s3:DeleteObject", phase_inputs_key),
                              ("s3:PutObject", STATE_BUCKET + "/" + producer.STATE_KEY),
                              ("s3:PutBucketPolicy", BUCKETS[0]), ("dynamodb:UpdateTable", TABLES[0]),
@@ -187,13 +187,16 @@ def test_politica_do_observador_tem_so_as_leituras_e_nega_assume_e_escrita(nativ
         assert decision(policy, action, resource) == "Deny", (action, resource)
 
 
+ASKED_RUN = {"source_sha": "a" * 40, "payload_reference": {"run_id": 42, "run_attempt": 1}}
+
+
 def test_observador_le_o_que_o_produtor_le_e_nada_fora_dos_recursos_nomeados(native):
     resources, _ = render(native, observer_values(), "observer-policy")
     policy = json.loads(resources[OBSERVER_POLICY]["policy"])
     state = STATE_BUCKET + "/" + producer.STATE_KEY
     asked = {"source_sha": "a" * 40, "payload_reference": {"run_id": 42, "run_attempt": 1}}
     base = phase_inputs._namespace_prefix(CONFIG, asked)
-    rehearsal = evidence(phase_inputs.prefix(CONFIG) + producer.REHEARSAL)
+    rehearsal = evidence(producer.rehearsal_key(CONFIG, ASKED_RUN))
     assert allowed(policy, "s3:GetObject", state)
     assert allowed(policy, "kms:Decrypt", STATE_KMS, VIA_S3 | {"kms:EncryptionContext:aws:s3:arn": state})
     for obj in [rehearsal] + [evidence(base + name) for name in phase_inputs.NAMES]:
@@ -298,7 +301,7 @@ def test_escritor_so_cria_em_phase_inputs_com_if_none_match_e_contexto_kms(nativ
     asked = {"source_sha": "a" * 40, "payload_reference": {"run_id": 42, "run_attempt": 1}}
     base = phase_inputs._namespace_prefix(CONFIG, asked)
     created = [evidence(base + name) for name in phase_inputs.NAMES]
-    created.append(evidence(phase_inputs.prefix(CONFIG) + producer.REHEARSAL))
+    created.append(evidence(producer.rehearsal_key(CONFIG, ASKED_RUN)))
     for obj in created:
         assert allowed(policy, "s3:PutObject", obj, {"s3:if-none-match": "*"})
         assert not allowed(policy, "s3:PutObject", obj)
@@ -478,7 +481,7 @@ def test_politica_do_audit_le_estado_lease_e_lifecycle_e_so_publica_no_proprio_l
     assert allowed(policy, "s3:ListBucket", STATE_BUCKET, {"s3:prefix": producer.STATE_KEY})
     assert allowed(policy, "iam:GetPolicyVersion", f"arn:aws:iam::{ACCOUNT}:policy/{AUDIT_NAME}-session")
     assert not allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-test-plan-session")
-    phase_inputs_key = evidence(phase_inputs.prefix(CONFIG) + producer.REHEARSAL)
+    phase_inputs_key = evidence(producer.rehearsal_key(CONFIG, ASKED_RUN))
     other = evidence(CONFIG["evidence_prefix"] + "a" * 40 + "/42/1/planned/envelope.json")
     for obj in (tflock, phase_inputs_key, other):
         assert not allowed(policy, "s3:GetObject", obj), obj

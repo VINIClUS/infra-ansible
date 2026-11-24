@@ -213,6 +213,12 @@ def test_gate_sha_malformado_recusa_com_chave_e_papel(value):
 
 
 
+@pytest.mark.parametrize("audit", ["E" * 40, "e" * 39, None, "g" * 40])
+def test_regra_da_governanca_inteira_recusa_sha_do_audit_malformado(audit):
+    shas = {"plan": "e" * 40, "deploy": "e" * 40, "audit": audit}
+    with pytest.raises(ValueError, match="^gate_shas malformed role=audit$"):
+        c.require_audit_gate({"gate_shas": shas})
+
 
 class CountingAPI:
     def __init__(self, inner):

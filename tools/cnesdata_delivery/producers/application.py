@@ -4,18 +4,17 @@ import re
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
+from tools.cnesdata_delivery import provenance
 from tools.cnesdata_delivery import session_policy
 from tools.cnesdata_delivery.producers import governance_assembly
 
 STEP_NAME = re.compile(r"[a-z][a-z0-9-]{0,63}")
+ACTIVATION_MARKER = c.canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
 IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-COMMON = "role purpose job_name producer_job admission_steps input_jobs"
-INFRA = COMMON + " mode direction"
-OPTIONAL = ("historical_entry", "activation_selection", "delete_resources")
 ROLES = ("plan", "deploy", "audit", "application")
 PIECES = frozenset("""
-    lifecycle_steps lifecycle_predecessor predecessor_read application_configuration application_fragment
-    application_delegations application_coordination_policy release
+    lifecycle_steps_sha256 source_closure_sha256 lifecycle_predecessor predecessor_read application_configuration
+    application_fragment application_delegations application_coordination_policy release
 """.split())
 
 
@@ -36,9 +35,11 @@ def _publication(api, governance, selector, publication):
 
 
 def _lease(lease, selector, checkpoint):
-    c.require(lease["status"] == "released" and lease["repository"] == c.REPOSITORY
-              and (lease["run_id"], lease["run_attempt"]) == (selector["run_id"], selector["run_attempt"])
-              and lease["checkpoint_sha256"] == checkpoint, f"predecessor lease status={lease['status']}")
+    c.require(lease["status"] == "released", f"predecessor lease status={lease['status']}")
+    c.require(lease["repository"] == c.REPOSITORY, f"predecessor lease repository={lease['repository']}")
+    run = (lease["run_id"], lease["run_attempt"])
+    c.require(run == (selector["run_id"], selector["run_attempt"]), f"predecessor lease run={run[0]}/{run[1]}")
+    c.require(lease["checkpoint_sha256"] == checkpoint, "predecessor lease checkpoint")
 
 
 def predecessor(api, governance, selector, *, lease, job, objects, publication=None):
@@ -148,11 +149,26 @@ def _input_jobs(value):
                   and type(producer["name"]) is str and 1 <= len(producer["name"]) <= 256, "step input job")
 
 
+def _historical_entry(value):
+    if "historical_entry" in value:
+        c.require(value["historical_entry"] is True and value["role"] in {"plan", "deploy"}
+                  and value["purpose"] == "application-prepare" and value["direction"] == "advance",
+                  "step historical entry")
+
+
+def _activation_selection(value):
+    operational = (value["role"], value["mode"]) == ("plan", "operational")
+    c.require(not operational or "activation_selection" in value, "step activation selection")
+    if "activation_selection" in value:
+        c.require(c.canonical(value["activation_selection"]) == ACTIVATION_MARKER, "step activation selection")
+
+
 def _infra(value):
     c.require(type(value["mode"]) is str and STEP_NAME.fullmatch(value["mode"]) is not None
               and value["direction"] in {"advance", "converge"}, "step mode/direction")
-    c.require(value.get("historical_entry", True) is True, "step historical entry")
-    c.require("delete_resources" not in value or value["direction"] == "converge", "step delete resources")
+    provenance.admitted_lifecycle_step(value)
+    _historical_entry(value)
+    _activation_selection(value)
 
 
 def step(role, purpose, *, job_name, producer_job, admission_steps, input_jobs=None, **infra):
@@ -166,7 +182,7 @@ def step(role, purpose, *, job_name, producer_job, admission_steps, input_jobs=N
 
 def _validate_step(value):
     infra = value.get("role") != "application"
-    c.closed(value, (INFRA if infra else COMMON) + "".join(" " + key for key in OPTIONAL if infra and key in value))
+    provenance.closed_lifecycle_step(value)
     c.require(value["role"] in ROLES and (value["purpose"] in lc.PURPOSES or not infra), "step role/purpose")
     c.require(value["purpose"] == "application-prepare" or infra, "application step purpose")
     c.require(type(value["job_name"]) is str and 1 <= len(value["job_name"]) <= 256
@@ -192,6 +208,8 @@ def _cross(steps):
     prepared = [name for name, item in steps.items() if (item["role"], item["purpose"], item.get("mode")) == shape]
     named = all(steps[name]["job_name"] == fence["job_name"] for name in prepared)
     c.require(prepared in ([], [fence["step"]]) and named, "catalog fence prepare producer")
+    if fence["step"] in steps:
+        c.require(prepared == [fence["step"]], "catalog fence prepare producer")
 
 
 def catalog(steps):
@@ -201,11 +219,23 @@ def catalog(steps):
         c.require(type(name) is str and STEP_NAME.fullmatch(name) is not None, "catalog step name")
         _validate_step(value)
     _cross(steps)
+    c.require(c.ACCOUNT_LIKE.search(c.canonical(steps).decode()) is None, "catalog account number")
     return c.loads(c.canonical(steps), canonical=True)
 
 
-def document(base, pieces):
-    """Args: base governance, application pieces. Returns: the application document. Raises: ValueError.
+def catalog_member(steps):
+    """Args: {step name: step}. Returns: canonical catalog member bytes and its governance reference."""
+    raw = c.canonical(catalog(steps), limit=provenance.LIFECYCLE_STEPS_LIMIT)
+    return raw, {"lifecycle_steps_sha256": c.sha(raw)}
+
+
+def source_closure_reference(manifest):
+    """Args: product source manifest. Returns: the source_closure_sha256 reference the gate recomputes."""
+    return {"source_closure_sha256": c.sha(c.canonical(provenance.source_closure(manifest)))}
+
+
+def document(base, pieces, catalog_raw):
+    """Args: base governance, application pieces, catalog member bytes. Returns: the document. Raises: ValueError.
 
     New governed keys enter through governance_assembly.GOVERNANCE_KEYS, never through this function.
     """
@@ -220,5 +250,8 @@ def document(base, pieces):
               f"application purpose={purpose} context={merged['context_kind']}")
     application_gate.application_release_sha256(merged)
     lifecycle_runtime.validate_predecessor_reference(merged)
-    catalog(merged["lifecycle_steps"])
+    governance_assembly.references(merged)
+    c.require(type(catalog_raw) is bytes and c.sha(catalog_raw) == merged["lifecycle_steps_sha256"],
+              "lifecycle steps member")
+    catalog_member(c.loads(catalog_raw, canonical=True, limit=provenance.LIFECYCLE_STEPS_LIMIT))
     return merged

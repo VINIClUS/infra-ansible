@@ -46,7 +46,15 @@ def test_cadeia_aceita_prazos_iguais_ou_maiores():
 
 def test_nomes_dos_artefatos_seguem_a_convencao_do_plano():
     names = assembler.artifact_names("ab12cd34" + "0" * 32, "plan", 55, 2)
-    assert names == {"drift": "delivery-drift-ab12cd34-55-2", "admission": "delivery-admission-plan-55-2"}
+    assert names == {"drift": "delivery-drift-plan-ab12cd34-55-2", "observed": "delivery-observed-plan-55-2",
+                     "admission": "delivery-admission-plan-55-2"}
+
+
+def test_nomes_dos_artefatos_de_plan_e_audit_no_mesmo_run_sao_distintos():
+    source = "ab12cd34" + "0" * 32
+    plan, audit = (assembler.artifact_names(source, role, 55, 2) for role in ("plan", "audit"))
+    assert set(plan) == set(audit)
+    assert all(plan[key] != audit[key] for key in plan)
 
 
 def owner_inputs(role="plan", mutate=None):

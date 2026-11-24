@@ -75,20 +75,19 @@ class REST:
         return record["zip"] if raw else copy.deepcopy(record["meta"])
 
 
-def plan_request(value, digest_hex):
+def plan_request(value, digest_hex, role="plan"):
     public = {key: item for key, item in value.items()
               if key not in ("purpose", "role", "source_sha", "x_star", "producer", "now")}
     public["references"] = {key: item for key, item in value["references"].items() if key != "drift"}
     env = {"GITHUB_WORKFLOW_REF": f"{PRODUCER['repository']}/{PRODUCER['workflow_path']}@refs/heads/main",
            "GITHUB_SHA": PRODUCER["workflow_sha"], "GITHUB_RUN_ID": str(PRODUCER["run_id"]),
-           "GITHUB_RUN_ATTEMPT": str(PRODUCER["run_attempt"]), "PURPOSE": "phase-a", "ROLE": "plan",
+           "GITHUB_RUN_ATTEMPT": str(PRODUCER["run_attempt"]), "PURPOSE": "phase-a", "ROLE": role,
            "SOURCE_SHA": SOURCE, "X_STAR": X_STAR, "DRIFT_ARTIFACT_ID": str(DRIFT_ID),
            "DRIFT_ARTIFACT_DIGEST": digest_hex, "REQUEST": json.dumps(public)}
     return inputs.request_from(env) | {"now": NOW}
 
 
-@pytest.fixture
-def world(setup, monkeypatch):
+def make_world(setup, monkeypatch, role):
     fake, value, observed = setup
     rest = REST()
     monkeypatch.setattr(provenance.GitHub, "_read", rest)
@@ -99,9 +98,19 @@ def world(setup, monkeypatch):
     sent = {name: observed[name] for name in drift_upload()}
     own = {key: PRODUCER[key] for key in ("repository", "run_id", "run_attempt", "workflow_path", "workflow_sha")}
     own |= {"artifact_id": DRIFT_ID, "source_sha": PRODUCER["workflow_sha"]}
-    request = plan_request(value, rest.publish(own, sent).removeprefix("sha256:"))
+    request = plan_request(value, rest.publish(own, sent).removeprefix("sha256:"), role)
     received = {name: observed[name] for name in assemble_receives()}
     return rest, request, received, sent
+
+
+@pytest.fixture
+def world(setup, monkeypatch):
+    return make_world(setup, monkeypatch, "plan")
+
+
+@pytest.fixture
+def audit_world(setup, monkeypatch):
+    return make_world(setup, monkeypatch, "audit")
 
 
 def listed_drift(rest):
@@ -120,6 +129,14 @@ def test_referencia_do_drift_montada_por_inputs_autentica_no_github_e_e_a_que_o_
 
 
 def test_plan_ponta_a_ponta_do_observador_ao_proof_conferido_pelo_gate(world):
+    check_end_to_end(world, "plan")
+
+
+def test_audit_ponta_a_ponta_traz_o_proprio_drift_e_o_proof_confere_com_o_papel_audit(audit_world):
+    check_end_to_end(audit_world, "audit")
+
+
+def check_end_to_end(world, role):
     rest, request, received, sent = world
     values, _ = inputs.build(provenance.GitHub(token="x"), request, received)
     built = assembler.assemble(values)
@@ -133,7 +150,7 @@ def test_plan_ponta_a_ponta_do_observador_ao_proof_conferido_pelo_gate(world):
                   "state_bucket": settings["state_bucket"], "evidence_bucket": settings["evidence_bucket"],
                   "drift_handoff": {"member": "drift-handoff.json", "sha256": c.sha(sent["drift-handoff.json"])}}
     gate = provenance.GitHub(token="x")
-    provenance.validate_proof(proof, built.files, governance, gate, NOW, SOURCE, "phase-a", "plan")
+    provenance.validate_proof(proof, built.files, governance, gate, NOW, SOURCE, "phase-a", role)
     drift = gate.artifact(governance["artifact_references"]["drift"], NOW)
     loaded = drift_handoff.load(drift, governance, proof, built.files, source=SOURCE, purpose="phase-a")
     assert loaded["drift_matrix"]["matrix_version"] == 2 and proof["plan_binding_sha256"] is None
