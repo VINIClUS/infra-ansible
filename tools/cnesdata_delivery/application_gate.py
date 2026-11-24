@@ -2796,6 +2796,16 @@ def _upload_keeper_artifact(keeper, api, run, *, name, files, guard, credential_
     return receipt
 
 
+def _publish_stage_open(keeper, api, run, governance, credential_limit, clock):
+    """E1: announce the window the lease just opened to the pre-approved external first job (stage_wait)."""
+    from tools.cnesdata_delivery import stage_wait
+    record = keeper.lease.check()
+    window = record["lifecycle"]
+    return stage_wait.publish_stage_open(
+        keeper=keeper, guard=KeeperGuard(keeper), api=api, run=run, owner=lc.owner_binding(record), window=window,
+        first_job=stage_wait.first_job_name(governance, window["stage"]), credential_limit=credential_limit, clock=clock)
+
+
 def publish_closed_ready(*, keeper, api, run, owner, files, credential_limit, clock=time.time):
     """DD-2 (2b): upload cnesdata-closed-ready-<run>-<attempt> from the keeper job while the caller probe job runs.
 
@@ -2970,6 +2980,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  checkpoint_sha256=c.sha(files["checkpoint.json"]),
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
+        _publish_stage_open(current, api, run, governance, credential_limit, clock)
         state.update({"prepared": files, "activation": activation, "terraform": terraform, "static-plan": static_plan,
                       "close-drain": journal._observation_bytes[observed[0]["sha256"]],
                       "revisions": {"unit": targets["processor_active_unit_task_definition_arn"],
@@ -3188,6 +3199,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
                     api=api, governance=governance, evidence_aws=aws)
     register_terminal_validators(keeper, validators)
     owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
+    _publish_stage_open(keeper, api, run, governance, credential_limit, keeper.clock)
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), keeper=keeper,
                               clock=keeper.clock)
     def operation_session(operation, role, stage):

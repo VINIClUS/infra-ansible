@@ -7,6 +7,8 @@ import types
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c, runtime
 from tools.cnesdata_delivery.application_gate import Keeper
 from tools.cnesdata_delivery.lifecycle_runtime import first_checkpoint
@@ -5514,7 +5516,7 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
                                                                               run=run, request=request)
 
 
-def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch):
+def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch, stage_open_published):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     ag, admitted, calls, world = _execute_case(monkeypatch)
     governance = admitted[0]
@@ -5528,6 +5530,8 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert [name for name, _, _ in calls] == ["closure", "authority", "aws", "readback", "store", "keeper", "register", "acquire",
                                               "events", "handlers", "loop"]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
+    (announced,) = stage_open_published
+    assert announced[0] is by_name["register"][0][0] and announced[1] is world.api and announced[3] is governance
     assert by_name["closure"][0] == ("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)
     assert by_name["authority"][0][:5] == (governance, world.api, "b" * 40, "application", "application-prepare")
     assert abs(by_name["authority"][0][5] - time.time()) < 60
@@ -5857,6 +5861,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
     gate = "tools/cnesdata_delivery/application_gate.py"
     assert sites == {
         (gate, "run_closed_ready", "KeeperGuard"),
+        (gate, "_publish_stage_open", "KeeperGuard"),
         (gate, "closed_ready_capability", "_assume_fence_session"),
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller

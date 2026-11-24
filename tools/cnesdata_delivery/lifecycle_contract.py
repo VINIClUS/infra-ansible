@@ -617,7 +617,7 @@ def fence_predecessor_baseline(raw, reference, carrier):
 
 APPLICATION_GATE_REPOSITORY = "VINIClUS/infra-ansible"
 APPLICATION_GATE_WORKFLOW = ".github/workflows/reusable-cnesdata-application-gate.yml"
-APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py", "aws_boundary.py",
+APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py", "stage_wait.py", "aws_boundary.py",
                       "runtime.py",
                       "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",

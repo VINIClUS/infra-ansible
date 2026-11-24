@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_roles import role_readbacks
@@ -1363,3 +1365,33 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
     static = window | {"sequence": 3, "stage": "static", "admitted_at": 1130, "deadline": 1310}
     lc.validate_adapter_request(c.canonical(published._request), operation="publish-static", owner=world.owner, window=static,
                                 inputs=published._inputs, activation_sha256=c.sha(world.activation))
+
+
+def test_prepared_handler_anuncia_a_janela_do_phase_b_depois_do_checkpoint_do_lease(monkeypatch, stage_open_published):
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    (args,) = stage_open_published
+    assert args[0] is world.keeper and args[1] is world.api and args[3] is world.governance
+    assert world.keeper.lease.check()["lifecycle"]["stage"] == "phase-b"
+
+
+def test_prepared_handler_nao_avanca_alem_do_checkpoint_se_o_anuncio_recusa(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    def refuse(*args):
+        raise ValueError("stage-open first job in progress before publication")
+    monkeypatch.setattr(ag, "_publish_stage_open", refuse)
+    with pytest.raises(ValueError, match="first job in progress"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.store.get()[0]["status"] == "held"
+
+
+def test_anuncio_real_publica_o_marcador_da_janela_aberta_com_o_primeiro_job_governado(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import stage_wait
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    seen = {}
+    monkeypatch.setattr(stage_wait, "publish_stage_open", lambda **kwargs: seen.update(kwargs))
+    stage_open_published.original(world.keeper, world.api, RUN, world.governance, 6000, world.clock)
+    assert seen["window"]["stage"] == "phase-b" and seen["first_job"] == "phase-b-plan / execute"
+    assert seen["owner"]["generation"] == world.owner["generation"] and seen["credential_limit"] == 6000

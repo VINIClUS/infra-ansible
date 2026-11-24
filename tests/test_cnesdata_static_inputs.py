@@ -10,6 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_stage import (BODIES, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, GATE_SHA, KEYS, TYPES, _Evidence,
