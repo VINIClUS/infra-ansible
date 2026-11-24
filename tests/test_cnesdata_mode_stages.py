@@ -388,7 +388,7 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
 
 
 def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False,
-                brokers=None):
+                brokers=None, steps=None):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
     fakes: source, capability, child."""
     from types import SimpleNamespace
@@ -400,7 +400,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
-                                 fail=fail, late=late, brokers=brokers or {}, contexts=[])
+                                 fail=fail, late=late, brokers=brokers or {}, contexts=[], steps=steps or {})
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -414,6 +414,10 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         mode = PRODUCT["operations"][operation][0]
         raw = (PRODUCT["observation"](mode, world.mode.checks.get(mode, []), journal._request, journal._inputs)
                if kind == "mode" else c.canonical({"fixture_child": operation}))
+        for step in world.mode.steps.get(operation, ()):
+            body = c.canonical({"fixture_step": step, "ordinal": len(journal._observations)})
+            journal._observations.append({"kind": step, "sha256": c.sha(body), "size": len(body)})
+            journal._observation_bytes[c.sha(body)] = body
         for _ in range(world.mode.observations):
             journal._observations.append({"kind": kind, "sha256": c.sha(raw), "size": len(raw)})
         journal._observation_bytes[c.sha(raw)] = raw
@@ -607,6 +611,83 @@ def test_operacao_de_modo_recusa_broker_admitido_que_nao_e_o_devolvido_pela_capa
     with pytest.raises(ValueError, match="^mode broker admitted before adapter$"):
         _unit_stage(world)
     assert world.mode.calls == []
+
+
+def test_passos_intermediarios_do_keeper_sao_os_do_abi_de_modo_do_produto():
+    assert lc.ADAPTER_STEPS == {name: steps for name, steps in PRODUCT["steps"].items() if steps}
+    assert lc.MODE_SINGLE_STEPS == frozenset({"unit-execution", "recovery-task", "audit-task"})
+
+
+@pytest.mark.parametrize("operation, kind", [("unit-start", "unit-execution"), ("unit-start", "unit-task"),
+                                             ("unit-start", "unit-output"), ("recovery-start", "recovery-task"),
+                                             ("audit-start", "audit-task")])
+def test_journal_aceita_o_passo_intermediario_da_propria_operacao(operation, kind):
+    journal = _start_journal(operation)
+    raw = c.canonical({"step": kind})
+    assert journal.observe(kind, raw) == c.sha(raw)
+    assert journal.observations == [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
+
+
+@pytest.mark.parametrize("operation, kind", [("unit-start", "recovery-task"), ("recovery-start", "unit-task"),
+                                             ("audit-start", "recovery-task"), ("unit-seed", "unit-task"),
+                                             ("unit-observe", "unit-execution"), ("unit-start", "mode-record")])
+def test_journal_recusa_passo_intermediario_de_outra_operacao(operation, kind):
+    journal = _start_journal(operation)
+    with pytest.raises(ValueError, match="^adapter operation observation$"):
+        journal.observe(kind, c.canonical({"step": kind}))
+
+
+def _start_journal(operation):
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    request, owner, window, inputs = _mode_case(operation)
+
+    class Guard:
+        def check(self, seconds=0):
+            return None
+    return AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=inputs,
+                          activation_sha256=request["activation_sha256"], guard=Guard())
+
+
+def _result(journal):
+    request = journal._request
+    return c.canonical({"abi_version": lc.ADAPTER_ABI_VERSION, "operation": request["operation"],
+                        "owner_sha256": request["owner"]["owner_sha256"], "generation": request["owner"]["generation"],
+                        "checkpoint_sha256": request["checkpoint_sha256"], "observations": journal.observations,
+                        "call_receipts_sha256": c.sha(c.canonical([])), "pending": [], "unknown": []})
+
+
+def test_resultado_do_adapter_aceita_os_passos_registrados_e_recusa_passo_de_outra_operacao():
+    journal = _start_journal("recovery-start")
+    journal.observe("recovery-task", c.canonical({"step": 1}))
+    journal.observe("mode-result", c.canonical({"result": 1}))
+    raw = _result(journal)
+    assert lc.validate_adapter_result(raw, request=journal._request, observations=journal.observations, call_receipts=[],
+                                      pending=[], unknown=[]) == c.loads(raw, canonical=True)
+    foreign = [{"kind": "unit-task", "sha256": "1" * 64, "size": 3}]
+    value = c.loads(raw, canonical=True) | {"observations": foreign}
+    with pytest.raises(ValueError, match="^adapter operation observation$"):
+        lc.validate_adapter_result(c.canonical(value), request=journal._request, observations=foreign, call_receipts=[],
+                                   pending=[], unknown=[])
+
+
+def test_unit_start_admite_execucao_tarefas_e_saidas_com_um_resultado(monkeypatch):
+    world = _mode_world(monkeypatch, steps={"unit-start": ("unit-execution", "unit-task", "unit-task", "unit-output",
+                                                           "unit-output")})
+    _enter_unit(world)
+    _unit_stage(world)
+    assert _record(world)["stage"] == "phase-c-recovery"
+
+
+@pytest.mark.parametrize("operation, steps", [("unit-start", ("unit-execution", "unit-execution")),
+                                              ("unit-start", ("recovery-task",)), ("unit-seed", ("unit-task",)),
+                                              ("unit-observe", ("unit-output",)), ("unit-start", ("mode-seed",))])
+def test_operacao_de_modo_recusa_passo_fora_da_cardinalidade_ou_de_outra_operacao(monkeypatch, operation, steps):
+    world = _mode_world(monkeypatch, steps={operation: steps})
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match=f"^{operation} step observations$"):
+        _unit_stage(world)
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
 
 @pytest.mark.parametrize("flags", [{"observations": 2}, {"observations": 0}, {"pending": True}])
