@@ -1,0 +1,376 @@
+{
+ "cases": [
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "dispatch": {
+     "dispatch_id": "1a2b3c4d5e6f7a8b",
+     "run_id": "unit-aaaaaaaaaaaaaaaa",
+     "tenant_id": "prod-canary-0123456789abcdef0123456789abcdef"
+    },
+    "unit_ids": [
+     "u1",
+     "u2"
+    ]
+   },
+   "name": "dispatch-unit",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "effect_id": "a9c348c2efb1d6023a066e38f47373e14ced9089f2ca6f3c387fee5a71f31254",
+    "items": [
+     {
+      "Put": {
+       "ConditionExpression": "attribute_not_exists(pk)",
+       "Item": {
+        "entity": {
+         "S": "MODECANARYEFFECT"
+        },
+        "payload": {
+         "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"a9c348c2efb1d6023a066e38f47373e14ced9089f2ca6f3c387fee5a71f31254\",\"effect_kind\":\"start-execution\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"95b9e509e5af78213f77b9276eb7c504f7c67ac5999802e35b4e7d277ea994a0\",\"receipt_sha256\":null,\"request_sha256\":\"2f0873404db28d9d80d46a8401676337e29c71849dff2f0cf0d291bacbf607ce\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"70f1b00c8ff721d612f71e74facc7da982264346d8bbeb8ea030c477f55715f9\"}\n"
+        },
+        "pk": {
+         "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+        },
+        "sk": {
+         "S": "PROD_CANARY_EFFECT#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#a9c348c2efb1d6023a066e38f47373e14ced9089f2ca6f3c387fee5a71f31254"
+        }
+       },
+       "TableName": "cnesdata-prod-control-plane"
+      }
+     },
+     {
+      "Put": {
+       "ConditionExpression": "payload = :old",
+       "ExpressionAttributeValues": {
+        ":old": {
+         "S": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n"
+        }
+       },
+       "Item": {
+        "entity": {
+         "S": "MODECANARYCONTROL"
+        },
+        "payload": {
+         "S": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":2},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"ec3dc21864b0b0ea6dd5db3f5e4ef6004762ee6bc808188df60b0d6078e9cfac\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n"
+        },
+        "pk": {
+         "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+        },
+        "sk": {
+         "S": "PROD_CANARY_CONTROL#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+       },
+       "TableName": "cnesdata-prod-control-plane"
+      }
+     },
+     {
+      "Put": {
+       "ConditionExpression": "attribute_not_exists(pk)",
+       "Item": {
+        "entity": {
+         "S": "MODECANARYBINDING"
+        },
+        "payload": {
+         "S": "{\"context_kind\":\"promotion\",\"dispatch_id\":\"1a2b3c4d5e6f7a8b\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"record_sha256\":\"95b9e509e5af78213f77b9276eb7c504f7c67ac5999802e35b4e7d277ea994a0\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-binding/v1\",\"tenant_id\":\"prod-canary-0123456789abcdef0123456789abcdef\"}\n"
+        },
+        "pk": {
+         "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#756e69742d61616161616161616161616161616161"
+        },
+        "sk": {
+         "S": "PROD_CANARY#1a2b3c4d5e6f7a8b"
+        }
+       },
+       "TableName": "cnesdata-prod-control-plane"
+      }
+     }
+    ]
+   },
+   "ticket": null
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "dispatch": {
+     "dispatch_id": "1a2b3c4d5e6f7a8b",
+     "run_id": "unit-aaaaaaaaaaaaaaaa",
+     "tenant_id": "prod-canary-0123456789abcdef0123456789abcdef"
+    },
+    "unit_ids": [
+     "u1",
+     "u2"
+    ]
+   },
+   "name": "dispatch-unit-replay",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "effect_id": "a9c348c2efb1d6023a066e38f47373e14ced9089f2ca6f3c387fee5a71f31254",
+    "items": null
+   },
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"a9c348c2efb1d6023a066e38f47373e14ced9089f2ca6f3c387fee5a71f31254\",\"effect_kind\":\"start-execution\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"95b9e509e5af78213f77b9276eb7c504f7c67ac5999802e35b4e7d277ea994a0\",\"receipt_sha256\":null,\"request_sha256\":\"2f0873404db28d9d80d46a8401676337e29c71849dff2f0cf0d291bacbf607ce\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"70f1b00c8ff721d612f71e74facc7da982264346d8bbeb8ea030c477f55715f9\"}\n"
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "kind": "run-recovery",
+    "request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+   },
+   "name": "ledger-admit",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "effect_id": "46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c",
+    "items": [
+     {
+      "Put": {
+       "ConditionExpression": "attribute_not_exists(pk)",
+       "Item": {
+        "entity": {
+         "S": "MODECANARYEFFECT"
+        },
+        "payload": {
+         "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+        },
+        "pk": {
+         "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+        },
+        "sk": {
+         "S": "PROD_CANARY_EFFECT#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c"
+        }
+       },
+       "TableName": "cnesdata-prod-control-plane"
+      }
+     },
+     {
+      "Put": {
+       "ConditionExpression": "payload = :old",
+       "ExpressionAttributeValues": {
+        ":old": {
+         "S": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n"
+        }
+       },
+       "Item": {
+        "entity": {
+         "S": "MODECANARYCONTROL"
+        },
+        "payload": {
+         "S": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":1,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"6fcbb2cf3456002d54984d3c32063c1bcd0bf7e868302329ff20f02cbd3c4c9a\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n"
+        },
+        "pk": {
+         "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+        },
+        "sk": {
+         "S": "PROD_CANARY_CONTROL#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+       },
+       "TableName": "cnesdata-prod-control-plane"
+      }
+     }
+    ]
+   },
+   "ticket": null
+  },
+  {
+   "builder": "transition",
+   "change": [
+    "UNKNOWN",
+    null
+   ],
+   "name": "ledger-unknown",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "ConditionExpression": "payload = :old",
+    "ExpressionAttributeValues": {
+     ":old": {
+      "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+     }
+    },
+    "Item": {
+     "entity": {
+      "S": "MODECANARYEFFECT"
+     },
+     "payload": {
+      "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"UNKNOWN\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+     },
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+     },
+     "sk": {
+      "S": "PROD_CANARY_EFFECT#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c"
+     }
+    },
+    "TableName": "cnesdata-prod-control-plane"
+   },
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+  },
+  {
+   "builder": "transition",
+   "change": [
+    "SETTLED",
+    "3333333333333333333333333333333333333333333333333333333333333333"
+   ],
+   "name": "ledger-settle",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "ConditionExpression": "payload = :old",
+    "ExpressionAttributeValues": {
+     ":old": {
+      "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"UNKNOWN\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+     }
+    },
+    "Item": {
+     "entity": {
+      "S": "MODECANARYEFFECT"
+     },
+     "payload": {
+      "S": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"SETTLED\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+     },
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+     },
+     "sk": {
+      "S": "PROD_CANARY_EFFECT#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c"
+     }
+    },
+    "TableName": "cnesdata-prod-control-plane"
+   },
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"UNKNOWN\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+  },
+  {
+   "builder": "transition",
+   "change": [
+    "SETTLED",
+    "3333333333333333333333333333333333333333333333333333333333333333"
+   ],
+   "name": "ledger-settle-replay",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": null,
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"SETTLED\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":1,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"6fcbb2cf3456002d54984d3c32063c1bcd0bf7e868302329ff20f02cbd3c4c9a\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "kind": "run-hang",
+    "request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+   },
+   "name": "ticket-conflict",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=ticket_conflict field=tenant_id",
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":0,\"unit_tasks\":7},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "dispatch": {
+     "dispatch_id": "1a2b3c4d5e6f7a8b",
+     "run_id": "unit-aaaaaaaaaaaaaaaa",
+     "tenant_id": "prod-canary-0123456789abcdef0123456789abcdef"
+    },
+    "unit_ids": [
+     "u1",
+     "u2"
+    ]
+   },
+   "name": "budget-exhausted-unit-tasks",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=budget_exhausted field=tenant_id",
+   "ticket": null
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":0,\"recovery_resumes\":8,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "kind": "run-recovery",
+    "request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+   },
+   "name": "budget-exhausted-recovery-resumes",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=budget_exhausted field=tenant_id",
+   "ticket": null
+  },
+  {
+   "builder": "admission",
+   "control": "{\"admission_state\":\"ACTIVE\",\"admitted_at\":\"2026-11-12T12:00:00Z\",\"admitted_counts\":{\"recovery_hangs\":1,\"recovery_resumes\":0,\"unit_tasks\":0},\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T13:00:00Z\",\"generation\":3,\"ledger_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"schema\":\"cnesdata.mode-canary-control/v1\",\"sealed_at\":null}\n",
+   "effect": {
+    "kind": "run-hang",
+    "request_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+   },
+   "name": "budget-exhausted-recovery-hangs",
+   "now": "2026-11-12T12:10:00Z",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=budget_exhausted field=tenant_id",
+   "ticket": null
+  },
+  {
+   "builder": "transition",
+   "change": [
+    "UNKNOWN",
+    null
+   ],
+   "name": "ticket-settled",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=ticket_settled field=tenant_id",
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"SETTLED\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
+  },
+  {
+   "builder": "record_item",
+   "name": "record-item",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "entity": {
+     "S": "MODECANARYRECORD"
+    },
+    "payload": {
+     "S": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n"
+    },
+    "pk": {
+     "S": "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566"
+    },
+    "sk": {
+     "S": "PROD_CANARY#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#unit"
+    }
+   }
+  },
+  {
+   "admitted_at": "2026-11-12T12:01:00Z",
+   "builder": "initial_control",
+   "name": "initial-control",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"unit\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"unit\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"unit-aaaaaaaaaaaaaaaa\"],\"scenario\":\"unit_wave\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "result": {
+    "admission_state": "ACTIVE",
+    "admitted_at": "2026-11-12T12:01:00+00:00",
+    "admitted_counts": {
+     "recovery_hangs": 0,
+     "recovery_resumes": 0,
+     "unit_tasks": 0
+    },
+    "context_kind": "promotion",
+    "context_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "deadline": "2026-11-12T13:00:00+00:00",
+    "generation": 3,
+    "ledger_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+    "owner_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "schema": "cnesdata.mode-canary-control/v1",
+    "sealed_at": null
+   }
+  }
+ ],
+ "source": {
+  "path": "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py",
+  "sha256": "250343666e0b199ae1ddbd29fb030de144d92d8fa18f576a27fa55b3d314d881"
+ },
+ "table": "cnesdata-prod-control-plane"
+}
