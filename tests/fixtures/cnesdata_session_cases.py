@@ -279,7 +279,8 @@ def assert_matrix(identity, managed, policy, gov, role):
             },
         ):
             bucket_key_context = (
-                key == gov["state_kms_key_arn"]
+                gov.get("state_bucket_key", False)
+                and key == gov["state_kms_key_arn"]
                 and context.get("kms:EncryptionContext:aws:s3:arn") == "arn:aws:s3:::" + gov["state_bucket"]
                 and context.get("kms:ViaService") == "s3.us-east-2.amazonaws.com"
             )
