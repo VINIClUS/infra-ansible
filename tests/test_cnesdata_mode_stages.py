@@ -8,36 +8,44 @@ from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 
 PRODUCT_MODE_ORIGIN = {
-    "commit": "33ae80fb15628248d6b771a081dc96c2923e09ca",
-    "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
+    "commit": "1c5bbd8299d8b97824f36e328f24bd3fc6ae7ba5",
+    "scripts/promotion/_adapter_abi.py": "1b0fd24e1e77776db0ccb4a99a513b37d8403c063730512fed51206454903386",
+    "scripts/promotion/promote_api.py": "7d0320746a7c670983c92feb3c5318fcf063fd843073ee722acf9a53c7f9b8cb",
     "scripts/promotion/promote_mode.py": "991d30a3f8e3589f64c906a3c2c796d98da76d40d75d2c066d2b0707815b2370",
-    "scripts/promotion/promote_mode_effects.py": "7bdd5f793aa40434531875ce4c68af5935da1dc84d9f41b0602ffeff8578b8db"}
-VENDORED_MODE_SHA256 = "f4d8b2a338730203edb1f1dec784c8f344c2b09a05d1192e091e0e25ae106c8e"
+    "scripts/promotion/promote_mode_effects.py": "b83d26ad81b10352aa35294228ea04f13d2783c1b046a7d5708e6bdd86688dcc",
+    "scripts/promotion/promote_mode_record.py": "7b38c539f62436ca165c847bd6da3076e1572fe12557c87ae2eda20cf434e6c5"}
+VENDORED_MODE_SHA256 = "328178f9569a92cede500a95e0ad02c52c37eea351fce75f65bdaca338c35f8f"
 MODES = ("unit", "recovery", "audit")
 MODE_STAGE = {"unit": "unit", "recovery": "phase-c-recovery", "audit": "phase-c-audit"}
 MODE_WINDOWS = {"unit": (1720, 1900), "phase-c-recovery": (1900, 2230), "phase-c-audit": (2230, 2560)}
 
 
 def _product_mode_abi():
-    """Vendored from CnesData 33ae80fb: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
-    MODE_OBSERVATION_FIELDS, MODE_EFFECT_CALLS/STEPS/METHODS, the handler of each operation in promote_mode and
-    promote_mode_effects, promote_mode_effects.SDK_OPERATIONS and promote_mode._observation."""
+    """Vendored from CnesData P16c 1c5bbd82: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
+    MODE_OBSERVATION_FIELDS, MODE_EFFECT_CALLS/STEPS/METHODS, the promote_api handler module of each operation
+    (promote_mode, promote_mode_effects, promote_mode_record), promote_mode_effects.SDK_OPERATIONS and
+    promote_mode._observation."""
     operations = {
         "unit-seed": ("unit", "unit"), "unit-start": ("unit", "unit"), "unit-observe": ("unit", "unit"),
         "recovery-seed": ("recovery", "phase-c-recovery"), "recovery-start": ("recovery", "phase-c-recovery"),
         "recovery-observe": ("recovery", "phase-c-recovery"),
-        "audit-start": ("audit", "phase-c-audit"), "audit-observe": ("audit", "phase-c-audit")}
+        "audit-start": ("audit", "phase-c-audit"), "audit-observe": ("audit", "phase-c-audit"),
+        "unit-record": ("unit", "unit"), "recovery-record": ("recovery", "phase-c-recovery"),
+        "audit-record": ("audit", "phase-c-audit")}
     scheduled = frozenset({"activation", "network", "close-drain", "phase-b", "phase-c", "mode-result", "readbacks"})
     seed = frozenset({"record", "mode-start", "fixture-manifest", "fixture-cnes-local", "fixture-cnes-nacional"})
     start = frozenset({"record", "readbacks", "previous", "mode-seed", "mode-start"})
+    record = frozenset({"activation", "close-drain", "fixture-manifest", "mode-input"})
     inputs = {"unit-seed": seed, "recovery-seed": seed, "unit-start": start, "recovery-start": start,
               "audit-start": start | {"audit-event-ids"},
               "unit-observe": frozenset({"activation", "close-drain", "record", "mode-result", "readbacks", "observed"}),
-              "recovery-observe": scheduled, "audit-observe": scheduled | {"recovery-result", "recovery-readbacks"}}
-    observations = {name: "mode-seed" if name.endswith("-seed") else "mode-result" if name.endswith("-start")
-                    else "mode" for name in operations}
+              "recovery-observe": scheduled, "audit-observe": scheduled | {"recovery-result", "recovery-readbacks"},
+              "unit-record": record, "recovery-record": record, "audit-record": record | {"mode-seed"}}
+    artifacts = {"seed": "mode-seed", "start": "mode-result", "record": "mode-record"}
+    observations = {name: artifacts.get(name.rsplit("-", 1)[1], "mode") for name in operations}
     fields = frozenset({"version", "kind", "accepted", "checks", "commitments"})
-    handlers = {name: "promote_mode" if name.endswith("-observe") else "promote_mode_effects" for name in operations}
+    handlers = {name: "promote_mode" if name.endswith("-observe") else "promote_mode_record" if name.endswith("-record")
+                else "promote_mode_effects" for name in operations}
     seed_calls = frozenset({("mode_seed", "dynamodb", "put_item"), ("mode_seed", "dynamodb", "get_item"),
                             ("mode_seed", "s3", "put_object"), ("mode_seed", "s3", "get_object")})
     calls = {"unit-seed": seed_calls, "recovery-seed": seed_calls, "unit-start": frozenset(),
@@ -73,8 +81,9 @@ PRODUCT = _product_mode_abi()
 
 def test_copia_vendorizada_do_abi_de_modo_so_muda_junto_com_a_origem_registrada():
     """infra-ansible CI cannot import CnesData: a refresh of the vendored tables updates its origin and this digest."""
-    assert set(PRODUCT_MODE_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py", "scripts/promotion/promote_mode.py",
-                                        "scripts/promotion/promote_mode_effects.py"}
+    assert set(PRODUCT_MODE_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py", "scripts/promotion/promote_api.py",
+                                        "scripts/promotion/promote_mode.py", "scripts/promotion/promote_mode_effects.py",
+                                        "scripts/promotion/promote_mode_record.py"}
     assert c.sha(inspect.getsource(_product_mode_abi).encode()) == VENDORED_MODE_SHA256
 
 
@@ -85,9 +94,11 @@ def test_tabelas_de_adapter_do_keeper_batem_com_o_abi_de_modo_do_produto(operati
     assert lc.ADAPTER_OBSERVATIONS[operation] == PRODUCT["observations"][operation]
 
 
-def test_as_oito_operacoes_de_modo_do_produto_tem_handler_e_tabelas_completas_no_keeper():
+def test_as_onze_operacoes_de_modo_do_produto_tem_handler_e_tabelas_completas_no_keeper():
     mode = {name for name in lc.ADAPTER_INPUTS if name in PRODUCT["operations"]}
-    assert mode == set(PRODUCT["operations"]) == set(PRODUCT["handlers"]) and len(mode) == 8
+    assert mode == set(PRODUCT["operations"]) == set(PRODUCT["handlers"]) and len(mode) == 11
+    assert {name for name, module in PRODUCT["handlers"].items() if module == "promote_mode_record"} == {
+        "unit-record", "recovery-record", "audit-record"}
     assert {name for name, module in PRODUCT["handlers"].items() if module == "promote_mode_effects"} == set(PRODUCT["calls"])
     assert set(PRODUCT["calls"]) == set(PRODUCT["steps"]) == set(PRODUCT["methods"])
     assert all(name in lc.ADAPTER_STAGES and name in lc.ADAPTER_OBSERVATIONS for name in mode)
@@ -101,10 +112,11 @@ def test_chamadas_sdk_de_cada_efeito_do_produto_usam_so_a_sessao_de_promotion_do
     assert {call[1:] for call in PRODUCT["calls"][operation]} <= set(PRODUCT["sdk"].values())
 
 
-def test_oito_sessoes_de_promotion_sao_as_operacoes_de_modo_do_produto():
+def test_oito_sessoes_de_promotion_sao_as_operacoes_de_modo_do_produto_com_sdk_e_os_records_puros_nao_tem_sessao():
     from fixtures.cnesdata_delivery_lifecycle import MODE_SESSION_VECTORS
     promotion = {name: phase for name, (_, _, context, phase) in lc.MODE_SESSION_OPERATIONS.items() if context == "promotion"}
-    assert promotion == {name: mode for name, (mode, _) in PRODUCT["operations"].items()}
+    assert promotion == {name: mode for name, (mode, _) in PRODUCT["operations"].items() if not name.endswith("-record")}
+    assert len(promotion) == 8 and not {name for name in lc.MODE_SESSION_OPERATIONS if name.endswith("-record")}
     vectors = {vector["operation"]: vector for vector in MODE_SESSION_VECTORS if vector["operation"] in promotion}
     assert set(vectors) == set(promotion)
     for name, vector in vectors.items():
@@ -408,12 +420,13 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         assert operation in PRODUCT["operations"], operation
         world.events.append(("child", operation))
         world.mode.calls.append((operation, kwargs["timeout"], world.clock.value, dict(journal._inputs)))
-        if world.mode.fail:
+        if world.mode.fail is True or world.mode.fail == operation:
             raise ValueError("fixture child failed")
         kind = lc.ADAPTER_OBSERVATIONS[operation]
         mode = PRODUCT["operations"][operation][0]
         raw = (PRODUCT["observation"](mode, world.mode.checks.get(mode, []), journal._request, journal._inputs)
-               if kind == "mode" else c.canonical({"fixture_child": operation}))
+               if kind == "mode" else _record_observation(mode, journal._request) if kind == "mode-record"
+               else c.canonical({"fixture_child": operation}))
         for step in world.mode.steps.get(operation, ()):
             body = c.canonical({"fixture_step": step, "ordinal": len(journal._observations)})
             journal._observations.append({"kind": step, "sha256": c.sha(body), "size": len(body)})
@@ -445,6 +458,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
             journal._failed = True
             raise ValueError(world.mode.capability)
         operation = journal._request["operation"]
+        if operation.endswith("-record") and operation not in world.mode.brokers:
+            return None
         kind = world.mode.brokers.get(operation, "FenceReadBroker" if operation.endswith("-observe") else "ModeBroker")
         broker = _fake_broker(kind, journal, keeper)
         world.mode.dropped.append(broker)
@@ -457,6 +472,17 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     monkeypatch.setattr(ag, "_deploy_publication", deploy_publication)
     world.c_files = {}
     return world
+
+
+def _record_text(mode, request):
+    return c.canonical({"activation_sha256": request["activation_sha256"], "fixture_record": mode, "mode": mode,
+                        "owner_sha256": request["owner"]["owner_sha256"], "phase": mode}).decode()
+
+
+def _record_observation(mode, request, **changes):
+    ids = [f"reconciliation.published:fixture:{mode}-{index}" for index in (1, 2)] if mode == "audit" else None
+    return c.canonical({"version": 1, "kind": "mode-record", "record": _record_text(mode, request),
+                        "audit_event_ids": ids} | changes)
 
 
 def _fake_broker(kind, journal, keeper):
@@ -508,17 +534,21 @@ def test_estagio_unit_roda_seed_start_observe_encadeados_e_avanca_com_o_unit_ace
     before = _record(world)
     _unit_stage(world)
     operations = [call[0] for call in world.mode.calls]
-    assert operations == ["unit-seed", "unit-start", "unit-observe"]
+    assert operations == ["unit-record", "unit-seed", "unit-start", "unit-observe"]
     assert [event for event in world.events if type(event) is tuple] == [
         (step, operation) for operation in operations for step in ("source", "capability", "child")]
-    seed, start, observe = (call[3] for call in world.mode.calls)
+    record, seed, start, observe = (call[3] for call in world.mode.calls)
     seed_raw = c.canonical({"fixture_child": "unit-seed"})
+    text = _record_text("unit", world.mode.capabilities[0]._request).encode()
+    assert seed["record"] == start["record"] == observe["record"] == text
     assert start["mode-seed"] == seed_raw and observe["mode-result"] == c.canonical({"fixture_child": "unit-start"})
-    assert observe["activation"] == world.activation and observe["close-drain"] == world.close_raw
+    assert observe["activation"] == record["activation"] == world.activation
+    assert observe["close-drain"] == record["close-drain"] == world.close_raw
     assert [(operation, names) for operation, names, _ in world.mode.sources] == [
-        ("unit-seed", sorted(PRODUCT["inputs"]["unit-seed"])),
-        ("unit-start", sorted(PRODUCT["inputs"]["unit-start"] - {"mode-seed"})),
-        ("unit-observe", ["observed", "readbacks", "record"])]
+        ("unit-record", ["fixture-manifest", "mode-input"]),
+        ("unit-seed", sorted(PRODUCT["inputs"]["unit-seed"] - {"record"})),
+        ("unit-start", sorted(PRODUCT["inputs"]["unit-start"] - {"mode-seed", "record"})),
+        ("unit-observe", ["observed", "readbacks"])]
     for operation, timeout, now, _ in world.mode.calls:
         assert timeout == before["deadline"] - now - 38
     assert len(world.mode.dropped) == 3 and all(broker.aws is None for broker in world.mode.dropped)
@@ -570,12 +600,12 @@ def test_estagio_de_modo_recusa_avancar_quando_o_prazo_do_vetor_governado_vence_
 
 
 def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(monkeypatch):
-    world = _mode_world(monkeypatch, fail=True)
+    world = _mode_world(monkeypatch, fail="unit-seed")
     _enter_unit(world)
     before = _record(world)
     with pytest.raises(ValueError, match="^fixture child failed$"):
         _unit_stage(world)
-    assert [call[0] for call in world.mode.calls] == ["unit-seed"]
+    assert [call[0] for call in world.mode.calls] == ["unit-record", "unit-seed"]
     broker, = world.mode.dropped
     assert (broker.aws, broker.session.client, broker.session.evidence) == (None, None, None)
     assert (broker.read_session.client, broker.read_session.evidence) == (None, None)
@@ -585,7 +615,8 @@ def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(mo
 
 @pytest.mark.parametrize("operation, kind", [("unit-seed", "FenceReadBroker"), ("unit-seed", "look-alike"),
                                              ("unit-start", "FenceReadBroker"), ("unit-observe", "ModeBroker"),
-                                             ("unit-observe", "look-alike")])
+                                             ("unit-observe", "look-alike"), ("unit-record", "ModeBroker"),
+                                             ("unit-record", "FenceReadBroker"), ("unit-record", "look-alike")])
 def test_operacao_de_modo_exige_o_broker_da_propria_classe_admitido_antes_do_child(monkeypatch, operation, kind):
     world = _mode_world(monkeypatch, brokers={operation: kind})
     _enter_unit(world)
@@ -695,7 +726,7 @@ def test_operacao_de_modo_exige_uma_observacao_e_nenhuma_incerteza(monkeypatch, 
     world = _mode_world(monkeypatch, **flags)
     _enter_unit(world)
     before = _record(world)
-    with pytest.raises(ValueError, match="^unit-seed single observation without uncertainty$"):
+    with pytest.raises(ValueError, match="^unit-record single observation without uncertainty$"):
         _unit_stage(world)
     assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
@@ -705,7 +736,7 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
     _enter_unit(world)
     window = _record(world)
     world.clock.value = window["deadline"] - 38
-    with pytest.raises(ValueError, match="^unit-seed capacity seconds=0$"):
+    with pytest.raises(ValueError, match="^unit-record capacity seconds=0$"):
         _unit_stage(world)
     assert world.mode.calls == [] and _record(world) == window
 
@@ -738,6 +769,106 @@ def test_capability_de_producao_do_observe_e_a_do_fence_preparado_com_o_contexto
     assert journal._failed is False
 
 
+def test_modos_rodam_o_record_puro_antes_do_seed_e_o_audit_record_antes_do_start():
+    from tools.cnesdata_delivery import application_gate as ag
+    assert ag.MODE_RUNS == {"unit": ("unit-record", "unit-seed", "unit-start", "unit-observe"),
+                            "recovery": ("recovery-record", "recovery-seed", "recovery-start", "recovery-observe"),
+                            "audit": ("audit-record", "audit-start", "audit-observe")}
+
+
+def _record_inputs(mode, raw, request):
+    from tools.cnesdata_delivery import mode_broker as mb
+    return mb.mode_record_inputs(raw, mode=mode, owner_sha256=request["owner"]["owner_sha256"],
+                                 activation_sha256=request["activation_sha256"])
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_observacao_mode_record_vira_o_texto_exato_do_record_e_os_ids_canonicos_do_audit(mode):
+    request = _mode_case(mode + "-record")[0]
+    raw = _record_observation(mode, request)
+    expected = {"record": _record_text(mode, request).encode()}
+    if mode == "audit":
+        expected["audit-event-ids"] = c.canonical(json.loads(raw)["audit_event_ids"])
+    assert _record_inputs(mode, raw, request) == expected
+
+
+RECORD_SHAPES = [("unit", {"version": 2}), ("unit", {"version": True}), ("unit", {"kind": "mode"}),
+                 ("unit", {"record": None}), ("unit", {"audit_event_ids": ["x"]}), ("recovery", {"audit_event_ids": []}),
+                 ("audit", {"audit_event_ids": None}), ("audit", {"audit_event_ids": []}),
+                 ("audit", {"audit_event_ids": [1]}), ("audit", {"audit_event_ids": ["x"] * 9}),
+                 ("audit", {"audit_event_ids": ["x" * 257]})]
+
+
+@pytest.mark.parametrize("mode, change", RECORD_SHAPES)
+def test_observacao_mode_record_fora_da_forma_fechada_recusa(mode, change):
+    request = _mode_case(mode + "-record")[0]
+    with pytest.raises(ValueError, match="^mode record observation$"):
+        _record_inputs(mode, _record_observation(mode, request, **change), request)
+
+
+def test_observacao_mode_record_com_campo_a_mais_ou_bytes_nao_canonicos_recusa():
+    request = _mode_case("unit-record")[0]
+    with pytest.raises(ValueError, match="^closed object fields$"):
+        _record_inputs("unit", _record_observation("unit", request, extra=1), request)
+    raw = _record_observation("unit", request)
+    with pytest.raises(ValueError, match="^noncanonical JSON bytes$"):
+        _record_inputs("unit", raw[:-1] + b" \n", request)
+    with pytest.raises(ValueError, match="^noncanonical JSON bytes$"):
+        _record_inputs("unit", _record_observation("unit", request, record='{"phase": "unit"}\n'), request)
+
+
+RECORD_BINDINGS = [("unit", {"phase": "recovery"}), ("recovery", {"mode": "unit"}), ("audit", {"owner_sha256": "0" * 64}),
+                   ("unit", {"activation_sha256": "0" * 64}), ("recovery", {"phase": None})]
+
+
+@pytest.mark.parametrize("mode, change", RECORD_BINDINGS)
+def test_record_de_outro_modo_owner_ou_ativacao_recusa(mode, change):
+    request = _mode_case(mode + "-record")[0]
+    text = c.canonical(json.loads(_record_text(mode, request)) | change).decode()
+    with pytest.raises(ValueError, match="^mode record binding$"):
+        _record_inputs(mode, _record_observation(mode, request, record=text), request)
+
+
+@pytest.mark.parametrize("operation", ["unit-record", "recovery-record", "audit-record"])
+def test_capability_de_producao_do_record_puro_nao_admite_broker_nem_falha_o_journal(operation):
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    journal = SimpleNamespace(_failed=False, _request={"operation": operation})
+    assert ag.mode_capability(journal=journal, keeper=None, guard=None, context=None) is None
+    assert journal._failed is False and not hasattr(journal, "_broker")
+    assert ag._mode_broker_class(operation) is type(None)
+
+
+def test_frame_call_numa_operacao_record_recusa_sem_broker_admitido():
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    frame = c.canonical({"kind": "call", "role": "mode_seed", "service": "dynamodb", "operation": "get_item",
+                         "parameters": {}})
+    with pytest.raises(ValueError, match="^adapter protected SDK admission absent$"):
+        ag._adapter_message(frame, SimpleNamespace(_broker=None, _request={"operation": "unit-record"}))
+
+
+def test_estagio_unit_recusa_record_de_outro_modo_antes_do_seed(monkeypatch):
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    before = _record(world)
+    from tools.cnesdata_delivery import application_gate as ag
+    original = ag.invoke_adapter
+
+    def invoke(**kwargs):
+        original(**kwargs)
+        journal = kwargs["journal"]
+        if journal._request["operation"] == "unit-record":
+            raw = _record_observation("recovery", journal._request, audit_event_ids=None)
+            journal._observations[:] = [{"kind": "mode-record", "sha256": c.sha(raw), "size": len(raw)}]
+            journal._observation_bytes[c.sha(raw)] = raw
+    monkeypatch.setattr(ag, "invoke_adapter", invoke)
+    with pytest.raises(ValueError, match="^mode record binding$"):
+        _unit_stage(world)
+    assert [call[0] for call in world.mode.calls] == ["unit-record"]
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
 def _c_files(world, purpose, **changes):
     window = _record(world)
     checkpoint = {"state": {"lineage": "original-lineage", "serial": 9, "state_sha256": "4" * 64},
@@ -765,7 +896,10 @@ def test_handler_do_c_recovery_autentica_o_deploy_roda_o_modo_e_avanca_com_o_che
     world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
     (purpose, owner, guard, _), = world.mode.publications
     assert (purpose, owner, guard) == ("phase-c-recovery", world.owner, "KeeperGuard")
-    assert [call[0] for call in world.mode.calls] == ["recovery-seed", "recovery-start", "recovery-observe"]
+    assert [call[0] for call in world.mode.calls] == ["recovery-record", "recovery-seed", "recovery-start",
+                                                      "recovery-observe"]
+    text = _record_text("recovery", world.mode.capabilities[-1]._request).encode()
+    assert all(call[3]["record"] == text for call in world.mode.calls[1:3])
     observe = world.mode.calls[-1][3]
     from test_cnesdata_stage_events import _ready_journal
     assert observe["phase-b"] == _ready_journal(world)._inputs["phase-b"]
@@ -786,8 +920,12 @@ def test_handler_do_c_audit_leva_o_resultado_do_recovery_e_avanca_para_o_final(m
     before = _record(world)
     world.mode.calls.clear()
     world.handlers["phase-c-audit"](world.keeper, dict(B_REFERENCE))
-    assert [call[0] for call in world.mode.calls] == ["audit-start", "audit-observe"]
+    assert [call[0] for call in world.mode.calls] == ["audit-record", "audit-start", "audit-observe"]
     assert world.mode.calls[-1][3]["recovery-result"] == recovery_result
+    request = world.mode.capabilities[-1]._request
+    assert world.mode.calls[1][3]["record"] == _record_text("audit", request).encode()
+    assert world.mode.calls[1][3]["audit-event-ids"] == c.canonical(json.loads(_record_observation("audit", request))[
+        "audit_event_ids"])
     after = _record(world)
     assert after == before | {"sequence": before["sequence"] + 1, "stage": "final", "admitted_at": world.clock.value,
                               "checkpoint_sha256": c.sha(files["checkpoint.json"]),
@@ -810,7 +948,8 @@ def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_
     world.mode.calls.clear()
     with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
         world.handlers[purpose](world.keeper, dict(B_REFERENCE))
-    assert world.mode.calls == [] and _record(world) == before
+    assert [call[0] for call in world.mode.calls] == [purpose.removeprefix("phase-c-") + "-record"]
+    assert _record(world) == before
     assert world.store.get()[0]["status"] == "held"
     assert {"kind": "context-failed"} in world.keeper.uncertainty()
 
@@ -852,7 +991,7 @@ def test_handler_do_c_entrega_ao_capability_o_contexto_do_keeper_e_o_fence_prepa
     world.mode.contexts.clear()
     world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
     contexts = world.mode.contexts
-    assert len(contexts) == 3 and all(context is contexts[0] for context in contexts)
+    assert len(contexts) == 4 and all(context is contexts[0] for context in contexts)
     context = contexts[0]
     assert (context.governance, context.authority, context.credential_limit) == (world.governance, world.authority, 6000)
     assert context.operation_session is world.operation_session and context.clock is world.clock
