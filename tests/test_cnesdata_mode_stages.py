@@ -387,7 +387,8 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
-def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False):
+def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False,
+                brokers=None):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
     fakes: source, capability, child."""
     from types import SimpleNamespace
@@ -399,7 +400,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
-                                 fail=fail, late=late)
+                                 fail=fail, late=late, brokers=brokers or {})
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -438,8 +439,9 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         if world.mode.capability is not None:
             journal._failed = True
             raise ValueError(world.mode.capability)
-        broker = SimpleNamespace(aws="operation-client", evidence=[SimpleNamespace(_aws="ledger-client")],
-                                 session=SimpleNamespace(client="c", evidence="e"))
+        operation = journal._request["operation"]
+        kind = world.mode.brokers.get(operation, "FenceReadBroker" if operation.endswith("-observe") else "ModeBroker")
+        broker = _fake_broker(kind, journal, keeper)
         world.mode.dropped.append(broker)
         return broker
     monkeypatch.setattr(ag, "mode_capability", mode_capability)
@@ -450,6 +452,24 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     monkeypatch.setattr(ag, "_deploy_publication", deploy_publication)
     world.c_files = {}
     return world
+
+
+def _fake_broker(kind, journal, keeper):
+    """A broker of the admitted mode type (or a look-alike) attached to the journal and keeper, with fake clients."""
+    from types import SimpleNamespace
+
+    from tools.cnesdata_delivery import mode_broker as mb
+    cls = getattr(mb, kind) if kind in ("ModeBroker", "FenceReadBroker") else None
+    broker = cls.__new__(cls) if cls is not None else SimpleNamespace()
+    broker.aws, broker.journal = "operation-client", journal
+    broker.evidence = [SimpleNamespace(_aws="ledger-client", uncertainty=[])]
+    broker.session = SimpleNamespace(client="c", evidence="e")
+    if kind == "ModeBroker":
+        broker.read_session = SimpleNamespace(client="rc", evidence="re")
+    journal._broker = broker
+    if cls is not None:
+        keeper.attach(broker)
+    return broker
 
 
 def _record(world):
@@ -553,8 +573,39 @@ def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(mo
     assert [call[0] for call in world.mode.calls] == ["unit-seed"]
     broker, = world.mode.dropped
     assert (broker.aws, broker.session.client, broker.session.evidence) == (None, None, None)
+    assert (broker.read_session.client, broker.read_session.evidence) == (None, None)
     assert [ledger._aws for ledger in broker.evidence] == [None]
     assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
+@pytest.mark.parametrize("operation, kind", [("unit-seed", "FenceReadBroker"), ("unit-seed", "look-alike"),
+                                             ("unit-start", "FenceReadBroker"), ("unit-observe", "ModeBroker"),
+                                             ("unit-observe", "look-alike")])
+def test_operacao_de_modo_exige_o_broker_da_propria_classe_admitido_antes_do_child(monkeypatch, operation, kind):
+    world = _mode_world(monkeypatch, brokers={operation: kind})
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match="^mode broker admitted before adapter$"):
+        _unit_stage(world)
+    assert operation not in [call[0] for call in world.mode.calls]
+    assert world.mode.dropped[-1].aws is None and world.mode.dropped[-1].session.client is None
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
+
+
+def test_operacao_de_modo_recusa_broker_admitido_que_nao_e_o_devolvido_pela_capability(monkeypatch):
+    from types import SimpleNamespace
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    from tools.cnesdata_delivery import application_gate as ag
+    real = ag.mode_capability
+
+    def swapped(*, journal, keeper, guard):
+        real(journal=journal, keeper=keeper, guard=guard)
+        return SimpleNamespace(aws="other", evidence=[], session=SimpleNamespace(client="x", evidence="y"))
+    monkeypatch.setattr(ag, "mode_capability", swapped)
+    with pytest.raises(ValueError, match="^mode broker admitted before adapter$"):
+        _unit_stage(world)
+    assert world.mode.calls == []
 
 
 @pytest.mark.parametrize("flags", [{"observations": 2}, {"observations": 0}, {"pending": True}])
