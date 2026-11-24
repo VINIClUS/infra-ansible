@@ -2,6 +2,7 @@
 import re
 
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery.application_gate import ClosedReadyBroker
 
 MODE_PHASES = ("unit", "recovery", "audit")
 MODE_SEED_KEYS = frozenset((family, action) for family in ("seed-raw", "seed-run", "seed-unit") for action in ("put", "get"))
@@ -94,9 +95,8 @@ class ModeBroker:
         return [item for ledger in self.evidence for item in ledger.uncertainty]
 
 
-class FenceReadBroker:
-    """Finite private dispatcher of the observe operations: strong FENCE/SEMAPHORE GetItem on the fence session only."""
+class FenceReadBroker(ClosedReadyBroker):
+    """Finite private dispatcher of the observe operations: strong FENCE/SEMAPHORE GetItem on the observe fence session.
 
-    @property
-    def uncertainty(self):
-        return [item for ledger in self.evidence for item in ledger.uncertainty]
+    The ClosedReadyBroker reservation, durable evidence and poison rules; lc.validate_fence_call admits only those reads.
+    """

@@ -732,11 +732,18 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_policy import validate_response
-    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain"}
+    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain", *lc.MODE_OBSERVES}
               and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
     request, stage = journal._request, journal._request["stage"]
-    close = request["operation"] == "close-drain"
-    if close:
+    close, observe = request["operation"] == "close-drain", request["operation"] in lc.MODE_OBSERVES
+    if observe:
+        deadline = stage["deadline"]
+        seconds = lc.governed_windows(stage["windows"])["stages"].get(stage["stage"])
+        c.require({stage["stage"]} == lc.ADAPTER_STAGES[request["operation"]] and stage["close"] is not None
+                  and stage["decision"] is None and deadline == min(stage["fixed_deadline"], stage["admitted_at"] + seconds)
+                  and stage["admitted_at"] <= clock() and clock() + 40 < deadline
+                  and clock() + 900 <= credential_limit, "fence original mode stage/credential window")
+    elif close:
         deadline = stage["preparation_deadline"]
         c.require(stage["stage"] == "application-prepare" and stage["close"] is None and stage["decision"] is None
                   and stage["deadline"] == deadline and stage["admitted_at"] <= clock() and clock() + 40 < deadline
@@ -749,7 +756,7 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
                   and stage["fixed_deadline"] - stage["admitted_at"] >= api + lc.later_seconds(windows, "api") + lc.FINAL_RESERVE
                   and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
                   and clock() + 900 <= credential_limit, "fence original API/credential window")
-    c.closed(scope, "account control_table_arn machine_arn" + ("" if close else " members"))
+    c.closed(scope, "account control_table_arn machine_arn" + ("" if close or observe else " members"))
     c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
               and role["role_arn"] == governance["application_delegations"]["fence_operator"]
               and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
@@ -757,17 +764,18 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
               and role["session_name"] == "promotion-fence-" + role["release_id"]
               and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
     probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
-    validate = lc.validate_close_drain_call if close else lc.validate_closed_ready_call
+    validate = lc.validate_close_drain_call if close else lc.validate_mode_observe_call if observe else lc.validate_closed_ready_call
     for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
         validate(request=request, role="fence_operator", service="dynamodb", operation="get_item",
             parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
                         "ConsistentRead": True}, **scope)
-    for member in [] if close else scope["members"]:
+    for member in [] if close or observe else scope["members"]:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_session_policy
+    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_observe_session_policy, fence_session_policy
     build = fence_close_session_policy if close else fence_session_policy
-    policy = build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline)
+    policy = (fence_observe_session_policy(control_table_arn=scope["control_table_arn"], deadline=deadline) if observe else
+              build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline))
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
     context = {"aws:CurrentTime": c.utc(clock())}
@@ -777,8 +785,8 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     for action, key in (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")) if close else ():
         c.require(effective_iam(role["policy"], [policy], action, scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective close-write grant")
-    c.require(effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context),
-              "fence original effective metadata-probe grant")
+    probe = effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context)
+    c.require(probe is not observe, "fence observe effective read-only grant" if observe else "fence original effective metadata-probe grant")
     journal._guard.check(40)
     journal.guard()
     operation = operation_session(request["operation"], role, stage)
