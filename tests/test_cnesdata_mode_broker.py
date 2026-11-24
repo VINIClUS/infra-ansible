@@ -189,3 +189,96 @@ def test_acao_e_frame_fora_da_tabela_sao_recusados():
         _admit("unit-seed", "delete", _keys()["seed-run"])
     with pytest.raises(ValueError, match="^mode key outside frame$"):
         _mode_broker_module().admit_mode_key("unit-start", "get", _keys()["seed-run"], binding=_binding("unit-start"))
+
+
+OBSERVES = ("unit-observe", "recovery-observe", "audit-observe")
+FENCE_READS = (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT"))
+
+
+def _scope():
+    from test_cnesdata_application_gate import CLOSE_SCOPE
+    return dict(CLOSE_SCOPE)
+
+
+def _observe_request(operation, stage=None):
+    from test_cnesdata_mode_stages import _mode_case
+    return _mode_case(operation, stage=stage)[0]
+
+
+def _fence_read(pk, sk, **parameters):
+    table = _scope()["control_table_arn"].rsplit("/", 1)[1]
+    return {"role": "fence_operator", "service": "dynamodb", "operation": "get_item",
+            "parameters": {"TableName": table, "Key": {"pk": {"S": pk}, "sk": {"S": sk}}, "ConsistentRead": True} | parameters}
+
+
+@pytest.mark.parametrize("operation", OBSERVES)
+@pytest.mark.parametrize("pk, sk", FENCE_READS)
+def test_observe_admite_so_a_leitura_forte_de_fence_e_semaphore_no_proprio_estagio(operation, pk, sk):
+    call = _fence_read(pk, sk)
+    request = _observe_request(operation)
+    assert lc.validate_fence_call(request=request, history=[], **call, **_scope()) == call["parameters"]
+    assert lc.validate_mode_observe_call(request=request, **call, **_scope()) == call["parameters"]
+    assert lc.FENCE_SDK_OPERATIONS[operation] == {("dynamodb", "get_item")}
+
+
+def _observe_refusal(case):
+    call, scope, request = _fence_read(*FENCE_READS[0]), _scope(), _observe_request("unit-observe")
+    if case == "describe":
+        call |= {"service": "stepfunctions", "operation": "describe_execution",
+                 "parameters": {"executionArn": scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + "0" * 16,
+                                "includedData": "METADATA_ONLY"}}
+    elif case == "update":
+        call["operation"] = "update_item"
+    elif case == "role":
+        call["role"] = "mode_observe"
+    elif case == "eventual":
+        call["parameters"]["ConsistentRead"] = False
+    elif case == "attempts":
+        call = _fence_read("ENV#prod#ATTEMPTS", "UNIT")
+    elif case == "crossed":
+        call = _fence_read("ENV#prod#FENCE", "UNIT")
+    elif case == "table":
+        call["parameters"]["TableName"] = "cnesdata-prod-other"
+    elif case == "extra":
+        call["parameters"]["ProjectionExpression"] = "pk"
+    elif case == "scope-table":
+        scope["control_table_arn"] = scope["control_table_arn"].replace("cnesdata-prod-", "other-")
+    elif case == "scope-machine":
+        scope["machine_arn"] += "-x"
+    elif case == "stage":
+        request = _observe_request("unit-observe", stage="phase-c-recovery")
+    return call, scope, request
+
+
+OBSERVE_REFUSALS = {"describe": "^mode observe finite SDK operation$", "update": "^mode observe finite SDK operation$",
+                    "role": "^mode observe finite SDK operation$", "stage": "^mode observe finite SDK operation$",
+                    "eventual": "^mode observe strong fence read$", "attempts": "^mode observe strong fence read$",
+                    "crossed": "^mode observe strong fence read$", "table": "^mode observe strong fence read$",
+                    "extra": "^closed object fields$", "scope-table": "^mode observe protected resource scope$",
+                    "scope-machine": "^mode observe protected resource scope$"}
+
+
+@pytest.mark.parametrize("case", sorted(OBSERVE_REFUSALS))
+def test_observe_recusa_qualquer_chamada_fora_da_leitura_forte_do_fence(case):
+    call, scope, request = _observe_refusal(case)
+    with pytest.raises(ValueError, match=OBSERVE_REFUSALS[case]):
+        lc.validate_fence_call(request=request, history=[], **call, **scope)
+
+
+def test_politica_da_sessao_do_observe_e_so_o_getitem_da_sessao_do_fence():
+    from tools.cnesdata_delivery import session_policy as sp
+    table, machine = _scope()["control_table_arn"], _scope()["machine_arn"]
+    full = sp.fence_session_policy(control_table_arn=table, execution_prefix=machine.replace(":stateMachine:", ":execution:") + ":",
+                                   deadline=1900)
+    observe = sp.fence_observe_session_policy(control_table_arn=table, deadline=1900)
+    assert observe == {"Version": "2012-10-17", "Statement": [full["Statement"][0]]}
+    assert c.canonical(observe) == c.canonical({"Version": "2012-10-17", "Statement": [full["Statement"][0]]})
+
+
+@pytest.mark.parametrize("change, message", [({"control_table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/other"},
+                                               "^fence session table$"),
+                                              ({"deadline": 1900.5}, "integer")])
+def test_politica_da_sessao_do_observe_recusa_escopo_inexato(change, message):
+    from tools.cnesdata_delivery import session_policy as sp
+    with pytest.raises(ValueError, match=message):
+        sp.fence_observe_session_policy(**{"control_table_arn": _scope()["control_table_arn"], "deadline": 1900} | change)

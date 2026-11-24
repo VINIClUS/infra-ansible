@@ -1961,7 +1961,8 @@ def test_close_drain_templates_are_the_pinned_product_vector():
     assert lc.CLOSE_DRAIN_TEMPLATES == {key: frozenset(value) for key, value in expected.items()}
     assert lc.FENCE_SDK_OPERATIONS == {
         "closed-ready": {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
-        "close-drain": {(call["service"], call["operation"]) for call in vector["calls"]}}
+        "close-drain": {(call["service"], call["operation"]) for call in vector["calls"]},
+        **dict.fromkeys(("unit-observe", "recovery-observe", "audit-observe"), {("dynamodb", "get_item")})}
     assert vector["role"] == "fence_operator" and vector["execution_arn"].endswith(":execution:cnesdata-prod:<dispatch_id>")
 
 
