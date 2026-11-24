@@ -5,6 +5,7 @@ No credentials, network, caller commands or lifecycle side effects in this modul
 """
 import base64
 import hashlib
+import json
 import time
 import re
 
@@ -1871,6 +1872,74 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
         c.require(deadline <= min(fixed, window["admitted_at"] + duration)
                   and now + operation_seconds + 37 < deadline
                   and fixed - now >= max(0, deadline - now) + later + FINAL_RESERVE, "phase remaining capacity")
+
+
+PHASE_C_ROUTE_MODES = ("recovery", "audit")
+
+
+def _observed_rows(rows, service, operation):
+    return [row["observed"] for row in rows if row["service"] == service and row["operation"] == operation]
+
+
+def _task_definition_targets(node):
+    if type(node) is dict:
+        for key, value in node.items():
+            if key == "TaskDefinition":
+                yield value
+            yield from _task_definition_targets(value)
+    elif type(node) is list:
+        for item in node:
+            yield from _task_definition_targets(item)
+
+
+def _phase_c_machine(after, phase_b):
+    machines = _observed_rows(after, "stepfunctions", "describe_state_machine")
+    previous = _observed_rows(phase_b, "stepfunctions", "describe_state_machine")
+    c.require(len(machines) == len(previous) == 1, "phase_c=routes field=machine")
+    machine, before = machines[0], previous[0]
+    c.require(machine["stateMachineArn"] == before["stateMachineArn"]
+              and json.loads(machine["definition"]) == json.loads(before["definition"]), "phase_c=routes field=machine")
+    targets = set(_task_definition_targets(json.loads(machine["definition"])))
+    c.require(len(targets) == 1 and all(type(item) is str for item in targets), "phase_c=routes field=machine")
+    return machine["stateMachineArn"], targets.pop()
+
+
+def _phase_c_schedules(after, routes):
+    for observed in _observed_rows(after, "scheduler", "get_schedule"):
+        if observed.get("absent") is True:
+            continue
+        revision = observed["Target"]["EcsParameters"]["TaskDefinitionArn"]
+        modes = [mode for mode in PHASE_C_ROUTE_MODES if type(revision) is str and f"processor-{mode}:" in revision]
+        c.require(len(modes) == 1 and routes[modes[0]] is None, "phase_c=routes field=scheduler_mode")
+        routes[modes[0]] = revision
+
+
+def _phase_c_environments(after, routes, machine_arn):
+    tasks = _observed_rows(after, "ecs", "describe_task_definition")
+    for mode in ("unit", "recovery"):
+        found = [item["taskDefinition"] for item in tasks if item["taskDefinition"]["taskDefinitionArn"] == routes[mode]]
+        containers = found[0]["containerDefinitions"] if len(found) == 1 else []
+        environment = {item["name"]: item.get("value") for item in containers[0]["environment"]} if len(containers) == 1 else {}
+        c.require(environment.get("AWS_STATE_MACHINE_ARN") == machine_arn, "phase_c=routes field=environment")
+
+
+def phase_c_routes(mode, *, after, phase_b):
+    """P17 ruling 1g: Phase C element routes projected from the C deploy post-apply readback rows (product read_routes).
+
+    Args: mode recovery or audit, the C deploy and the Phase B checkpoint readback rows.
+    Returns: {unit, recovery, audit}; a mode not scheduled yet is null. Raises: ValueError phase_c=routes field=.
+    """
+    c.require(mode in PHASE_C_ROUTE_MODES, "phase_c=routes field=mode")
+    try:
+        machine_arn, unit = _phase_c_machine(after, phase_b)
+        routes = {"unit": unit, "recovery": None, "audit": None}
+        _phase_c_schedules(after, routes)
+        applied = PHASE_C_ROUTE_MODES[:PHASE_C_ROUTE_MODES.index(mode) + 1]
+        c.require(all(type(routes[name]) is str for name in applied), "phase_c=routes field=applied")
+        _phase_c_environments(after, routes, machine_arn)
+    except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError("phase_c=routes field=readbacks") from error
+    return routes
 
 
 def adapter_seconds(window, *, now, credential_deadline, operation):
