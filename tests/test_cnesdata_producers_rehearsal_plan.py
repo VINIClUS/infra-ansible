@@ -237,3 +237,61 @@ def test_plano_de_ensaio_recusa_product_root_sem_a_arvore_do_produto(job, tmp_pa
     with pytest.raises(ValueError, match="product tree"):
         plan()
     assert job.runner.calls == []
+
+
+def test_plano_de_ensaio_grava_o_cli_config_em_0600_mesmo_com_umask_aberto(job):
+    modes = []
+    original = job.runner.__call__
+
+    def watch(argv, **kwargs):
+        modes.append(os.stat(kwargs["env"]["TF_CLI_CONFIG_FILE"]).st_mode & 0o777)
+        return original(argv, **kwargs)
+
+    job.monkeypatch.setattr(rehearsal_plan.subprocess, "run", watch)
+    previous = os.umask(0o022)
+    try:
+        plan()
+    finally:
+        os.umask(previous)
+    assert modes and set(modes) == {0o600}
+
+
+def test_sessao_web_identity_do_observador_pede_exatamente_a_duracao_da_sessao(monkeypatch):
+    import sys
+    import types
+    calls = []
+
+    class Sts:
+        def assume_role_with_web_identity(self, **kwargs):
+            calls.append(kwargs)
+            return {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "b", "SessionToken": "c"}}
+
+    class Boto:
+        class Session:
+            def __init__(self, **kwargs):
+                pass
+
+            def client(self, *args, **kwargs):
+                return Sts()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            return b'{"value": "token"}'
+
+    botocore = types.ModuleType("botocore")
+    botocore.UNSIGNED = object()
+    config = types.ModuleType("botocore.config")
+    config.Config = lambda **kwargs: None
+    for name, module in (("boto3", Boto), ("botocore", botocore), ("botocore.config", config)):
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(aws_reader.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    aws_reader.web_identity_session("arn:aws:iam::111122223333:role/x", {
+        "ACTIONS_ID_TOKEN_REQUEST_URL": "https://pipelines.actions.githubusercontent.com/t?x=1",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "t"})
+    assert [call["DurationSeconds"] for call in calls] == [aws_reader.SESSION_SECONDS] == [900]
