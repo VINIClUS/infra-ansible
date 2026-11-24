@@ -1232,7 +1232,8 @@ STAGE_SUM_CEILING = 1830
 PROMOTION_CONTEXT_SECONDS = 1200
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
-STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static")}
+STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static"),
+                  "static": ("publish-static", "unit")}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision windows")
 CLOSE_EXPIRATION_KINDS = frozenset({"envelope", "artifact", "platform", "cost", "credential", "activation", "plan"})
@@ -1619,6 +1620,15 @@ def static_window(previous, *, now):
               and previous["admitted_at"] <= admitted, "static follows the closed API stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "static", "admitted_at": admitted,
                        "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["static"])}
+
+
+def unit_window(previous, *, now):
+    """DD-3, static -> unit: admitted on the settled publish-static observation; publication changes no state checkpoint."""
+    admitted = int(now)
+    c.require(previous["stage"] == "static" and previous["close"] is not None and previous["decision"] is None
+              and previous["admitted_at"] <= admitted, "unit follows the closed static stage")
+    return previous | {"sequence": previous["sequence"] + 1, "stage": "unit", "admitted_at": admitted,
+                       "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["unit"])}
 
 
 def phase_capacity(window, *, now, credential_deadline, operation_seconds):

@@ -201,7 +201,7 @@ def test_static_window_so_segue_o_estagio_api_fechado(change):
 def test_stage_triggers_are_the_closed_ratified_table():
     from tools.cnesdata_delivery import lifecycle_contract as lc
     assert lc.STAGE_TRIGGERS == {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"),
-                                 "api": ("host", "static")}
+                                 "api": ("host", "static"), "static": ("publish-static", "unit")}
     order = ["application-prepare", *lc.STAGES]
     for stage, (_, following) in lc.STAGE_TRIGGERS.items():
         assert order.index(following) == order.index(stage) + 1
@@ -1218,14 +1218,22 @@ def _api_world(monkeypatch, **flags):
 
 
 def test_host_handler_admite_a_janela_static_com_o_handoff_aceito_do_closed_ready_do_keeper(monkeypatch):
-    """P14 RED: after phase-b and the closed-ready observation, the authenticated host handoff moves api -> static."""
+    """P14: after phase-b and the closed-ready observation, the authenticated host handoff moves api -> static
+    before the static stage asks for its inputs (P15 runs publish-static right after)."""
     from tools.cnesdata_delivery import application_gate as ag
     world = _api_world(monkeypatch)
-    before = _lifecycle(world)
-    world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    before, seen = _lifecycle(world), []
+
+    def source(**kwargs):
+        seen.append(dict(kwargs["window"]))
+        raise ValueError("static inputs consulted")
+    monkeypatch.setattr(ag, "static_input_source", source)
+    with pytest.raises(ValueError, match="^static inputs consulted$"):
+        world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     (api, owner, guard), = world.host
     assert api is world.api and owner == world.owner and type(guard) is ag.KeeperGuard
-    assert _lifecycle(world) == before | {"sequence": 3, "stage": "static", "admitted_at": 1200, "deadline": 1380}
+    static = before | {"sequence": 3, "stage": "static", "admitted_at": 1200, "deadline": 1380}
+    assert seen == [static] and _lifecycle(world) == static
     assert world.keeper.uncertainty() == [] and world.store.get()[0]["status"] == "held"
 
 
@@ -1269,7 +1277,8 @@ def test_host_handler_reconfere_o_prazo_do_api_depois_de_autenticar_o_handoff(mo
     world = _api_world(monkeypatch, ready={"host_seconds": 1310 - 1200 - 1})
     world.clock.value = 1200 + 1 - seconds_left
     if admitted:
-        world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+        with pytest.raises(ValueError, match="^static_inputs=source_unconnected$"):
+            world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
         assert _lifecycle(world)["stage"] == "static"
         return
     before = _lifecycle(world)
@@ -1300,13 +1309,15 @@ def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_af
     assert lc.CLOSE_EXPIRATION_KINDS - {"envelope"} == PRODUCT_EXPIRATION_KINDS
 
 
-def test_keeper_para_no_estagio_static_com_o_lease_retido_e_so_o_closed_ready_despachado_no_api(monkeypatch):
-    """R18 and R15 after P14: the reachable end is the static stage; prepared -> B -> API (closed-ready) -> host -> static."""
+def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish_static_despachados(monkeypatch):
+    """R18 and R15 after P15: the reachable end is the unit stage; prepared -> B -> API (closed-ready) -> host -> static
+    (publish-static, internal) -> unit."""
+    from test_cnesdata_static_stage import _install_static
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
-    world = _stage_world(monkeypatch)
-    for name in ("publish_terminal", "published_terminal", "publish_static_closed_ready"):
-        monkeypatch.setattr(ag, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached before the static stage ends the slice"))
-    world.keeper.finish = lambda reference: pytest.fail("finish reached before the static stage ends the slice")
+    world = _install_static(monkeypatch, _stage_world(monkeypatch))
+    for name in ("publish_terminal", "published_terminal"):
+        monkeypatch.setattr(ag, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached before the unit stage ends the slice"))
+    world.keeper.finish = lambda reference: pytest.fail("finish reached before the unit stage ends the slice")
     statuses = []
     put = world.store.put
     world.store.put = lambda value, etag: statuses.append(value["status"]) or put(value, etag)
@@ -1315,18 +1326,23 @@ def test_keeper_para_no_estagio_static_com_o_lease_retido_e_so_o_closed_ready_de
     triggers = {"application-prepare": {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)},
                 "phase-b": {"kind": "phase-b", "reference": dict(B_REFERENCE)},
                 "api": {"kind": "host", "reference": dict(HOST_REFERENCE)}}
-    with pytest.raises(ValueError, match="^stage trigger not connected stage=static$"):
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
         ag.keeper_loop(world.keeper, next_event=lambda window: triggers.get(window["stage"]) or real(window),
                        handlers=world.handlers, sleep=lambda seconds: None)
     record = world.store.get()[0]
-    assert record["status"] == "held" and set(statuses) == {"held"} and record["lifecycle"]["stage"] == "static"
-    assert [item["journal"]._request["operation"] for item in world.invoke] == ["close-drain", "closed-ready"]
+    assert record["status"] == "held" and set(statuses) == {"held"} and record["lifecycle"]["stage"] == "unit"
+    assert [item["journal"]._request["operation"] for item in world.invoke] == ["close-drain", "closed-ready", "publish-static"]
     assert len(world.capability) == len(world.ready_capability) == len(world.uploads) == len(world.host) == 1
-    assert world.keeper.uncertainty() == []
+    assert len(world.static_capability) == len(world.static_requests) == 1 and world.keeper.uncertainty() == []
     window = record["lifecycle"]
     assert window["checkpoint_sha256"] == c.sha(world.b_files["checkpoint.json"]) and window["close"] == 1050
-    assert window["sequence"] == 3 and window["admitted_at"] == 1130 and window["deadline"] == 1310
+    assert window["sequence"] == 4 and window["admitted_at"] == 1130 + 5 + 10 + 7
+    assert window["deadline"] == 1152 + window["windows"]["stages"]["unit"]
     journal = _ready_journal(world)
     api = window | {"sequence": 2, "stage": "api", "admitted_at": 1115, "deadline": 1295}
     lc.validate_adapter_request(c.canonical(journal._request), operation="closed-ready", owner=world.owner, window=api,
                                 inputs=journal._inputs, activation_sha256=c.sha(world.activation))
+    (published,) = [item["journal"] for item in world.invoke if item["journal"]._request["operation"] == "publish-static"]
+    static = window | {"sequence": 3, "stage": "static", "admitted_at": 1130, "deadline": 1310}
+    lc.validate_adapter_request(c.canonical(published._request), operation="publish-static", owner=world.owner, window=static,
+                                inputs=published._inputs, activation_sha256=c.sha(world.activation))
