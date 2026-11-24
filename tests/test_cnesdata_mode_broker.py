@@ -411,3 +411,78 @@ def test_clientes_do_broker_do_observe_sao_descartados(monkeypatch):
     broker, _, _, _ = _fence_read_broker(monkeypatch)
     ag._drop_operation_clients(broker)
     assert (broker.aws, broker.session.client, broker.session.evidence) == (None, None, None)
+
+
+def _observe_capability_case(monkeypatch, mutation=None):
+    """The close-drain capability world (real prepared package, fake STS and IAM) with an observe journal in the unit window."""
+    from test_cnesdata_application_gate import _close_drain_capability_case
+    from test_cnesdata_mode_stages import _mode_case
+    close = "evaluation-scope" if mutation == "evaluation-scope" else None
+    close = mutation if mutation in {"identity-no-assume", "managed-no-assume", "managed-expired", "delegation",
+                                     "operation-exchange"} else close
+    _, args, sts_calls, keeper, close_journal, events = _close_drain_capability_case(monkeypatch, close)
+    request, base_owner, window, inputs = _mode_case("unit-observe")
+    owner = close_journal._request["owner"] | close_journal._identity
+    if mutation == "owner":
+        owner = owner | {"generation": owner["generation"] + 1}
+    identity = lc.application_identity(owner)
+    window = {key: value for key, value in window.items() if key not in lc.application_identity(base_owner)} | identity
+    window.update(admitted_at=1280, deadline=min(window["fixed_deadline"], 1280 + window["windows"]["stages"]["unit"]))
+    inputs["activation"] = close_journal._inputs["activation"] if mutation != "activation" else b"other"
+    request |= {"source_sha": owner["source_sha"], "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+                "activation_sha256": c.sha(inputs["activation"]),
+                "stage": {key: value for key, value in window.items() if key not in identity},
+                "inputs": {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}}
+
+    class Guard:
+        def check(self, seconds=0):
+            return None
+    journal = ag.AdapterJournal(c.canonical(request), operation="unit-observe", owner=owner, window=window, inputs=inputs,
+                                activation_sha256=request["activation_sha256"], guard=Guard())
+    arguments = {key: args[key] for key in ("governance", "authority", "keeper", "prepared", "credential_limit",
+                                            "operation_session", "clock")} | {"journal": journal}
+    return arguments, sts_calls, keeper, journal, events
+
+
+OBSERVE_CAPABILITY_REFUSALS = {
+    "activation": "^prepared/request/input activation_sha256$", "owner": "^prepared current owner$",
+    "delegation": "^fence_operator delegation$", "evaluation-scope": "^capability scope recomputed from prepared policy$",
+    "identity-no-assume": "^unit-observe operation session effective IAM$",
+    "managed-no-assume": "^unit-observe operation session effective IAM$",
+    "managed-expired": "^unit-observe operation session effective IAM$",
+    "operation-exchange": "^operation session exchange refused$"}
+
+
+def test_capability_do_observe_compoe_o_fence_preparado_a_sessao_e_o_broker_anexado(monkeypatch):
+    from tools.cnesdata_delivery import session_policy as sp
+    args, sts_calls, keeper, journal, events = _observe_capability_case(monkeypatch)
+    broker = _mode_broker_module().fence_observe_capability(**args)
+    assert type(broker) is _mode_broker_module().FenceReadBroker and keeper._contexts == [broker] and keeper.uncertainty() == []
+    assert journal._broker is broker and broker.session.scope == {key: broker.session.scope[key] for key in
+                                                                  ("account", "control_table_arn", "machine_arn")}
+    assert events == [("lease", "check"), ("sts", "assume_role_with_web_identity"), ("sts", "get_caller_identity"),
+                      ("sts", "assume_role")]
+    policy = sp.fence_observe_session_policy(control_table_arn=broker.session.scope["control_table_arn"],
+                                             deadline=journal._request["stage"]["deadline"])
+    (_, _, sent), = [call for call in sts_calls if call[1] == "assume_role"]
+    assert sent["Policy"] == c.canonical(policy).decode().strip()
+    assert args["operation_session"].calls == [("unit-observe", "promotion-fence-r1", journal._request["stage"])]
+    assert broker.aws is args["operation_session"].client and broker.session.evidence is args["operation_session"].client
+
+
+@pytest.mark.parametrize("mutation", sorted(OBSERVE_CAPABILITY_REFUSALS))
+def test_capability_do_observe_recusa_antes_do_sts_envenena_o_journal_e_segura_o_lease(monkeypatch, mutation):
+    args, sts_calls, keeper, journal, events = _observe_capability_case(monkeypatch, mutation)
+    with pytest.raises(ValueError, match=OBSERVE_CAPABILITY_REFUSALS[mutation]):
+        _mode_broker_module().fence_observe_capability(**args)
+    assert [call for call in sts_calls if call[1] == "assume_role"] == [] and journal._failed is True
+    assert keeper.uncertainty() == [{"kind": "context-failed"}] and getattr(journal, "_broker", None) is None
+    assert ("sts", "assume_role") not in events
+
+
+@pytest.mark.parametrize("operation", ["unit-start", "closed-ready"])
+def test_capability_do_observe_recusa_journal_que_nao_e_de_observe(monkeypatch, operation):
+    args, _, keeper, journal, _ = _observe_capability_case(monkeypatch)
+    journal._request["operation"] = operation
+    with pytest.raises(ValueError, match="^mode observe capability only$"):
+        _mode_broker_module().fence_observe_capability(**args)
