@@ -115,6 +115,30 @@ def fence_close_session_policy(*, control_table_arn, execution_prefix, deadline)
         {"Effect": "Allow", "Action": "states:DescribeExecution", "Resource": execution_prefix + "*", "Condition": condition}]}
 
 
+STATIC_SESSION_ACTIONS = {
+    "observer": (("s3:ListBucketVersions", "s3:ListBucketMultipartUploads"), ("s3:GetObjectVersion", "s3:ListMultipartUploadParts"),
+                 ()),
+    "normal": ((), ("s3:PutObject", "s3:GetObject"), ("cloudfront:CreateInvalidation",)),
+}
+
+
+def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline):
+    """Publish-static session of one #498 static role: the IAM actions of its product calls, until the stage deadline.
+
+    Bucket, object and distribution actions in that order; the role policy still narrows keys and versions.
+    """
+    c.require(alias in STATIC_SESSION_ACTIONS, "static session alias")
+    c.require(type(bucket_arn) is str and re.fullmatch(r"arn:aws:s3:::cnesdata-prod-[a-z0-9-]+", bucket_arn), "static session bucket")
+    c.require(type(distribution_arn) is str and re.fullmatch(r"arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+",
+                                                             distribution_arn), "static session distribution")
+    c.integer(deadline)
+    condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
+    resources = (bucket_arn, bucket_arn + "/*", distribution_arn)
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": list(actions), "Resource": resource, "Condition": condition}
+        for actions, resource in zip(STATIC_SESSION_ACTIONS[alias], resources) if actions]}
+
+
 def _fence_session_condition(control_table_arn, execution_prefix, deadline):
     c.require(type(control_table_arn) is str and re.fullmatch(
         r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")

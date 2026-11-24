@@ -5306,29 +5306,31 @@ def _keeper_loop_case():
     def host(current, reference):
         handled.append(("host", reference))
         advance(current, stage="static", admitted_at=1010, deadline=1190)
+        advance(current, stage="unit", admitted_at=1020, deadline=1140)
     events = {"application-prepare": [None, {"kind": "prepared", "reference": {"fixture": "prepared"}}],
               "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}],
               "api": [None, {"kind": "host", "reference": {"fixture": "host"}}]}
     def next_event(window):
         seen.append(window["stage"])
-        if window["stage"] not in lc.STAGE_TRIGGERS:
+        if window["stage"] not in lc.STAGE_TRIGGERS or lc.STAGE_TRIGGERS[window["stage"]][0] not in ag.KEEPER_EVENTS:
             raise ValueError(f"stage trigger not connected stage={window['stage']}")
         return events[window["stage"]].pop(0)
-    unreached = {name: lambda *a, _name=name: pytest.fail(_name + " before the static stage") for name in ("phase-c-recovery", "phase-c-audit")}
+    unreached = {name: lambda *a, _name=name: pytest.fail(_name + " before the unit acceptance") for name in ("phase-c-recovery", "phase-c-audit")}
     run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b, "host": host} | unreached,
                                                       "sleep": slept.append} | changes))
     return ag, keeper, store, run, seen, handled, slept
 
 
-def test_keeper_loop_despacha_cada_gatilho_e_para_no_estagio_static():
+def test_keeper_loop_despacha_cada_gatilho_e_para_no_estagio_unit():
+    """P15: the host handler runs publish-static inline (static -> unit is internal, DD-3); the producer refuses at unit."""
     ag, keeper, store, run, seen, handled, slept = _keeper_loop_case()
-    with pytest.raises(ValueError, match="^stage trigger not connected stage=static$"):
+    with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
         run()
     assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"}),
                        ("host", {"fixture": "host"})] and slept == [5, 5]
-    assert seen == ["application-prepare", "application-prepare", "phase-b", "api", "api", "static"]
+    assert seen == ["application-prepare", "application-prepare", "phase-b", "api", "api", "unit"]
     record = store.get()[0]
-    assert record["status"] == "held" and record["lifecycle"]["stage"] == "static" and keeper.uncertainty() == []
+    assert record["status"] == "held" and record["lifecycle"]["stage"] == "unit" and keeper.uncertainty() == []
 
 
 def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
@@ -5620,7 +5622,7 @@ def test_operation_session_factory_mints_the_exact_delegation_in_process_and_nev
 
 
 @pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", "other", "promotion", ""])
-def test_operation_session_factory_serves_only_the_two_fence_operations(monkeypatch, operation):
+def test_operation_session_factory_serves_only_the_fence_and_publish_static_operations(monkeypatch, operation):
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
     with pytest.raises(ValueError, match="^operation session operation$"):
         factory(operation, {"session_name": "promotion-fence-r1"}, stage)
@@ -5817,7 +5819,9 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
                "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
                "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready", "mode_capability",
-               "run_mode_operation", "mode_stage", "mode_stage_window"}
+               "run_mode_operation", "mode_stage", "mode_stage_window",
+               "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
+               "static_input_source"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5876,10 +5880,27 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "mode_stage", "mode_stage_window"),
         (gate, "run_mode_operation", "KeeperGuard"),
         (gate, "capability", "mode_capability"),
-        ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),  # no production caller
-        ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),  # s3_put_body has none either
-        ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),  # only via validate_static_call
-        ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),  # no production caller
+        (gate, "publish_static", "static_input_source"),
+        (gate, "publish_static", "run_publish_static"),
+        (gate, "capability", "static_capability"),
+        (gate, "publish_static", "publish_static_closed_ready"),
+        (gate, "publish_static", "unit_window"),
+        (gate, "_publication_observation", "static_plan"),
+        (gate, "run_publish_static", "KeeperGuard"),
+        (gate, "static_capability", "static_plan"),
+        (gate, "static_capability", "publish_static_closed_ready"),
+        (gate, "static_capability", "_assume_static_session"),
+        (gate, "static_capability", "StaticBroker"),
+        (gate, "_assume_static_session", "static_plan"),
+        (gate, "_assume_static_session", "static_sessions"),
+        (gate, "call", "validate_static_call"),
+        (gate, "call", "s3_put_body"),
+        (gate, "_native", "validate_static_call"),
+        (gate, "_static_response", "s3_body_value"),
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),
+        ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]

@@ -1264,9 +1264,10 @@ STAGE_SUM_CEILING = 1830
 PROMOTION_CONTEXT_SECONDS = 1200
 # Amendment 6886977054 decision 3: only the ratified transitions. close -> B has no external
 # event (the close CAS enters phase-b); every transition after the API needs its own amendment.
-# P02 DD-3 rows: unit is internal (the unit acceptance); the two C rows are external (the C deploy
-# job) plus the acceptance of their mode.
+# P02 DD-3 rows: static -> unit is internal (the settled publish-static); unit is internal (the unit
+# acceptance); the two C rows are external (the C deploy job) plus the acceptance of their mode.
 STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("phase-b", "api"), "api": ("host", "static"),
+                  "static": ("publish-static", "unit"),
                   "unit": ("unit", "phase-c-recovery"),
                   "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
                   "phase-c-audit": ("phase-c-audit", "final")}
@@ -1789,6 +1790,15 @@ def static_window(previous, *, now):
               and previous["admitted_at"] <= admitted, "static follows the closed API stage")
     return previous | {"sequence": previous["sequence"] + 1, "stage": "static", "admitted_at": admitted,
                        "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["static"])}
+
+
+def unit_window(previous, *, now):
+    """DD-3, static -> unit: admitted on the settled publish-static observation; publication changes no state checkpoint."""
+    admitted = int(now)
+    c.require(previous["stage"] == "static" and previous["close"] is not None and previous["decision"] is None
+              and previous["admitted_at"] <= admitted, "unit follows the closed static stage")
+    return previous | {"sequence": previous["sequence"] + 1, "stage": "unit", "admitted_at": admitted,
+                       "deadline": min(previous["fixed_deadline"], admitted + previous["windows"]["stages"]["unit"])}
 
 
 def mode_stage_window(previous, stage, *, now, checkpoint_sha256=None):

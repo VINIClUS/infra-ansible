@@ -271,7 +271,7 @@ def test_tabela_de_gatilhos_tem_as_tres_linhas_do_dd3_depois_do_unit():
     assert {stage: lc.STAGE_TRIGGERS[stage] for stage in ("unit", "phase-c-recovery", "phase-c-audit")} == {
         "unit": ("unit", "phase-c-recovery"), "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
         "phase-c-audit": ("phase-c-audit", "final")}
-    assert "static" not in lc.STAGE_TRIGGERS and "final" not in lc.STAGE_TRIGGERS
+    assert lc.STAGE_TRIGGERS["static"] == ("publish-static", "unit") and "final" not in lc.STAGE_TRIGGERS
 
 
 def test_janela_do_c_recovery_segue_o_unit_aceito_sem_mudar_o_checkpoint():
@@ -382,16 +382,18 @@ def test_gatilho_interno_do_unit_nao_e_evento_do_produtor():
 def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     from tools.cnesdata_delivery import application_gate as ag
     assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
-    assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"unit"}
+    assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
 def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False):
-    """The stage-events world through the host handler (static window), plus mode fakes: source, capability, child."""
+    """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
+    fakes: source, capability, child."""
     from types import SimpleNamespace
 
     from test_cnesdata_stage_events import HOST_REFERENCE, _api_world
+    from test_cnesdata_static_stage import _install_static
     from tools.cnesdata_delivery import application_gate as ag
-    world = _api_world(monkeypatch)
+    world = _install_static(monkeypatch, _api_world(monkeypatch))
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[])
@@ -444,11 +446,9 @@ def _record(world):
 
 
 def _enter_unit(world, at=1250):
-    window = _record(world)
-    world.clock.value = at
+    assert _record(world)["stage"] == "unit"
+    world.clock.value = max(world.clock.value, at)
     world.keeper.tick()
-    world.keeper.lease.checkpoint(window | {"sequence": window["sequence"] + 1, "stage": "unit", "admitted_at": at,
-                                            "deadline": min(window["fixed_deadline"], at + window["windows"]["stages"]["unit"])})
 
 
 def _known(world):

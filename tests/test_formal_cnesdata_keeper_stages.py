@@ -39,9 +39,7 @@ GUARDED_EXITS = ["Advance == Leave /\\ OpsSettled(Ops(stage))",
 ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-z-]+)">>,?$')
 TERMINAL_ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)">>,?$')
 STAGE_ROW = re.compile(r'^ {4}"([a-z-]+)",?$')
-EXPECTED_DIFFERENCE = {
-    ("static", "publish-static", "internal", "unit"),
-}
+EXPECTED_DIFFERENCE = set()
 TERMINAL_EXIT = ("final", "terminal-readback", "internal", "terminal")
 
 
