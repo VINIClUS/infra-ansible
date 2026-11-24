@@ -1,0 +1,700 @@
+{
+ "fields": {
+  "application_principal_arn": "arn:aws:iam::111122223333:role/cnesdata-prod-application",
+  "context_kind": "promotion",
+  "delegation_sessions": {
+   "mode_audit_launch": [
+    "mc-ax-5e85370e555e95d27df68f93c0ccaa4edfc1da5e"
+   ],
+   "mode_dispatch": [
+    "mc-rx-501bdc4f8cb2ded40f4a8bdd4c452602322c7bae",
+    "mc-ux-07302499974f21b9e32dcccf30d83d15c17ad96c"
+   ],
+   "mode_observe": [
+    "mc-ao-2dd411308b37266d33c9246821adc5aa4002f009",
+    "mc-ro-7ef9ec0cf2c4facafddd03ab96eca0939d6749b4",
+    "mc-uo-6ad39835c3d6d768a05ed3fac56a928168c1295c"
+   ],
+   "mode_seed": [
+    "mc-rs-571b0e35550136585f653a70460974d32f858791",
+    "mc-us-79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b"
+   ]
+  },
+  "enabled_until": "2026-11-23T12:30:00Z",
+  "resources": {
+   "alarm_arns": {
+    "audit_outbox_backlog": "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-audit-outbox-backlog",
+    "audit_repeated_failure": "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-audit-repeated-failure",
+    "recovery_repeated_failure": "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-recovery-repeated-failure"
+   },
+   "audit_bucket_arn": "arn:aws:s3:::cnesdata-prod-audit",
+   "cluster_arn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+   "data_bucket_arn": "arn:aws:s3:::cnesdata-prod-data",
+   "execution_role_arn": "arn:aws:iam::111122223333:role/cnesdata-prod-ecs-execution",
+   "index_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane/index/gsi1",
+   "log_group_arn": "arn:aws:logs:us-east-2:111122223333:log-group:/cnesdata/prod/processor",
+   "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processing",
+   "network": {
+    "public_subnet_ids": [
+     "subnet-0aaa1111",
+     "subnet-0bbb2222"
+    ],
+    "security_group_id": "sg-0ccc3333"
+   },
+   "revisions": {
+    "audit": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-audit:7",
+    "recovery": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-recovery:7",
+    "unit": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-unit:7"
+   },
+   "schedule_arns": {
+    "audit": "arn:aws:scheduler:us-east-2:111122223333:schedule/cnesdata-prod/cnesdata-prod-audit",
+    "recovery": "arn:aws:scheduler:us-east-2:111122223333:schedule/cnesdata-prod/cnesdata-prod-recovery"
+   },
+   "scope": {
+    "audit_object_keys": [
+     "audit/prod-canary-0123456789abcdef0123456789abcdef/outbox.json"
+    ],
+    "output_object_keys": [
+     "processed/cnes/prod-canary-0123456789abcdef0123456789abcdef/unit-aaaaaaaaaaaaaaaa/output.parquet"
+    ],
+    "raw_object_keys": [
+     "raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/unit-aaaaaaaaaaaaaaaa/fixture.parquet",
+     "raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/recovery-a-aaaaaaaaaaaaaaaa/fixture.parquet",
+     "raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/recovery-b-aaaaaaaaaaaaaaaa/fixture.parquet"
+    ],
+    "run_ids": [
+     "unit-aaaaaaaaaaaaaaaa",
+     "recovery-a-aaaaaaaaaaaaaaaa",
+     "recovery-b-aaaaaaaaaaaaaaaa"
+    ],
+    "tenant_id": "prod-canary-0123456789abcdef0123456789abcdef"
+   },
+   "table_arn": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+   "task_role_arns": {
+    "audit": "arn:aws:iam::111122223333:role/cnesdata-prod-processor-audit",
+    "recovery": "arn:aws:iam::111122223333:role/cnesdata-prod-processor-recovery",
+    "unit": "arn:aws:iam::111122223333:role/cnesdata-prod-processor-unit"
+   }
+  }
+ },
+ "roles": {
+  "mode_audit_launch": {
+   "policy": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "ecs:RunTask"
+       ],
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod"
+        },
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-audit:7",
+       "Sid": "Launch"
+      },
+      {
+       "Action": [
+        "iam:PassRole"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "StringEquals": {
+         "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:iam::111122223333:role/cnesdata-prod-processor-audit",
+        "arn:aws:iam::111122223333:role/cnesdata-prod-ecs-execution"
+       ],
+       "Sid": "Roles"
+      },
+      {
+       "Action": [
+        "ecs:DescribeTasks"
+       ],
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod"
+        },
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/*",
+       "Sid": "Tasks"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "cnesdata-prod-mode-audit-launch-runtime",
+    "RoleName": "cnesdata-prod-mode-audit-launch"
+   },
+   "role": {
+    "Role": {
+     "Arn": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-audit-launch",
+     "AssumeRolePolicyDocument": {
+      "Statement": [
+       {
+        "Action": "sts:AssumeRole",
+        "Condition": {
+         "DateLessThan": {
+          "aws:CurrentTime": "2026-11-23T12:30:00Z"
+         },
+         "StringEquals": {
+          "sts:RoleSessionName": [
+           "mc-ax-5e85370e555e95d27df68f93c0ccaa4edfc1da5e"
+          ]
+         }
+        },
+        "Effect": "Allow",
+        "Principal": {
+         "AWS": "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+        }
+       }
+      ],
+      "Version": "2012-10-17"
+     },
+     "MaxSessionDuration": 3600,
+     "RoleName": "cnesdata-prod-mode-audit-launch"
+    }
+   }
+  },
+  "mode_dispatch": {
+   "policy": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:ConditionCheckItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#756e69742d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d612d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d622d61616161616161616161616161616161"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Dispatch"
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:ConditionCheckItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "ENV#prod#FENCE"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Fence"
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "ENV#prod#SEMAPHORE"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Semaphore"
+      },
+      {
+       "Action": [
+        "dynamodb:UpdateItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "ENV#prod#ATTEMPTS"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Attempts"
+      },
+      {
+       "Action": [
+        "ecs:RunTask"
+       ],
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod"
+        },
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-processor-recovery:7",
+       "Sid": "Launch"
+      },
+      {
+       "Action": [
+        "iam:PassRole"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "StringEquals": {
+         "iam:PassedToService": "ecs-tasks.amazonaws.com"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:iam::111122223333:role/cnesdata-prod-processor-recovery",
+        "arn:aws:iam::111122223333:role/cnesdata-prod-ecs-execution"
+       ],
+       "Sid": "Roles"
+      },
+      {
+       "Action": [
+        "ecs:DescribeTasks",
+        "ecs:StopTask"
+       ],
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod"
+        },
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/*",
+       "Sid": "Tasks"
+      },
+      {
+       "Action": [
+        "states:DescribeStateMachine",
+        "states:StartExecution"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processing",
+       "Sid": "Machine"
+      },
+      {
+       "Action": [
+        "states:DescribeExecution",
+        "states:StopExecution"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processing:*",
+       "Sid": "Executions"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "cnesdata-prod-mode-dispatch-runtime",
+    "RoleName": "cnesdata-prod-mode-dispatch"
+   },
+   "role": {
+    "Role": {
+     "Arn": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-dispatch",
+     "AssumeRolePolicyDocument": {
+      "Statement": [
+       {
+        "Action": "sts:AssumeRole",
+        "Condition": {
+         "DateLessThan": {
+          "aws:CurrentTime": "2026-11-23T12:30:00Z"
+         },
+         "StringEquals": {
+          "sts:RoleSessionName": [
+           "mc-rx-501bdc4f8cb2ded40f4a8bdd4c452602322c7bae",
+           "mc-ux-07302499974f21b9e32dcccf30d83d15c17ad96c"
+          ]
+         }
+        },
+        "Effect": "Allow",
+        "Principal": {
+         "AWS": "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+        }
+       }
+      ],
+      "Version": "2012-10-17"
+     },
+     "MaxSessionDuration": 3600,
+     "RoleName": "cnesdata-prod-mode-dispatch"
+    }
+   }
+  },
+  "mode_observe": {
+   "policy": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#756e69742d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d612d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d622d61616161616161616161616161616161"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Observe"
+      },
+      {
+       "Action": [
+        "dynamodb:GetItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "OUTBOX#CURSOR"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Cursor"
+      },
+      {
+       "Action": [
+        "s3:GetObject"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:s3:::cnesdata-prod-data/processed/cnes/prod-canary-0123456789abcdef0123456789abcdef/unit-aaaaaaaaaaaaaaaa/output.parquet"
+       ],
+       "Sid": "Outputs"
+      },
+      {
+       "Action": [
+        "s3:GetObject",
+        "s3:GetObjectRetention"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:s3:::cnesdata-prod-audit/audit/prod-canary-0123456789abcdef0123456789abcdef/outbox.json"
+       ],
+       "Sid": "Audit"
+      },
+      {
+       "Action": [
+        "ecs:DescribeTasks"
+       ],
+       "Condition": {
+        "ArnEquals": {
+         "ecs:cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod"
+        },
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/*",
+       "Sid": "Tasks"
+      },
+      {
+       "Action": [
+        "states:DescribeStateMachine"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processing",
+       "Sid": "Machine"
+      },
+      {
+       "Action": [
+        "states:DescribeExecution"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod-processing:*",
+       "Sid": "Executions"
+      },
+      {
+       "Action": [
+        "ecs:DescribeTaskDefinition"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "*"
+       ]
+      },
+      {
+       "Action": [
+        "scheduler:GetSchedule"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:scheduler:us-east-2:111122223333:schedule/cnesdata-prod/cnesdata-prod-audit",
+        "arn:aws:scheduler:us-east-2:111122223333:schedule/cnesdata-prod/cnesdata-prod-recovery"
+       ]
+      },
+      {
+       "Action": [
+        "cloudwatch:DescribeAlarms"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-audit-outbox-backlog",
+        "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-audit-repeated-failure",
+        "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-scheduler-recovery-repeated-failure"
+       ]
+      },
+      {
+       "Action": [
+        "logs:GetLogEvents"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:logs:us-east-2:111122223333:log-group:/cnesdata/prod/processor:log-stream:unit/processor/*",
+        "arn:aws:logs:us-east-2:111122223333:log-group:/cnesdata/prod/processor:log-stream:recovery/processor/*",
+        "arn:aws:logs:us-east-2:111122223333:log-group:/cnesdata/prod/processor:log-stream:audit/processor/*"
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "cnesdata-prod-mode-observe-runtime",
+    "RoleName": "cnesdata-prod-mode-observe"
+   },
+   "role": {
+    "Role": {
+     "Arn": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-observe",
+     "AssumeRolePolicyDocument": {
+      "Statement": [
+       {
+        "Action": "sts:AssumeRole",
+        "Condition": {
+         "DateLessThan": {
+          "aws:CurrentTime": "2026-11-23T12:30:00Z"
+         },
+         "StringEquals": {
+          "sts:RoleSessionName": [
+           "mc-ao-2dd411308b37266d33c9246821adc5aa4002f009",
+           "mc-ro-7ef9ec0cf2c4facafddd03ab96eca0939d6749b4",
+           "mc-uo-6ad39835c3d6d768a05ed3fac56a928168c1295c"
+          ]
+         }
+        },
+        "Effect": "Allow",
+        "Principal": {
+         "AWS": "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+        }
+       }
+      ],
+      "Version": "2012-10-17"
+     },
+     "MaxSessionDuration": 3600,
+     "RoleName": "cnesdata-prod-mode-observe"
+    }
+   }
+  },
+  "mode_seed": {
+   "policy": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        },
+        "ForAllValues:StringEquals": {
+         "dynamodb:LeadingKeys": [
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#756e69742d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d612d61616161616161616161616161616161",
+          "TENANT#70726f642d63616e6172792d3031323334353637383961626364656630313233343536373839616263646566#RUN#7265636f766572792d622d61616161616161616161616161616161"
+         ]
+        },
+        "Null": {
+         "dynamodb:LeadingKeys": "false"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": "arn:aws:dynamodb:us-east-2:111122223333:table/cnesdata-prod-control-plane",
+       "Sid": "Seed"
+      },
+      {
+       "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+       ],
+       "Condition": {
+        "DateLessThan": {
+         "aws:CurrentTime": "2026-11-23T12:30:00Z"
+        }
+       },
+       "Effect": "Allow",
+       "Resource": [
+        "arn:aws:s3:::cnesdata-prod-data/raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/unit-aaaaaaaaaaaaaaaa/fixture.parquet",
+        "arn:aws:s3:::cnesdata-prod-data/raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/recovery-a-aaaaaaaaaaaaaaaa/fixture.parquet",
+        "arn:aws:s3:::cnesdata-prod-data/raw/cnes/prod-canary-0123456789abcdef0123456789abcdef/recovery-b-aaaaaaaaaaaaaaaa/fixture.parquet"
+       ],
+       "Sid": "Raw"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "cnesdata-prod-mode-seed-runtime",
+    "RoleName": "cnesdata-prod-mode-seed"
+   },
+   "role": {
+    "Role": {
+     "Arn": "arn:aws:iam::111122223333:role/cnesdata-prod-mode-seed",
+     "AssumeRolePolicyDocument": {
+      "Statement": [
+       {
+        "Action": "sts:AssumeRole",
+        "Condition": {
+         "DateLessThan": {
+          "aws:CurrentTime": "2026-11-23T12:30:00Z"
+         },
+         "StringEquals": {
+          "sts:RoleSessionName": [
+           "mc-rs-571b0e35550136585f653a70460974d32f858791",
+           "mc-us-79adb2a2fce5c6ba215fe5f27f532d4e7edbac4b"
+          ]
+         }
+        },
+        "Effect": "Allow",
+        "Principal": {
+         "AWS": "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+        }
+       }
+      ],
+      "Version": "2012-10-17"
+     },
+     "MaxSessionDuration": 3600,
+     "RoleName": "cnesdata-prod-mode-seed"
+    }
+   }
+  }
+ },
+ "source": {
+  "builder": "_documents",
+  "commit": "1d0054c87501de3bbc5f55cfa618b4f54124c55f",
+  "path": "scripts/promotion/prepare_mode_canary.py",
+  "repository": "CnesData",
+  "sha256": "6bde6b649cc5b369b3d918ba4a3a1fb7d90aa426298df1b3c8fdc14a50fc48a5"
+ }
+}
