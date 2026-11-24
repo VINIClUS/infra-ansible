@@ -125,6 +125,8 @@ def _report(alias, operation, change):
     (lambda specs, reports: reports.pop(), "static_role=readbacks_unaligned"),
     (_report("normal", "get_role", lambda report: report.update(operation="get_role_policy")),
      "static_role=readback_shape alias=normal operation=get_role"),
+    (_report("normal", "get_role", lambda report: report.update(service="sts")),
+     "static_role=readback_shape alias=normal operation=get_role"),
     (_report("observer", "get_role", lambda report: report["observed"]["Role"].update(
         Arn=f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-static-other")), "static_role=identity alias=observer"),
     (_report("observer", "get_role", lambda report: report["observed"]["Role"].update(RoleId="")),
