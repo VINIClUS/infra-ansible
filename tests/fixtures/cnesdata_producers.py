@@ -19,7 +19,7 @@ PAYLOAD_REFERENCE = {"repository": c.REPOSITORY, "run_id": RUN, "run_attempt": A
 
 def config():
     account = ACCOUNT
-    roles = {role: f"arn:aws:iam::{account}:role/cnesdata-infra-{role}" for role in ("plan", "deploy")}
+    roles = {role: f"arn:aws:iam::{account}:role/cnesdata-infra-{role}" for role in ("plan", "deploy", "audit")}
     return {"account_id": account, "roles": roles, "state_bucket": "cnesdata-state-4f6e21",
             "evidence_bucket": "cnesdata-evid-4f6e21", "evidence_prefix": EVIDENCE, "ecr_repository": "cnesdata-ecr-9b2d71"}
 
@@ -77,6 +77,10 @@ def ecr_responses(chain, settings):
                 {"images": [{"imageManifest": chain.manifest.decode()}], "failures": []}}
 
 
+def rehearsal_key(settings, source=SOURCE, run=RUN, attempt=ATTEMPT):
+    return settings["evidence_prefix"] + f"phase-inputs/rehearsal/{source}/{run}/{attempt}/plan.json"
+
+
 def namespace_prefix(settings):
     return settings["evidence_prefix"] + f"phase-inputs/{SOURCE}/{RUN}/{ATTEMPT}/"
 
@@ -100,7 +104,7 @@ def policy_responses(settings, role, document):
 def world(chain, settings=None, *, phase_inputs=True):
     settings = settings or config()
     objects = {(settings["state_bucket"], KEY): c.canonical(chain.prior),
-               (settings["evidence_bucket"], settings["evidence_prefix"] + "phase-inputs/rehearsal/plan.json"):
+               (settings["evidence_bucket"], rehearsal_key(settings)):
                    c.canonical(chain.replay.plan)}
     names = {"phase-inputs.json": c.canonical(chain.gov["phase_a_inputs"]),
              "candidate.json": c.canonical({"repository": c.REPOSITORY, "source_sha": SOURCE, "release_id": "fixture"})}
@@ -112,7 +116,7 @@ def world(chain, settings=None, *, phase_inputs=True):
     responses = dict(chain.responses["before"] and {
         (op, params): doc for (op, params), doc in chain.responses["before"].items()})
     document = {"Version": "2012-10-17", "Statement": []}
-    for role in ("plan", "deploy"):
+    for role in ("plan", "deploy", "audit"):
         responses |= policy_responses(settings, role, document)
     responses |= ecr_responses(chain, settings)
     return FakeReader(objects, responses, chain.blobs), names, document

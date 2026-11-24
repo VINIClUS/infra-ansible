@@ -87,6 +87,80 @@ def product_source_manifest(api, governance, now):
     return manifest
 
 
+LIFECYCLE_STEPS_PATH = ".github/delivery/lifecycle-steps.json"
+LIFECYCLE_STEPS_LIMIT = 65536
+SOURCE_CLOSURE_PREFIX = "infra/opentofu/"
+
+
+def source_closure(manifest):
+    """Args: product source manifest. Returns: its infra/opentofu/ subset. Raises: ValueError."""
+    closed(manifest, "version source_sha files")
+    closure = {path: value for path, value in manifest["files"].items() if path.startswith(SOURCE_CLOSURE_PREFIX)}
+    require(0 < len(closure) <= 4096, "source closure inventory")
+    return closure
+
+
+ACTIVATION_MARKER = canonical({"selection_version": 1, "ext2_post_upload_receipt_v1": {}})
+
+
+STEP_COMMON = "role purpose job_name producer_job admission_steps input_jobs"
+STEP_OPTIONAL = ("historical_entry", "activation_selection")
+
+
+def closed_lifecycle_step(value):
+    """Args: one catalog step. Raises: ValueError when its key set is not the closed one for its role."""
+    require(type(value) is dict, "lifecycle step shape")
+    infra = value.get("role") != "application"
+    optional = "".join(" " + key for key in STEP_OPTIONAL if infra and key in value)
+    closed(value, STEP_COMMON + (" mode direction" if infra else "") + optional)
+
+
+def admitted_lifecycle_step(value):
+    """Args: one closed catalog step. Raises: ValueError on a converge direction or a delta the lifecycle refuses."""
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    if value["role"] != "application":
+        require(value["direction"] == "advance", "lifecycle converge custody unavailable")
+        lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
+
+
+def _compose_receipts(governance, steps):
+    from tools.cnesdata_delivery import ext2_transport
+    receipts = governance.get("activation_receipts", {})
+    require(type(receipts) is dict, "lifecycle steps activation receipt")
+    for name, reference in receipts.items():
+        step = steps.get(name)
+        require(type(step) is dict and canonical(step.get("activation_selection")) == ACTIVATION_MARKER,
+                "lifecycle steps activation receipt")
+        try:
+            ext2_transport.validate_reference(reference)
+        except ValueError:
+            require(False, "lifecycle steps activation receipt")
+        step["activation_selection"] = {"selection_version": 1, "ext2_post_upload_receipt_v1": reference}
+
+
+def lifecycle_objects(api, governance, manifest):
+    """DD-6 (a): catalog and source closure from the authenticated manifest; governance pins only sha256."""
+    require("lifecycle_steps" not in governance and "source_closure" not in governance, "inline lifecycle objects")
+    source = digest(manifest["source_sha"], 40)
+    require(source == governance["source_sha"], "lifecycle objects source")
+    closure = source_closure(manifest)
+    require(sha(canonical(closure)) == digest(governance["source_closure_sha256"]), "source closure hash")
+    pinned = digest(governance["lifecycle_steps_sha256"])
+    require(manifest["files"].get(LIFECYCLE_STEPS_PATH) == pinned, "lifecycle steps manifest hash")
+    document = api.read(f"repos/{REPOSITORY}/contents/{LIFECYCLE_STEPS_PATH}?ref={source}", maximum=2 * 1024**2)
+    require(document.get("encoding") == "base64", "lifecycle steps encoding")
+    raw = base64.b64decode(document["content"].replace("\n", ""), validate=True)
+    require(len(raw) <= LIFECYCLE_STEPS_LIMIT and sha(raw) == pinned, "lifecycle steps hash")
+    steps = loads(raw, canonical=True, limit=LIFECYCLE_STEPS_LIMIT)
+    require(type(steps) is dict and 1 <= len(steps) <= 256 and all(type(step) is dict for step in steps.values()),
+            "lifecycle steps catalog")
+    for step in steps.values():
+        closed_lifecycle_step(step)
+        admitted_lifecycle_step(step)
+    _compose_receipts(governance, steps)
+    return {"lifecycle_steps": steps, "source_closure": closure}
+
+
 def application_caller(api, governance, run, role, step, *, include_job=False):
     """Original caller source and running job, independent of future receipts."""
     import base64

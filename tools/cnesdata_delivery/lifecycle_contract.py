@@ -1488,6 +1488,18 @@ def mode_observed_role(observed, role, attributes):
     return observed
 
 
+def admitted_delta(purpose, direction, mode):
+    """Args: purpose, direction, mode. Raises: ValueError when the lifecycle delta rule refuses the combination."""
+    if purpose == "application-prepare":
+        c.require(direction == "advance" and mode in {"observer-bootstrap", "operational", "mode-canary"}, "prepare mode")
+    elif purpose == "phase-b":
+        c.require(mode in {"initial", "established"}, "B checkpoint mode")
+    elif purpose.startswith("phase-c-"):
+        c.require(mode in {"initial", "established"}, "C checkpoint mode")
+    else:
+        c.require(direction == "advance" and mode == "post-open", "maintenance after OPEN")
+
+
 def validate_delta(plan, approval):
     """Source-bound independent audit plus closed structural phase oracle.
 
@@ -1505,8 +1517,8 @@ def validate_delta(plan, approval):
     c.require(len(changes) == len({r["address"] for r in changes}), "duplicate change")
     creates, updates = set(), {}
     oracle = frozenset()
+    admitted_delta(purpose, direction, mode)
     if purpose == "application-prepare":
-        c.require(direction == "advance" and mode in {"observer-bootstrap", "operational", "mode-canary"}, "prepare mode")
         if mode == "mode-canary":
             validate_mode_canary_delta(plan, approval["before"], stage=mode_canary_stage(approval["before"]))
             return changes
@@ -1521,19 +1533,16 @@ def validate_delta(plan, approval):
                 creates.add(address)
                 updates[address] = {"assume_role_policy"} if kind == "aws_iam_role" else {"policy"}
     elif purpose == "phase-b":
-        c.require(mode in {"initial", "established"}, "B checkpoint mode")
         updates[STATE_MACHINE] = {"definition"}
         if mode == "initial":
             creates.add(STATE_MACHINE)
             updates[API_POLICY] = {"policy"}
     elif purpose.startswith("phase-c-"):
-        c.require(mode in {"initial", "established"}, "C checkpoint mode")
         target = purpose.removeprefix("phase-c-")
         creates = scheduler_closure(target) if mode == "initial" else set()
         updates[f'module.schedulers.aws_scheduler_schedule.mode["{target}"]'] = {"target"}
         updates[f'module.schedulers.aws_iam_role_policy.run["{target}"]'] = {"policy"}
     else:
-        c.require(direction == "advance" and mode == "post-open", "maintenance after OPEN")
         updates = {"module.static_web.aws_s3_bucket_lifecycle_configuration.this": {"rule"},
                    "module.static_web.aws_cloudfront_response_headers_policy.this": {"security_headers_config", "custom_headers_config"}}
     for row in changes:

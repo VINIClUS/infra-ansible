@@ -159,10 +159,11 @@ def test_producer_extrai_o_caller_do_ref_do_workflow():
         inputs.producer(env | {"GITHUB_WORKFLOW_REF": "x"})
 
 
-def test_request_from_acrescenta_a_referencia_do_drift_do_proprio_run():
+@pytest.mark.parametrize("role", ["plan", "audit"])
+def test_request_from_acrescenta_a_referencia_do_drift_do_proprio_run(role):
     env = {"GITHUB_WORKFLOW_REF": "VINIClUS/infra-ansible/.github/workflows/cnesdata-producers.yml@refs/heads/main",
            "GITHUB_SHA": "9" * 40, "GITHUB_RUN_ID": "7001", "GITHUB_RUN_ATTEMPT": "2", "PURPOSE": "phase-a",
-           "ROLE": "plan", "SOURCE_SHA": SOURCE, "X_STAR": X_STAR, "DRIFT_ARTIFACT_ID": "55",
+           "ROLE": role, "SOURCE_SHA": SOURCE, "X_STAR": X_STAR, "DRIFT_ARTIFACT_ID": "55",
            "DRIFT_ARTIFACT_DIGEST": "a" * 64, "REQUEST": json.dumps({"references": {"cost": {"artifact_id": 2}}})}
     merged = inputs.request_from(env)
     drift = merged["references"]["drift"]

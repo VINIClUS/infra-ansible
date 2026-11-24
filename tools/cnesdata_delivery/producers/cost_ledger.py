@@ -1,5 +1,7 @@
 """Gate cost manifest derived from the authenticated source manifest, never from a free-form value."""
 import json
+from datetime import date
+import re
 from decimal import ROUND_CEILING, Decimal
 
 from tools.cnesdata_delivery import contract as c
@@ -25,6 +27,8 @@ CATEGORIES = {
 }
 SCOPES = {"product": "product", "shared": "aggregate-only"}
 CENT = Decimal("0.01")
+MONTH = re.compile(r"\d{4}-(?:0[1-9]|1[0-2])")
+DAY = re.compile(r"\d{4}-\d\d-\d\d")
 
 
 def _source(raw):
@@ -50,11 +54,23 @@ def _maximum(line):
     return max(Decimal(0), quantity - allowance) * line["unit_price_usd"]
 
 
+def _real_day(value):
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _spend(line):
     price = line["unit_price_usd"]
     c.require(price is not None and price >= 0, f"other projects spend price id={line['id']}")
     measurement = line.get("measurement")
     c.require(type(measurement) is dict and {"month", "measured_on", "total_usd", "method"} <= set(measurement),
+              "other projects spend measurement")
+    month, measured_on = measurement["month"], measurement["measured_on"]
+    c.require(type(month) is str and MONTH.fullmatch(month) is not None, "other projects spend measurement")
+    c.require(type(measured_on) is str and DAY.fullmatch(measured_on) is not None and _real_day(measured_on),
               "other projects spend measurement")
 
 

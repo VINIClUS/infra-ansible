@@ -5,8 +5,8 @@ import json
 import pytest
 
 from fixtures.cnesdata_phase_a_replay import ACCOUNT, ReplayChain
-from fixtures.cnesdata_producers import (EVIDENCE, KEY_HEX, SOURCE, config, namespace_prefix, public_objects,
-                                         request, world)
+from fixtures.cnesdata_producers import (ATTEMPT, EVIDENCE, KEY_HEX, RUN, SOURCE, config, namespace_prefix,
+                                         public_objects, rehearsal_key, request, world)
 from tools.cnesdata_delivery import contract as c, drift_catalog, session_owner
 from tools.cnesdata_delivery.producers import aws_reader, observer
 
@@ -34,7 +34,7 @@ def observations(result):
 def test_observador_registra_o_sha256_do_plano_de_ensaio_lido_de_phase_inputs(chain):
     reader, result, _ = run(chain)
     settings = config()
-    plan_key = EVIDENCE + "phase-inputs/rehearsal/plan.json"
+    plan_key = rehearsal_key(settings)
     assert (settings["evidence_bucket"], plan_key) in reader.reads
     measured = observations(result)["drift-baseline"]
     assert measured["rehearsal_plan_sha256"] == c.sha(c.canonical(chain.replay.plan))
@@ -54,7 +54,7 @@ def test_observador_conta_linhas_e_especificacoes_do_handoff(chain):
 
 def test_observador_sem_plano_de_ensaio_recusa(chain):
     def remove(reader, settings, names):
-        del reader.objects[settings["evidence_bucket"], EVIDENCE + "phase-inputs/rehearsal/plan.json"]
+        del reader.objects[settings["evidence_bucket"], rehearsal_key(settings)]
 
     with pytest.raises(ValueError, match="rehearsal plan"):
         run(chain, mutate=remove)
@@ -146,7 +146,7 @@ def test_plano_de_ensaio_fora_do_namespace_nao_muda_a_contagem(chain):
 def test_fatos_da_sessao_sao_hmac_e_iguais_aos_do_session_owner(chain):
     _, result, asked = run(chain, mode="local")
     pins = result.pins
-    assert set(pins) == {"plan", "deploy"}
+    assert set(pins) == {"plan", "deploy", "audit"}
     for role, pin in pins.items():
         assert observations(result)["session_facts"][role] == session_owner._facts(pin, KEY)
         assert pin["owner_producer"] == asked["owner_producer"] and pin["root_source_sha"] == "d" * 40
@@ -290,3 +290,57 @@ def test_varredura_de_vazamento_cobre_os_seis_valores_da_configuracao(field):
     leaked = {"drift-handoff.json": c.canonical({"note": "x " + settings[field] + " y"}), "observations.json": c.canonical({})}
     with pytest.raises(ValueError):
         observer._sanitize(leaked, settings, KEY_HEX, {})
+
+
+@pytest.mark.parametrize("other", [
+    {"source": "b" * 40}, {"run": RUN + 1}, {"attempt": ATTEMPT + 1},
+], ids=["outra-fonte", "outro-run", "outra-tentativa"])
+def test_observador_recusa_plano_de_ensaio_de_outra_fonte_run_ou_tentativa(chain, other):
+    def move(reader, settings, names):
+        raw = reader.objects.pop((settings["evidence_bucket"], rehearsal_key(settings)))
+        reader.objects[settings["evidence_bucket"], rehearsal_key(settings, **other)] = raw
+
+    with pytest.raises(ValueError, match="rehearsal plan absent"):
+        run(chain, mutate=move)
+
+
+def test_observador_le_a_chave_de_ensaio_do_proprio_run(chain):
+    reader, _, _ = run(chain)
+    assert (config()["evidence_bucket"], rehearsal_key(config())) in reader.reads
+    assert observer.rehearsal_key(config(), request()) == rehearsal_key(config())
+
+
+def test_observador_mede_o_pin_do_audit_alem_de_plan_e_deploy(chain):
+    _, result, _ = run(chain)
+    assert observer.ROLES == ("plan", "deploy", "audit")
+    assert set(observations(result)["session_facts"]) == {"plan", "deploy", "audit"}
+
+
+def test_observador_fecha_roles_da_configuracao_com_o_audit(monkeypatch):
+    settings = config()
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(settings).decode())
+    assert set(observer._config()["roles"]) == {"plan", "deploy", "audit"}
+    without = settings | {"roles": {key: value for key, value in settings["roles"].items() if key != "audit"}}
+    monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(without).decode())
+    with pytest.raises(ValueError):
+        observer._config()
+
+
+def test_observador_le_o_plano_de_ensaio_da_tentativa_pedida_e_nao_o_da_primeira(chain):
+    second = ATTEMPT + 1
+    other = copy.deepcopy(chain.replay.plan)
+    other["format_version"] = "outro"
+
+    def stage(reader, settings, names):
+        raw = reader.objects.pop((settings["evidence_bucket"], rehearsal_key(settings)))
+        reader.objects[settings["evidence_bucket"], rehearsal_key(settings, attempt=second)] = raw
+        reader.objects[settings["evidence_bucket"], rehearsal_key(settings)] = c.canonical(other)
+        old, new = namespace_prefix(settings), namespace_prefix(settings).replace(f"/{ATTEMPT}/", f"/{second}/")
+        for (bucket, key), value in list(reader.objects.items()):
+            if key.startswith(old):
+                reader.objects[bucket, new + key[len(old):]] = value
+
+    reference = request()["payload_reference"] | {"run_attempt": second}
+    _, result, _ = run(chain, mutate=stage, payload_reference=reference)
+    measured = observations(result)["drift-baseline"]["rehearsal_plan_sha256"]
+    assert measured == c.sha(c.canonical(chain.replay.plan)) != c.sha(c.canonical(other))
