@@ -981,7 +981,9 @@ class AdapterJournal:
         c.require(self._durable_active is None, "durable SDK receipt unresolved")
         if getattr(self, "_broker", None) is not None:
             c.require(self._durable_count == len(self._call_receipts), "all observations require durable SDK receipts")
-        c.require(kind == lc.ADAPTER_OBSERVATIONS[self._request["operation"]], "adapter operation observation")
+        operation = self._request["operation"]
+        c.require(kind == lc.ADAPTER_OBSERVATIONS[operation] or kind in lc.ADAPTER_STEPS.get(operation, ()),
+                  "adapter operation observation")
         value = c.loads(raw, canonical=True, limit=1024**2)
         c.require(type(value) is dict and value, "adapter observation requires original domain object")
         c._secrets(value)
@@ -2907,10 +2909,12 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
                                                             operation=operation))
     finally:
         _drop_operation_clients(broker)
-    kind = lc.ADAPTER_OBSERVATIONS[operation]
+    kind, steps = lc.ADAPTER_OBSERVATIONS[operation], lc.ADAPTER_STEPS.get(operation, frozenset())
+    kinds = [entry["kind"] for entry in journal._observations]
+    c.require(set(kinds) <= {kind} | steps and all(kinds.count(name) <= 1 for name in steps & lc.MODE_SINGLE_STEPS),
+              f"{operation} step observations")
     observed = [entry for entry in journal._observations if entry["kind"] == kind]
-    c.require(len(journal._observations) == len(observed) == 1 and not keeper.uncertainty(),
-              f"{operation} single observation without uncertainty")
+    c.require(len(observed) == 1 and not keeper.uncertainty(), f"{operation} single observation without uncertainty")
     return journal._observation_bytes[observed[0]["sha256"]]
 
 

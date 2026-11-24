@@ -234,6 +234,12 @@ ADAPTER_OBSERVATIONS = {
     **{name: "mode-result" for name in ("unit-start", "recovery-start", "audit-start")},
     **{name: "mode" for name in ("unit-observe", "recovery-observe", "audit-observe")},
 }
+# Product MODE_EFFECT_STEPS: intermediate observations of the start operations; the single ones appear at most once.
+ADAPTER_STEPS = {
+    "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
+    "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),
+}
+MODE_SINGLE_STEPS = frozenset({"unit-execution", "recovery-task", "audit-task"})
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
@@ -909,7 +915,8 @@ def validate_adapter_result(raw, *, request, observations, call_receipts, pendin
     c.require(type(result["observations"]) is list and result["observations"] == observations, "adapter registered observations")
     for item in result["observations"]:
         c.closed(item, "kind sha256 size")
-        c.require(item["kind"] == ADAPTER_OBSERVATIONS[result["operation"]], "adapter operation observation")
+        c.require(item["kind"] == ADAPTER_OBSERVATIONS[result["operation"]]
+                  or item["kind"] in ADAPTER_STEPS.get(result["operation"], ()), "adapter operation observation")
         c.digest(item["sha256"])
         c.integer(item["size"], 1, 1024**2)
     c.require(type(call_receipts) is list and result["call_receipts_sha256"] == c.sha(c.canonical(call_receipts)),
