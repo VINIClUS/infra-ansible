@@ -361,6 +361,30 @@ def mode_readback_bytes(mode, resources, responses):
     return c.canonical(document)
 
 
+MODE_WAIT_RESERVE = 30
+MODE_WAIT_INTERVAL = 5
+
+
+def mode_wait(poll, *, terminal, child_deadline, clock, sleep):
+    """Design 4.1 bounded native wait (ruling 2 item 4): every 5 s until terminal or wait_end = kill - R, R = 30 s.
+
+    Args: poll() -> receipted response, terminal(response), the child kill instant, clock, sleep.
+    Returns: (final response only, C4 timing). Raises: ValueError mode wait elapsed, before any poll.
+    """
+    end = child_deadline - MODE_WAIT_RESERVE
+    started = clock()
+    c.require(started < end, "mode wait elapsed")
+    polls = 0
+    while True:
+        response = poll()
+        polls, now = polls + 1, clock()
+        done = bool(terminal(response))
+        if done or now + MODE_WAIT_INTERVAL > end:
+            return response, {"kind": "wait", "started_at": started, "ended_at": now, "wait_end": end, "polls": polls,
+                              "terminal": done}
+        sleep(MODE_WAIT_INTERVAL)
+
+
 MODE_RUN_TASK_ROUTES = {"recovery": {"locator": "PROD_CANARY_BINDING", "command": ["recover-once"]},
                         "audit": {"locator": "PROD_CANARY_AUDIT_OBSERVE", "command": ["dispatch-outbox-once"]}}
 _TOKEN = re.compile(r"mc-[0-9a-f]{60}")

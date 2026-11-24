@@ -2905,13 +2905,15 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
                              operation=operation, owner=owner, window=window, inputs=inputs,
                              activation_sha256=c.sha(activation), guard=guard)
     keeper.attach(journal)
-    broker = capability(journal=journal, keeper=keeper, guard=guard)
+    journal._timings, started, broker = [], clock(), None
     try:
+        broker = capability(journal=journal, keeper=keeper, guard=guard)
         c.require(getattr(journal, "_broker", None) is broker and type(broker) is _mode_broker_class(operation),
                   "mode broker admitted before adapter")
         invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
                                                             operation=operation))
     finally:
+        journal._timings.append({"kind": "operation", "operation": operation, "started_at": started, "ended_at": clock()})
         _drop_operation_clients(broker)
     kind, steps = lc.ADAPTER_OBSERVATIONS[operation], lc.ADAPTER_STEPS.get(operation, frozenset())
     kinds = [entry["kind"] for entry in journal._observations]
