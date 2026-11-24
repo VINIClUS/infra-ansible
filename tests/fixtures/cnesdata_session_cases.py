@@ -278,7 +278,13 @@ def assert_matrix(identity, managed, policy, gov, role):
                 "kms:EncryptionContext:aws:s3:arn": own,
             },
         ):
-            assert not check("kms:Decrypt", key, context)
+            bucket_key_context = (
+                gov.get("state_bucket_key", False)
+                and key == gov["state_kms_key_arn"]
+                and context.get("kms:EncryptionContext:aws:s3:arn") == "arn:aws:s3:::" + gov["state_bucket"]
+                and context.get("kms:ViaService") == "s3.us-east-2.amazonaws.com"
+            )
+            assert check("kms:Decrypt", key, context) is bucket_key_context
     for key in STATE_KEYS:
         assert check(
             "s3:ListBucket", "arn:aws:s3:::" + gov["state_bucket"], {"s3:prefix": key}
