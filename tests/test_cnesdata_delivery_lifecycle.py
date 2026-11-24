@@ -358,6 +358,8 @@ def test_mode_prepare_source_resolver_binds_all_four_policies_even_noop(noop):
     ({"approval_other": "inputs_sha256"}, {}, False),
     ({"approval_other": "checkpoint_sha256"}, {}, False),
     ({"approval_other": "owner"}, {}, False),
+    ({"audit_role": "admit"}, {}, True),
+    ({"audit_role": "refuse"}, {}, False),
 ])
 def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path, monkeypatch, step_change, delta_change, allowed):
     """Unit regression for execute's step/delta checks, not operational admission.
@@ -378,6 +380,9 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     inputs.update({key: original_phase[key] for key in ("canary_storage_enabled", "canary_release_id", "canary_trusted_principal_arn")})
     step = {"purpose": "application-prepare", "mode": "operational", "direction": "advance",
             "input_jobs": {"prepared": {"step": "prepared"}, "audit": {"step": "audited"}}, **step_change}
+    audit_role = step.pop("audit_role", None)
+    if audit_role:
+        step["input_jobs"].pop("audit")
     if not step.pop("mode_only", False):
         configured = plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"]
         plan["resource_changes"] += json.loads(json.dumps(
@@ -457,7 +462,11 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     monkeypatch.setattr(session_owner, "verify_managed", lambda *args: None)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2030-01-01T00:00:00Z")
     mode_admissions, mode_outputs = [], []
-    monkeypatch.setattr(lr, "mode_canary_admission", lambda **kwargs: mode_admissions.append(kwargs) or {"fixture": True})
+    def admit_mode(**kwargs):
+        mode_admissions.append(kwargs)
+        c.require(audit_role != "refuse", "fixture mode input refused")
+        return {"fixture": True}
+    monkeypatch.setattr(lr, "mode_canary_admission", admit_mode)
     monkeypatch.setattr(lr, "mode_canary_output", lambda aws, **kwargs: mode_outputs.append(kwargs) or {"fixture": True})
     def private_payload(*args, **kwargs):
         audit = args[4]["index.json"] == b"audit"
@@ -512,7 +521,23 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                 Path(kwargs["output"]).write_bytes(payload["plan.json"])
     monkeypatch.setattr(lr, "LifecycleWatchdog", lambda *args: Guard())
     _isolate_ext2_revalidation(monkeypatch)
-    if plan_operational:
+    if audit_role:
+        built = []
+        monkeypatch.setattr(lr, "build_approval", lambda **kwargs: built.append(kwargs) or {"fixture": "approval"})
+        monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
+        if audit_role == "refuse":
+            with pytest.raises(ValueError, match="fixture mode input refused"):
+                lr.execute("audit")
+            assert published == []
+        else:
+            lr.execute("audit")
+            assert [(args[5], args[9]) for args in published] == [
+                ({"approval.json": c.canonical({"fixture": "approval"})}, "audited")]
+        assert commands == ["init", "show"] and len(built) == 1 and mode_outputs == []
+        assert [call["step_mode"] for call in mode_admissions] == ["operational"]
+        assert mode_admissions[0]["plan"] == plan and mode_admissions[0]["inputs_raw"] == c.canonical(inputs)
+        assert mode_admissions[0]["activation_sha256"] == c.sha(b"p" * 40) and mode_admissions[0]["owner"] == owner
+    elif plan_operational:
         lr.execute("plan")
         assert commands == ["init", "plan", "show"] and len(carriers) == len(published) == 1
         assert carriers[0]["step"] is step and carriers[0]["terraform_raw"] == payload["inputs.json"] == var_files[0]
