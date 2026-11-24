@@ -361,6 +361,70 @@ def mode_readback_bytes(mode, resources, responses):
     return c.canonical(document)
 
 
+MODE_RUN_TASK_ROUTES = {"recovery": {"locator": "PROD_CANARY_BINDING", "command": ["recover-once"]},
+                        "audit": {"locator": "PROD_CANARY_AUDIT_OBSERVE", "command": ["dispatch-outbox-once"]}}
+_TOKEN = re.compile(r"mc-[0-9a-f]{60}")
+_LOCATOR_LIMIT = 4096
+
+
+def _route_network(ecs):
+    vpc = ecs["NetworkConfiguration"]["awsvpcConfiguration"]
+    return {"awsvpcConfiguration": {"subnets": vpc["Subnets"], "securityGroups": vpc["SecurityGroups"],
+                                    "assignPublicIp": vpc["AssignPublicIp"]}}
+
+
+def _mode_route(mode, readbacks, record, resources):
+    c.require(mode in MODE_RUN_TASK_ROUTES, "mode run_task readbacks")
+    target = readbacks["schedules"][mode]["Target"]
+    ecs, definition = target["EcsParameters"], readbacks["task_definitions"][mode]["taskDefinition"]
+    revision, containers = record["revisions"][mode], definition["containerDefinitions"]
+    c.require(revision == resources["revisions"][mode] == ecs["TaskDefinitionArn"] == definition["taskDefinitionArn"]
+              and ecs.get("TaskCount", 1) == 1 and target["RetryPolicy"]["MaximumRetryAttempts"] == 0
+              and target["Arn"] == resources["cluster_arn"] and type(containers) is list and len(containers) == 1
+              and containers[0].get("command") == MODE_RUN_TASK_ROUTES[mode]["command"], "mode run_task readbacks")
+    launch = {name: ecs[key] for key, name in (("LaunchType", "launchType"), ("PlatformVersion", "platformVersion"))
+              if key in ecs}
+    route = {"cluster": target["Arn"], "taskDefinition": revision, "count": 1, "enableExecuteCommand": False,
+             "networkConfiguration": _route_network(ecs)} | launch
+    return route, containers[0]["name"]
+
+
+def _run_task_locator(parameters):
+    try:
+        (override,) = parameters["overrides"]["containerOverrides"]
+        (entry,) = override["environment"]
+        value = entry["value"]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if type(value) is str and 1 <= len(value.encode()) <= _LOCATOR_LIMIT else None
+
+
+def validate_mode_run_task(mode, parameters, *, readbacks, record, resources):
+    """Design 4.1: the RunTask is the product run_task_request over the route re-derived from the projected readbacks.
+
+    Args: mode, RunTask parameters, projected readbacks document, record mapping, mode-input resources.
+    Raises: ValueError mode run_task readbacks (route outside the product target) or mode run_task route.
+    """
+    try:
+        route, container = _mode_route(mode, readbacks, record, resources)
+    except (KeyError, TypeError, IndexError, AttributeError) as error:
+        raise ValueError("mode run_task readbacks") from error
+    locator, token = _run_task_locator(parameters), parameters.get("clientToken") if type(parameters) is dict else None
+    environment = [{"name": MODE_RUN_TASK_ROUTES[mode]["locator"], "value": locator}]
+    expected = route | {"overrides": {"containerOverrides": [{"name": container, "environment": environment}]},
+                        "clientToken": token}
+    c.require(locator is not None and type(token) is str and _TOKEN.fullmatch(token) is not None
+              and c.canonical(parameters) == c.canonical(expected), "mode run_task route")
+
+
+def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
+    """Design 4.1: DescribeTasks only for the task this operation's RunTask returned. Raises: ValueError."""
+    tasks = parameters.get("tasks") if type(parameters) is dict else None
+    c.require(type(parameters) is dict and set(parameters) == {"cluster", "tasks"} and parameters["cluster"] == cluster_arn
+              and type(tasks) is list and len(tasks) == 1 and type(tasks[0]) is str and tasks[0] in launched,
+              "mode describe_tasks own task")
+
+
 MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe"}
 
 
