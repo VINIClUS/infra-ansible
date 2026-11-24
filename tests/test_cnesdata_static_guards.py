@@ -52,6 +52,8 @@ _RECEIPT_CONTRADICTIONS = {
     "invalidation-never-created": ({"invalidation_id": "IFORGED"}, "publication=invalidation_mismatch"),
     "already-published-foreign-key": ({"already_published": ["assets/foreign.js"]}, "publication=already_published_invalid"),
     "already-published-and-uploaded": ({"already_published": ["index.html"]}, "publication=already_published_invalid"),
+    "uploaded-prefix-of-receipts": ({"uploaded": [["assets/app.js", "New.1"], ["index.html", "New.2"]]},
+                                    "publication=uploaded_mismatch index=2 observed=2 receipts=3"),
 }
 
 
@@ -64,6 +66,35 @@ def test_publicacao_que_contradiz_os_recibos_do_journal_e_recusada_com_o_lease_r
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     assert len(_publish_journal(world).call_receipts) == 9
     assert _lifecycle(world)["stage"] == "static" and world.store.get()[0]["status"] == "held"
+
+
+class _Settled:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def _settled_calls(self):
+        return self.calls
+
+
+def _put_receipt(key, version):
+    return {"call": {"operation": "PutObject", "parameters": {"Key": key}}, "response": {"VersionId": version}}
+
+
+def _invalidation_receipt(identifier):
+    return {"call": {"operation": "CreateInvalidation", "parameters": {}}, "response": {"Invalidation": {"Id": identifier}}}
+
+
+def test_recibo_de_put_com_version_id_null_e_recusado():
+    from tools.cnesdata_delivery import application_gate as ag
+    with pytest.raises(ValueError, match="^static version id$"):
+        ag._publication_receipts(_Settled([_put_receipt("index.html", "null")]))
+
+
+def test_dois_recibos_de_create_invalidation_sao_recusados():
+    from tools.cnesdata_delivery import application_gate as ag
+    calls = [_put_receipt("index.html", "New.1"), _invalidation_receipt("I1"), _invalidation_receipt("I2")]
+    with pytest.raises(ValueError, match="^publication=invalidation_calls count=2$"):
+        ag._publication_receipts(_Settled(calls))
 
 
 def test_publicacao_sem_chamada_de_invalidacao_so_aceita_invalidation_id_nulo(monkeypatch):
@@ -102,6 +133,25 @@ def test_put_object_dos_tamanhos_que_o_p15_recusava_passa_pelo_digest_com_pedido
     ag._adapter_message(_frame(role, service, operation, parameters), journal)
     (call,) = clients["normal"].calls
     assert size < 1024 < ag.STATIC_REQUEST_LIMIT and call[3]["Body"] == body and evidence.writes
+
+
+@pytest.mark.parametrize("slack, admitted", [(0, True), (-1, False)])
+def test_pedido_com_exatamente_o_limite_de_bytes_e_aceito_e_um_byte_acima_e_recusado(monkeypatch, slack, admitted):
+    from test_cnesdata_static_inputs import _digest_broker, _digest_put
+    body = b"<html></html>\n"
+    ag, broker, journal, clients, evidence = _digest_broker({"assets/app.js": b"app()\n", "index.html": body,
+                                                             "theme-init.js": b"theme()\n"})
+    assert ag.STATIC_REQUEST_LIMIT == 128 * 1024 - 2048
+    role, service, operation, parameters = _digest_put("index.html", body)
+    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}))
+    monkeypatch.setattr(ag, "STATIC_REQUEST_LIMIT", size + slack)
+    if admitted:
+        ag._adapter_message(_frame(role, service, operation, parameters), journal)
+        assert len(clients["normal"].calls) == 1
+        return
+    with pytest.raises(ValueError, match=f"^static request size={size} limit={size - 1}$"):
+        ag._adapter_message(_frame(role, service, operation, parameters), journal)
+    assert clients["normal"].calls == [] and evidence.writes == []
 
 
 def test_politica_estatica_e_exatamente_o_documento_esperado_por_alias():
