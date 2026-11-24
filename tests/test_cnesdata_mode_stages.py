@@ -400,16 +400,21 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
 
 
 def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False,
-                brokers=None, steps=None):
+                brokers=None, steps=None, host=True):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
-    fakes: source, capability, child."""
+    fakes: source, capability, child. With host, the unit mode run the host starts is recorded and the world stays in the
+    unit window; without it, the caller runs the host with the real unit mode run over these fakes."""
     from types import SimpleNamespace
 
     from test_cnesdata_stage_events import HOST_REFERENCE
     from test_cnesdata_static_stage import _static_world
     from tools.cnesdata_delivery import application_gate as ag
-    world = _static_world(monkeypatch)
-    world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    real_stage = ag.mode_stage
+    world = _static_world(monkeypatch, static={"unit": "stub" if host else "real"})
+    if host:
+        world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+        monkeypatch.setattr(ag, "mode_stage", real_stage)
+    inner = ag.invoke_adapter
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
                                  fail=fail, late=late, brokers=brokers or {}, contexts=[], steps=steps or {})
@@ -417,7 +422,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
         operation = journal._request["operation"]
-        assert operation in PRODUCT["operations"], operation
+        if operation not in PRODUCT["operations"]:
+            return inner(**kwargs)
         world.events.append(("child", operation))
         world.mode.calls.append((operation, kwargs["timeout"], world.clock.value, dict(journal._inputs)))
         if world.mode.fail is True or world.mode.fail == operation:
@@ -556,6 +562,69 @@ def test_estagio_unit_roda_seed_start_observe_encadeados_e_avanca_com_o_unit_ace
     assert after == before | {"sequence": before["sequence"] + 1, "stage": "phase-c-recovery", "admitted_at": world.clock.value,
                               "deadline": world.clock.value + before["windows"]["stages"]["phase-c-recovery"]}
     assert world.store.get()[0]["status"] == "held" and world.keeper.uncertainty() == []
+
+
+def _host_unit(monkeypatch, **flags):
+    from test_cnesdata_stage_events import HOST_REFERENCE
+    world = _mode_world(monkeypatch, host=False, **flags)
+    world.puts = []
+    put = world.store.put
+    world.store.put = lambda value, etag: world.puts.append(value["lifecycle"]) or put(value, etag)
+    return world, lambda: world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+
+
+def _stages(lifecycles):
+    stages = [item["stage"] for item in lifecycles]
+    return [stage for index, stage in enumerate(stages) if index == 0 or stages[index - 1] != stage]
+
+
+def test_host_roda_o_modo_unit_na_janela_unit_e_o_unit_aceito_abre_a_janela_phase_c_recovery(monkeypatch):
+    """Ruling 4 item 6: the internal DD-3 transition unit -> phase-c-recovery under STAGE_TRIGGERS, through the real host
+    handler and the real mode_stage, with only the mode boundaries faked."""
+    world, host = _host_unit(monkeypatch)
+    host()
+    assert lc.STAGE_TRIGGERS["unit"] == ("unit", "phase-c-recovery")
+    assert _stages(world.puts)[-3:] == ["static", "unit", "phase-c-recovery"]
+    unit = next(item for item in world.puts if item["stage"] == "unit")
+    operations = [call[0] for call in world.mode.calls]
+    assert operations == ["unit-record", "unit-seed", "unit-start", "unit-observe"]
+    assert [event for event in world.events if type(event) is tuple] == [
+        (step, operation) for operation in operations for step in ("source", "capability", "child")]
+    assert {stage for _, _, stage in world.mode.sources} == {"unit"}
+    assert [journal._request["stage"] for journal in world.mode.capabilities] == [
+        {key: unit[key] for key in lc.ADAPTER_STAGE_FIELDS.split()}] * 4
+    for _, timeout, now, _ in world.mode.calls:
+        assert timeout == unit["deadline"] - now - 38
+    assert world.mode.calls[0][3]["activation"] == world.activation and world.mode.calls[0][3]["close-drain"] == world.close_raw
+    assert len(world.mode.dropped) == 3 and all(broker.aws is None for broker in world.mode.dropped)
+    assert _record(world) == unit | {"sequence": unit["sequence"] + 1, "stage": "phase-c-recovery",
+                                     "admitted_at": world.clock.value,
+                                     "deadline": world.clock.value + unit["windows"]["stages"]["phase-c-recovery"]}
+    assert world.store.get()[0]["status"] == "held" and world.keeper.uncertainty() == []
+
+
+@pytest.mark.parametrize("flags, message, last", [
+    ({"checks": {"unit": ["canary=schema"]}}, "unit mode accepted", "unit-observe"),
+    ({"fail": "unit-seed"}, "fixture child failed", "unit-seed"),
+    ({"capability": "mode broker refused"}, "mode broker refused", None),
+    ({"late": True}, "unit stage deadline elapsed", "unit-observe")], ids=["recusado", "child", "capability", "lapso"])
+def test_host_mantem_o_lease_retido_sem_checkpoint_de_janela_quando_o_modo_unit_e_recusado(monkeypatch, flags, message,
+                                                                                            last):
+    world, host = _host_unit(monkeypatch, **flags)
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        host()
+    unit = next(item for item in world.puts if item["stage"] == "unit")
+    assert _stages(world.puts)[-2:] == ["static", "unit"] and _record(world) == unit
+    assert world.store.get()[0]["status"] == "held"
+    assert (world.mode.calls[-1][0] if world.mode.calls else None) == last
+
+
+def test_docstring_dos_handlers_descreve_o_modo_unit_rodado_na_janela_unit():
+    from tools.cnesdata_delivery import application_gate as ag
+    doc = " ".join(ag.stage_handlers.__doc__.split())
+    assert "nothing runs it" not in doc and "the unit stage ends it" not in doc
+    assert "the unit window (internal, DD-3) and in it the unit mode run (record, seed, start, observe)" in doc
+    assert "its acceptance opens the phase-c-recovery window (internal, DD-3); a refusal or a lapse ends held" in doc
 
 
 def test_estagio_unit_recusa_unit_que_o_produto_nao_aceitou_e_mantem_o_lease(monkeypatch):

@@ -500,11 +500,21 @@ def _static_world(monkeypatch, *, static=None, **flags):
 
 
 def _install_static(monkeypatch, world, static=None):
-    """Static-stage boundaries on a _stage_world: input source, capability (or STS only), child and native S3/CloudFront."""
+    """Static-stage boundaries on a _stage_world: input source, capability (or STS only), child and native S3/CloudFront.
+
+    The unit mode run that the host starts after publish-static (ruling 4 item 6) is recorded in unit_runs and not run,
+    unless unit is "real"; test_cnesdata_mode_stages covers it.
+    """
     from tools.cnesdata_delivery import application_gate as ag
     static = {"capability": "fake", "capability_error": None, "capability_seconds": 5, "observation": {}, "observations": 1,
               "pending": False, "child_seconds": 10, "rollback": (), "versions": (), "latency": 0, "inputs": None,
-              "source": "fake"} | (static or {})
+              "source": "fake", "unit": "stub"} | (static or {})
+    world.unit_runs = []
+    if static["unit"] == "stub":
+        def unit_stage(keeper, mode, **kwargs):
+            world.unit_runs.append((mode, kwargs["checkpoint_sha256"], keeper.lease.check()["lifecycle"]["stage"]))
+            return {}
+        monkeypatch.setattr(ag, "mode_stage", unit_stage)
     world.governance.update({key: value for key, value in EVIDENCE_GOVERNANCE.items() if key not in world.governance})
     world.static = static
     world.static_values = _static_inputs(world.owner["source_sha"], rollback=static["rollback"])
@@ -631,6 +641,15 @@ def test_host_handler_roda_o_publish_static_e_avanca_de_static_para_unit(monkeyp
     assert invoked["journal"] is journal and invoked["timeout"] == 1380 - 1205 - 38 - 7
     assert _lifecycle(world) == static | {"sequence": 4, "stage": "unit", "admitted_at": 1222, "deadline": 1342}
     assert world.keeper.uncertainty() == [] and world.store.get()[0]["status"] == "held"
+
+
+def test_host_handler_inicia_o_modo_unit_na_janela_unit_depois_do_publish_static(monkeypatch):
+    """Ruling 4 item 6: static -> unit and unit -> phase-c-recovery are internal to the host handler (DD-3)."""
+    from test_cnesdata_stage_events import HOST_REFERENCE
+    world = _static_world(monkeypatch)
+    world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    assert world.unit_runs == [("unit", None, "unit")]
+    assert world.events[-1] == "invoke_adapter"
 
 
 def test_host_handler_sem_os_insumos_retidos_do_inventory_recusa_fail_closed_no_estagio_static(monkeypatch):
