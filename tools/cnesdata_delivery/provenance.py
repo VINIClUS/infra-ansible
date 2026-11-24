@@ -119,6 +119,8 @@ def admitted_lifecycle_step(value):
     """Args: one closed catalog step. Raises: ValueError on a converge direction or a delta the lifecycle refuses."""
     from tools.cnesdata_delivery import lifecycle_contract as lc
     if value["role"] != "application":
+        for field in ("purpose", "mode"):
+            require(type(value[field]) is str, f"lifecycle step text fields {field}_type={type(value[field]).__name__}")
         require(value["direction"] == "advance", "lifecycle converge custody unavailable")
         lc.admitted_delta(value["purpose"], value["direction"], value["mode"])
 

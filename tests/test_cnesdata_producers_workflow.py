@@ -206,3 +206,67 @@ def test_nomes_dos_artefatos_do_observe_e_do_assemble_levam_o_role_para_plan_e_a
     assert names and all("${{ inputs.role }}" in name for name in names)
     rendered = {role: {name.replace("${{ inputs.role }}", role) for name in names} for role in ("plan", "audit")}
     assert rendered["plan"].isdisjoint(rendered["audit"])
+
+
+TOFU_SHA256 = "723bebb0df8411daff1e5fc3862e28ff5581fe5634087f4c29a9aa41d78208b5"
+
+
+def observe_steps(document):
+    return {step["name"]: index for index, step in enumerate(document["jobs"]["observe"]["steps"])}
+
+
+def test_observe_instala_o_opentofu_1_13_2_com_o_mesmo_sha256_do_gate_de_plan(document, text):
+    gate = (ROOT / ".github/workflows/reusable-cnesdata-infra-plan-gate.yml").read_text()
+    assert f"{TOFU_SHA256}  " in gate
+    observe = text.partition("  assemble:")[0]
+    assert "v1.13.2" in observe and f"{TOFU_SHA256}  ${{RUNNER_TEMP}}/tofu.zip" in observe and "sha256sum -c -" in observe
+    names = observe_steps(document)
+    assert names["Install pinned OpenTofu"] < names["Observe with the read-only role"]
+
+
+def test_observe_baixa_o_produto_no_sha_da_fonte_sem_credencial_persistida(document):
+    steps = document["jobs"]["observe"]["steps"]
+    checkout = next(step for step in steps if step["name"] == "Check out the product source at the pin")
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"] == {"repository": "VINIClUS/CnesData", "ref": "${{ inputs.source_sha }}",
+                                "path": "product", "persist-credentials": False}
+    names = observe_steps(document)
+    assert names["Check out the product source at the pin"] < names["Observe with the read-only role"]
+
+
+def test_observe_aponta_a_arvore_do_produto_so_no_passo_que_planeja(document):
+    holders = [step["name"] for step in document["jobs"]["observe"]["steps"] if "PRODUCT_ROOT" in step.get("env", {})]
+    assert holders == ["Observe with the read-only role"]
+    step = document["jobs"]["observe"]["steps"][observe_steps(document)["Observe with the read-only role"]]
+    assert step["env"]["PRODUCT_ROOT"] == "${{ github.workspace }}/product"
+
+
+def test_observe_mascara_tambem_os_textos_do_shared_outputs(text):
+    mask = text.partition("Fetch the pinned producer modules")[0]
+    assert 'value["shared_outputs"]' in mask and "::add-mask::" in mask
+
+
+def test_lista_de_modulos_do_observe_inclui_o_limite_de_subprocesso(text):
+    assert "producers/rehearsal_plan.py" in listed(text)[0]
+    assert "producers/rehearsal_plan.py" not in listed(text)[1]
+
+
+def _script(document, name):
+    step = next(item for item in document["jobs"]["observe"]["steps"] if item["name"] == name)
+    return step["run"].split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
+
+
+def test_mascara_executada_cobre_texto_aninhado_do_shared_outputs_e_ignora_o_curto(document):
+    import json
+    text_value = "Zq7 shared output plain text"
+    settings = {"account_id": "111122223333", "roles": {"plan": "role-plan-x"},
+                "shared_outputs": {"a": {"b": [text_value, "short"]}}}
+    done = subprocess.run([sys.executable, "-I", "-c", _script(document, "Mask every value of the private observer configuration")],
+                          env={"OBSERVER_CONFIG": json.dumps(settings)}, capture_output=True, text=True, check=True)
+    masked = {line.removeprefix("::add-mask::") for line in done.stdout.splitlines()}
+    assert text_value in masked and "short" not in masked
+
+
+def test_tofu_instalado_entra_no_path_dos_passos_seguintes(document):
+    step = next(item for item in document["jobs"]["observe"]["steps"] if item["name"] == "Install pinned OpenTofu")
+    assert 'echo "${RUNNER_TEMP}/observer-bin" >> "${GITHUB_PATH}"' in step["run"]

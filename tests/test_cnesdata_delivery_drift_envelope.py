@@ -663,3 +663,10 @@ def test_campo_da_task_definition_omitido_com_plan_fora_do_padrao_e_recusado(att
     plan_, reports, rows, specs = real_task_case(planned={attribute: TASK_NON_DEFAULT[attribute][1]})
     with pytest.raises(ValueError, match="drift response field"):
         coverage(plan_, reports, rows, specs=specs, envelope=phase_a())
+
+
+@pytest.mark.parametrize("attribute", sorted(TASK_DEFAULTS))
+def test_campo_da_task_definition_omitido_com_plan_nulo_casa_com_o_plan(attribute):
+    plan_, reports, rows, specs = real_task_case(planned={attribute: None})
+    assert not {"enableFaultInjection", "ipcMode", "pidMode"} & set(reports[0]["observed"]["taskDefinition"])
+    assert coverage(plan_, reports, rows, specs=specs, envelope=phase_a()) is None
