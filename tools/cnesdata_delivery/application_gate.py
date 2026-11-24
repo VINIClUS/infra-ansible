@@ -582,7 +582,7 @@ def _adapter_message(frame, journal):
         return journal.evidence_snapshot(), None
     if kind == "call":
         c.closed(value, "kind role service operation parameters")
-        c.require(type(getattr(journal, "_broker", None)) in BROKERS, "adapter protected SDK admission absent")
+        c.require(type(getattr(journal, "_broker", None)) in _brokers(), "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
@@ -1389,8 +1389,14 @@ def _static_member(journal, reference):
 BROKERS = (ClosedReadyBroker, StaticBroker)
 
 
+def _brokers():
+    """P15's brokers plus the two mode brokers; mode_broker imports this module, so it is imported at call time."""
+    from tools.cnesdata_delivery.mode_broker import FenceReadBroker, ModeBroker
+    return BROKERS + (ModeBroker, FenceReadBroker)
+
+
 def _journal_of(context):
-    return context.journal if type(context) in BROKERS else context
+    return context.journal if type(context) in _brokers() else context
 
 
 def _static_deadline(request):
@@ -1954,7 +1960,7 @@ class Keeper:
 
     def attach(self, context):
         """Register an original journal/broker; its uncertainty keeps the lease held."""
-        c.require(type(context) in (AdapterJournal, *BROKERS), "original adapter context")
+        c.require(type(context) in (AdapterJournal, *_brokers()), "original adapter context")
         if not any(item is context for item in self._contexts):
             self._contexts.append(context)
 
@@ -1964,7 +1970,7 @@ class Keeper:
         found = [{"kind": "context-failed"} for journal in journals if journal._failed]
         found += [{"kind": "sdk-inflight"} for journal in journals if journal._inflight is not None]
         found += [entry for journal in journals for entry in journal.pending + journal.unknown]
-        found += [entry for item in self._contexts if type(item) in BROKERS for entry in item.uncertainty]
+        found += [entry for item in self._contexts if type(item) in _brokers() for entry in item.uncertainty]
         return found
 
     def _previous(self, previous):
@@ -2323,8 +2329,8 @@ def _handoff_validator(role):
 
 
 def _mode_journal(keeper, mode):
-    journals = [_journal_of(item) for item in keeper._contexts]
-    found = [journal for journal in journals if journal._request["operation"] == mode + "-observe"]
+    journals = {id(journal): journal for journal in (_journal_of(item) for item in keeper._contexts)}
+    found = [journal for journal in journals.values() if journal._request["operation"] == mode + "-observe"]
     c.require(len(found) == 1, f"terminal mode journal mode={mode}")
     return found[0]
 
@@ -2639,6 +2645,9 @@ def _drop_operation_clients(broker):
         broker.session.clients = None
     else:
         broker.session.client = None
+    read = getattr(broker, "read_session", None)
+    if read is not None:
+        read.client = read.evidence = None
 
 
 def _frozen_membership(close_raw):
@@ -2845,6 +2854,15 @@ def mode_capability(*, journal, keeper, guard):
     raise ValueError("mode_broker=unconnected")
 
 
+def _mode_broker_class(operation):
+    """Admitted broker type per class: none for the pure record operations, ModeBroker for seed and start, and
+    FenceReadBroker for the observes."""
+    from tools.cnesdata_delivery.mode_broker import FenceReadBroker, ModeBroker
+    if operation.endswith("-record"):
+        return type(None)
+    return FenceReadBroker if operation.endswith("-observe") else ModeBroker
+
+
 def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capability, credential_limit, clock):
     """One mode operation: journal under the keeper guard, the injected capability before the child, timeout
     window - now - 38. Returns: the single observation bytes. Raises: ValueError."""
@@ -2858,6 +2876,8 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
     keeper.attach(journal)
     broker = capability(journal=journal, keeper=keeper, guard=guard)
     try:
+        c.require(getattr(journal, "_broker", None) is broker and type(broker) is _mode_broker_class(operation),
+                  "mode broker admitted before adapter")
         invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
                                                             operation=operation))
     finally:
