@@ -12,7 +12,7 @@ from tools.cnesdata_delivery.session_policy import managed_arn
 
 STATE_KEY = rehearsal_plan.STATE_KEY
 ROLES = ("plan", "deploy", "audit")
-CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository shared_outputs"
+CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository shared_outputs toolchain"
 Observed = namedtuple("Observed", "files pins")
 
 
@@ -119,10 +119,23 @@ def _session(asked):
 
 def _config():
     config = c.loads(os.environ["OBSERVER_CONFIG"].encode())
-    c.closed(config, CONFIG_KEYS)
+    c.require(type(config) is dict, "observer config shape")
+    for name in CONFIG_KEYS.split():
+        c.require(name in config, f"observer config missing key={name}")
+    for name in sorted(set(config) - set(CONFIG_KEYS.split())):
+        c.require(False, f"observer config extra key={name}")
     c.closed(config["roles"], " ".join(ROLES))
     c.require(type(config["shared_outputs"]) is dict and bool(config["shared_outputs"]), "observer shared_outputs")
+    _toolchain(config["toolchain"])
     return config
+
+
+def _toolchain(value):
+    c.closed(value, "lock_sha256 providers")
+    c.digest(value["lock_sha256"])
+    providers = value["providers"]
+    c.require(type(providers) is list and bool(providers) and all(type(item) is str and item for item in providers),
+              "observer toolchain providers")
 
 
 def _run(args):

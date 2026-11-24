@@ -13,6 +13,7 @@ READS = {service: set(operations) for service, operations in drift_catalog.READ_
     "s3": drift_catalog.READ_ONLY["s3"] | {"get_object", "list_objects_v2"}}
 REGION = "us-east-2"
 AUDIENCE = "sts.amazonaws.com"
+SESSION_SECONDS = 900
 
 
 def require_read(service, operation):
@@ -102,6 +103,6 @@ def web_identity_session(role_arn, environment=None):
         token = json.loads(response.read(65536))["value"]
     sts = boto3.Session(region_name=REGION).client("sts", config=Config(signature_version=UNSIGNED))
     issued = sts.assume_role_with_web_identity(RoleArn=role_arn, RoleSessionName="cnesdata-observer",
-                                               WebIdentityToken=token, DurationSeconds=900)["Credentials"]
+                                               WebIdentityToken=token, DurationSeconds=SESSION_SECONDS)["Credentials"]
     return boto3.Session(aws_access_key_id=issued["AccessKeyId"], aws_secret_access_key=issued["SecretAccessKey"],
                          aws_session_token=issued["SessionToken"], region_name=REGION)
