@@ -15,6 +15,7 @@ DASHBOARD_ARTIFACT = "production-dashboard"
 DASHBOARD_PIN_FIELDS = "id sha256 expires_at source_sha run_id run_attempt"
 MANIFEST_MEMBER = "release-manifest.json"
 JSON_LIMIT = 1024**2
+ROLE_POLICY_SUFFIX = "-runtime"
 
 
 def authenticated_candidate(raw, governance):
@@ -175,7 +176,7 @@ def static_body_budget(tar_raw, keys, seconds):
 
 
 def static_role_facts(checkpoint_raw, approval_raw, *, governance, aliases):
-    """Static role facts from one deploy's after-apply readbacks, bound by index to the approval addresses.
+    """Static role facts from one deploy's after-apply readbacks, keyed by the observed IAM identity.
 
     Returns: {alias: {role_arn, role_name, role_id, policy_name, policy}}. Raises: ValueError static_role=<reason>.
     """
@@ -184,43 +185,33 @@ def static_role_facts(checkpoint_raw, approval_raw, *, governance, aliases):
     specs = readbacks.get("after") if type(readbacks) is dict else None
     reports = checkpoint.get("readbacks") if type(checkpoint) is dict else None
     c.require(type(specs) is list and type(reports) is list and len(specs) == len(reports), "static_role=readbacks_unaligned")
-    return {alias: _role_facts(specs, reports, governance, alias) for alias in aliases}
+    return {alias: _role_facts(reports, governance, alias) for alias in aliases}
 
 
-def _role_facts(specs, reports, governance, alias):
+def _role_facts(reports, governance, alias):
     arn = governance["application_delegations"][alias]
     name = arn.rsplit("/", 1)[1]
-    role = _observed(specs, reports, alias, "aws_iam_role", "get_role").get("Role")
-    c.require(type(role) is dict and role.get("Arn") == arn and role.get("RoleName") == name
-              and type(role.get("RoleId")) is str and re.fullmatch(r"AROA[0-9A-Z]{16,128}", role["RoleId"]) is not None,
-              f"static_role=identity alias={alias}")
-    policy = _observed(specs, reports, alias, "aws_iam_role_policy", "get_role_policy")
-    c.require(policy.get("RoleName") == name and type(policy.get("PolicyName")) is str and bool(policy["PolicyName"])
-              and type(policy.get("PolicyDocument")) is dict, f"static_role=policy alias={alias}")
+    role = _observed(reports, alias, "get_role", name)["Role"]
+    c.require(role.get("Arn") == arn and type(role.get("RoleId")) is str
+              and re.fullmatch(r"AROA[0-9A-Z]{16,128}", role["RoleId"]) is not None, f"static_role=identity alias={alias}")
+    policy = _observed(reports, alias, "get_role_policy", name)
+    c.require(type(policy.get("PolicyDocument")) is dict, f"static_role=policy alias={alias}")
     return {"role_arn": arn, "role_name": name, "role_id": role["RoleId"], "policy_name": policy["PolicyName"],
             "policy": policy["PolicyDocument"]}
 
 
-def _observed(specs, reports, alias, kind, operation):
-    address = f"module.runtime_iam.{kind}.static_{alias}[0]"
-    found = [index for index, spec in enumerate(specs) if type(spec) is dict and spec.get("address") == address]
-    spec = specs[found[0]] if len(found) == 1 else {}
-    c.require(spec.get("service") == "iam" and spec.get("operation") == operation and spec.get("absent") is False,
-              f"static_role=readback_absent alias={alias} operation={operation}")
-    report = reports[found[0]]
-    observed = report.get("observed") if type(report) is dict else None
-    c.require(type(observed) is dict and report.get("service") == "iam" and report.get("operation") == operation
-              and _named(spec.get("parameters"), observed, operation),
+def _observed(reports, alias, operation, name):
+    found = [report["observed"] for report in reports
+             if type(report) is dict and report.get("service") == "iam" and report.get("operation") == operation
+             and type(report.get("observed")) is dict and _observed_role(report["observed"], operation) == name]
+    c.require(len(found) == 1 and (operation == "get_role" or found[0].get("PolicyName") == name + ROLE_POLICY_SUFFIX),
               f"static_role=readback_shape alias={alias} operation={operation}")
-    return observed
+    return found[0]
 
 
-def _named(parameters, observed, operation):
-    if operation == "get_role":
-        role = observed.get("Role")
-        return type(parameters) is dict and type(role) is dict and role.get("RoleName") == parameters.get("RoleName")
-    return (type(parameters) is dict and observed.get("RoleName") == parameters.get("RoleName")
-            and observed.get("PolicyName") == parameters.get("PolicyName"))
+def _observed_role(observed, operation):
+    role = observed.get("Role") if operation == "get_role" else observed
+    return role.get("RoleName") if type(role) is dict else None
 
 
 def inventory_observation(raw, inputs):
