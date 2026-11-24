@@ -494,3 +494,26 @@ def test_hidratacao_admite_o_passo_que_o_produtor_admitiria():
 def test_hidratacao_recusa_catalogo_com_sha_igual_que_o_produtor_recusaria(change, reason):
     with pytest.raises(ValueError, match=reason):
         hydrate({"phase-b-deploy": valid_step(**change)})
+
+
+@pytest.mark.parametrize("change", [{"mode": {}}, {"mode": 3}, {"purpose": 7}, {"purpose": ["phase-b"]}],
+                         ids=["modo-dict", "modo-inteiro", "proposito-inteiro", "proposito-lista"])
+def test_hidratacao_recusa_proposito_ou_modo_que_nao_e_texto_com_value_error(change):
+    with pytest.raises(ValueError, match="lifecycle step text fields"):
+        hydrate({"phase-b-deploy": valid_step(**change)})
+
+
+APPLICATION_STEP = {"role": "application", "purpose": "application-inventory", "job_name": "application / execute",
+                    "producer_job": "execute", "admission_steps": ["Issue credentials"], "input_jobs": {}}
+
+
+@pytest.mark.parametrize("key", ["historical_entry", "activation_selection"])
+def test_passo_de_aplicacao_com_chave_opcional_de_infra_e_recusado(key):
+    provenance().closed_lifecycle_step(APPLICATION_STEP)
+    with pytest.raises(ValueError, match="closed object fields"):
+        provenance().closed_lifecycle_step(APPLICATION_STEP | {key: {}})
+
+
+@pytest.mark.parametrize("key", ["historical_entry", "activation_selection"])
+def test_passo_de_infra_aceita_a_chave_opcional_no_conjunto_fechado(key):
+    provenance().closed_lifecycle_step(valid_step() | {key: {}})
