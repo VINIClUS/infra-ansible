@@ -146,14 +146,24 @@ def test_gatilhos_do_codigo_estao_no_modelo_com_a_classificacao_do_keeper():
     assert {model[key] for key in _code_triggers()} == {"external", "internal"}
 
 
-def test_inventario_do_codigo_e_a_operacao_do_prepare_que_a_observacao_observer_bootstrap_dispara_no_modelo():
-    """P15b (DD-1 1C): inventory roda no application-prepare sobre a observacao externa do caller, e o prepared depende dele."""
+def test_operacoes_do_codigo_disparadas_por_observacao_externa_estao_no_modelo():
+    """P15b (DD-1 1C): inventory sobre observer-bootstrap no application-prepare, e o prepared depende dele.
+    P17 (emenda DD-3): rollback-api-static sobre host-recovery no recovery."""
     operations, observations = set(_block("OpRows", TRIPLE_ROW)), set(_block("CallerRows", TRIPLE_ROW))
     code = {(stage, operation, event) for operation, (stage, event) in lc.OPERATION_TRIGGERS.items()}
-    assert code == {("application-prepare", "inventory", "observer-bootstrap")} and code <= operations
+    assert code == {("application-prepare", "inventory", "observer-bootstrap"),
+                    ("recovery", "rollback-api-static", "host-recovery")} and code <= operations
     assert all((event, stage, "none") in observations and event in ag.KEEPER_EVENTS for stage, _, event in code)
     assert ("prepared", "application-prepare", "inventory") in observations
     assert all(event not in {trigger for trigger, _ in lc.STAGE_TRIGGERS.values()} for _, _, event in code)
+
+
+def test_recovery_do_modelo_e_rollback_depois_reopen_depois_terminal_readback():
+    rows = {(operation, need) for stage, operation, need in _block("OpRows", TRIPLE_ROW) if stage == "recovery"}
+    assert rows == {("rollback-api-static", "host-recovery"), ("reopen", "rollback-api-static"),
+                    ("terminal-readback", "reopen")}
+    assert {operation for operation, _ in rows} == {
+        operation for operation, stages in lc.ADAPTER_STAGES.items() if "recovery" in stages}
 
 
 def test_gatilhos_que_o_codigo_ainda_nao_tem_sao_exatamente_a_lista_esperada():
