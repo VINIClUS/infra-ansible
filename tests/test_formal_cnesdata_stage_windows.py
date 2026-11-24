@@ -308,7 +308,7 @@ def test_linha_static_do_modelo_e_o_child_do_publish_static_na_abertura_mais_a_s
     margin, exit_seconds = static_shape()
     assert margin == int(cfg_values(CONFIGS["StageWindows"])["AdmitMargin"]) + 1
     assert re.search(r'^      \[\] s = 3 -> <<"static_publish", "static_settle">>$', MODEL, re.M)
-    for name in ("Code", "E2"):
+    for name in ("Code", "E2", "Ceiling"):
         window = model_tuple(name + "Dur")[2]
         assert model_records(name + "Var")[2] == {"static_publish": window - margin - exit_seconds,
                                                   "static_settle": exit_seconds}, name

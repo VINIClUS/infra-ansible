@@ -2183,8 +2183,10 @@ def test_closed_ready_evidence_keys_stay_byte_identical():
     close = lr.closed_ready_evidence_keys(governance, **arguments, operation="close-drain")
     assert close["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/close-drain/sdk-")
     assert close["intent"].rsplit("/", 1)[1] != keys["intent"].rsplit("/", 1)[1]
+    inventory = lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+    assert inventory["intent"].startswith("cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/41/1/inventory/sdk-")
     with pytest.raises(ValueError):
-        lr.closed_ready_evidence_keys(governance, **arguments, operation="inventory")
+        lr.closed_ready_evidence_keys(governance, **arguments, operation="retire-static")
 
 
 R12_ERRORS = {
@@ -5296,6 +5298,9 @@ def _keeper_loop_case():
     def advance(current, **changes):
         record = current.lease.check()["lifecycle"]
         current.lease.checkpoint(record | {"sequence": record["sequence"] + 1} | changes)
+    def observer_bootstrap(current, reference):
+        handled.append(("observer-bootstrap", reference))
+        current.static_inventory = b"settled"
     def prepared(current, reference):
         handled.append(("prepared", reference))
         advance(current, close=1000, fixed_deadline=2800, input_deadline=4000, stage="phase-b", admitted_at=1000,
@@ -5307,7 +5312,8 @@ def _keeper_loop_case():
         handled.append(("host", reference))
         advance(current, stage="static", admitted_at=1010, deadline=1190)
         advance(current, stage="unit", admitted_at=1020, deadline=1140)
-    events = {"application-prepare": [None, {"kind": "prepared", "reference": {"fixture": "prepared"}}],
+    events = {"application-prepare": [None, {"kind": "observer-bootstrap", "reference": {"fixture": "observer-bootstrap"}},
+                                      {"kind": "prepared", "reference": {"fixture": "prepared"}}],
               "phase-b": [{"kind": "phase-b", "reference": {"fixture": "phase-b"}}],
               "api": [None, {"kind": "host", "reference": {"fixture": "host"}}]}
     def next_event(window):
@@ -5316,7 +5322,8 @@ def _keeper_loop_case():
             raise ValueError(f"stage trigger not connected stage={window['stage']}")
         return events[window["stage"]].pop(0)
     unreached = {name: lambda *a, _name=name: pytest.fail(_name + " before the unit acceptance") for name in ("phase-c-recovery", "phase-c-audit")}
-    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": {"prepared": prepared, "phase-b": phase_b, "host": host} | unreached,
+    handlers = {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host} | unreached
+    run = lambda **changes: ag.keeper_loop(keeper, **({"next_event": next_event, "handlers": handlers,
                                                       "sleep": slept.append} | changes))
     return ag, keeper, store, run, seen, handled, slept
 
@@ -5326,9 +5333,9 @@ def test_keeper_loop_despacha_cada_gatilho_e_para_no_estagio_unit():
     ag, keeper, store, run, seen, handled, slept = _keeper_loop_case()
     with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
         run()
-    assert handled == [("prepared", {"fixture": "prepared"}), ("phase-b", {"fixture": "phase-b"}),
-                       ("host", {"fixture": "host"})] and slept == [5, 5]
-    assert seen == ["application-prepare", "application-prepare", "phase-b", "api", "api", "unit"]
+    assert handled == [("observer-bootstrap", {"fixture": "observer-bootstrap"}), ("prepared", {"fixture": "prepared"}),
+                       ("phase-b", {"fixture": "phase-b"}), ("host", {"fixture": "host"})] and slept == [5, 5]
+    assert seen == ["application-prepare", "application-prepare", "application-prepare", "phase-b", "api", "api", "unit"]
     record = store.get()[0]
     assert record["status"] == "held" and record["lifecycle"]["stage"] == "unit" and keeper.uncertainty() == []
 
@@ -5337,12 +5344,14 @@ def test_keeper_loop_has_no_publish_parameter_and_returns_only_by_exception():
     import inspect
     from tools.cnesdata_delivery import application_gate as ag
     assert list(inspect.signature(ag.keeper_loop).parameters) == ["keeper", "next_event", "handlers", "poll", "sleep"]
-    assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
 
 
 @pytest.mark.parametrize("names", [(), ("prepared",), ("phase-b",), ("prepared", "phase-b"), ("prepared", "host"),
-                                   ("prepared", "phase-b", "host", "closed-ready"), ("prepared", "phase-b", "host", "terminal")])
-def test_keeper_loop_conecta_so_os_tres_gatilhos_de_estagio(names):
+                                   ("prepared", "phase-b", "host"),
+                                   ("observer-bootstrap", "prepared", "phase-b", "host", "closed-ready"),
+                                   ("observer-bootstrap", "prepared", "phase-b", "host", "terminal")])
+def test_keeper_loop_conecta_so_os_quatro_gatilhos_do_keeper(names):
     ag, keeper, store, run, _, _, _ = _keeper_loop_case()
     with pytest.raises(ValueError, match="closed keeper handlers"):
         run(handlers={name: None for name in names}, next_event=lambda window: pytest.fail("no event before handler check"))
@@ -5533,7 +5542,8 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert keeper_kwargs == {"api": world.api, "governance": governance, "evidence_aws": world.aws}
     assert by_name["register"][0][1] is validators and by_name["acquire"][1] == {"preparation_deadline": 1000 + 900}
     events_kwargs = by_name["events"][1]
-    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "clock"} and events_kwargs["owner"] == {"owner": "acquired"}
+    assert set(events_kwargs) == {"api", "governance", "run", "owner", "guard", "keeper", "clock"}
+    assert events_kwargs["owner"] == {"owner": "acquired"} and events_kwargs["keeper"] is by_name["register"][0][0]
     assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
     handler_kwargs = by_name["handlers"][1]
     assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit",
@@ -5621,8 +5631,8 @@ def test_operation_session_factory_mints_the_exact_delegation_in_process_and_nev
     assert seen[2][1:] == (governance, credentials)
 
 
-@pytest.mark.parametrize("operation", ["keeper", "inventory", "retire-static", "terminal", "other", "promotion", ""])
-def test_operation_session_factory_serves_only_the_fence_and_publish_static_operations(monkeypatch, operation):
+@pytest.mark.parametrize("operation", ["keeper", "retire-static", "terminal", "other", "promotion", ""])
+def test_operation_session_factory_serves_only_the_fence_and_static_operations(monkeypatch, operation):
     factory, admitted, world, stage, seen, client, credentials = _operation_factory_case(monkeypatch)
     with pytest.raises(ValueError, match="^operation session operation$"):
         factory(operation, {"session_name": "promotion-fence-r1"}, stage)
@@ -5817,11 +5827,12 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "close_expirations", "close_drain_capability", "register_terminal_validator", "routing_terminal_validator",
                "static_terminal_validator", "membership_terminal_validator", "quiescence_terminal_validator",
                "host_terminal_validator", "decision_terminal_validator", "publish_static_closed_ready",
-               "static_session", "static_sessions", "s3_body_bytes", "s3_put_body", "s3_body_value", "static_plan",
+               "static_session", "static_sessions", "s3_put_body", "s3_body_value", "static_plan",
                "validate_static_call", "stage_handlers", "static_window", "publish_closed_ready", "mode_capability",
                "run_mode_operation", "mode_stage", "mode_stage_window",
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
-               "static_input_source"}
+               "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
+               "static_plan_source", "static_role_facts", "_observer_publication"}
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5863,6 +5874,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "execute", "keeper_loop"),
         (gate, "prepared", "KeeperGuard"),                                      # stage_handlers' own handlers
         (gate, "prepared", "close_expirations"),
+        (gate, "prepared", "static_plan_source"),
         (gate, "prepared", "close_drain_capability"),
         (gate, "prepared", "infra_expiration_bound"),
         (gate, "prepared", "close_window"),
@@ -5872,6 +5884,17 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "capability", "closed_ready_capability"),
         (gate, "closed_ready", "publish_closed_ready"),
         (gate, "publish_closed_ready", "KeeperGuard"),
+        (gate, "observer_bootstrap", "KeeperGuard"),
+        (gate, "observer_bootstrap", "inventory_input_source"),
+        (gate, "observer_bootstrap", "_observer_publication"),
+        (gate, "observer_bootstrap", "run_inventory"),
+        (gate, "capability", "inventory_capability"),
+        (gate, "observer_bootstrap", "publish_inventory"),
+        (gate, "run_inventory", "KeeperGuard"),
+        (gate, "publish_inventory", "KeeperGuard"),
+        (gate, "inventory_capability", "static_role_facts"),
+        (gate, "inventory_capability", "_assume_static_session"),
+        (gate, "inventory_capability", "StaticBroker"),
         (gate, "host", "KeeperGuard"),
         (gate, "host", "static_window"),
         (gate, "handler", "KeeperGuard"),                                       # phase-c handlers (DD-3)
@@ -5887,8 +5910,10 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "publish_static", "unit_window"),
         (gate, "_publication_observation", "static_plan"),
         (gate, "run_publish_static", "KeeperGuard"),
+        (gate, "run_publish_static", "static_plan"),
         (gate, "static_capability", "static_plan"),
         (gate, "static_capability", "publish_static_closed_ready"),
+        (gate, "static_capability", "static_role_facts"),
         (gate, "static_capability", "_assume_static_session"),
         (gate, "static_capability", "StaticBroker"),
         (gate, "_assume_static_session", "static_plan"),
@@ -5898,7 +5923,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "_native", "validate_static_call"),
         (gate, "_static_response", "s3_body_value"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "static_sessions", "static_session"),
-        ("tools/cnesdata_delivery/lifecycle_contract.py", "s3_put_body", "s3_body_bytes"),
+        ("tools/cnesdata_delivery/static_inputs.py", "static_plan_bytes", "static_plan"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),
     }, sites
@@ -7215,46 +7240,49 @@ def _b64(raw):
     return base64.b64encode(raw).decode("ascii")
 
 
+def _member_reference(key, raw):
+    return {"member": key, "size": len(raw), "sha256": c.sha(raw)}
+
+
 @pytest.mark.parametrize("raw", [b"", b"a", b"\x00\xff" * 10, bytes(range(256))])
-def test_s3_body_crosses_the_broker_as_canonical_standard_base64(raw):
+def test_s3_put_body_atravessa_o_broker_so_como_referencia_do_membro(raw):
     import hashlib
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    assert lc.s3_body_bytes({"base64": _b64(raw)}) == raw
-    parameters = {"Bucket": "b", "Key": "index.html", "Body": {"base64": _b64(raw)}, "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
-    assert lc.s3_put_body(parameters) == raw
+    parameters = {"Bucket": "b", "Key": "index.html", "Body": _member_reference("index.html", raw),
+                  "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
+    assert lc.s3_put_body(parameters) == _member_reference("index.html", raw)
 
 
-@pytest.mark.parametrize("body", [b"QQ==", "QQ", "QR==", "QQ==\n", " QQ==", "Q Q==", "-_8=", "+/8", "QQ==QQ==", "QUI=" + "é",
-                                  None, 7, ["QQ=="]])
-def test_s3_body_refuses_anything_but_one_canonical_padded_base64_text(body):
-    from tools.cnesdata_delivery import lifecycle_contract as lc
-    with pytest.raises(ValueError, match="S3 Body"):
-        lc.s3_body_bytes({"base64": body})
-
-
-@pytest.mark.parametrize("body", [None, "QQ==", {}, {"base64": "QQ==", "encoding": "base64"}, {"b64": "QQ=="}])
-def test_s3_body_is_a_closed_single_field_object(body):
+@pytest.mark.parametrize("body", [{"base64": "QQ=="}, None, "QQ==", {}, {"member": "index.html", "size": 1},
+                                  {"member": "index.html", "size": -1, "sha256": c.sha(b"A")},
+                                  {"member": "index.html", "size": True, "sha256": c.sha(b"A")},
+                                  {"member": "index.html", "size": 1024**2 + 1, "sha256": c.sha(b"A")},
+                                  {"member": "index.html", "size": 1, "sha256": c.sha(b"A").upper()},
+                                  {"member": "index.html", "size": 1, "sha256": c.sha(b"A"), "base64": "QQ=="},
+                                  {"member": "theme-init.js", "size": 1, "sha256": c.sha(b"A")}])
+def test_s3_put_body_recusa_tudo_que_nao_e_a_referencia_fechada_do_proprio_key(body):
+    import hashlib
     from tools.cnesdata_delivery import lifecycle_contract as lc
     with pytest.raises(ValueError):
-        lc.s3_body_bytes(body)
+        lc.s3_put_body({"Bucket": "b", "Key": "index.html", "Body": body, "ChecksumSHA256": _b64(hashlib.sha256(b"A").digest())})
 
 
-@pytest.mark.parametrize("mutation", ["checksum-other", "checksum-hex", "checksum-of-text", "checksum-missing", "checksum-none",
+@pytest.mark.parametrize("mutation", ["checksum-other", "checksum-hex", "checksum-missing", "checksum-none",
                                       "body-missing", "body-invalid", "not-dict"])
-def test_s3_put_body_binds_checksum_sha256_to_the_decoded_bytes(mutation):
+def test_s3_put_body_binds_checksum_sha256_to_the_member_digest(mutation):
     import hashlib
     from tools.cnesdata_delivery import lifecycle_contract as lc
     raw = b"console.log(1)\n"
-    parameters = {"Bucket": "b", "Key": "assets/app.js", "Body": {"base64": _b64(raw)}, "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
+    parameters = {"Bucket": "b", "Key": "assets/app.js", "Body": _member_reference("assets/app.js", raw),
+                  "ChecksumSHA256": _b64(hashlib.sha256(raw).digest())}
     if mutation == "checksum-other": parameters["ChecksumSHA256"] = _b64(hashlib.sha256(raw + b" ").digest())
     if mutation == "checksum-hex": parameters["ChecksumSHA256"] = hashlib.sha256(raw).hexdigest()
-    if mutation == "checksum-of-text": parameters["ChecksumSHA256"] = _b64(hashlib.sha256(_b64(raw).encode()).digest())
     if mutation == "checksum-missing": parameters.pop("ChecksumSHA256")
     if mutation == "checksum-none": parameters["ChecksumSHA256"] = None
     if mutation == "body-missing": parameters.pop("Body")
-    if mutation == "body-invalid": parameters["Body"] = {"base64": "QR=="}
+    if mutation == "body-invalid": parameters["Body"] = {"member": "assets/app.js"}
     if mutation == "not-dict": parameters = [parameters]
-    with pytest.raises(ValueError, match="S3 Body"):
+    with pytest.raises(ValueError):
         lc.s3_put_body(parameters)
 
 
@@ -7272,10 +7300,10 @@ class _Stream:
 
 @pytest.mark.parametrize("step", [None, 1, 3])
 @pytest.mark.parametrize("raw", [b"", b"x", b"\x00" * 9, bytes(range(10))])
-def test_s3_body_value_reads_at_most_the_bound_and_returns_base64(raw, step):
+def test_s3_body_value_reads_at_most_the_bound_and_returns_only_the_digest(raw, step):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     stream = _Stream(raw, step)
-    assert lc.s3_body_value(stream, maximum=10) == {"base64": _b64(raw)}
+    assert lc.s3_body_value(stream, maximum=10) == {"sha256": c.sha(raw), "size": len(raw)}
     amounts = [amount for amount in stream.reads if amount is not None]
     assert stream.raw == b"" and all(1 <= amount <= 11 for amount in amounts)
 
@@ -7287,7 +7315,7 @@ def test_s3_body_value_admits_a_zero_bound_for_an_empty_body_only(raw):
         with pytest.raises(ValueError, match="S3 Body bound"):
             lc.s3_body_value(_Stream(raw), maximum=0)
     else:
-        assert lc.s3_body_value(_Stream(raw), maximum=0) == {"base64": ""}
+        assert lc.s3_body_value(_Stream(raw), maximum=0) == {"sha256": c.sha(b""), "size": 0}
 
 
 @pytest.mark.parametrize("step", [None, 1, 4])
@@ -7336,7 +7364,7 @@ def _static_product_calls(bucket=_STATIC_BUCKET):
                 ("observer", "s3", "ListParts", {"Bucket": bucket, "Key": "assets/big.js", "UploadId": "upload-1"})]
 
     def put(key, **extra):
-        return ("normal", "s3", "PutObject", {"Bucket": bucket, "Key": key, "Body": {"base64": _b64(body)},
+        return ("normal", "s3", "PutObject", {"Bucket": bucket, "Key": key, "Body": _member_reference(key, body),
                 "ContentType": "text/javascript", "CacheControl": "public, max-age=31536000, immutable",
                 "ChecksumSHA256": _b64(hashlib.sha256(body).digest())} | extra)
     normal = [put("assets/app.js", IfNoneMatch="*"), put("index.html"), put("theme-init.js"),

@@ -1,5 +1,4 @@
 """Guardas do broker, do STS e do handler estaticos e a publicacao contra os recibos do journal (#55, P15 rodada 1)."""
-import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -8,8 +7,10 @@ import pytest
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_stage import (ACCOUNT, BUCKET, DISTRIBUTION, EVIDENCE_GOVERNANCE, INVALIDATION, PAIR, ROLES,
-                                        _Evidence, _Native, _b64, _broker_case, _frame, _journal, _lifecycle, _metadata,
+                                        _Evidence, _Native, _broker_case, _frame, _journal, _lifecycle, _metadata,
                                         _publish_journal, _put, _session, _static_world)
+
+from test_cnesdata_static_roles import ROLE_FACTS, role_files
 
 LIST = ("observer", "s3", "ListObjectVersions", {"Bucket": BUCKET})
 
@@ -51,6 +52,8 @@ _RECEIPT_CONTRADICTIONS = {
     "invalidation-never-created": ({"invalidation_id": "IFORGED"}, "publication=invalidation_mismatch"),
     "already-published-foreign-key": ({"already_published": ["assets/foreign.js"]}, "publication=already_published_invalid"),
     "already-published-and-uploaded": ({"already_published": ["index.html"]}, "publication=already_published_invalid"),
+    "uploaded-prefix-of-receipts": ({"uploaded": [["assets/app.js", "New.1"], ["index.html", "New.2"]]},
+                                    "publication=uploaded_mismatch index=2 observed=2 receipts=3"),
 }
 
 
@@ -63,6 +66,35 @@ def test_publicacao_que_contradiz_os_recibos_do_journal_e_recusada_com_o_lease_r
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     assert len(_publish_journal(world).call_receipts) == 9
     assert _lifecycle(world)["stage"] == "static" and world.store.get()[0]["status"] == "held"
+
+
+class _Settled:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def _settled_calls(self):
+        return self.calls
+
+
+def _put_receipt(key, version):
+    return {"call": {"operation": "PutObject", "parameters": {"Key": key}}, "response": {"VersionId": version}}
+
+
+def _invalidation_receipt(identifier):
+    return {"call": {"operation": "CreateInvalidation", "parameters": {}}, "response": {"Invalidation": {"Id": identifier}}}
+
+
+def test_recibo_de_put_com_version_id_null_e_recusado():
+    from tools.cnesdata_delivery import application_gate as ag
+    with pytest.raises(ValueError, match="^static version id$"):
+        ag._publication_receipts(_Settled([_put_receipt("index.html", "null")]))
+
+
+def test_dois_recibos_de_create_invalidation_sao_recusados():
+    from tools.cnesdata_delivery import application_gate as ag
+    calls = [_put_receipt("index.html", "New.1"), _invalidation_receipt("I1"), _invalidation_receipt("I2")]
+    with pytest.raises(ValueError, match="^publication=invalidation_calls count=2$"):
+        ag._publication_receipts(_Settled(calls))
 
 
 def test_publicacao_sem_chamada_de_invalidacao_so_aceita_invalidation_id_nulo(monkeypatch):
@@ -90,22 +122,35 @@ def test_publicacao_com_tipo_de_campo_errado_recusa_pela_forma(monkeypatch, obse
     assert _lifecycle(world)["stage"] == "static"
 
 
-@pytest.mark.parametrize("length, accepted", [(96528, True), (96529, False), (97243, False), (98064, False),
-                                              (125138, False), (310126, False)])
-def test_put_object_acima_do_orcamento_recusa_com_tamanho_e_limite_antes_de_evidencia_ou_io(length, accepted):
-    ag, broker, journal, clients, evidence = _broker_case()
+@pytest.mark.parametrize("length", [96528, 96529, 97243, 98064, 125138, 310126])
+def test_put_object_dos_tamanhos_que_o_p15_recusava_passa_pelo_digest_com_pedido_abaixo_do_limite(length):
+    from test_cnesdata_static_inputs import _digest_broker, _digest_put
     body = (bytes(range(256)) * 1212)[:length]
-    role, service, operation, parameters = _put("assets/app.js")
-    parameters = parameters | {"Body": {"base64": _b64(body)}, "ChecksumSHA256": _b64(hashlib.sha256(body).digest())}
-    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters},
-                           limit=2 * 1024**2))
-    frame = _frame(role, service, operation, parameters)
-    if accepted:
-        ag._adapter_message(frame, journal)
-        assert size <= 129024 and len(clients["normal"].calls) == 1 and evidence.writes
+    ag, broker, journal, clients, evidence = _digest_broker({"assets/app.js": body, "index.html": b"<html></html>\n",
+                                                             "theme-init.js": b"theme()\n"})
+    role, service, operation, parameters = _digest_put("assets/app.js", body)
+    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}))
+    ag._adapter_message(_frame(role, service, operation, parameters), journal)
+    (call,) = clients["normal"].calls
+    assert size < 1024 < ag.STATIC_REQUEST_LIMIT and call[3]["Body"] == body and evidence.writes
+
+
+@pytest.mark.parametrize("slack, admitted", [(0, True), (-1, False)])
+def test_pedido_com_exatamente_o_limite_de_bytes_e_aceito_e_um_byte_acima_e_recusado(monkeypatch, slack, admitted):
+    from test_cnesdata_static_inputs import _digest_broker, _digest_put
+    body = b"<html></html>\n"
+    ag, broker, journal, clients, evidence = _digest_broker({"assets/app.js": b"app()\n", "index.html": body,
+                                                             "theme-init.js": b"theme()\n"})
+    assert ag.STATIC_REQUEST_LIMIT == 128 * 1024 - 2048
+    role, service, operation, parameters = _digest_put("index.html", body)
+    size = len(c.canonical({"role": role, "service": service, "operation": operation, "parameters": parameters}))
+    monkeypatch.setattr(ag, "STATIC_REQUEST_LIMIT", size + slack)
+    if admitted:
+        ag._adapter_message(_frame(role, service, operation, parameters), journal)
+        assert len(clients["normal"].calls) == 1
         return
-    with pytest.raises(ValueError, match=f"^static request size={size} limit=129024$"):
-        ag._adapter_message(frame, journal)
+    with pytest.raises(ValueError, match=f"^static request size={size} limit={size - 1}$"):
+        ag._adapter_message(_frame(role, service, operation, parameters), journal)
     assert clients["normal"].calls == [] and evidence.writes == []
 
 
@@ -118,10 +163,12 @@ def test_politica_estatica_e_exatamente_o_documento_esperado_por_alias():
         return {"Effect": "Allow", "Action": actions, "Resource": resource, "Condition": condition}
     expected = {"observer": [allow(["s3:ListBucketVersions", "s3:ListBucketMultipartUploads"], bucket),
                              allow(["s3:GetObjectVersion", "s3:ListMultipartUploadParts"], bucket + "/*")],
-                "normal": [allow(["s3:PutObject", "s3:GetObject"], bucket + "/*"),
+                "normal": [allow(["s3:PutObject", "s3:GetObject"], [bucket + "/assets/app.js", bucket + "/index.html"]),
                            allow(["cloudfront:CreateInvalidation"], DISTRIBUTION)]}
+    keys = {"observer": None, "normal": ["assets/app.js", "index.html"]}
     for alias, statements in expected.items():
-        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000)
+        policy = session_policy.static_session_policy(alias, bucket_arn=bucket, distribution_arn=DISTRIBUTION, deadline=2000,
+                                                      keys=keys[alias])
         assert policy == {"Version": "2012-10-17", "Statement": statements}
 
 
@@ -207,7 +254,7 @@ def test_broker_estatico_exige_o_status_nativo_exato_de_cada_operacao(call, stat
     assert len(clients["normal"].calls) == 1 and journal.unknown
 
 
-@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (128 * 1024 + 1, False)])
+@pytest.mark.parametrize("size, accepted", [(64 * 1024, True), (1024**2, True), (1024**2 + 1, False)])
 def test_get_object_acima_do_limite_do_corpo_e_recusado(size, accepted):
     ag, broker, journal, clients, evidence = _broker_case()
     ag._adapter_message(_frame(*_put("index.html")), journal)
@@ -215,7 +262,7 @@ def test_get_object_acima_do_limite_do_corpo_e_recusado(size, accepted):
     frame = _frame("normal", "s3", "GetObject", {"Bucket": BUCKET, "Key": "index.html"})
     if accepted:
         reply, _ = ag._adapter_message(frame, journal)
-        assert reply["value"]["Body"] == {"base64": _b64(b"x" * size)}
+        assert reply["value"]["Body"] == {"sha256": c.sha(b"x" * size), "size": size}
         return
     with pytest.raises(ValueError, match="^S3 Body bound$"):
         ag._adapter_message(frame, journal)
@@ -265,7 +312,7 @@ def _sts(monkeypatch, *, now, credential_limit, expiry=900, governance=EVIDENCE_
         return Operation()
 
     def assume():
-        return ag._assume_static_session(governance=governance, journal=journal, binding=binding,
+        return ag._assume_static_session(governance=governance, journal=journal, binding=binding, roles=ROLE_FACTS,
                                          credential_limit=credential_limit, operation_session=factory, clock=lambda: now)
     return assume, window, minted
 
@@ -336,7 +383,8 @@ def test_capability_recusa_recibo_do_host_sem_o_closed_ready_do_keeper_antes_do_
     minted = []
     with pytest.raises(ValueError, match="^publish-static host-receipt closed-ready binding$"):
         ag.static_capability(governance=EVIDENCE_GOVERNANCE, journal=journal, keeper=keeper, credential_limit=6000,
-                             operation_session=lambda *args: minted.append(args), clock=lambda: 1505)
+                             operation_session=lambda *args: minted.append(args), clock=lambda: 1505,
+                             carrier=ag._static_binding(EVIDENCE_GOVERNANCE, journal), prepared=role_files())
     assert minted == [] and journal._failed and store.get()[0]["status"] == "held"
 
 
