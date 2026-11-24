@@ -152,7 +152,7 @@ def tar_member(tar_raw, reference):
 
 
 def static_body_budget(tar_raw, keys, seconds):
-    """Candidate member sizes under the per-file cap and their sum under STATIC_UPLOAD_FLOOR x the child timeout.
+    """Candidate member sizes under the per-file cap and their sum under STATIC_UPLOAD_FLOOR x (timeout - root block).
 
     Returns: the total bytes. Raises: ValueError static_body=member_absent|member_size or static_total=over_window.
     """
@@ -168,8 +168,9 @@ def static_body_budget(tar_raw, keys, seconds):
         c.require(found[0] <= lc.STATIC_MEMBER_LIMIT,
                   f"static_body=member_size key={key} size={found[0]} limit={lc.STATIC_MEMBER_LIMIT}")
         total += found[0]
-    limit = lc.STATIC_UPLOAD_FLOOR * seconds
-    c.require(total <= limit, f"static_total=over_window total={total} limit={limit} seconds={seconds}")
+    limit = lc.STATIC_UPLOAD_FLOOR * max(0, seconds - lc.STATIC_ROOT_BLOCK_SECONDS)
+    c.require(0 < limit and total <= limit, f"static_total=over_window total={total} limit={limit} seconds={seconds} "
+              f"reserve={lc.STATIC_ROOT_BLOCK_SECONDS}")
     return total
 
 
@@ -207,9 +208,19 @@ def _observed(specs, reports, alias, kind, operation):
     c.require(spec.get("service") == "iam" and spec.get("operation") == operation and spec.get("absent") is False,
               f"static_role=readback_absent alias={alias} operation={operation}")
     report = reports[found[0]]
-    c.require(type(report) is dict and report.get("service") == "iam" and report.get("operation") == operation
-              and type(report.get("observed")) is dict, f"static_role=readback_shape alias={alias} operation={operation}")
-    return report["observed"]
+    observed = report.get("observed") if type(report) is dict else None
+    c.require(type(observed) is dict and report.get("service") == "iam" and report.get("operation") == operation
+              and _named(spec.get("parameters"), observed, operation),
+              f"static_role=readback_shape alias={alias} operation={operation}")
+    return observed
+
+
+def _named(parameters, observed, operation):
+    if operation == "get_role":
+        role = observed.get("Role")
+        return type(parameters) is dict and type(role) is dict and role.get("RoleName") == parameters.get("RoleName")
+    return (type(parameters) is dict and observed.get("RoleName") == parameters.get("RoleName")
+            and observed.get("PolicyName") == parameters.get("PolicyName"))
 
 
 def inventory_observation(raw, inputs):

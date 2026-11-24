@@ -248,6 +248,7 @@ def static_sessions(binding, operation):
 
 STATIC_MEMBER_LIMIT = 1024**2
 STATIC_UPLOAD_FLOOR = 512 * 1024
+STATIC_ROOT_BLOCK_SECONDS = 5 * 20
 
 
 def s3_put_body(parameters):

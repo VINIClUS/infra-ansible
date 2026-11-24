@@ -125,7 +125,7 @@ STATIC_RESPONSE_FIELDS = {
     "GetObject": ("Body VersionId ContentType CacheControl", {}), "CreateInvalidation": ("Invalidation", {}),
 }
 STATIC_REQUEST_LIMIT = 128 * 1024 - 2048
-STATIC_ROOT_BLOCK_SECONDS = 5 * 20
+STATIC_ROOT_BLOCK_SECONDS = lc.STATIC_ROOT_BLOCK_SECONDS
 # host_gate.py public handoff (version 1) and validate_recovery_decision.
 HOST_HANDOFF_FIELDS = ("version kind caller producer_sha closed_ready_sha256 original_request_sha256 status response_sha256 "
                        "proof_sha256 receipt_sha256 witness_sha256 operation_id binding_sha256 generation recovery_decision "
