@@ -409,6 +409,44 @@ def test_prepare_operational_resolve_politicas_estaticas_e_de_modo_no_mesmo_plan
                 mode="operational")
 
 
+
+def _operational_source_case():
+    from fixtures.cnesdata_delivery_lifecycle import mode_source_case
+    plan, sources, inputs = mode_source_case()
+    configured = plan["configuration"]["root_module"]["module_calls"]["runtime_iam"]["module"]["resources"]
+    plan["resource_changes"] += json.loads(json.dumps(
+        [row for row in plan["resource_changes"] if ".mode_seed[0]" in row["address"]]).replace("mode_seed", "static_normal"))
+    configured += json.loads(json.dumps([row for row in configured if row["address"].endswith(".mode_seed")]).replace(
+        "mode_seed", "static_normal"))
+    path = "infra/opentofu/modules/runtime-iam/"
+    blocks = sources[path + "mode-canary.tf"].split(b"\n}\n")
+    sources[path + "static-promotion.tf"] = (blocks[0] + b"\n}\n" + blocks[1] + b"\n}").replace(b"mode_seed", b"static_normal")
+    return plan, sources, inputs, configured
+
+
+@pytest.mark.parametrize("alias,shape,refusal", [
+    ("mode_seed", "object", None),
+    ("static_normal", "object", "iam=constant_binding"),
+    ("mode_seed", "list", "iam=constant_binding"),
+])
+def test_prepare_operational_isenta_jsonencode_sem_constante_so_no_documento_de_modo(alias, shape, refusal):
+    from tools.cnesdata_delivery.iam_boundary import prepare
+    plan, sources, inputs, configured = _operational_source_case()
+    policy, = [row for row in configured if row["address"] == "aws_iam_role_policy." + alias]
+    policy["expressions"]["policy"] = {}
+    if shape == "list":
+        path = "infra/opentofu/modules/runtime-iam/mode-canary.tf"
+        head, tail = sources[path].split(b'resource "aws_iam_role_policy" "mode_seed"', 1)
+        block, rest = tail.split(b"\n}", 1)
+        block = block.replace(b"policy = jsonencode(", b"policy = jsonencode([").replace(b"})", b"}])")
+        sources[path] = head + b'resource "aws_iam_role_policy" "mode_seed"' + block + b"\n}" + rest
+    if refusal:
+        with pytest.raises(ValueError, match=refusal):
+            prepare(plan, inputs, ACCOUNT, "application-prepare", sources, mode="operational")
+    else:
+        resolver = prepare(plan, inputs, ACCOUNT, "application-prepare", sources, mode="operational")
+        assert "module.runtime_iam.aws_iam_role_policy.mode_seed[0]" in resolver.traces
+
 def _runtime_case(context="promotion"):
     inputs, owner = _mode_input(context)
     admitted = _admit(inputs, owner)
