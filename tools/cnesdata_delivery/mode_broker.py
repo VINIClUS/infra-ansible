@@ -1,8 +1,11 @@
 """Mode SDK broker, fence-read broker and mode readbacks of the promotion mode stages (P16b)."""
 import re
+import time
 
 from tools.cnesdata_delivery import contract as c
-from tools.cnesdata_delivery.application_gate import ClosedReadyBroker
+from tools.cnesdata_delivery import lifecycle_contract as lc
+from tools.cnesdata_delivery.application_gate import (AdapterJournal, ClosedReadyBroker, Keeper, _assume_fence_session,
+                                                      _fence_operation_iam)
 
 MODE_PHASES = ("unit", "recovery", "audit")
 MODE_SEED_KEYS = frozenset((family, action) for family in ("seed-raw", "seed-run", "seed-unit") for action in ("put", "get"))
@@ -100,3 +103,48 @@ class FenceReadBroker(ClosedReadyBroker):
 
     The ClosedReadyBroker reservation, durable evidence and poison rules; lc.validate_fence_call admits only those reads.
     """
+
+
+def fence_observe_capability(*, governance, authority, journal, keeper, prepared, credential_limit, operation_session,
+                             clock=time.time):
+    """Observe capability (design 3.2): the authenticated PreparedFence role and recomputed scope, the local
+    operation-session effective IAM, the observe fence STS and a FenceReadBroker attached to the keeper.
+
+    Every check precedes STS; a refusal poisons the journal, keeps the lease held and mints no credential.
+    Returns: FenceReadBroker. Raises: ValueError.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    c.require(type(journal) is AdapterJournal and type(keeper) is Keeper and type(prepared) is lr.PreparedFence,
+              "mode observe original journal/keeper/prepared authority")
+    c.require(journal._request["operation"] in lc.MODE_OBSERVES and getattr(journal, "_broker", None) is None,
+              "mode observe capability only")
+    try:
+        keeper.lease.check()
+        owner = journal._request["owner"] | journal._identity
+        manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+        role = c.loads(prepared["fence-role.json"], canonical=True)
+        evaluation = c.loads(prepared["fence-evaluation.json"], canonical=True)
+        c.require(manifest["activation_sha256"] == journal._request["activation_sha256"] == c.sha(journal._inputs["activation"]),
+                  "prepared/request/input activation_sha256")
+        c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
+        c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
+        cases = {case["case_id"]: case for case in evaluation["cases"]}
+        derived = lr.fence_policy_scope(governance, role["policy"])
+        c.require(cases["get-fence"]["resource"] == derived["control_table_arn"]
+                  and cases["probe-own"]["resource"] == derived["execution_prefix"] + "0" * 16,
+                  "capability scope recomputed from prepared policy")
+        scope = {"account": governance["account_id"], "control_table_arn": derived["control_table_arn"],
+                 "machine_arn": derived["machine_arn"]}
+        _fence_operation_iam(governance, authority, journal, role, clock)
+        journal.guard()
+        prepared_sha256 = c.sha(prepared["fence-prepared.json"])
+        session = _assume_fence_session(governance=governance, role=role, scope=scope, journal=journal,
+                                        prepared_sha256=prepared_sha256, credential_limit=credential_limit,
+                                        operation_session=operation_session, clock=clock)
+        broker = FenceReadBroker(session.evidence, governance, journal, session, prepared_sha256=prepared_sha256, clock=clock)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        keeper.attach(journal)
+        raise
