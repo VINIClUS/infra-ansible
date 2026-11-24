@@ -385,7 +385,7 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
-def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False):
+def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
     fakes: source, capability, child."""
     from types import SimpleNamespace
@@ -396,7 +396,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     world = _install_static(monkeypatch, _api_world(monkeypatch))
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
-                                 capability=capability, observations=observations, pending=pending, publications=[])
+                                 capability=capability, observations=observations, pending=pending, publications=[],
+                                 fail=fail)
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -404,6 +405,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         assert operation in PRODUCT["operations"], operation
         world.events.append(("child", operation))
         world.mode.calls.append((operation, kwargs["timeout"], world.clock.value, dict(journal._inputs)))
+        if world.mode.fail:
+            raise ValueError("fixture child failed")
         kind = lc.ADAPTER_OBSERVATIONS[operation]
         mode = PRODUCT["operations"][operation][0]
         raw = (PRODUCT["observation"](mode, world.mode.checks.get(mode, []), journal._request, journal._inputs)
@@ -428,7 +431,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         if world.mode.capability is not None:
             journal._failed = True
             raise ValueError(world.mode.capability)
-        broker = SimpleNamespace(aws="operation-client", evidence=[], session=SimpleNamespace(client="c", evidence="e"))
+        broker = SimpleNamespace(aws="operation-client", evidence=[SimpleNamespace(_aws="ledger-client")],
+                                 session=SimpleNamespace(client="c", evidence="e"))
         world.mode.dropped.append(broker)
         return broker
     monkeypatch.setattr(ag, "mode_capability", mode_capability)
@@ -509,6 +513,19 @@ def test_operacao_de_modo_nunca_roda_o_child_quando_a_capability_recusa(monkeypa
         _unit_stage(world)
     assert world.mode.calls == [] and _record(world) == before
     assert {"kind": "context-failed"} in world.keeper.uncertainty()
+
+
+def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(monkeypatch):
+    world = _mode_world(monkeypatch, fail=True)
+    _enter_unit(world)
+    before = _record(world)
+    with pytest.raises(ValueError, match="^fixture child failed$"):
+        _unit_stage(world)
+    assert [call[0] for call in world.mode.calls] == ["unit-seed"]
+    broker, = world.mode.dropped
+    assert (broker.aws, broker.session.client, broker.session.evidence) == (None, None, None)
+    assert [ledger._aws for ledger in broker.evidence] == [None]
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
 
 @pytest.mark.parametrize("flags", [{"observations": 2}, {"observations": 0}, {"pending": True}])
