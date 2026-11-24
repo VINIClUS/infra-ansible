@@ -869,6 +869,74 @@ def test_estagio_unit_recusa_record_de_outro_modo_antes_do_seed(monkeypatch):
     assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
 
+def _lease_journal(operation, *, observations=(), inputs=None):
+    from tools.cnesdata_delivery.application_gate import AdapterJournal
+    request, owner, window, original = _mode_case(operation)
+    if inputs is not None:
+        original = original | inputs
+        request["inputs"] = {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in original.items()}
+
+    class Guard:
+        def check(self, seconds=0):
+            return None
+    journal = AdapterJournal(c.canonical(request), operation=operation, owner=owner, window=window, inputs=original,
+                             activation_sha256=request["activation_sha256"], guard=Guard())
+    for kind, raw in observations:
+        journal.observe(kind, raw)
+    return journal
+
+
+def _source(operation, names, *journals):
+    from types import SimpleNamespace
+    from tools.cnesdata_delivery import application_gate as ag
+    window = _mode_case(operation)[2]
+    return ag.mode_input_source(keeper=SimpleNamespace(_contexts=list(journals)), owner={}, window=window,
+                                operation=operation, names=names), window
+
+
+@pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
+def test_mode_start_e_do_keeper_com_o_instante_de_abertura_da_janela_e_o_frozen_que_o_produto_aceita(operation):
+    inputs, window = _source(operation, ["mode-start"])
+    assert inputs == {"mode-start": c.canonical({"version": 1, "kind": "mode-start", "frozen": operation == "audit-start",
+                                                 "started_at": c.utc(window["admitted_at"])})}
+
+
+@pytest.mark.parametrize("operation", ["unit-start", "recovery-start", "audit-start"])
+def test_previous_e_sempre_nulo_e_um_segundo_start_no_lease_recusa_reentrada(operation):
+    assert _source(operation, ["previous"], _lease_journal(operation.replace("-start", "-observe")))[0] == {
+        "previous": b"null\n"}
+    with pytest.raises(ValueError, match="^mode reentry unavailable$"):
+        _source(operation, ["previous"], _lease_journal(operation))
+
+
+@pytest.mark.parametrize("operation", ["audit-record", "audit-start"])
+def test_mode_seed_do_audit_e_a_observacao_do_recovery_seed_deste_lease(operation):
+    seed = c.canonical({"fixture_seed": "recovery"})
+    journal = _lease_journal("recovery-seed", observations=[("mode-seed", seed)])
+    assert _source(operation, ["mode-seed"], journal)[0] == {"mode-seed": seed}
+    for journals in ((), (journal, _lease_journal("recovery-seed", observations=[("mode-seed", seed)])),
+                     (_lease_journal("recovery-seed"),)):
+        with pytest.raises(ValueError, match="^mode-seed original$"):
+            _source(operation, ["mode-seed"], *journals)
+
+
+def test_recovery_readbacks_do_audit_observe_sao_os_readbacks_ligados_ao_recovery_start_deste_lease():
+    readbacks = c.canonical({"fixture_readbacks": "recovery"})
+    journal = _lease_journal("recovery-start", inputs={"readbacks": readbacks})
+    assert _source("audit-observe", ["recovery-readbacks"], journal)[0] == {"recovery-readbacks": readbacks}
+    with pytest.raises(ValueError, match="^recovery-readbacks original$"):
+        _source("audit-observe", ["recovery-readbacks"])
+
+
+@pytest.mark.parametrize("operation, names", [("unit-seed", ["mode-start", "fixture-manifest"]),
+                                              ("unit-record", ["mode-input"]), ("unit-start", ["readbacks"]),
+                                              ("recovery-observe", ["network"]), ("unit-seed", ["mode-seed"]),
+                                              ("unit-observe", ["recovery-readbacks"])])
+def test_origem_ainda_nao_conectada_recusa_sem_derivar_nenhuma_outra(operation, names):
+    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+        _source(operation, names)
+
+
 def _c_files(world, purpose, **changes):
     window = _record(world)
     checkpoint = {"state": {"lineage": "original-lineage", "serial": 9, "state_sha256": "4" * 64},
