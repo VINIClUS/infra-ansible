@@ -70,7 +70,8 @@ def test_documentos_nativos_preservam_intersecao_com_uniao_e_deny_global(
         )
         session = inline(governance, role)
         assert_matrix(
-            identity, managed, json.loads(session["Policy"]), governance, role
+            identity, managed, json.loads(session["Policy"]),
+            governance | {"state_bucket_key": True}, role
         )
 
 
