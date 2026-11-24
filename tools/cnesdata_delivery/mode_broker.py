@@ -27,7 +27,7 @@ PRODUCT_FRAMES = (
     ("cnes_domain.orchestration.mode_canary", "product_mode_canary.py",
      "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2"),
     ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
-     "250343666e0b199ae1ddbd29fb030de144d92d8fa18f576a27fa55b3d314d881"))
+     "3b95d77a70c9c121c6dc77cea9b71d0cac5fab359fd4b6d655269f3a61a315a6"))
 _PRODUCT = {}
 _RUN = re.compile(r"[a-z0-9-]{1,64}")
 _DISPATCH = re.compile(r"[A-Za-z0-9._:-]{1,128}")

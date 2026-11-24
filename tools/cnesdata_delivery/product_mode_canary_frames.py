@@ -35,6 +35,7 @@ COUNTERS: Final = {
     "run-hang": "recovery_hangs",
 }
 EFFECT_KINDS: Final = frozenset({*COUNTERS, "native-mutation", "settle-permit"})
+ATTEMPTS: Final = 3
 RECORD_ENTITY: Final = "MODECANARYRECORD"
 CONTROL_ENTITY: Final = "MODECANARYCONTROL"
 EFFECT_ENTITY: Final = "MODECANARYEFFECT"
@@ -353,6 +354,7 @@ def transition(table: str, binding: ModeCanaryBinding, ticket_text: str | None,
 
 
 __all__ = [
+    "ATTEMPTS",
     "BINDING_ENTITY",
     "CEILINGS",
     "CONTROL_ENTITY",
