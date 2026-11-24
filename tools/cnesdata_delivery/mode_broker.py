@@ -361,6 +361,28 @@ def mode_readback_bytes(mode, resources, responses):
     return c.canonical(document)
 
 
+_SUBNET = re.compile(r"subnet-[0-9a-f]{8,17}")
+_SECURITY_GROUP = re.compile(r"sg-[0-9a-f]{8,17}")
+_CLUSTER = re.compile(r"arn:aws:ecs:[a-z0-9-]+:[0-9]{12}:cluster/[A-Za-z0-9_-]{1,255}")
+
+
+def mode_network_input(resources):
+    """Design 2 origin (a): the `network` input of recovery-observe and audit-observe from the mode-input resources.
+
+    Returns: canonical {cluster, sorted subnets, security_group, public_ip, platform}. Raises: ValueError.
+    """
+    network, cluster = resources.get("network"), resources.get("cluster_arn")
+    subnets = network.get("public_subnet_ids") if type(network) is dict else None
+    group = network.get("security_group_id") if type(network) is dict else None
+    c.require(type(network) is dict and set(network) == {"public_subnet_ids", "security_group_id"}
+              and type(subnets) is list and 1 <= len(subnets) <= 16 and len(set(map(str, subnets))) == len(subnets)
+              and all(type(item) is str and _SUBNET.fullmatch(item) is not None for item in subnets)
+              and type(group) is str and _SECURITY_GROUP.fullmatch(group) is not None
+              and type(cluster) is str and _CLUSTER.fullmatch(cluster) is not None, "mode network input")
+    return c.canonical({"cluster": cluster, "subnets": sorted(subnets), "security_group": group, "public_ip": "ENABLED",
+                        "platform": "1.4.0"})
+
+
 MODE_WAIT_RESERVE = 30
 MODE_WAIT_INTERVAL = 5
 
