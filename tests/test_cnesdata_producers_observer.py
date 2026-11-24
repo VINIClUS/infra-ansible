@@ -5,17 +5,19 @@ import json
 import pytest
 
 from fixtures.cnesdata_phase_a_replay import ACCOUNT, ReplayChain
-from fixtures.cnesdata_producers import (ATTEMPT, EVIDENCE, KEY_HEX, RUN, SOURCE, config, namespace_prefix,
-                                         public_objects, rehearsal_key, request, world)
+from fixtures.cnesdata_producers import (KEY_HEX, SOURCE, config, namespace_prefix, public_objects, request,
+                                         stub_plan, world)
 from tools.cnesdata_delivery import contract as c, drift_catalog, session_owner
-from tools.cnesdata_delivery.producers import aws_reader, observer
+from tools.cnesdata_delivery.producers import aws_reader, observer, rehearsal_plan
 
 KEY = bytes.fromhex(KEY_HEX)
 
 
 @pytest.fixture
 def chain(monkeypatch, tmp_path):
-    return ReplayChain(monkeypatch, tmp_path)
+    built = ReplayChain(monkeypatch, tmp_path)
+    stub_plan(monkeypatch, built)
+    return built
 
 
 def run(chain, *, mutate=None, **changes):
@@ -31,16 +33,63 @@ def observations(result):
     return c.loads(result.files["observations.json"], canonical=True)
 
 
-def test_observador_registra_o_sha256_do_plano_de_ensaio_lido_de_phase_inputs(chain):
+def test_observador_registra_o_sha256_do_plano_gerado_no_job(chain, monkeypatch):
+    seen = []
+    stub_plan(monkeypatch, chain, seen)
     reader, result, _ = run(chain)
-    settings = config()
-    plan_key = rehearsal_key(settings)
-    assert (settings["evidence_bucket"], plan_key) in reader.reads
     measured = observations(result)["drift-baseline"]
     assert measured["rehearsal_plan_sha256"] == c.sha(c.canonical(chain.replay.plan))
     assert measured["handoff_sha256"] == c.sha(result.files["drift-handoff.json"])
     assert measured["catalog_sha256"] == drift_catalog.CATALOG_SHA256 and measured["matrix_version"] == 2
     assert measured["state_identity"] == c.state_identity(c.canonical(chain.prior))
+    (settings, release_inputs, session), = seen
+    assert settings == config() and session is reader.session
+    assert release_inputs == c.canonical(chain.gov["phase_a_inputs"])
+
+
+def test_plano_nunca_chega_ao_leitor_nem_aos_arquivos_publicos(chain, monkeypatch):
+    marker = "plano-que-fica-no-job"
+    monkeypatch.setattr(rehearsal_plan, "plan", lambda *args: c.canonical(chain.replay.plan | {"format_version": marker}))
+    reader, result, _ = run(chain)
+    assert set(result.files) == {"drift-handoff.json", "observations.json"}
+    assert all(marker.encode() not in raw for raw in result.files.values())
+    assert not hasattr(reader, "writes") and all(marker not in key for _, key in reader.reads)
+    assert observations(result)["drift-baseline"]["rehearsal_plan_sha256"] == c.sha(
+        c.canonical(chain.replay.plan | {"format_version": marker}))
+
+
+def test_main_nao_grava_o_plano_na_saida_nem_no_arquivo_privado(cli, chain, monkeypatch, tmp_path):
+    marker = "plano-que-fica-no-job"
+    reader, names, _ = world(chain, config())
+    monkeypatch.setattr(rehearsal_plan, "plan", lambda *args: c.canonical(chain.replay.plan | {"format_version": marker}))
+    monkeypatch.setattr(aws_reader, "Reader", lambda *args: reader)
+    asked = tmp_path / "request.json"
+    asked.write_text(json.dumps(request(mode="local", public_objects=public_objects(names))))
+    assert observer.main(["--request", str(asked), "--out", str(tmp_path / "out"),
+                          "--private-out", str(tmp_path / "private.json")]) == 0
+    written = [path for path in tmp_path.rglob("*") if path.is_file() and path != asked]
+    assert written and all(marker.encode() not in path.read_bytes() for path in written)
+
+
+def test_falha_do_plano_para_antes_de_qualquer_medicao(chain, monkeypatch):
+    def refuse(*args):
+        raise ValueError("tofu plan exit=1")
+
+    monkeypatch.setattr(rehearsal_plan, "plan", refuse)
+    settings = config()
+    reader, names, _ = world(chain, settings)
+    with pytest.raises(ValueError, match="tofu plan exit=1"):
+        observer.observe(reader, settings, request(public_objects=public_objects(names)), KEY_HEX)
+    assert reader.calls == [] and (settings["state_bucket"], observer.STATE_KEY) not in reader.reads
+
+
+def test_observador_recusa_insumos_de_release_ausentes_antes_do_plano(chain, monkeypatch):
+    called = []
+    monkeypatch.setattr(rehearsal_plan, "plan", lambda *args: called.append(args))
+    with pytest.raises(ValueError, match="phase input namespace objects"):
+        run(chain, mutate=lambda reader, settings, names: reader.objects.pop(
+            (settings["evidence_bucket"], namespace_prefix(settings) + "promotion.json")))
+    assert called == []
 
 
 def test_observador_conta_linhas_e_especificacoes_do_handoff(chain):
@@ -50,14 +99,6 @@ def test_observador_conta_linhas_e_especificacoes_do_handoff(chain):
     assert measured["rows_before"] == len(document["matrix"]["before"])
     assert measured["rows_after"] == len(document["matrix"]["after"])
     assert measured["readbacks_before"] == len(document["readbacks"]["before"]) and measured["absent_rows"] == 0
-
-
-def test_observador_sem_plano_de_ensaio_recusa(chain):
-    def remove(reader, settings, names):
-        del reader.objects[settings["evidence_bucket"], rehearsal_key(settings)]
-
-    with pytest.raises(ValueError, match="rehearsal plan"):
-        run(chain, mutate=remove)
 
 
 def test_observador_so_chama_operacoes_de_leitura_e_nao_escreve(chain):
@@ -134,13 +175,6 @@ def test_namespace_recusa_hash_diferente_do_publico(chain):
 
     with pytest.raises(ValueError, match="namespace"):
         run(chain, mutate=corrupt)
-
-
-def test_plano_de_ensaio_fora_do_namespace_nao_muda_a_contagem(chain):
-    reader, _, _ = run(chain)
-    prefix = namespace_prefix(config())
-    assert len(reader.list(config()["evidence_bucket"], prefix)) == 3
-    assert len(reader.list(config()["evidence_bucket"], EVIDENCE + "phase-inputs/")) == 4
 
 
 def test_fatos_da_sessao_sao_hmac_e_iguais_aos_do_session_owner(chain):
@@ -277,37 +311,22 @@ def test_main_recusa_recusas_do_contrato_so_com_a_classe(cli, monkeypatch, capsy
     assert "cnesdata-evid" not in seen.err + seen.out and "refused reason=ValueError" in seen.err
 
 
-@pytest.mark.parametrize("change", [lambda v: v | {"extra": "x"}, lambda v: {k: x for k, x in v.items() if k != "ecr_repository"}])
-def test_main_recusa_configuracao_com_chaves_diferentes_das_seis(cli, monkeypatch, capsys, change):
+@pytest.mark.parametrize("change", [lambda v: v | {"extra": "x"}, lambda v: {k: x for k, x in v.items() if k != "ecr_repository"},
+                                    lambda v: {k: x for k, x in v.items() if k != "shared_outputs"}],
+                         ids=["chave-extra", "sem-ecr", "sem-shared-outputs"])
+def test_main_recusa_configuracao_com_chaves_diferentes_das_sete(cli, monkeypatch, capsys, change):
     monkeypatch.setenv("OBSERVER_CONFIG", json.dumps(change(config())))
     assert observer.main(cli) != 0
     assert "refused reason=ValueError" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("field", ["ecr_repository", "evidence_prefix", "state_bucket", "evidence_bucket"])
-def test_varredura_de_vazamento_cobre_os_seis_valores_da_configuracao(field):
+@pytest.mark.parametrize("field", ["ecr_repository", "evidence_prefix", "state_bucket", "evidence_bucket", "shared_outputs"])
+def test_varredura_de_vazamento_cobre_os_valores_da_configuracao(field):
     settings = config() | {"ecr_repository": "cnesdata-ecr-9b2d71"}
-    leaked = {"drift-handoff.json": c.canonical({"note": "x " + settings[field] + " y"}), "observations.json": c.canonical({})}
+    value = settings[field] if field != "shared_outputs" else settings[field]["kms_key_arn"]
+    leaked = {"drift-handoff.json": c.canonical({"note": "x " + value + " y"}), "observations.json": c.canonical({})}
     with pytest.raises(ValueError):
         observer._sanitize(leaked, settings, KEY_HEX, {})
-
-
-@pytest.mark.parametrize("other", [
-    {"source": "b" * 40}, {"run": RUN + 1}, {"attempt": ATTEMPT + 1},
-], ids=["outra-fonte", "outro-run", "outra-tentativa"])
-def test_observador_recusa_plano_de_ensaio_de_outra_fonte_run_ou_tentativa(chain, other):
-    def move(reader, settings, names):
-        raw = reader.objects.pop((settings["evidence_bucket"], rehearsal_key(settings)))
-        reader.objects[settings["evidence_bucket"], rehearsal_key(settings, **other)] = raw
-
-    with pytest.raises(ValueError, match="rehearsal plan absent"):
-        run(chain, mutate=move)
-
-
-def test_observador_le_a_chave_de_ensaio_do_proprio_run(chain):
-    reader, _, _ = run(chain)
-    assert (config()["evidence_bucket"], rehearsal_key(config())) in reader.reads
-    assert observer.rehearsal_key(config(), request()) == rehearsal_key(config())
 
 
 def test_observador_mede_o_pin_do_audit_alem_de_plan_e_deploy(chain):
@@ -324,23 +343,3 @@ def test_observador_fecha_roles_da_configuracao_com_o_audit(monkeypatch):
     monkeypatch.setenv("OBSERVER_CONFIG", c.canonical(without).decode())
     with pytest.raises(ValueError):
         observer._config()
-
-
-def test_observador_le_o_plano_de_ensaio_da_tentativa_pedida_e_nao_o_da_primeira(chain):
-    second = ATTEMPT + 1
-    other = copy.deepcopy(chain.replay.plan)
-    other["format_version"] = "outro"
-
-    def stage(reader, settings, names):
-        raw = reader.objects.pop((settings["evidence_bucket"], rehearsal_key(settings)))
-        reader.objects[settings["evidence_bucket"], rehearsal_key(settings, attempt=second)] = raw
-        reader.objects[settings["evidence_bucket"], rehearsal_key(settings)] = c.canonical(other)
-        old, new = namespace_prefix(settings), namespace_prefix(settings).replace(f"/{ATTEMPT}/", f"/{second}/")
-        for (bucket, key), value in list(reader.objects.items()):
-            if key.startswith(old):
-                reader.objects[bucket, new + key[len(old):]] = value
-
-    reference = request()["payload_reference"] | {"run_attempt": second}
-    _, result, _ = run(chain, mutate=stage, payload_reference=reference)
-    measured = observations(result)["drift-baseline"]["rehearsal_plan_sha256"]
-    assert measured == c.sha(c.canonical(chain.replay.plan)) != c.sha(c.canonical(other))

@@ -7,30 +7,13 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from tools.cnesdata_delivery import contract as c, drift_catalog, session_owner
-from tools.cnesdata_delivery.producers import aws_reader, chain, drift_handoff, phase_inputs
+from tools.cnesdata_delivery.producers import aws_reader, chain, drift_handoff, phase_inputs, rehearsal_plan
 from tools.cnesdata_delivery.session_policy import managed_arn
 
-STATE_KEY = "cnesdata/prod/opentofu.tfstate"
+STATE_KEY = rehearsal_plan.STATE_KEY
 ROLES = ("plan", "deploy", "audit")
-CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository"
+CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository shared_outputs"
 Observed = namedtuple("Observed", "files pins")
-
-
-def rehearsal_key(config, asked):
-    reference = asked["payload_reference"]
-    return phase_inputs.prefix(config) + "phase-inputs/rehearsal/{}/{}/{}/plan.json".format(
-        c.digest(asked["source_sha"], 40), c.integer(reference["run_id"]), c.integer(reference["run_attempt"]))
-
-
-def _rehearsal(reader, config, asked):
-    key = rehearsal_key(config, asked)
-    failed = False
-    try:
-        raw = reader.read(config["evidence_bucket"], key)
-    except KeyError:
-        failed = True
-    c.require(not failed, "rehearsal plan absent")
-    return c.loads(raw, state=True), c.sha(raw)
 
 
 def _reports(reader, calls):
@@ -82,8 +65,16 @@ def _pin(reader, config, role, asked):
     return pin
 
 
+def _strings(value):
+    if type(value) is str:
+        return [value]
+    children = value.values() if type(value) is dict else value if type(value) is list else []
+    return [text for child in children for text in _strings(child)]
+
+
 def _private_values(config):
     values = [config[name] for name in CONFIG_KEYS.split() if type(config[name]) is str]
+    values += [text for text in _strings(config["shared_outputs"]) if len(text) >= 12]
     return [value for value in values + list(config["roles"].values()) if value]
 
 
@@ -104,7 +95,8 @@ def observe(reader, config, asked, key_hex):
     """
     c.require(asked["purpose"] in drift_catalog.ENVELOPES, "purpose without envelope")
     key = c.report_key({"report_hmac_key": key_hex})
-    plan, rehearsal_sha = _rehearsal(reader, config, asked)
+    plan_raw = rehearsal_plan.plan(config, phase_inputs.release_inputs(reader, config, asked), reader.session)
+    plan, rehearsal_sha = c.loads(plan_raw, state=True), c.sha(plan_raw)
     state_raw = reader.read(config["state_bucket"], STATE_KEY)
     document = drift_handoff.generate(plan, c.loads(state_raw, state=True), asked["source_sha"], asked["purpose"])
     raw = drift_handoff.serialize(document)
@@ -129,6 +121,7 @@ def _config():
     config = c.loads(os.environ["OBSERVER_CONFIG"].encode())
     c.closed(config, CONFIG_KEYS)
     c.closed(config["roles"], " ".join(ROLES))
+    c.require(type(config["shared_outputs"]) is dict and bool(config["shared_outputs"]), "observer shared_outputs")
     return config
 
 

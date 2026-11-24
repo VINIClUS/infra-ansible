@@ -10,7 +10,8 @@ import pytest
 import yaml
 
 from fixtures.cnesdata_phase_a_replay import ReplayChain
-from fixtures.cnesdata_producers import KEY_HEX, PAYLOAD_REFERENCE, SOURCE, config, public_objects, request, world
+from fixtures.cnesdata_producers import (KEY_HEX, PAYLOAD_REFERENCE, SOURCE, config, public_objects, request,
+                                         stub_plan, world)
 from test_cnesdata_producers_cost import NOW, owner_block
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.producers import assembler, baseline_commitments, inputs, observer, pins
@@ -78,6 +79,7 @@ def setup(monkeypatch, tmp_path):
     chain = ReplayChain(monkeypatch, tmp_path)
     settings = config()
     reader, names, _ = world(chain, settings)
+    stub_plan(monkeypatch, chain)
     asked = request(public_objects=public_objects(names), observed_at=T)
     observed = observer.observe(reader, settings, asked, KEY_HEX).files
     source = Path(__file__).parent / "fixtures/cnesdata_cost_source_manifest.json"

@@ -4,6 +4,7 @@ import json
 
 from fixtures.cnesdata_phase_a_replay import ACCOUNT, KEY
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery.producers import rehearsal_plan
 
 SOURCE = "a" * 40
 RUN, ATTEMPT = 7001, 1
@@ -21,13 +22,15 @@ def config():
     account = ACCOUNT
     roles = {role: f"arn:aws:iam::{account}:role/cnesdata-infra-{role}" for role in ("plan", "deploy", "audit")}
     return {"account_id": account, "roles": roles, "state_bucket": "cnesdata-state-4f6e21",
-            "evidence_bucket": "cnesdata-evid-4f6e21", "evidence_prefix": EVIDENCE, "ecr_repository": "cnesdata-ecr-9b2d71"}
+            "evidence_bucket": "cnesdata-evid-4f6e21", "evidence_prefix": EVIDENCE, "ecr_repository": "cnesdata-ecr-9b2d71",
+            "shared_outputs": {"schema_version": 1, "account_id": account,
+                               "kms_key_arn": f"arn:aws:kms:us-east-2:{account}:key/fixture-shared-key"}}
 
 
 class FakeReader:
     def __init__(self, objects, responses, blobs=None):
         self.objects, self.responses, self.blobs = objects, responses, blobs or {}
-        self.calls, self.reads = [], []
+        self.calls, self.reads, self.session = [], [], object()
 
     def call(self, service, operation, **parameters):
         self.calls.append((service, operation))
@@ -77,8 +80,13 @@ def ecr_responses(chain, settings):
                 {"images": [{"imageManifest": chain.manifest.decode()}], "failures": []}}
 
 
-def rehearsal_key(settings, source=SOURCE, run=RUN, attempt=ATTEMPT):
-    return settings["evidence_prefix"] + f"phase-inputs/rehearsal/{source}/{run}/{attempt}/plan.json"
+def stub_plan(monkeypatch, chain, seen=None):
+    def planned(settings, release_inputs, session):
+        if seen is not None:
+            seen.append((settings, release_inputs, session))
+        return c.canonical(chain.replay.plan)
+
+    monkeypatch.setattr(rehearsal_plan, "plan", planned)
 
 
 def namespace_prefix(settings):
@@ -103,9 +111,7 @@ def policy_responses(settings, role, document):
 
 def world(chain, settings=None, *, phase_inputs=True):
     settings = settings or config()
-    objects = {(settings["state_bucket"], KEY): c.canonical(chain.prior),
-               (settings["evidence_bucket"], rehearsal_key(settings)):
-                   c.canonical(chain.replay.plan)}
+    objects = {(settings["state_bucket"], KEY): c.canonical(chain.prior)}
     names = {"phase-inputs.json": c.canonical(chain.gov["phase_a_inputs"]),
              "candidate.json": c.canonical({"repository": c.REPOSITORY, "source_sha": SOURCE, "release_id": "fixture"})}
     names["promotion.json"] = c.canonical(promotion(chain))

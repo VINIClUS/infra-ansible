@@ -35,6 +35,10 @@ def _objects(reader, config, asked):
     return objects, namespace
 
 
+def release_inputs(reader, config, asked):
+    return _objects(reader, config, asked)[0]["phase-inputs.json"]
+
+
 def _binding(raw, asked):
     candidate = c.r2_candidate(raw)
     binding = c.canary_binding(candidate, c.sha(raw))
