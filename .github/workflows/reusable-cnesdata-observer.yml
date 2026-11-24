@@ -9,7 +9,7 @@ name: CnesData observer and admission assembler
         required: true
         type: string
       role:
-        description: Delivery role, plan or deploy
+        description: Delivery role, plan, audit or deploy
         required: true
         type: string
       source_sha:
@@ -49,7 +49,7 @@ env:
 
 jobs:
   observe:
-    if: ${{ inputs.role == 'plan' }}
+    if: ${{ inputs.role == 'plan' || inputs.role == 'audit' }}
     runs-on: ubuntu-latest
     environment: cnesdata-observer
     timeout-minutes: 20
@@ -163,14 +163,15 @@ jobs:
         id: drift
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: delivery-drift-${{ steps.names.outputs.source8 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: "delivery-drift-${{ inputs.role }}-${{ steps.names.outputs.source8 }}-\
+            ${{ github.run_id }}-${{ github.run_attempt }}"
           path: ${{ runner.temp }}/observed/drift-handoff.json
           retention-days: 30
           if-no-files-found: error
       - name: Upload the observations for the assemble job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: delivery-observed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: delivery-observed-${{ inputs.role }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/observed/observations.json
             ${{ runner.temp }}/observed/drift-handoff.json
@@ -247,10 +248,10 @@ jobs:
               fs.writeFileSync("tools/cnesdata_delivery/" + name, Buffer.from(item.content, "base64"), {mode: 0o600});
             }
       - name: Download the observations of this run
-        if: ${{ inputs.role == 'plan' }}
+        if: ${{ inputs.role == 'plan' || inputs.role == 'audit' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: delivery-observed-${{ github.run_id }}-${{ github.run_attempt }}
+          name: delivery-observed-${{ inputs.role }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/observed
       - name: Assemble the admission proof without AWS
         run: >-

@@ -157,13 +157,13 @@ def padded(size):
 
 
 def test_governanca_no_teto_da_cli_e_aceita_e_acima_e_recusada():
-    assert len(governance_assembly.render(padded(40960))) == 40960
-    with pytest.raises(ValueError, match="ceiling"):
-        governance_assembly.render(padded(40961))
+    assert len(governance_assembly.render(padded(43856))) == 43856
+    with pytest.raises(ValueError, match="^governance above the write ceiling size=43857 ceiling=43856$"):
+        governance_assembly.render(padded(43857))
 
 
 def test_teto_do_secret_nao_pode_ser_ultrapassado_por_parametro():
-    assert governance_assembly.SECRET_CEILING == 47952 and governance_assembly.CLI_CEILING == 40960
+    assert governance_assembly.SECRET_CEILING == 47952 and governance_assembly.CLI_CEILING == 47952 - 4096 == 43856
     assert len(governance_assembly.render(padded(47952), ceiling=47952)) == 47952
     with pytest.raises(ValueError, match="ceiling"):
         governance_assembly.render(padded(47953), ceiling=47953)
@@ -333,14 +333,19 @@ def test_cruzamento_recusa_pin_do_application_fora_da_propria_cadeia(changes):
         governance_assembly.crosscheck(document_with(session_policy_pins=pins_), COMMITMENTS)
 
 
+RUNTIME_MANIFEST = "application_product_source_manifest"
+
+
 def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem():
     pattern = re.compile(r'\bgovernance(?:\[\s*"(\w+)"\s*\]|\.get\(\s*"(\w+)")')
     read = set()
     for path in (ROOT / "tools/cnesdata_delivery").glob("*.py"):
         if path.name not in {"host_gate.py", "signing_gate.py"}:
             read |= {first or second for first, second in pattern.findall(path.read_text())}
-    assert "account_id" in read and read <= governance_assembly.GOVERNANCE_KEYS, sorted(
-        read - governance_assembly.GOVERNANCE_KEYS)
+    closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS | {RUNTIME_MANIFEST}
+    assert "account_id" in read and read <= closed, sorted(read - closed)
+    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure"}
+    assert governance_assembly.HYDRATED_KEYS.isdisjoint(governance_assembly.GOVERNANCE_KEYS)
 
 
 def test_render_do_cli_valida_antes_de_emitir(tmp_path, capsys):
@@ -432,3 +437,52 @@ def test_cli_do_dono_renderiza_gera_chave_e_emite_baseline_sem_pyyaml(tmp_path):
 def test_guarda_de_release_continua_lendo_o_caller_com_pyyaml(repo):
     x_star, k = release(repo)
     release_guard.check(repo, x_star, k)
+
+
+RECEIPT = {"repository": "VINIClUS/CnesData", "run_id": "123", "run_attempt": "1", "artifact_id": "456",
+           "artifact_digest": "sha256:" + "a" * 64, "publisher_job_id": "789", "publisher_step_number": 2,
+           "source_sha": "b" * 40, "caller_workflow_path": ".github/workflows/promote-production.yml",
+           "reusable_workflow_sha": "c" * 40}
+
+
+def test_cruzamento_aceita_recibo_de_ativacao_valido_por_passo():
+    assert "activation_receipts" in governance_assembly.GOVERNANCE_KEYS
+    governance_assembly.crosscheck(document_with(activation_receipts={"operational-plan": RECEIPT}), COMMITMENTS)
+
+
+@pytest.mark.parametrize("receipts", [
+    {"operational-plan": {**RECEIPT, "run_id": "0"}},
+    {"operational-plan": {**{k: v for k, v in RECEIPT.items() if k != "run_id"}}},
+    {"operational-plan": {**RECEIPT, "extra": 1}},
+    {"operational-plan": "ref"},
+    {"": RECEIPT},
+    {7: RECEIPT},
+    ["operational-plan"],
+    {},
+], ids=["id-zero", "campo-ausente", "campo-extra", "nao-dict", "passo-vazio", "passo-nao-string", "lista", "vazio"])
+def test_cruzamento_recusa_recibo_de_ativacao_que_o_consumidor_recusa(receipts):
+    with pytest.raises(ValueError, match="activation receipt"):
+        governance_assembly.crosscheck(document_with(activation_receipts=receipts), COMMITMENTS)
+
+
+def test_render_do_cli_recusa_o_manifesto_inline_pelo_cruzamento(tmp_path, capsys):
+    assert render_cli(tmp_path, document_with(application_product_source_manifest={"files": {}})) == 1
+    seen = capsys.readouterr()
+    assert seen.out == "" and seen.err == "refused reason=governance key=application_product_source_manifest\n"
+
+
+def test_sessoes_da_cadeia_de_expiracao_incluem_o_audit_com_o_inicio_do_plan():
+    assert governance_assembly.SESSION_ROLES == ("plan", "deploy", "audit", "application")
+    pins = {"plan": pin_at(), "deploy": pin_at(), "audit": pin_at()}
+    governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
+
+
+@pytest.mark.parametrize("audit", [
+    pin_at(observed_at="2026-11-20T12:00:01Z", expires_at="2026-11-20T15:00:01Z", frozen_until="2026-11-20T16:00:01Z"),
+    pin_at(expires_at="2026-11-20T14:59:59Z"),
+    pin_at(frozen_until="2026-11-20T15:59:59Z"),
+], ids=["inicio-diferente-do-plan", "expira-antes-da-prova", "congela-antes-do-fim"])
+def test_cruzamento_recusa_pin_do_audit_fora_da_cadeia_de_expiracao(audit):
+    pins = {"plan": pin_at(), "audit": audit}
+    with pytest.raises(ValueError, match="expiry chain violated element=pin role=audit"):
+        governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)

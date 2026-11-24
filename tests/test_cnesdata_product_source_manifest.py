@@ -255,14 +255,17 @@ def _plan_admission(monkeypatch, mutation):
     import base64
     from test_cnesdata_application_gate import _application_caller_fixture
     from tools.cnesdata_delivery import lifecycle_runtime as lr
+    from fixtures import cnesdata_lifecycle_objects as objects
     gov, caller_api, run, step, _, _ = _application_caller_fixture(monkeypatch, "promotion", "plan")
     inline = gov.pop("application_product_source_manifest")
+    step.pop("caller_job")
+    step.update(role="plan", purpose="application-prepare", input_jobs={}, mode="observer-bootstrap", direction="advance")
+    catalog = objects.install(gov, inline, {"keeper": step})
     world, world_api, _ = manifest_world(inline, source="b" * 40)
     gov["application_product_source_manifest_artifact"] = world["application_product_source_manifest_artifact"]
+    gov["application_product_source_closure_sha256"] = world["application_product_source_closure_sha256"]
     contract = b"contract"
-    step.update(role="plan", purpose="application-prepare", input_jobs={})
     gov.update(activation_enabled=True, lifecycle_enabled=True, lifecycle_authority="infra-ansible#55/6755178450",
-               lifecycle_steps={"keeper": step},
                lifecycle_contract={"repository": "VINIClUS/infra-ansible", "source_sha": "a" * 40,
                                    "path": "docs/cnesdata-delivery-application-lifecycle.md", "sha256": c.sha(contract)})
     from tools.cnesdata_delivery.provenance import application_caller
@@ -276,6 +279,8 @@ def _plan_admission(monkeypatch, mutation):
 
     class API:
         def read(self, path, **kwargs):
+            if path == objects.catalog_url("b" * 40):
+                return objects.contents(catalog)
             if "/actions/artifacts/" in path:
                 return world_api.read(path, **kwargs)
             if "docs/cnesdata-delivery-application-lifecycle.md" in path:

@@ -112,7 +112,7 @@ A chave e nova a cada ciclo e a antiga nunca e reutilizada (`rotate` recusa `fre
    `secret-tool lookup ... | tr -d '\n' | <upload do dono lendo stdin>`), com criptografia do store; a quarta copia nao
    tem comando no CLI.
 5. Governanca: renderizar de novo o documento com `report_hmac_key` igual a chave nova (`render` roda
-   `crosscheck`, recusa chave fora de 64 hex e teto acima de 40 960 B; o teto de escrita do GitHub e
+   `crosscheck`, recusa chave fora de 64 hex e teto acima de 43 856 B; o teto de escrita do GitHub e
    47 952 B) e fazer a escrita de governanca da janela. Tudo derivado por HMAC muda: `baseline-inputs`
    (que le a chave do Secret Service e falha com "report hmac key absent from custody" se ela falta), os
    `_facts` das session pins e os `*_hmac` do relatorio. Observacoes e baselines do ciclo anterior deixam

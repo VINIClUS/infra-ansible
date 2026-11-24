@@ -3032,9 +3032,10 @@ def test_application_module_entry_never_succeeds_without_admission(command):
 
 
 
-def _application_entry_case(monkeypatch, tmp_path):
+def _application_entry_case(monkeypatch, tmp_path, steps=None):
     import base64
     from pathlib import Path
+    from fixtures import cnesdata_lifecycle_objects as objects
     from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
     chain, aws, history_api, store, _, _ = _legacy_history_fixture(monkeypatch, tmp_path)
     current, current_api, run, step, job, _ = _application_caller_fixture(monkeypatch)
@@ -3042,15 +3043,17 @@ def _application_entry_case(monkeypatch, tmp_path):
     gov = chain.gov | current
     from test_cnesdata_product_source_manifest import manifest_world
     inline = gov.pop("application_product_source_manifest")
+    step.pop("caller_job")
+    step.update(role="application", purpose="application-prepare", input_jobs={})
+    catalog = objects.install(gov, inline, steps or {"keeper": step})
     manifest_governance, manifest_api, _ = manifest_world(inline, source=run["head_sha"])
     gov["application_product_source_manifest_artifact"] = manifest_governance["application_product_source_manifest_artifact"]
+    gov["application_product_source_closure_sha256"] = manifest_governance["application_product_source_closure_sha256"]
     gov["gate_shas"] = chain.gov["gate_shas"] | current["gate_shas"]
     gov["application_source_closure_sha256"] = expected_closure(lambda path: (CLOSURE_ROOT / path).read_bytes())
     workflow_url = "repos/VINIClUS/infra-ansible/contents/" + WORKFLOW + "?ref=" + gov["gate_shas"]["application"]
-    served = {"workflow": (CLOSURE_ROOT / WORKFLOW).read_bytes()}
-    step.update(role="application", purpose="application-prepare", input_jobs={})
-    gov.update(activation_enabled=True, lifecycle_enabled=True, lifecycle_authority="infra-ansible#55/6755178450",
-        lifecycle_steps={"keeper": step})
+    served = {"workflow": (CLOSURE_ROOT / WORKFLOW).read_bytes(), "catalog": catalog}
+    gov.update(activation_enabled=True, lifecycle_enabled=True, lifecycle_authority="infra-ansible#55/6755178450")
     contract = Path(__file__).resolve().parents[1] / "docs/cnesdata-delivery-application-lifecycle.md"
     contract_raw = contract.read_bytes()
     gov["lifecycle_contract"] = {"repository": "VINIClUS/infra-ansible", "source_sha": "a" * 40,
@@ -3079,6 +3082,8 @@ def _application_entry_case(monkeypatch, tmp_path):
             reads.append(path)
             if path == workflow_url:
                 return workflow_contents(served["workflow"])
+            if path == objects.catalog_url(run["head_sha"]):
+                return objects.contents(served["catalog"])
             if "/contents/docs/cnesdata-delivery-application-lifecycle.md?ref=" in path:
                 return {"encoding": "base64", "content": base64.b64encode(contract_raw).decode()}
             if f"/actions/artifacts/{manifest_governance['application_product_source_manifest_artifact']['artifact_id']}" in path:
@@ -3175,8 +3180,9 @@ def test_artifact_digests_retain_only_the_authenticated_download_digest():
 @pytest.mark.parametrize("role", ["application", "plan"])
 def test_admission_retains_artifact_digests_only_for_the_application_role(monkeypatch, role):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"], "activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
-                  "lifecycle_steps": {"keeper": {"role": role, "purpose": "application-prepare", "input_jobs": {}}}}
+    governance = {"stage_windows": WINDOWS["stages"], "fixed_deadline_seconds": WINDOWS["fixed_deadline_seconds"],
+                  "activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
+                  "lifecycle_steps_sha256": "a" * 64, "source_closure_sha256": "b" * 64}
     request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
                            "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
     for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(governance).decode(), "REQUEST_DESCRIPTOR": request.decode(),

@@ -116,7 +116,7 @@ def test_capability_do_closed_ready_reconstroi_a_sessao_preparada_com_a_janela_a
 def test_admissao_do_application_recusa_governanca_sem_as_janelas_antes_do_github(monkeypatch, role):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     governance = {"activation_enabled": True, "lifecycle_enabled": True, "lifecycle_authority": "infra-ansible#55/6755178450",
-                  "lifecycle_steps": {"keeper": {"role": role, "purpose": "application-prepare", "input_jobs": {}}}}
+                  "lifecycle_steps_sha256": "d" * 64, "source_closure_sha256": "e" * 64}
     request = c.canonical({"schema_version": 1, "repository": c.REPOSITORY, "source_sha": "b" * 40, "step": "keeper",
                            "payloads": {}, "application_purpose": "promotion", "caller_binding_sha256": "c" * 64})
     for key, value in {"CNESDATA_DELIVERY_GOVERNANCE": c.canonical(governance).decode(), "REQUEST_DESCRIPTOR": request.decode(),

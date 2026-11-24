@@ -615,3 +615,51 @@ def test_container_de_topo_ausente_nao_vale_como_omissao(tipo, attribute, expect
     with pytest.raises(ValueError, match="drift response field"):
         c._projection(row, {}, expected, c.ENCODINGS, declared)
     c._projection(row, {path[0]: {}}, expected, c.ENCODINGS, declared)
+
+
+TASK_ARN = "arn:aws:ecs:us-east-2:111122223333:task-definition/processor:3"
+TASK_DEFAULTS = {"enable_fault_injection": False, "ipc_mode": "", "pid_mode": ""}
+TASK_NON_DEFAULT = {"enable_fault_injection": ("enableFaultInjection", True), "ipc_mode": ("ipcMode", "host"),
+                    "pid_mode": ("pidMode", "task")}
+
+
+def real_task_case(planned=None, live=None):
+    entries = catalog().CATALOG["aws_ecs_task_definition"]
+    before = {"arn": TASK_ARN, "container_definitions": json.dumps(CONTAINERS), "cpu": "256",
+              "execution_role_arn": "arn:aws:iam::111122223333:role/synthetic-execution", "family": "processor",
+              "id": "processor", "memory": "512", "network_mode": "awsvpc", "requires_compatibilities": ["FARGATE"],
+              "revision": 3, "task_role_arn": "arn:aws:iam::111122223333:role/synthetic-task"}
+    before = before | TASK_DEFAULTS | (planned or {})
+    observed = {"taskDefinition": {
+        "taskDefinitionArn": TASK_ARN, "containerDefinitions": api_containers(), "family": "processor",
+        "taskRoleArn": before["task_role_arn"], "executionRoleArn": before["execution_role_arn"],
+        "networkMode": "awsvpc", "revision": 3, "volumes": [], "status": "ACTIVE",
+        "requiresAttributes": [], "placementConstraints": [], "compatibilities": ["EC2", "FARGATE"],
+        "requiresCompatibilities": ["FARGATE"], "cpu": "256", "memory": "512"} | (live or {})}
+    rows = [{"address": TASK, "attribute": name, "readback": 0, "path": list(entries[name][2]),
+             "encoding": entries[name][3]} for name in sorted(before)]
+    spec = {"service": "ecs", "operation": "describe_task_definition", "address": TASK,
+            "parameters": {"taskDefinition": "processor"}}
+    reports = [{"service": "ecs", "operation": "describe_task_definition", "sha256": "0" * 64, "observed": observed}]
+    return plan(change(TASK, before, before)), reports, matrix(rows), [spec]
+
+
+def test_task_definition_real_sem_os_tres_campos_no_padrao_casa_com_o_plan():
+    plan_, reports, rows, specs = real_task_case()
+    assert not {"enableFaultInjection", "ipcMode", "pidMode"} & set(reports[0]["observed"]["taskDefinition"])
+    assert coverage(plan_, reports, rows, specs=specs, envelope=phase_a()) is None
+
+
+@pytest.mark.parametrize("attribute", sorted(TASK_DEFAULTS))
+def test_campo_da_task_definition_presente_fora_do_padrao_e_diferente_do_plan_e_recusado(attribute):
+    key, value = TASK_NON_DEFAULT[attribute]
+    plan_, reports, rows, specs = real_task_case(live={key: value})
+    with pytest.raises(ValueError, match="saved-plan live functional drift"):
+        coverage(plan_, reports, rows, specs=specs, envelope=phase_a())
+
+
+@pytest.mark.parametrize("attribute", sorted(TASK_DEFAULTS))
+def test_campo_da_task_definition_omitido_com_plan_fora_do_padrao_e_recusado(attribute):
+    plan_, reports, rows, specs = real_task_case(planned={attribute: TASK_NON_DEFAULT[attribute][1]})
+    with pytest.raises(ValueError, match="drift response field"):
+        coverage(plan_, reports, rows, specs=specs, envelope=phase_a())
