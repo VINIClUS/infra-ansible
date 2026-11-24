@@ -130,6 +130,99 @@ def admit_mode_key(frame, action, key, *, binding):
     return family
 
 
+LEDGER_REBUILD_CODES = frozenset({"None", "ConditionalCheckFailed", "TransactionConflict"})
+LEDGER_CANCELS = {"transact_write_items": "TransactionCanceledException", "put_item": "ConditionalCheckFailedException"}
+_LEDGER_ITEM = frozenset({"pk", "sk", "entity", "payload"})
+
+
+def _cancel_reasons(operation, response):
+    if operation == "put_item":
+        return [{"Code": "ConditionalCheckFailed"}]
+    reasons = response.get("CancellationReasons")
+    if type(reasons) is not list or not reasons or not all(type(item) is dict and type(item.get("Code")) is str
+                                                           for item in reasons):
+        return None
+    return [{"Code": item["Code"]} for item in reasons]
+
+
+def ledger_cancel_response(operation, error):
+    """R12 split of a ledger write error (ruling 3 item 2): a cancel applied nothing, anything else is unknown.
+
+    Returns: the definite cancel as the receipted response, or None when the outcome is unknown (poison, no retry).
+    """
+    response = getattr(error, "response", None)
+    if operation not in LEDGER_CANCELS or type(response) is not dict:
+        return None
+    metadata, failure = response.get("ResponseMetadata"), response.get("Error")
+    if (type(metadata) is not dict or metadata.get("HTTPStatusCode") != 400 or type(failure) is not dict
+            or failure.get("Code") != LEDGER_CANCELS[operation]):
+        return None
+    reasons = _cancel_reasons(operation, response)
+    return None if reasons is None else {"Error": {"Code": LEDGER_CANCELS[operation]}, "CancellationReasons": reasons}
+
+
+def ledger_cancel_codes(response):
+    """Returns: None for the applied write ({}), else the cancellation codes. Raises: ValueError mode ledger response."""
+    if response == {}:
+        return None
+    reasons = response.get("CancellationReasons") if type(response) is dict else None
+    c.require(type(response) is dict and set(response) == {"Error", "CancellationReasons"}
+              and response["Error"] in [{"Code": code} for code in LEDGER_CANCELS.values()]
+              and type(reasons) is list and len(reasons) >= 1
+              and all(type(item) is dict and set(item) == {"Code"} and type(item["Code"]) is str for item in reasons),
+              "mode ledger response")
+    return tuple(item["Code"] for item in reasons)
+
+
+def _ledger_put(table, put):
+    frames = product_frames()
+    item = put.get("Item") if type(put) is dict else None
+    c.require(type(item) is dict and set(item) == _LEDGER_ITEM
+              and all(type(item[name]) is dict and set(item[name]) == {"S"} and type(item[name]["S"]) is str
+                      for name in _LEDGER_ITEM)
+              and put.get("TableName") == table
+              and (put.get("ConditionExpression"), set(put)) in [
+                  (frames.INSERT_ONLY, {"TableName", "Item", "ConditionExpression"}),
+                  (frames.SWAP, {"TableName", "Item", "ConditionExpression", "ExpressionAttributeValues"})],
+              "mode ledger request shape")
+    return item["pk"]["S"], item["sk"]["S"]
+
+
+def _ledger_keys(table, operation, request):
+    c.require(operation in LEDGER_CANCELS and type(request) is dict, "mode ledger request shape")
+    if operation == "put_item":
+        return [_ledger_put(table, request)]
+    items = request.get("TransactItems")
+    c.require(set(request) == {"TransactItems"} and type(items) is list and 1 <= len(items) <= 3
+              and all(type(item) is dict and set(item) == {"Put"} for item in items), "mode ledger request shape")
+    return [_ledger_put(table, item["Put"]) for item in items]
+
+
+def ledger_write(frame, *, table, binding, reads, read, build, execute):
+    """Ruling 3 item 2: a ledger write built by the vendored product builder, rebuilt only after a definite cancel.
+
+    Args: C1 frame and binding, control table, strong-read keys, read(keys) -> {key: text}, build(texts) ->
+    (operation, request) or None once applied, execute(operation, request) -> receipted response (raises if unknown).
+    Returns: native writes made. Raises: ValueError (C1, shape, ledger_cancel reason=, ledger_contended attempts=).
+    """
+    attempts = product_frames().ATTEMPTS
+    for key in reads:
+        admit_mode_key(frame, "get", key, binding=binding)
+    for attempt in range(attempts):
+        planned = build(read(reads))
+        if planned is None:
+            return attempt
+        operation, request = planned
+        for key in _ledger_keys(table, operation, request):
+            admit_mode_key(frame, "put", key, binding=binding)
+        codes = ledger_cancel_codes(execute(operation, request))
+        if codes is None:
+            return attempt + 1
+        refused = [code for code in codes if code not in LEDGER_REBUILD_CODES]
+        c.require(not refused, f"ledger_cancel reason={refused[0] if refused else ''}")
+    raise ValueError(f"ledger_contended attempts={attempts}")
+
+
 MODE_RECORD_FIELDS = "version kind record audit_event_ids"
 
 
