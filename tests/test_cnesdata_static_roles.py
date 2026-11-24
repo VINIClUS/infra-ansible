@@ -1,5 +1,6 @@
 """Roles estaticos pelos readbacks pos-apply autenticados no proprio run: role_id, politica e IAM efetivo (#55, P15b)."""
 import copy
+import itertools
 
 import pytest
 
@@ -109,6 +110,14 @@ def _report(alias, operation, change):
     return mutate
 
 
+def _named(alias, operation, **names):
+    def mutate(specs, reports):
+        index = _index(specs, alias, operation)
+        specs[index]["parameters"].update(names)
+        reports[index]["observed"].update(names)
+    return mutate
+
+
 @pytest.mark.parametrize("mutate, message", [
     (_drop("normal", "get_role"), "static_role=readback_absent alias=normal operation=get_role"),
     (_drop("observer", "get_role_policy"), "static_role=readback_absent alias=observer operation=get_role_policy"),
@@ -120,8 +129,7 @@ def _report(alias, operation, change):
         Arn=f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-static-other")), "static_role=identity alias=observer"),
     (_report("observer", "get_role", lambda report: report["observed"]["Role"].update(RoleId="")),
      "static_role=identity alias=observer"),
-    (_report("normal", "get_role_policy", lambda report: report["observed"].update(RoleName="cnesdata-prod-static-observer")),
-     "static_role=policy alias=normal"),
+    (_named("normal", "get_role_policy", RoleName="cnesdata-prod-static-observer"), "static_role=policy alias=normal"),
     (_report("normal", "get_role_policy", lambda report: report["observed"].update(PolicyDocument="{}")),
      "static_role=policy alias=normal")])
 def test_fatos_do_role_estatico_recusam_readback_ausente_duplicado_desalinhado_ou_fora_da_governanca(mutate, message):
@@ -130,6 +138,38 @@ def test_fatos_do_role_estatico_recusam_readback_ausente_duplicado_desalinhado_o
     with pytest.raises(ValueError, match=f"^{message}$"):
         si.static_role_facts(files["checkpoint.json"], files["approval.json"], governance=EVIDENCE_GOVERNANCE,
                              aliases=("observer", "normal"))
+
+
+def _second_policy(specs, reports):
+    name = ROLE_FACTS["normal"]["role_name"]
+    names = {"RoleName": name, "PolicyName": name + "-extra"}
+    specs.append({"service": "iam", "operation": "get_role_policy", "absent": False, "parameters": dict(names),
+                  "address": "module.runtime_iam.aws_iam_role_policy.static_normal_extra[0]"})
+    reports.append({"service": "iam", "operation": "get_role_policy",
+                    "observed": names | {"PolicyDocument": ROLE_POLICIES["observer"]}})
+
+
+def test_transposicao_de_relatorios_nunca_entrega_fato_trocado_e_recusa_como_readback_shape():
+    from tools.cnesdata_delivery import static_inputs as si
+    specs, reports = role_readbacks(mutate=_second_policy)
+    approval = c.canonical({"version": 1, "readbacks": {"before": [], "after": specs}})
+    order = [(alias, operation) for alias in ("observer", "normal") for operation in ("get_role", "get_role_policy")]
+    rows = {_index(specs, alias, operation): (alias, operation) for alias, operation in order}
+    outcomes, expected = {}, {}
+    for first, second in itertools.combinations(range(len(specs)), 2):
+        swapped = copy.deepcopy(reports)
+        swapped[first], swapped[second] = swapped[second], swapped[first]
+        checkpoint = c.canonical({"purpose": "application-prepare", "readbacks": swapped})
+        try:
+            outcomes[first, second] = si.static_role_facts(checkpoint, approval, governance=EVIDENCE_GOVERNANCE,
+                                                           aliases=("observer", "normal"))
+        except ValueError as error:
+            outcomes[first, second] = str(error)
+        touched = sorted((rows[index] for index in (first, second) if index in rows), key=order.index)
+        expected[first, second] = (f"static_role=readback_shape alias={touched[0][0]} operation={touched[0][1]}"
+                                   if touched else ROLE_FACTS)
+    assert len(specs) == 7 and len(rows) == 4
+    assert outcomes == expected
 
 
 def test_politica_da_sessao_normal_restringe_os_objetos_as_candidate_keys_autenticadas():

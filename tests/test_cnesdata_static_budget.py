@@ -11,6 +11,7 @@ from test_cnesdata_static_stage import (ACTIVATION, BUCKET, BODIES, EVIDENCE_GOV
                                         _Native, _dist, _frame, _journal, _put, _session)
 
 LIST = ("observer", "s3", "ListObjectVersions", {"Bucket": BUCKET})
+CHUNKS = tuple(f"assets/chunk-{index:02d}.js" for index in range(17))
 
 
 class _Clock:
@@ -85,13 +86,13 @@ def test_put_de_asset_nao_exige_a_folga_das_raizes():
     assert [call[1] for call in clients["normal"].calls] == ["put_object"]
 
 
-def _run(monkeypatch, operation, *, seconds=77, dashboard=None):
+def _run(monkeypatch, operation, *, seconds=177, dashboard=None, plan=None):
     from test_cnesdata_application_gate import _prepare_stage_keeper
     from test_cnesdata_static_inputs import _inventory_journal
     from tools.cnesdata_delivery import application_gate as ag
     keeper, store = _prepare_stage_keeper()
     if operation == "publish-static":
-        journal, owner, window, inputs = _journal(dashboard=dashboard)
+        journal, owner, window, inputs = _journal(dashboard=dashboard, plan=plan)
         aliases, activation = ("observer", "normal"), ACTIVATION
     else:
         journal, owner, window = _inventory_journal()
@@ -125,7 +126,7 @@ def _run(monkeypatch, operation, *, seconds=77, dashboard=None):
 def test_run_entrega_ao_broker_o_prazo_do_child_antes_do_adapter(monkeypatch, operation):
     call, seen = _run(monkeypatch, operation)
     call()
-    assert seen == [(77, 1505 + 77)]
+    assert seen == [(177, 1505 + 177)]
 
 
 def test_corte_do_child_no_bloco_das_raizes_vira_recusa_antes_do_primeiro_put_de_raiz(monkeypatch):
@@ -162,18 +163,28 @@ def _dashboard(app_size):
 
 
 @pytest.mark.parametrize("extra, refused", [(0, False), (1, True)])
-def test_publish_static_recusa_soma_dos_corpos_acima_do_piso_de_upload_vezes_o_timeout_do_child(monkeypatch, extra, refused):
+def test_publish_static_recusa_soma_dos_corpos_acima_do_piso_vezes_o_timeout_menos_a_reserva_das_raizes(monkeypatch, extra,
+                                                                                                         refused):
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    assert lc.STATIC_UPLOAD_FLOOR == 512 * 1024
+    assert lc.STATIC_UPLOAD_FLOOR == 512 * 1024 and lc.STATIC_ROOT_BLOCK_SECONDS == 100
     roots = len(BODIES["index.html"]) + len(BODIES["theme-init.js"])
-    dist, files = _dashboard(2 * lc.STATIC_UPLOAD_FLOOR - roots + extra)
-    call, seen = _run(monkeypatch, "publish-static", seconds=2, dashboard=dist)
+    files = dict(BODIES) | {key: b"c" * lc.STATIC_MEMBER_LIMIT for key in CHUNKS}
+    files["assets/app.js"] = b"a" * (lc.STATIC_UPLOAD_FLOOR - roots + extra)
     total = sum(len(raw) for raw in files.values())
+    assert total == 512 * 1024 * 35 + extra == 18_350_080 + extra
+    call, seen = _run(monkeypatch, "publish-static", seconds=135, dashboard=_dist(files), plan={"candidate_keys": sorted(files)})
     if not refused:
         call()
-        assert seen == [(2, 1507)]
+        assert seen == [(135, 1505 + 135)]
         return
-    with pytest.raises(ValueError, match=f"^static_total=over_window total={total} limit={2 * lc.STATIC_UPLOAD_FLOOR} seconds=2$"):
+    with pytest.raises(ValueError, match=f"^static_total=over_window total={total} limit=18350080 seconds=135 reserve=100$"):
+        call()
+    assert seen == []
+
+
+def test_publish_static_recusa_timeout_sem_folga_alem_da_reserva_das_raizes_mesmo_sem_bytes(monkeypatch):
+    call, seen = _run(monkeypatch, "publish-static", seconds=100, dashboard=_dist({key: b"" for key in BODIES}))
+    with pytest.raises(ValueError, match="^static_total=over_window total=0 limit=0 seconds=100 reserve=100$"):
         call()
     assert seen == []
 
