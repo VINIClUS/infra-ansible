@@ -153,6 +153,120 @@ def mode_record_inputs(raw, *, mode, owner_sha256, activation_sha256):
     return {"record": text.encode()} | ({} if ids is None else {"audit-event-ids": c.canonical(ids)})
 
 
+MODE_READBACK_KEYS = {"unit": ("state_machine", "task_definitions.unit"),
+                      **{mode: ("state_machine", f"schedules.{mode}", f"task_definitions.{mode}", f"alarms.{mode}")
+                         for mode in ("recovery", "audit")}}
+_MACHINE = re.compile(r"arn:aws:states:[a-z0-9-]+:[0-9]{12}:stateMachine:[A-Za-z0-9_-]{1,80}")
+_REVISION = re.compile(r"arn:aws:ecs:[a-z0-9-]+:[0-9]{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}")
+_SCHEDULE = re.compile(r"arn:aws:scheduler:[a-z0-9-]+:[0-9]{12}:schedule/([0-9A-Za-z_.-]{1,64})/([0-9A-Za-z_.-]{1,64})")
+_ALARM = re.compile(r"arn:aws:cloudwatch:[a-z0-9-]+:[0-9]{12}:alarm:([A-Za-z0-9_.-]{1,255})")
+
+
+def _target(pattern, resources, field, key=None):
+    value = resources.get(field) if type(resources) is dict else None
+    if key is not None:
+        value = value.get(key) if type(value) is dict else None
+    match = pattern.fullmatch(value) if type(value) is str else None
+    c.require(match is not None, "mode readback target")
+    return match
+
+
+def mode_readback_calls(mode, resources):
+    """The closed reads of the mode key set (design 4.4), with targets from the admitted mode-input resources.
+
+    Returns: [{key, service, operation, parameters}] in key-set order. Raises: ValueError before any read.
+    """
+    c.require(mode in MODE_READBACK_KEYS, "mode readback target")
+    calls = [{"key": "state_machine", "service": "stepfunctions", "operation": "describe_state_machine",
+              "parameters": {"stateMachineArn": _target(_MACHINE, resources, "machine_arn").group(0)}}]
+    if mode != "unit":
+        group, name = _target(_SCHEDULE, resources, "schedule_arns", mode).groups()
+        calls.append({"key": f"schedules.{mode}", "service": "scheduler", "operation": "get_schedule",
+                      "parameters": {"Name": name, "GroupName": group}})
+    calls.append({"key": f"task_definitions.{mode}", "service": "ecs", "operation": "describe_task_definition",
+                  "parameters": {"taskDefinition": _target(_REVISION, resources, "revisions", mode).group(0)}})
+    if mode != "unit":
+        alarm = _target(_ALARM, resources, "alarm_arns", f"{mode}_repeated_failure").group(1)
+        calls.append({"key": f"alarms.{mode}", "service": "cloudwatch", "operation": "describe_alarms",
+                      "parameters": {"AlarmNames": [alarm]}})
+    return calls
+
+
+def _pick(node, fields, required=()):
+    c.require(type(node) is dict and all(key in node for key in required), "mode readback shape")
+    return {key: node[key] for key in fields if key in node}
+
+
+def _project_machine(response, _):
+    machine = _pick(response, ("stateMachineArn", "definition"), ("stateMachineArn", "definition"))
+    c.require(all(type(value) is str for value in machine.values()), "mode readback shape")
+    return machine
+
+
+def _project_schedule(response, _):
+    target = _pick(response, ("Target",), ("Target",))["Target"]
+    projected = _pick(target, ("Arn", "RetryPolicy", "EcsParameters"), ("Arn", "RetryPolicy", "EcsParameters"))
+    ecs = projected["EcsParameters"]
+    parameters = _pick(ecs, ("TaskDefinitionArn", "TaskCount", "LaunchType", "PlatformVersion"), ("TaskDefinitionArn",))
+    network = _pick(ecs, ("NetworkConfiguration",), ("NetworkConfiguration",))["NetworkConfiguration"]
+    vpc = _pick(network, ("awsvpcConfiguration",), ("awsvpcConfiguration",))["awsvpcConfiguration"]
+    parameters["NetworkConfiguration"] = {"awsvpcConfiguration": _pick(vpc, ("Subnets", "SecurityGroups", "AssignPublicIp"))}
+    retry = _pick(projected["RetryPolicy"], ("MaximumRetryAttempts", "MaximumEventAgeInSeconds"))
+    return {"Target": {"Arn": projected["Arn"], "RetryPolicy": retry, "EcsParameters": parameters}}
+
+
+def _project_task_definition(response, _):
+    definition = _pick(response, ("taskDefinition",), ("taskDefinition",))["taskDefinition"]
+    projected = _pick(definition, ("taskDefinitionArn", "taskRoleArn", "containerDefinitions"),
+                      ("taskDefinitionArn", "containerDefinitions"))
+    containers = projected["containerDefinitions"]
+    c.require(type(containers) is list and 1 <= len(containers) <= 16, "mode readback shape")
+    projected["containerDefinitions"] = [_pick(item, ("name", "command"), ("name",)) for item in containers]
+    return {"taskDefinition": projected}
+
+
+def _project_alarm(response, parameters):
+    alarms = _pick(response, ("MetricAlarms",), ("MetricAlarms",))["MetricAlarms"]
+    c.require(type(alarms) is list and len(alarms) == 1 and type(alarms[0]) is dict
+              and [alarms[0].get("AlarmName")] == parameters["AlarmNames"], "mode readback shape")
+    alarm = _pick(alarms[0], ("AlarmName", "Dimensions", "EvaluationPeriods", "DatapointsToAlarm", "ActionsEnabled",
+                              "AlarmActions"))
+    if "Dimensions" in alarm:
+        c.require(type(alarm["Dimensions"]) is list and len(alarm["Dimensions"]) <= 30, "mode readback shape")
+        alarm["Dimensions"] = [_pick(item, ("Name", "Value")) for item in alarm["Dimensions"]]
+    return alarm
+
+
+_PROJECTIONS = {"state_machine": _project_machine, "schedules": _project_schedule,
+                "task_definitions": _project_task_definition, "alarms": _project_alarm}
+
+
+def _integral(value):
+    if type(value) is float:
+        raise ValueError("mode readback non-integer")
+    for item in value.values() if type(value) is dict else value if type(value) is list else ():
+        _integral(item)
+
+
+def mode_readback_bytes(mode, resources, responses):
+    """ModeReadback document (design 4.4): only the fields the product reads, present keys only, volatile fields out.
+
+    Args: mode, admitted mode-input resources, raw SDK response by key. Returns: canonical bytes. Raises: ValueError.
+    """
+    calls = mode_readback_calls(mode, resources)
+    c.require(type(responses) is dict and set(responses) == set(MODE_READBACK_KEYS[mode]), "mode readback key set")
+    document = {}
+    for call in calls:
+        family, _, member = call["key"].partition(".")
+        projected = _PROJECTIONS[family](responses[call["key"]], call["parameters"])
+        _integral(projected)
+        if member:
+            document.setdefault(family, {})[member] = projected
+        else:
+            document[family] = projected
+    return c.canonical(document)
+
+
 class ModeBroker:
     """Finite private SDK dispatcher of one mode seed/start operation, on its own derived mc-* session.
 

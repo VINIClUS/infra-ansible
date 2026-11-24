@@ -137,21 +137,21 @@ def test_alvo_fora_da_forma_do_recurso_recusa_antes_de_qualquer_leitura(mode, fi
 
 @pytest.mark.parametrize("mode", MODES)
 def test_projecao_guarda_so_os_campos_que_o_produto_le_em_bytes_canonicos(mode):
-    raw = _mb().mode_readback_bytes(mode, _responses(mode))
+    raw = _mb().mode_readback_bytes(mode, RESOURCES, _responses(mode))
     assert raw == (json.dumps(_expected(mode), sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
     assert c.loads(raw, canonical=True) == _expected(mode)
 
 
 @pytest.mark.parametrize("mode", MODES)
 def test_campos_volateis_nao_mudam_a_projecao_entao_antes_e_depois_coincidem(mode):
-    before = _mb().mode_readback_bytes(mode, _responses(mode))
+    before = _mb().mode_readback_bytes(mode, RESOURCES, _responses(mode))
     changed = copy.deepcopy(_responses(mode))
     changed["state_machine"].update(creationDate="2026-11-20T00:00:00Z", revisionId="r-9", status="UPDATING")
     changed[f"task_definitions.{mode}"]["taskDefinition"].update(registeredAt="2026-11-20T00:00:00Z", revision=8)
     if mode != "unit":
         changed[f"schedules.{mode}"].update(State="DISABLED", LastModificationDate="2026-11-20T00:00:00Z")
         changed[f"alarms.{mode}"]["MetricAlarms"][0].update(StateValue="ALARM", StateUpdatedTimestamp="2026-11-21T00:00:00Z")
-    assert _mb().mode_readback_bytes(mode, changed) == before
+    assert _mb().mode_readback_bytes(mode, RESOURCES, changed) == before
 
 
 @pytest.mark.parametrize("mode", ["recovery", "audit"])
@@ -160,7 +160,7 @@ def test_ausencia_de_task_count_launch_type_platform_version_e_command_e_preserv
     for key in ("TaskCount", "LaunchType", "PlatformVersion"):
         del responses[f"schedules.{mode}"]["Target"]["EcsParameters"][key]
     responses[f"task_definitions.{mode}"] = _task_definition(mode, command=False)
-    document = c.loads(_mb().mode_readback_bytes(mode, responses), canonical=True)
+    document = c.loads(_mb().mode_readback_bytes(mode, RESOURCES, responses), canonical=True)
     assert set(document["schedules"][mode]["Target"]["EcsParameters"]) == {"TaskDefinitionArn", "NetworkConfiguration"}
     assert document["task_definitions"][mode]["taskDefinition"]["containerDefinitions"] == [{"name": f"processor-{mode}"}]
 
@@ -176,13 +176,13 @@ def test_numero_nao_inteiro_na_projecao_recusa(mode, key, path, value):
         node = node[step]
     node[path[-1]] = value
     with pytest.raises(ValueError, match="^mode readback non-integer$"):
-        _mb().mode_readback_bytes(mode, responses)
+        _mb().mode_readback_bytes(mode, RESOURCES, responses)
 
 
 def test_numero_nao_inteiro_fora_da_projecao_nao_entra_nem_recusa():
     responses = _responses("recovery")
     responses["alarms.recovery"]["MetricAlarms"][0]["Threshold"] = 1.5
-    assert _mb().mode_readback_bytes("recovery", responses) == _mb().mode_readback_bytes("recovery", _responses("recovery"))
+    assert _mb().mode_readback_bytes("recovery", RESOURCES, responses) == _mb().mode_readback_bytes("recovery", RESOURCES, _responses("recovery"))
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -191,7 +191,7 @@ def test_respostas_fora_do_conjunto_de_chaves_do_modo_recusam(mode):
     for broken in ({key: value for key, value in responses.items() if key != "state_machine"},
                    responses | {"alarms.unit": _alarm("recovery")}):
         with pytest.raises(ValueError, match="^mode readback key set$"):
-            _mb().mode_readback_bytes(mode, broken)
+            _mb().mode_readback_bytes(mode, RESOURCES, broken)
 
 
 @pytest.mark.parametrize("change", [
@@ -209,4 +209,4 @@ def test_resposta_sem_a_estrutura_que_o_produto_le_recusa(change):
     responses = _responses("recovery")
     change(responses)
     with pytest.raises(ValueError, match="^mode readback shape$"):
-        _mb().mode_readback_bytes("recovery", responses)
+        _mb().mode_readback_bytes("recovery", RESOURCES, responses)
