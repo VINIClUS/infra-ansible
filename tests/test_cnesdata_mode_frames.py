@@ -155,3 +155,30 @@ def test_copia_do_produto_nao_carrega_texto_privado():
     for _, name, _ in VENDORED:
         text = (TOOLS / name).read_text()
         assert c.ACCOUNT_LIKE.search(text) is None and c.PRIVATE_TEXT.search(text) is None, name
+
+
+@pytest.mark.parametrize("version", [(3, 11, 9, "final", 0), (3, 10, 0, "final", 0), (2, 7, 18, "final", 0)])
+def test_carregador_recusa_python_anterior_a_3_12_antes_de_ler_ou_executar_qualquer_arquivo(tmp_path, monkeypatch,
+                                                                                              version):
+    """Ruling 4 item 7: the vendored frames use PEP 695 `type`; an older runner refuses fail-closed."""
+    for _, name, _ in VENDORED:
+        (tmp_path / name).write_bytes(b"import builtins\nbuiltins.MODE_FRAMES_EXECUTED = True\n")
+    monkeypatch.setattr(sys, "version_info", version)
+    with pytest.raises(ValueError, match="^mode_frames=python_version$"):
+        _mb()._load_product_frames(tmp_path)
+    assert not hasattr(builtins, "MODE_FRAMES_EXECUTED")
+
+
+def test_formatos_do_produto_recusam_python_anterior_a_3_12_sem_cache(monkeypatch):
+    mb = _mb()
+    monkeypatch.setattr(mb, "_PRODUCT", {})
+    monkeypatch.setattr(sys, "version_info", (3, 11, 9, "final", 0))
+    with pytest.raises(ValueError, match="^mode_frames=python_version$"):
+        mb.product_frames()
+    assert mb._PRODUCT == {}
+
+
+def test_carregador_admite_python_3_12_no_limite(monkeypatch):
+    monkeypatch.setattr(sys, "version_info", (3, 12, 0, "final", 0))
+    frames = _mb()._load_product_frames(TOOLS)
+    assert frames.__name__ == "cnes_infra.aws.mode_canary_frames"
