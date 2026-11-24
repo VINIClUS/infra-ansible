@@ -285,10 +285,10 @@ def _change(path, value):
     (("execution_role_arn",), "arn:aws:iam::111122223333:user/x"), (("scope", "tenant_id"), "Prod_Canary"),
     (("scope", "raw_object_keys"), []), (("scope", "raw_object_keys"), ["a", "a"]), (("scope", "output_object_keys"), ["a*"]),
     (("revisions", "recovery"), "arn:aws:ecs:us-east-2:111122223333:task-definition/x"),
-    (("task_role_arns", "audit"), 7)],
+    (("task_role_arns", "audit"), 7), (("scope", "audit_object_keys"), ["a*"])],
     ids=["sem-index", "campo-extra", "sem-audit-keys", "modo-extra", "tabela-alheia", "maquina-curinga", "cluster-invalido",
          "bucket-alheio", "role-invalida", "tenant-invalido", "raw-vazio", "raw-duplicado", "output-curinga",
-         "revisao-sem-numero", "task-role-nao-texto"])
+         "revisao-sem-numero", "task-role-nao-texto", "audit-curinga"])
 def test_sessao_recusa_recursos_fora_da_forma_do_mode_input(path, value):
     with pytest.raises(ValueError, match="^mode session resources$"):
         _session("unit-start", _change(path, value))

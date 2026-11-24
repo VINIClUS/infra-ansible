@@ -157,6 +157,133 @@ def fence_observe_session_policy(*, control_table_arn, deadline):
             "Null": {"dynamodb:LeadingKeys": "false"}}}]}
 
 
+MODE_SEED_RUN_PREFIXES = {"unit": ("unit",), "recovery": ("recovery-a", "recovery-b")}
+MODE_SESSION_FRAMES = {"unit-seed": ("unit-seed",), "recovery-seed": ("recovery-seed",), "unit-start": ("dispatch-unit",),
+                       "recovery-start": ("ledger-admit", "ledger-unknown", "ledger-settle")}
+MODE_RESOURCE_SHAPES = {"revisions": "audit recovery unit", "task_role_arns": "audit recovery unit",
+                        "network": "public_subnet_ids security_group_id", "schedule_arns": "audit recovery",
+                        "alarm_arns": "audit_outbox_backlog audit_repeated_failure recovery_repeated_failure",
+                        "scope": "audit_object_keys output_object_keys raw_object_keys run_ids tenant_id"}
+_MODE_RESOURCE_FIELDS = frozenset({"table_arn", "index_arn", "data_bucket_arn", "audit_bucket_arn", "cluster_arn", "machine_arn",
+                                   "execution_role_arn", "log_group_arn", *MODE_RESOURCE_SHAPES})
+_MODE_ARNS = {"table_arn": r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+",
+              "data_bucket_arn": r"arn:aws:s3:::cnesdata-prod-[a-z0-9-]+",
+              "cluster_arn": r"arn:aws:ecs:us-east-2:[0-9]{12}:cluster/[A-Za-z0-9_-]+",
+              "machine_arn": r"arn:aws:states:us-east-2:[0-9]{12}:stateMachine:[A-Za-z0-9_-]+",
+              "execution_role_arn": r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+"}
+_MODE_MAPS = {"revisions": r"arn:aws:ecs:us-east-2:[0-9]{12}:task-definition/[A-Za-z0-9_-]+:[0-9]+",
+              "task_role_arns": r"arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+"}
+_MODE_OBJECT_KEY = re.compile(r"[A-Za-z0-9._/=-]{1,1024}")
+_MODE_RUN_FAMILIES = frozenset({"seed-unit", "binding"})
+_MODE_DYNAMODB = {"get": "dynamodb:GetItem", "put": "dynamodb:PutItem"}
+_MODE_READS = {"describe_state_machine": "states:DescribeStateMachine", "get_schedule": "scheduler:GetSchedule",
+               "describe_task_definition": "ecs:DescribeTaskDefinition", "describe_alarms": "cloudwatch:DescribeAlarms"}
+
+
+def mode_session_policy(operation, *, resources, owner_sha256, deadline):
+    """Mode stage session (P16b ruling 4 item 1): the native calls of one promotion operation, until the deadline.
+
+    DynamoDB actions and keys come from the operation's C1 key frames, pinned against the vendored vector; observe
+    reads come from mode_readback_calls. Each session is a strict subset of its mode role grant.
+    Raises: ValueError before any STS call.
+    """
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    entry = lc.MODE_SESSION_OPERATIONS.get(operation) if type(operation) is str else None
+    c.require(entry is not None and entry[2] == "promotion", "mode session operation")
+    _mode_session_resources(resources)
+    c.require(type(owner_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", owner_sha256) is not None, "mode session owner")
+    c.integer(deadline)
+    phase, step = entry[3], operation.removeprefix(entry[3] + "-")
+    statements = _mode_dynamodb(operation, resources, owner_sha256)
+    if step == "seed":
+        statements.append(_mode_allow(["s3:PutObject", "s3:GetObject"], _mode_objects(resources, "raw_object_keys")))
+    elif step == "start":
+        statements += _mode_start(phase, resources)
+    else:
+        statements += _mode_observe(phase, resources)
+    expiry = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
+    return {"Version": "2012-10-17", "Statement": [statement | {"Condition": expiry | statement.get("Condition", {})}
+                                                   for statement in statements]}
+
+
+def _mode_session_resources(resources):
+    c.require(type(resources) is dict and set(resources) == _MODE_RESOURCE_FIELDS
+              and all(type(resources[key]) is dict and set(resources[key]) == set(shape.split())
+                      for key, shape in MODE_RESOURCE_SHAPES.items())
+              and all(type(resources[key]) is str and re.fullmatch(pattern, resources[key]) is not None
+                      for key, pattern in _MODE_ARNS.items())
+              and all(type(value) is str and re.fullmatch(pattern, value) is not None
+                      for key, pattern in _MODE_MAPS.items() for value in resources[key].values()), "mode session resources")
+    scope = resources["scope"]
+    runs = scope["run_ids"]
+    c.require(type(runs) is list and len(set(runs)) == len(runs)
+              and all(type(name) is str and re.fullmatch(r"[0-9a-z-]{1,64}", name) is not None for name in [scope["tenant_id"], *runs])
+              and all(_mode_keys(scope[field], 1) for field in ("raw_object_keys", "output_object_keys"))
+              and _mode_keys(scope["audit_object_keys"], 0), "mode session resources")
+
+
+def _mode_keys(value, minimum):
+    return (type(value) is list and minimum <= len(value) <= 64 and len(set(value)) == len(value)
+            and all(type(key) is str and _MODE_OBJECT_KEY.fullmatch(key) is not None for key in value))
+
+
+def _mode_allow(actions, resource, condition=None):
+    return {"Effect": "Allow", "Action": actions, "Resource": resource} | ({"Condition": condition} if condition else {})
+
+
+def _mode_objects(resources, field):
+    return [resources["data_bucket_arn"] + "/" + key for key in resources["scope"][field]]
+
+
+def _mode_runs(operation, resources, owner):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    names = {f"{prefix}-{owner[:16]}" for prefix in MODE_SEED_RUN_PREFIXES[lc.MODE_SESSION_OPERATIONS[operation][3]]}
+    runs = [run for run in resources["scope"]["run_ids"] if run in names]
+    c.require(bool(runs), "mode session runs")
+    return runs
+
+
+def _mode_dynamodb(operation, resources, owner):
+    from tools.cnesdata_delivery.mode_broker import MODE_KEY_FRAMES
+    tenant = "TENANT#" + resources["scope"]["tenant_id"].encode().hex()
+    families = set().union(*(MODE_KEY_FRAMES[frame] for frame in MODE_SESSION_FRAMES.get(operation, ())))
+    runs = ([tenant + "#RUN#" + run.encode().hex() for run in _mode_runs(operation, resources, owner)]
+            if any(family in _MODE_RUN_FAMILIES for family, _ in families) else [])
+    keys = {}
+    for family, action in families:
+        keys.setdefault(_MODE_DYNAMODB[action], set()).update(runs if family in _MODE_RUN_FAMILIES else [tenant])
+    grouped = {}
+    for action in sorted(keys):
+        grouped.setdefault(tuple(sorted(keys[action])), []).append(action)
+    return [_mode_allow(actions, resources["table_arn"], {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": list(found)},
+                                                        "Null": {"dynamodb:LeadingKeys": "false"}})
+            for found, actions in grouped.items()]
+
+
+def _mode_start(phase, resources):
+    cluster = {"ArnEquals": {"ecs:cluster": resources["cluster_arn"]}}
+    tasks = _mode_allow(["ecs:DescribeTasks"], resources["cluster_arn"].replace(":cluster/", ":task/") + "/*", cluster)
+    if phase == "unit":
+        machine = resources["machine_arn"]
+        return [_mode_allow(["states:StartExecution"], machine),
+                _mode_allow(["states:DescribeExecution"], machine.replace(":stateMachine:", ":execution:") + ":*"), tasks]
+    return [_mode_allow(["ecs:RunTask"], resources["revisions"][phase], cluster),
+            _mode_allow(["iam:PassRole"], [resources["task_role_arns"][phase], resources["execution_role_arn"]],
+                        {"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}}), tasks]
+
+
+def _mode_observe(phase, resources):
+    from tools.cnesdata_delivery.mode_broker import mode_readback_calls
+    targets = {"describe_state_machine": resources["machine_arn"], "describe_task_definition": "*",
+               "get_schedule": resources["schedule_arns"].get(phase),
+               "describe_alarms": resources["alarm_arns"].get(phase + "_repeated_failure")}
+    statements = [_mode_allow([_MODE_READS[call["operation"]]], targets[call["operation"]])
+                  for call in mode_readback_calls(phase, resources)]
+    if phase == "unit":
+        statements.append(_mode_allow(["s3:GetObject"], _mode_objects(resources, "output_object_keys")))
+    return statements
+
+
 def _fence_session_table(control_table_arn):
     c.require(type(control_table_arn) is str and re.fullmatch(
         r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
