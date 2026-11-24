@@ -483,10 +483,10 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
 def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence, operation="closed-ready"):
     """Single derivation of own-run SDK intent/response/receipt keys, one namespace per operation.
 
-    Used by ClosedReadyEvidence (fence and publish-static) and by the prepared evaluation scope (item 2);
+    Used by ClosedReadyEvidence (fence, inventory and publish-static) and by the prepared evaluation scope (item 2);
     closed-ready bytes are unchanged.
     """
-    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation == "publish-static", "fence evidence operation")
+    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static"), "fence evidence operation")
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
     digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,

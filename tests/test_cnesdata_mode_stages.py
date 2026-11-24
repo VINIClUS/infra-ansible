@@ -342,10 +342,12 @@ def _c_governance(change=None):
 
 
 def _c_source(api, governance):
+    from types import SimpleNamespace
+
     from test_cnesdata_stage_events import OWNER, RUN, _Guard
     from tools.cnesdata_delivery import application_gate as ag
     return ag.stage_event_source(api=api, governance=governance, run=dict(RUN), owner=dict(OWNER), guard=_Guard(),
-                                 clock=lambda: 1300)
+                                 keeper=SimpleNamespace(static_inventory=b"settled"), clock=lambda: 1300)
 
 
 @pytest.mark.parametrize("stage", ["phase-c-recovery", "phase-c-audit"])
@@ -381,7 +383,7 @@ def test_gatilho_interno_do_unit_nao_e_evento_do_produtor():
 
 def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     from tools.cnesdata_delivery import application_gate as ag
-    assert ag.KEEPER_EVENTS == ("prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
     assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
@@ -390,10 +392,10 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     fakes: source, capability, child."""
     from types import SimpleNamespace
 
-    from test_cnesdata_stage_events import HOST_REFERENCE, _api_world
-    from test_cnesdata_static_stage import _install_static
+    from test_cnesdata_stage_events import HOST_REFERENCE
+    from test_cnesdata_static_stage import _static_world
     from tools.cnesdata_delivery import application_gate as ag
-    world = _install_static(monkeypatch, _api_world(monkeypatch))
+    world = _static_world(monkeypatch)
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
