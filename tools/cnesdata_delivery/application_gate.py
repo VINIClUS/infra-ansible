@@ -2860,9 +2860,9 @@ MODE_NEXT_STAGE = {"unit": "phase-c-recovery", "recovery": "phase-c-audit", "aud
 
 
 def mode_input_source(*, keeper, owner, window, operation, names):
-    """Mode originals the keeper journal does not hold: the mode-canary record and fixtures, readbacks, network, the
-    Phase C evidence and the audit event ids. Their producers are unwired (DD-1 1C), so production refuses here."""
-    raise ValueError("mode_inputs=source_unconnected")
+    """Mode originals the stage does not hold yet, from mode_broker.mode_input_source. Raises: ValueError."""
+    from tools.cnesdata_delivery import mode_broker
+    return mode_broker.mode_input_source(keeper=keeper, owner=owner, window=window, operation=operation, names=names)
 
 
 ModeContext = namedtuple("ModeContext", "governance authority prepared credential_limit operation_session clock")

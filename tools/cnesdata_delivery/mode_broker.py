@@ -8,7 +8,7 @@ import time
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.application_gate import (AdapterJournal, ClosedReadyBroker, Keeper, _assume_fence_session,
-                                                      _fence_operation_iam)
+                                                      _fence_operation_iam, _operation_journals)
 
 MODE_PHASES = ("unit", "recovery", "audit")
 MODE_SEED_KEYS = frozenset((family, action) for family in ("seed-raw", "seed-run", "seed-unit") for action in ("put", "get"))
@@ -265,6 +265,43 @@ def mode_readback_bytes(mode, resources, responses):
         else:
             document[family] = projected
     return c.canonical(document)
+
+
+MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe"}
+
+
+def _lease_original(keeper, operation, kind, label):
+    journals = _operation_journals(keeper, operation)
+    c.require(len(journals) == 1, label)
+    if kind is None:
+        return journals[0]._inputs["readbacks"]
+    found = [entry for entry in journals[0]._observations if entry["kind"] == kind]
+    c.require(len(found) == 1, label)
+    return journals[0]._observation_bytes[found[0]["sha256"]]
+
+
+def mode_input_source(*, keeper, owner, window, operation, names):
+    """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null; (s) the audit mode-seed
+    and recovery-readbacks from this lease's recovery journals. Any other origin is not connected and refuses first.
+
+    Returns: {name: bytes}. Raises: ValueError.
+    """
+    mode = operation.partition("-")[0]
+    c.require(all(name in MODE_KEEPER_ORIGINS and MODE_KEEPER_ORIGINS[name] in (None, mode, operation) for name in names),
+              "mode_inputs=source_unconnected")
+    inputs = {}
+    for name in names:
+        if name == "mode-start":
+            inputs[name] = c.canonical({"version": 1, "kind": "mode-start", "frozen": mode == "audit",
+                                        "started_at": c.utc(window["admitted_at"])})
+        elif name == "previous":
+            c.require(not _operation_journals(keeper, operation), "mode reentry unavailable")
+            inputs[name] = c.canonical(None)
+        elif name == "mode-seed":
+            inputs[name] = _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
+        else:
+            inputs[name] = _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
+    return inputs
 
 
 class ModeBroker:
