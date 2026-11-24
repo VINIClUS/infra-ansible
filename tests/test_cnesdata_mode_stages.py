@@ -387,7 +387,7 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
-def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False):
+def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
     fakes: source, capability, child."""
     from types import SimpleNamespace
@@ -399,7 +399,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
-                                 fail=fail)
+                                 fail=fail, late=late)
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -418,6 +418,11 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
         journal._observation_bytes[c.sha(raw)] = raw
         journal._pending = [{"kind": "sdk-call", "reference_sha256": "f" * 64}] if world.mode.pending else []
         world.clock.value += 5
+        if world.mode.late and operation.endswith("-observe"):
+            deadline = lc.terminal_deadline(_record(world))
+            while world.clock.value < deadline:
+                world.clock.value = min(deadline, world.clock.value + 25)
+                world.keeper.tick()
     monkeypatch.setattr(ag, "invoke_adapter", invoke_adapter)
 
     def mode_input_source(*, keeper, owner, window, operation, names):
@@ -515,6 +520,28 @@ def test_operacao_de_modo_nunca_roda_o_child_quando_a_capability_recusa(monkeypa
         _unit_stage(world)
     assert world.mode.calls == [] and _record(world) == before
     assert {"kind": "context-failed"} in world.keeper.uncertainty()
+
+
+@pytest.mark.parametrize("stage", ["unit", "phase-c-recovery"])
+def test_estagio_de_modo_recusa_avancar_quando_o_prazo_do_vetor_governado_vence_depois_do_observe(monkeypatch, stage):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _mode_world(monkeypatch)
+    _enter_unit(world)
+    if stage == "phase-c-recovery":
+        _unit_stage(world)
+        _c_files(world, stage)
+    world.mode.late = True
+    before = _record(world)
+    assert lc.governed_windows(before["windows"])["stages"][stage] == before["deadline"] - before["admitted_at"]
+    assert lc.terminal_deadline(before) == min(before["fixed_deadline"], before["admitted_at"] + before["windows"]["stages"][stage])
+    with pytest.raises(ValueError, match=f"^{stage} stage deadline elapsed$"):
+        if stage == "unit":
+            _unit_stage(world)
+        else:
+            world.handlers[stage](world.keeper, dict(B_REFERENCE))
+    assert world.mode.calls[-1][0] == ("unit" if stage == "unit" else "recovery") + "-observe"
+    assert world.clock.value == lc.terminal_deadline(before)
+    assert _record(world) == before and world.store.get()[0]["status"] == "held"
 
 
 def test_operacao_de_modo_descarta_os_clientes_do_broker_quando_o_child_falha(monkeypatch):
