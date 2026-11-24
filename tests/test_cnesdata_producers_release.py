@@ -157,13 +157,13 @@ def padded(size):
 
 
 def test_governanca_no_teto_da_cli_e_aceita_e_acima_e_recusada():
-    assert len(governance_assembly.render(padded(40960))) == 40960
-    with pytest.raises(ValueError, match="ceiling"):
-        governance_assembly.render(padded(40961))
+    assert len(governance_assembly.render(padded(43856))) == 43856
+    with pytest.raises(ValueError, match="^governance above the write ceiling size=43857 ceiling=43856$"):
+        governance_assembly.render(padded(43857))
 
 
 def test_teto_do_secret_nao_pode_ser_ultrapassado_por_parametro():
-    assert governance_assembly.SECRET_CEILING == 47952 and governance_assembly.CLI_CEILING == 40960
+    assert governance_assembly.SECRET_CEILING == 47952 and governance_assembly.CLI_CEILING == 47952 - 4096 == 43856
     assert len(governance_assembly.render(padded(47952), ceiling=47952)) == 47952
     with pytest.raises(ValueError, match="ceiling"):
         governance_assembly.render(padded(47953), ceiling=47953)
