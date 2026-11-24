@@ -146,9 +146,24 @@ def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline, keys
         for actions, resource in zip(STATIC_SESSION_ACTIONS[alias], resources) if actions]}
 
 
-def _fence_session_condition(control_table_arn, execution_prefix, deadline):
+def fence_observe_session_policy(*, control_table_arn, deadline):
+    """Observe fence session (P16b): only the strong FENCE/SEMAPHORE GetItem statement of fence_session_policy."""
+    _fence_session_table(control_table_arn)
+    c.integer(deadline)
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": control_table_arn, "Condition": {
+            "DateLessThan": {"aws:CurrentTime": c.utc(deadline)},
+            "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": ["ENV#prod#FENCE", "ENV#prod#SEMAPHORE"]},
+            "Null": {"dynamodb:LeadingKeys": "false"}}}]}
+
+
+def _fence_session_table(control_table_arn):
     c.require(type(control_table_arn) is str and re.fullmatch(
         r"arn:aws:dynamodb:us-east-2:[0-9]{12}:table/cnesdata-prod-[A-Za-z0-9_.-]+", control_table_arn), "fence session table")
+
+
+def _fence_session_condition(control_table_arn, execution_prefix, deadline):
+    _fence_session_table(control_table_arn)
     c.require(type(execution_prefix) is str and re.fullmatch(
         r"arn:aws:states:us-east-2:[0-9]{12}:execution:cnesdata-prod:", execution_prefix), "fence session execution prefix")
     c.integer(deadline)

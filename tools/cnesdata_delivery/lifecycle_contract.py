@@ -1065,10 +1065,12 @@ def closed_ready_probe_response(response, *, execution_arn, machine_arn):
     return {key: response[key] for key in ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate") if key in response}
 
 
+MODE_OBSERVES = ("unit-observe", "recovery-observe", "audit-observe")
 FENCE_SDK_OPERATIONS = {
     "closed-ready": frozenset({("dynamodb", "get_item"), ("stepfunctions", "describe_execution")}),
     "close-drain": frozenset({("dynamodb", "get_item"), ("dynamodb", "update_item"), ("dynamodb", "transact_write_items"),
                               ("stepfunctions", "describe_execution")}),
+    **dict.fromkeys(MODE_OBSERVES, frozenset({("dynamodb", "get_item")})),
 }
 # Correction 6906038586 item 3: sha256 of each canonical template of the product call vector
 # (CnesData 2c66f62c tests/production/delivery/close_drain_call_vector.json, sha256 44d0cf91...).
@@ -1202,10 +1204,28 @@ def validate_close_drain_call(*, request, role, service, operation, parameters, 
     return parameters
 
 
+def validate_mode_observe_call(*, request, role, service, operation, parameters, account, control_table_arn, machine_arn):
+    """P16b: the observe _gate reads FENCE and SEMAPHORE strongly on the fence session, in its own stage; nothing else."""
+    c.require(request["operation"] in MODE_OBSERVES and {request["stage"]["stage"]} == ADAPTER_STAGES[request["operation"]]
+              and role == "fence_operator" and (service, operation) == ("dynamodb", "get_item"),
+              "mode observe finite SDK operation")
+    c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account) is not None, "mode observe account")
+    table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
+    c.require(table is not None and machine_arn == "arn:aws:states:us-east-2:" + account + ":stateMachine:cnesdata-prod",
+              "mode observe protected resource scope")
+    c.closed(parameters, "TableName Key ConsistentRead")
+    allowed = [{"TableName": table[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}}, "ConsistentRead": True}
+               for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT"))]
+    c.require(any(c.canonical(parameters) == c.canonical(value) for value in allowed), "mode observe strong fence read")
+    return parameters
+
+
 def validate_fence_call(*, request, history=(), **arguments):
     """Per-operation fence SDK scope; closed-ready keeps its frozen-member validator."""
     if request["operation"] == "close-drain":
         return validate_close_drain_call(request=request, history=history, **arguments)
+    if request["operation"] in MODE_OBSERVES:
+        return validate_mode_observe_call(request=request, **arguments)
     return validate_closed_ready_call(request=request, **arguments)
 
 
