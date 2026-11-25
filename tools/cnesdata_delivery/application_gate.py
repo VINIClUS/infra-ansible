@@ -503,10 +503,8 @@ class _TerminalStore:
         return result
 
 
-_ADAPTER_CHILD = r'''
-import base64, importlib.machinery, importlib.util, os, sys
-sys.path.insert(0, sys.argv[2])
-from tools.cnesdata_delivery import contract as c
+PRODUCT_IMPORTS = r'''
+import importlib.machinery, importlib.util, os, sys
 product = sys.argv[1]
 sys.path.insert(0, product)
 class AuthorizedPackages:
@@ -525,7 +523,12 @@ class AuthorizedPackages:
             return importlib.util.spec_from_file_location(name, base + ".py")
         raise ModuleNotFoundError("adapter authorized path " + name, name=name)
 sys.meta_path.insert(0, AuthorizedPackages())
-def receive():
+'''
+_ADAPTER_CHILD = r'''
+import base64, sys
+sys.path.insert(0, sys.argv[2])
+from tools.cnesdata_delivery import contract as c
+''' + PRODUCT_IMPORTS + r'''def receive():
     raw = sys.stdin.buffer.readline(192 * 1024**2 + 1)
     return c.loads(raw, canonical=True, limit=192 * 1024**2)
 def send(value):
@@ -2648,11 +2651,6 @@ ROUTE_REVISIONS = ("unit", "recovery", "audit")
 TASK_REVISION = re.compile(r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}")
 
 
-def _state_point(checkpoint):
-    return dict(c.closed(dict(checkpoint["state"]), "lineage serial state_sha256"),
-                object_version=checkpoint["state_object"]["version_id"])
-
-
 STATE_MACHINE_REVISION = re.compile(r"arn:aws:states:[a-z0-9-]+:\d{12}:stateMachine:[A-Za-z0-9_-]+")
 B_MOMENTS = ("artifact_created_at", "job_completed_at")
 
@@ -2690,7 +2688,7 @@ def api_phase_b_evidence(*, close_raw, prepared, published, moments, admitted_at
     after = c.loads(published["checkpoint.json"], canonical=True)
     c.require(approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"]) and approval["plan_sha256"] == after["plan_sha256"]
               and after["purpose"] == "phase-b", "phase_b=ancestry")
-    first, last = _state_point(before), _state_point(after)
+    first, last = lc.state_point(before), lc.state_point(after)
     c.require(first["lineage"] == last["lineage"] and first["serial"] < last["serial"]
               and first["object_version"] != last["object_version"], "phase_b=checkpoint_not_advanced")
     machines = [row["observed"].get("stateMachineArn") for row in after["readbacks"]

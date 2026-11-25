@@ -1987,6 +1987,16 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
 
 
 PHASE_C_ROUTE_MODES = ("recovery", "audit")
+PHASE_C_PURPOSES = ("phase-c-recovery", "phase-c-audit")
+PHASE_C_PRODUCT_FILES = {
+    "scripts/promotion/phase_c_recovery.py": "3fdc5c959823044b91f6e647e436a15e77d7c01c7d1a17f72001a7c54059ba20",
+    "scripts/promotion/_phase_c_core.py": "2bcc1649c92ac5071e91104400291dee0adb514fe2ca2b36d9a30b0626083fcb"}
+
+
+def state_point(checkpoint):
+    """Args: a lifecycle checkpoint. Returns: its state identity plus the state object version (B and C elements)."""
+    return dict(c.closed(dict(checkpoint["state"]), "lineage serial state_sha256"),
+                object_version=checkpoint["state_object"]["version_id"])
 
 
 def _observed_rows(rows, service, operation):

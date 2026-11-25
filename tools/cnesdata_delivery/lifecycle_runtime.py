@@ -5,13 +5,16 @@ apply approval: deploy additionally consumes an independent, source-pinned audit
 No AWS client is constructed before public admission. Default configuration closes.
 """
 import base64
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
+from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import drift_catalog as dc
@@ -1473,6 +1476,79 @@ def execute(role):
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)
+
+
+PhaseCDeploy = namedtuple("PhaseCDeploy", "purpose payload checkpoint_raw apply_output")
+_PHASE_C_CHILD = r'''
+import base64, json
+from datetime import datetime, timezone
+from scripts.promotion.phase_c_recovery import PhaseCEvidence, phase_c_evidence
+request = json.loads(sys.stdin.buffer.read(8 * 1024**2 + 1))
+observed = datetime.strptime(request["observed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+sys.stdout.buffer.write(phase_c_evidence(PhaseCEvidence(request["mode"], request["close"], request["before"], request["after"],
+    request["plan_sha256"], request["audit_sha256"], base64.b64decode(request["apply_output"]), request["routes"], observed)))
+'''
+
+
+def phase_c_publication(deploy, *, product, close_raw, phase_b, observed_at, run=None):
+    """Design 6 and P17 ruling 1g: the phase-c.json member of a C deploy publication. The product builder at the pinned
+    source shapes it; routes come from this deploy's own after readbacks, never from rendered targets.
+
+    Args: deploy PhaseCDeploy; product the authenticated tree; close-drain bytes; Phase B checkpoint readback rows.
+    Returns: {"phase-c.json": bytes} for the two C purposes, {} otherwise. Raises: ValueError phase_c=<reason>.
+    """
+    if deploy.purpose not in lc.PHASE_C_PURPOSES:
+        return {}
+    request = _phase_c_request(deploy, close_raw, phase_b, observed_at)
+    for name, digest in lc.PHASE_C_PRODUCT_FILES.items():
+        c.require(c.sha((Path(product) / name).read_bytes()) == digest, f"phase_c=product_pin file={name}")
+    raw = (run or _phase_c_child)(product, request)
+    c.require(raw == _phase_c_element(request, deploy.apply_output), "phase_c=element_parity")
+    return {"phase-c.json": raw}
+
+
+def _phase_c_request(deploy, close_raw, phase_b, observed_at):
+    payload = deploy.payload
+    close = c.closed(c.loads(close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
+    previous, checkpoint, approval = (c.loads(raw, canonical=True) for raw in (
+        payload["checkpoint.json"], deploy.checkpoint_raw, payload["approval.json"]))
+    plan = c.sha(payload["plan.bin"])
+    c.require(checkpoint["purpose"] == approval["purpose"] == deploy.purpose
+              and approval["checkpoint_sha256"] == c.sha(payload["checkpoint.json"])
+              and approval["plan_sha256"] == checkpoint["plan_sha256"] == plan, "phase_c=element_ancestry")
+    mode = deploy.purpose.removeprefix("phase-c-")
+    return {"mode": mode, "close": close, "before": lc.state_point(previous), "after": lc.state_point(checkpoint),
+            "plan_sha256": plan, "audit_sha256": c.sha(payload["approval.json"]),
+            "apply_output": base64.b64encode(deploy.apply_output).decode(),
+            "routes": lc.phase_c_routes(mode, after=checkpoint["readbacks"], phase_b=phase_b),
+            "observed_at": c.utc(observed_at)}
+
+
+def _product_text(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _phase_c_element(request, apply_output):
+    close = request["close"]
+    return _product_text({"version": 1, "kind": "phase-c-" + request["mode"], "common": close["common"],
+                          "close_drain_sha256": c.sha(_product_text(close)), "before": request["before"],
+                          "after": request["after"], "plan_sha256": request["plan_sha256"],
+                          "audit_sha256": request["audit_sha256"], "apply_sha256": c.sha(apply_output),
+                          "routes": request["routes"], "observed_at": request["observed_at"]})
+
+
+def _phase_c_child(product, request):
+    from tools.cnesdata_delivery.application_gate import PRODUCT_IMPORTS
+    root = Path(product).resolve()
+    with tempfile.TemporaryDirectory(prefix="cnesdata-phase-c-") as home:
+        try:
+            done = subprocess.run([sys.executable, "-I", "-B", "-c", PRODUCT_IMPORTS + _PHASE_C_CHILD, str(root)], cwd=root,
+                                  env={"PATH": os.defpath, "HOME": home, "LANG": "C.UTF-8"}, input=c.canonical(request),
+                                  capture_output=True, timeout=20, check=False)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("phase_c=element_child") from error
+    c.require(done.returncode == 0, "phase_c=element_child")
+    return done.stdout
 
 
 def admit_approval_origin(governance, role, origins):
