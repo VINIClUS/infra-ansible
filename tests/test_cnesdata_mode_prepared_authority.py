@@ -21,7 +21,8 @@ def _world(monkeypatch):
     files = lr.fence_prepare_package(**kwargs)
     calls.clear()
     arguments = {"governance": copy.deepcopy(kwargs["governance"]), "application": copy.deepcopy(kwargs["authority"]),
-                 "owner": dict(kwargs["owner"]), "activation_sha256": kwargs["activation_sha256"]}
+                 "owner": dict(kwargs["owner"]), "activation_sha256": kwargs["activation_sha256"],
+                 "window": copy.deepcopy(kwargs["guard"].window)}
     return lr.PreparedFence(files), arguments, kwargs, calls
 
 
@@ -33,7 +34,9 @@ def test_autoridade_do_estagio_e_o_pacote_preparado_revalidado(monkeypatch):
     assert type(authority) is _mb().ModeAuthority and calls == []
     assert c.canonical(authority.evaluation) == prepared["mode-evaluation.json"]
     assert authority.scope["resources"] == mode["resources"] and authority.scope["owner_sha256"] == arguments["owner"]["owner_sha256"]
-    assert authority.scope["deadline"] == int(c.instant(mode["enabled_until"]))
+    window = arguments["window"]
+    assert authority.scope["deadline"] == min(int(c.instant(mode["enabled_until"])), window["preparation_deadline"]
+                                              + lc.governed_windows(window["windows"])["fixed_deadline_seconds"])
     assert sorted(authority.scope["session_names"].values()) == sorted(
         name for names in mode["delegation_sessions"].values() for name in names)
     assert set(authority.roles) == set(lc.MODE_ALIASES) and all(entry["role"]["Role"]["RoleId"] for entry in authority.roles.values())
@@ -76,6 +79,7 @@ def _evaluator(value):
     ("principal", "^mode application principal$"),
     ("activation", "^mode prepared authority binding$"),
     ("owner", "^mode prepared authority binding$"),
+    ("preparation-deadline", "^mode prepared authority binding$"),
     ("role-policy", "^mode prepared evaluation recompute$"),
     ("role-id", "^fence mode roles readback identity$"),
     ("case-resource", "^mode prepared evaluation recompute$"),
@@ -100,6 +104,8 @@ def test_autoridade_do_estagio_recusa_um_byte_trocado_em_cada_arquivo_ou_origina
         arguments["activation_sha256"] = "9" * 64
     if mutation == "owner":
         arguments["owner"]["owner_sha256"] = "9" * 64
+    if mutation == "preparation-deadline":
+        arguments["window"]["preparation_deadline"] += 1
     if mutation == "role-policy":
         prepared = _rewrite(prepared, "mode-roles.json", _policy)
     if mutation == "role-id":

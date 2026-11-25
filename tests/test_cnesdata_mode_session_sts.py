@@ -184,13 +184,14 @@ def test_sessao_mc_de_cada_efeito_assume_o_papel_do_alias_com_a_politica_do_cons
     args, calls, native = _case(monkeypatch, operation)
     session = _mb().assume_mode_session(**args)
     code, alias = lc.MODE_SESSION_OPERATIONS[operation][:2]
-    policy = mode_session_policy(operation, resources=RESOURCES, owner_sha256=OWNER, deadline=DEADLINE)
+    stage = args["journal"]._request["stage"]
+    minted = min(stage["deadline"], args["credential_limit"], DEADLINE)
+    policy = mode_session_policy(operation, resources=RESOURCES, owner_sha256=OWNER, deadline=minted)
     assert calls == [("sts", "assume_role", {"RoleArn": ROLE_ARNS[alias], "RoleSessionName": NAMES[code],
                                              "DurationSeconds": 900, "Policy": c.canonical(policy).decode().strip()})]
     assert native == [("sts", "get_caller_identity", {})]
-    stage = args["journal"]._request["stage"]
     assert args["operation_session"].calls == [(operation, ROLE_ARNS[alias], NAMES[code], stage)]
-    assert (session.code, session.alias, session.deadline) == (code, alias, min(stage["deadline"], DEADLINE))
+    assert (session.code, session.alias, session.deadline) == (code, alias, minted)
     assert session.evidence is args["operation_session"].client and session.client.governance["roles"] == {alias: ROLE_ARNS[alias]}
     assert session.request_binding == c.sha(c.canonical(args["journal"]._request))
     c.digest(session.commitment)

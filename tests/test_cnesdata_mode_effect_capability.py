@@ -104,7 +104,7 @@ def test_nenhum_seed_ou_start_recusa_mais_com_mode_broker_unconnected(monkeypatc
 
 def _effect(monkeypatch, operation, *, read=True, activation=None):
     mode = operation.partition("-")[0]
-    args, world, (owner, _), _, _ = _read_case(monkeypatch, mode)
+    args, world, (owner, window), _, _ = _read_case(monkeypatch, mode)
     readback = None
     if read:
         reads = mb.assume_readback_session(**args)
@@ -119,7 +119,7 @@ def _effect(monkeypatch, operation, *, read=True, activation=None):
                              credential_limit=args["credential_limit"], operation_session=factory, clock=args["clock"],
                              aws=_Store(), activation_sha256=activation or c.sha(world.activation), product="product")
     return SimpleNamespace(world=world, args=args, readback=readback, context=context, calls=calls,
-                           authorities=authorities, owner=owner)
+                           authorities=authorities, owner=owner, window=window)
 
 
 def _run(effect, operation):
@@ -159,7 +159,7 @@ def test_capability_de_seed_e_start_cunha_a_sessao_mc_e_admite_o_mode_broker_com
     (prepared, kwargs), = effect.authorities
     assert prepared is effect.context.prepared and kwargs == {
         "governance": effect.args["governance"], "application": effect.args["application"], "owner": effect.owner,
-        "activation_sha256": c.sha(effect.world.activation)}
+        "activation_sha256": c.sha(effect.world.activation), "window": effect.window}
     assert broker.aws is None and broker.session.client is None and (not start or broker.reads.client is None)
 
 

@@ -76,14 +76,15 @@ def test_sessao_de_leitura_assume_o_mode_observe_com_a_politica_de_observe_e_o_p
     session = _mb().assume_readback_session(**args)
     code = lc.MODE_SESSION_OPERATIONS[mode + "-observe"][0]
     request = _mb().mode_readback_request(owner, window, mode)
+    minted = min(window["deadline"], args["credential_limit"], sts.DEADLINE)
     policy = mode_session_policy(mode + "-observe", resources=args["authority"].scope["resources"], owner_sha256=owner["owner_sha256"],
-                                 deadline=sts.DEADLINE)
+                                 deadline=minted)
     assert calls == [("sts", "assume_role", {"RoleArn": sts.ROLE_ARNS["mode_observe"], "RoleSessionName": sts.NAMES[code],
                                              "DurationSeconds": 900, "Policy": c.canonical(policy).decode().strip()})]
     assert native == [("sts", "get_caller_identity", {})]
     assert args["operation_session"].calls == [(mode + "-observe", sts.ROLE_ARNS["mode_observe"], sts.NAMES[code],
                                                 request["stage"])]
-    assert (session.code, session.alias, session.deadline) == (code, "mode_observe", min(window["deadline"], sts.DEADLINE))
+    assert (session.code, session.alias, session.deadline) == (code, "mode_observe", minted)
     assert session.request_binding == c.sha(c.canonical(request)) and session.scope == args["authority"].scope
     assert session.client.governance["roles"] == {"mode_observe": sts.ROLE_ARNS["mode_observe"]}
     c.digest(session.commitment)

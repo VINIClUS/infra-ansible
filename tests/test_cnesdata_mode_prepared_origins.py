@@ -33,8 +33,10 @@ def _context(prepared, arguments, **changes):
     return _ag().ModeContext(**(fields | changes))
 
 
-def _source(operation, names, *, context, owner, keeper=None):
+def _source(operation, names, *, context, owner, keeper=None, prepared=None):
     window = _mode_case(operation)[2]
+    if prepared is not None:
+        window |= {"preparation_deadline": prepared["preparation_deadline"], "windows": prepared["windows"]}
     keeper = SimpleNamespace(_contexts=[]) if keeper is None else keeper
     return _ag().mode_input_source(keeper=keeper, owner=owner, window=window, operation=operation, names=names,
                                    context=context)
@@ -50,7 +52,8 @@ def test_contexto_de_modo_carrega_a_evidencia_a_ativacao_e_o_produto():
                                              ("audit-observe", "network")])
 def test_mode_input_e_network_vem_do_pacote_preparado_revalidado_no_estagio(monkeypatch, operation, name):
     prepared, arguments, _, _ = _world(monkeypatch)
-    inputs = _source(operation, [name], context=_context(prepared, arguments), owner=arguments["owner"])
+    inputs = _source(operation, [name], context=_context(prepared, arguments), owner=arguments["owner"],
+                     prepared=arguments["window"])
     resources = c.loads(prepared["mode-input.json"], canonical=True)["mode_canary"]["resources"]
     expected = prepared["mode-input.json"] if name == "mode-input" else _mb().mode_network_input(resources)
     assert inputs == {name: expected}
@@ -71,7 +74,7 @@ def test_origem_a_recusa_pacote_que_nao_revalida_no_estagio(monkeypatch, mutatio
     if mutation == "no-context":
         context = None
     with pytest.raises(ValueError, match=message):
-        _source("recovery-record", ["mode-input"], context=context, owner=arguments["owner"])
+        _source("recovery-record", ["mode-input"], context=context, owner=arguments["owner"], prepared=arguments["window"])
 
 
 def _product(tmp_path, governance, *, change=None):
@@ -209,7 +212,8 @@ def test_origem_readbacks_constroi_anexa_e_le_o_mode_readback_no_start_e_o_obser
     (session,) = sessions
     assert session["governance"] == "g" and session["application"] == "a" and session["authority"] == "authority"
     assert session["mode"] == mode and session["credential_limit"] == 6000 and session["operation_session"] == "o"
-    assert authorities == [{"governance": "g", "application": "a", "owner": owner, "activation_sha256": "1" * 64}]
+    assert authorities == [{"governance": "g", "application": "a", "owner": owner, "activation_sha256": "1" * 64,
+                            "window": window}]
     observe = _mb().mode_input_source(keeper=world.keeper, owner=owner, window=window, operation=mode + "-observe",
                                       names=["readbacks"], context=context)
     assert observe == start and len(_Readback.made) == 1 and len(sessions) == 1

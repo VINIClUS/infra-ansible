@@ -730,16 +730,16 @@ def _phase_c_original(keeper, mode):
     return c.canonical([c.loads(elements[purpose]) for purpose in purposes])
 
 
-def _prepared_authority(context, owner):
+def _prepared_authority(context, owner, window):
     c.require(type(context) is ModeContext, "mode prepared origin context")
     return mode_prepared_authority(context.prepared, governance=context.governance, application=context.authority,
-                                   owner=owner, activation_sha256=context.activation_sha256)
+                                   owner=owner, activation_sha256=context.activation_sha256, window=window)
 
 
-def _readbacks_original(keeper, mode, *, start, owner, context):
+def _readbacks_original(keeper, mode, *, start, owner, window, context):
     found = [item for item in keeper._contexts if type(item) is ModeReadback and item.mode == mode]
     if not found and start:
-        authority, guard = _prepared_authority(context, owner), KeeperGuard(keeper)
+        authority, guard = _prepared_authority(context, owner, window), KeeperGuard(keeper)
         session = assume_readback_session(governance=context.governance, application=context.authority,
                                           authority=authority, guard=guard, mode=mode,
                                           credential_limit=context.credential_limit,
@@ -803,12 +803,13 @@ def _source_original(name, *, keeper, owner, window, operation, context):
     if name == "phase-c":
         return _phase_c_original(keeper, mode)
     if name == "readbacks":
-        return _readbacks_original(keeper, mode, start=operation.endswith("-start"), owner=owner, context=context)
+        return _readbacks_original(keeper, mode, start=operation.endswith("-start"), owner=owner, window=window,
+                                   context=context)
     if name == "mode-input":
-        _prepared_authority(context, owner)
+        _prepared_authority(context, owner, window)
         return context.prepared["mode-input.json"]
     if name == "network":
-        return mode_network_input(_prepared_authority(context, owner).scope["resources"])
+        return mode_network_input(_prepared_authority(context, owner, window).scope["resources"])
     return _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
 
 
@@ -834,19 +835,21 @@ def mode_input_source(*, keeper, owner, window, operation, names, context=None):
 ModeAuthority = namedtuple("ModeAuthority", "evaluation documents scope roles")
 
 
-def mode_prepared_authority(prepared, *, governance, application, owner, activation_sha256):
+def mode_prepared_authority(prepared, *, governance, application, owner, activation_sha256, window):
     """The stage ModeAuthority from the authenticated PreparedFence (P16b ruling 1 item 1, Falta 6): the mode-input
-    re-admitted against the same originals, the mode-roles readbacks, every document derived again and the
-    mode-evaluation recomputed with byte equality.
+    re-admitted against the same originals, the mode-roles readbacks, every document derived again on the prepared
+    session bound of the lease window (ruling 9 item 1) and the mode-evaluation recomputed with byte equality.
 
-    Args: application is the authenticated application authority. Returns: ModeAuthority. Raises: ValueError, no IO.
+    Args: application is the authenticated application authority; window the held lease window.
+    Returns: ModeAuthority. Raises: ValueError, no IO.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     c.require(type(prepared) is lr.PreparedFence and lc.FENCE_MODE_FILES | {"fence-prepared.json", "checkpoint.json"} <= set(prepared),
               "mode prepared authority package")
     manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
     c.require(manifest["activation_sha256"] == c.digest(activation_sha256)
-              and manifest["owner"]["owner_sha256"] == owner["owner_sha256"], "mode prepared authority binding")
+              and manifest["owner"]["owner_sha256"] == owner["owner_sha256"]
+              and manifest["preparation"]["deadline"] == window["preparation_deadline"], "mode prepared authority binding")
     historical = lc.phase_a_originals(c.loads(prepared["checkpoint.json"], canonical=True)["phase_a_originals"])
     raw = prepared["mode-input.json"]
     admitted = lr.mode_input_admission(raw, governance=governance, historical=historical, owner=owner,
@@ -856,7 +859,7 @@ def mode_prepared_authority(prepared, *, governance, application, owner, activat
                                    preparation=manifest["preparation"])
     scope, documents, evaluation = lr.mode_prepared_evaluation(
         governance=governance, authority=application, owner=owner, mode_input_raw=raw, admitted=admitted, roles=roles,
-        evaluator=(manifest["producer"]["workflow_sha"], manifest["preparation"]["observed_at"]))
+        evaluator=(manifest["producer"]["workflow_sha"], manifest["preparation"]["observed_at"]), window=window)
     c.require(c.canonical(evaluation) == prepared["mode-evaluation.json"], "mode prepared evaluation recompute")
     return ModeAuthority(evaluation, documents, scope, roles)
 MODE_EFFECTS = ("unit-seed", "recovery-seed", "unit-start", "recovery-start", "audit-start")
@@ -1013,7 +1016,7 @@ _ModePlan = namedtuple("_ModePlan", "target binding code alias role policy deadl
 
 
 def _mode_plan(governance, application, authority, bound, part, *, credential_limit, clock):
-    from tools.cnesdata_delivery.iam_boundary import mode_session_document, mode_stage_evaluation
+    from tools.cnesdata_delivery.iam_boundary import mode_minted_session, mode_stage_evaluation
     target, binding = bound
     session_code, alias = lc.MODE_SESSION_OPERATIONS[target.operation][:2]
     code = part or session_code
@@ -1027,9 +1030,9 @@ def _mode_plan(governance, application, authority, bound, part, *, credential_li
     mode_stage_evaluation(authority.evaluation, documents, scope, code=code)
     role = _mode_role(governance, authority, session_code, alias)
     _mode_application(governance, application, documents, target, role, clock)
-    policy = mode_session_document(code, target.operation, scope)
+    deadline, policy = mode_minted_session(code, target.operation, scope, prepared=documents["session." + code],
+                                           stage_deadline=stage["deadline"], credential_limit=credential_limit, now=clock())
     c.require(len(c.canonical(policy).decode().strip()) <= 2048, "mode STS policy limit")
-    deadline = min(stage["deadline"], scope["deadline"])
     c.require(clock() + 40 < deadline, "mode session original stage/credential window")
     return _ModePlan(target, binding, code, alias, role, policy, deadline, authority.evaluation, scope)
 
@@ -1763,12 +1766,13 @@ def mode_effect_capability(*, journal, keeper, context):
         c.require(type(context) is ModeContext and type(keeper) is Keeper and type(journal) is AdapterJournal
                   and operation in MODE_EFFECTS and getattr(journal, "_broker", None) is None
                   and journal._request["activation_sha256"] == context.activation_sha256, "mode effect original context")
-        owner = lc.owner_binding(keeper.lease.check())
+        record = keeper.lease.check()
+        owner = lc.owner_binding(record)
         c.require(journal._request["owner"] == {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
                   "mode effect original context")
         authority = mode_prepared_authority(context.prepared, governance=context.governance,
                                             application=context.authority, owner=owner,
-                                            activation_sha256=context.activation_sha256)
+                                            activation_sha256=context.activation_sha256, window=record["lifecycle"])
         reads = _start_reads(keeper, operation)
         unit = (unit_start_plan(keeper, journal, resources=authority.scope["resources"], now=context.clock())
                 if operation == "unit-start" else None)

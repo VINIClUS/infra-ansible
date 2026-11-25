@@ -12,10 +12,11 @@ def _mb():
     return mode_broker
 
 
-def _policies():
+def _policies(args):
     from tools.cnesdata_delivery.session_policy import mode_session_policy, mode_unit_wait_policy
-    start = mode_session_policy("unit-start", resources=RESOURCES, owner_sha256=OWNER, deadline=DEADLINE)
-    wait = mode_unit_wait_policy(resources=RESOURCES, deadline=DEADLINE)
+    minted = min(args["journal"]._request["stage"]["deadline"], args["credential_limit"], DEADLINE)
+    start = mode_session_policy("unit-start", resources=RESOURCES, owner_sha256=OWNER, deadline=minted)
+    wait = mode_unit_wait_policy(resources=RESOURCES, deadline=minted)
     return [c.canonical(policy).decode().strip() for policy in (start, wait)]
 
 
@@ -23,7 +24,7 @@ def test_unit_start_cunha_ux_e_uw_no_mesmo_papel_e_nome_de_sessao(monkeypatch):
     args, calls, native = _case(monkeypatch, "unit-start")
     start, wait = _mb().assume_unit_start_sessions(**args)
     assert calls == [("sts", "assume_role", {"RoleArn": ROLE_ARNS["mode_dispatch"], "RoleSessionName": NAMES["ux"],
-                                             "DurationSeconds": 900, "Policy": policy}) for policy in _policies()]
+                                             "DurationSeconds": 900, "Policy": policy}) for policy in _policies(args)]
     assert native == [("sts", "get_caller_identity", {})] * 2
     stage = args["journal"]._request["stage"]
     assert args["operation_session"].calls == [("unit-start", ROLE_ARNS["mode_dispatch"], NAMES["ux"], stage)] * 2

@@ -737,21 +737,21 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
                  "fence-chain.json": c.canonical(chain), "fence-evaluation.json": c.canonical(evaluation)}
     originals |= mode_prepared_files(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
                                      admitted=admitted, roles=roles, mode_readbacks=mode_readbacks,
-                                     evaluator=(producer["workflow_sha"], preparation["observed_at"]))
+                                     evaluator=(producer["workflow_sha"], preparation["observed_at"]), window=window)
     guard.check()
     return fence_prepared_files(originals=originals, owner=owner, fragment=fragment, activation_sha256=activation_sha256,
         producer=producer, preparation=preparation, predecessor_raw=baseline, predecessor_reference=predecessor)
 
 
-def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, admitted, roles, evaluator):
+def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, admitted, roles, evaluator, window):
     """The scope, documents and mode-evaluation of the prepared mode files (P16b Falta 6), one derivation for the
     package producer and the stage recompute.
 
-    Args: authority is the application authority; evaluator is (workflow sha, observed_at).
+    Args: authority is the application authority; evaluator is (workflow sha, observed_at); window the lease window.
     Returns: (scope, documents, evaluation). Raises: ValueError.
     """
     from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation, mode_evaluation_documents, mode_prepared_scope
-    scope = mode_prepared_scope(mode_input_raw, admitted, owner=owner, governance=governance)
+    scope = mode_prepared_scope(mode_input_raw, admitted, owner=owner, governance=governance, window=window)
     documents = mode_evaluation_documents(governance=governance, fragment=authority.application_fragment,
         pin_document=authority.pin["document"], owner=owner, scope=scope,
         policies={alias: roles[alias]["policy"]["PolicyDocument"] for alias in lc.MODE_ALIASES})
@@ -759,10 +759,10 @@ def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, ad
     return scope, documents, evaluation
 
 
-def mode_prepared_files(*, governance, authority, owner, mode_input_raw, admitted, roles, mode_readbacks, evaluator):
+def mode_prepared_files(*, governance, authority, owner, mode_input_raw, admitted, roles, mode_readbacks, evaluator, window):
     """Args: as mode_prepared_evaluation plus the mode role readback proof. Returns: the three mode files by name."""
     evaluation = mode_prepared_evaluation(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
-                                          admitted=admitted, roles=roles, evaluator=evaluator)[2]
+                                          admitted=admitted, roles=roles, evaluator=evaluator, window=window)[2]
     return {"mode-input.json": mode_input_raw, "mode-roles.json": c.canonical(mode_readbacks),
             "mode-evaluation.json": c.canonical(evaluation)}
 

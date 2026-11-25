@@ -148,11 +148,13 @@ def mode_effective_evaluation(documents, scope, *, evaluator_source_sha, observe
     return evaluation
 
 
-def mode_prepared_scope(mode_raw, admitted, *, owner, governance):
+def mode_prepared_scope(mode_raw, admitted, *, owner, governance, window):
     """Scope of the prepared mode-evaluation (P16b Falta 6), one derivation at prepare and at stage: the admitted
-    mode-input resources and sessions, the owner, the delegated role ARNs and the enabled_until deadline.
+    mode-input resources and sessions, the owner, the delegated role ARNs and the prepared session bound
+    min(enabled_until, preparation_deadline + fixed_deadline_seconds) of ruling 9 item 1.
 
-    Args: mode-input bytes, its validate_mode_canary_input result, owner, governance. Returns: scope. Raises: ValueError.
+    Args: mode-input bytes, its validate_mode_canary_input result, owner, governance, the lease window.
+    Returns: scope. Raises: ValueError.
     """
     from tools.cnesdata_delivery import lifecycle_contract as lc
     operations, names = _mode_codes(), {}
@@ -164,7 +166,8 @@ def mode_prepared_scope(mode_raw, admitted, *, owner, governance):
             names[code] = name
     scope = {"resources": c.loads(mode_raw, limit=131072)["mode_canary"]["resources"], "owner_sha256": owner["owner_sha256"],
              "role_arns": {alias: governance["application_delegations"][alias] for alias in lc.MODE_ALIASES},
-             "session_names": names, "deadline": int(c.instant(admitted["enabled_until"]))}
+             "session_names": names, "deadline": min(int(c.instant(admitted["enabled_until"])), window["preparation_deadline"]
+                                                     + lc.governed_windows(window["windows"])["fixed_deadline_seconds"])}
     _mode_scope(scope, operations)
     return scope
 
@@ -265,6 +268,43 @@ def _mode_reports(documents, scope, observed_at, codes):
         reports.append({"case_id": case_id, "action": action, "resource": resource, "context": context,
                         "expected": expected, "observed": observed})
     return reports
+
+
+_MODE_INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def mode_deadline_reverse(minted, prepared, *, deadline, bound):
+    """Ruling 9 item 3: every statement of the minted session document is Allow with DateLessThan aws:CurrentTime at
+    the minted deadline, the size is unchanged, and putting the prepared bound back gives the prepared bytes.
+
+    Returns: None. Raises: ValueError mode_session_deadline=<reason>, before any STS call.
+    """
+    at, until = c.utc(deadline), c.utc(bound)
+    c.require(_MODE_INSTANT.fullmatch(at) is not None and _MODE_INSTANT.fullmatch(until) is not None
+              and len(at) == len(until), "mode_session_deadline=format")
+    statements = minted.get("Statement") if type(minted) is dict else None
+    c.require(type(statements) is list and bool(statements) and all(
+        type(statement) is dict and statement.get("Effect") == "Allow" and type(statement.get("Condition")) is dict
+        and statement["Condition"].get("DateLessThan") == {"aws:CurrentTime": at} for statement in statements),
+        "mode_session_deadline=statement")
+    c.require(len(c.canonical(minted)) == len(c.canonical(prepared)), "mode_session_deadline=format")
+    restored = minted | {"Statement": [statement | {"Condition": statement["Condition"] | {
+        "DateLessThan": {"aws:CurrentTime": until}}} for statement in statements]}
+    c.require(c.canonical(restored) == c.canonical(prepared), "mode_session_deadline=reverse")
+
+
+def mode_minted_session(code, operation, scope, *, prepared, stage_deadline, credential_limit, now):
+    """Ruling 9 item 2: d = min(stage window deadline, credential limit, prepared bound) in whole seconds, the minted
+    document from the same builder with scope.deadline = d, and the item 3 checks against the prepared document.
+
+    Returns: (d, minted document). Raises: ValueError mode_session_deadline=<reason>, before any STS call.
+    """
+    bound = scope["deadline"]
+    deadline = int(min(stage_deadline, credential_limit, bound))
+    c.require(now < deadline <= bound, "mode_session_deadline=window")
+    minted = mode_session_document(code, operation, scope | {"deadline": deadline})
+    mode_deadline_reverse(minted, prepared, deadline=deadline, bound=bound)
+    return deadline, minted
 
 
 def mode_session_document(code, operation, scope):
