@@ -284,6 +284,24 @@ def test_runtime_do_filho_vem_do_ambiente_do_job_com_python_3_13():
     assert lr.phase_c_runtime({"CNESDATA_PHASE_C_PYTHON": runtime.python, "CNESDATA_PHASE_C_TARGET": runtime.target}) == runtime
 
 
+@pytest.mark.parametrize("version, accepted", [((3, 12, 9, "final", 0), False), ((3, 13, 1, "final", 0), True),
+                                               ((3, 14, 0, "final", 0), False)], ids=["3.12", "3.13", "3.14"])
+def test_runtime_do_filho_exige_exatamente_3_13_de_um_interpretador_que_responde_ao_predicado(tmp_path, version, accepted):
+    """NIT 7: the stub evaluates the runtime predicate itself under the reported version, so 3.12 and 3.14 exit 1 by the
+    exact (3, 13) comparison and the 3.13 control exits 0."""
+    import sys
+    stub = tmp_path / "python"
+    stub.write_text(f"#!{sys.executable} -I\nimport sys\nassert sys.argv[1:4] == ['-I', '-S', '-c']\n"
+                    f"sys.version_info = {version!r}\nexec(compile(sys.argv[4], 'stub', 'exec'), {{'__name__': '__main__'}})\n")
+    stub.chmod(0o755)
+    environ = {"CNESDATA_PHASE_C_PYTHON": str(stub), "CNESDATA_PHASE_C_TARGET": str(tmp_path)}
+    if accepted:
+        assert lr.phase_c_runtime(environ) == lr.PhaseCRuntime(str(stub), str(tmp_path))
+        return
+    with pytest.raises(ValueError, match="^phase_c=runtime$"):
+        lr.phase_c_runtime(environ)
+
+
 @pytest.mark.parametrize("case", ["sem-python", "sem-alvo", "python-relativo", "alvo-ausente", "outra-versao"])
 def test_runtime_do_filho_fora_do_provisionado_recusa(tmp_path, case):
     runtime = _runtime()
