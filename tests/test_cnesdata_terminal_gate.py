@@ -667,7 +667,8 @@ def _recovery_world(monkeypatch, *, rolled_back=None, **changes):
     world.decision = _decision(choice_at=1200, deadline=min(window["fixed_deadline"], 1620), fixed=window["fixed_deadline"])
     ready = c.sha(world.ready_raw)
     first = _handoff("recovery_required", world.decision, closed_ready_sha256=ready)
-    second = _handoff("rolled_back", world.decision, closed_ready_sha256=ready) if rolled_back is None else rolled_back(ready)
+    second = (_handoff("rolled_back", world.decision, closed_ready_sha256=ready) if rolled_back is None
+              else rolled_back(ready, world.decision))
     world.handoff_raws = (first, second)
     world.handoffs = []
 
@@ -697,7 +698,9 @@ def test_host_recovery_required_com_decisao_entra_no_estagio_recovery_sem_public
     lambda ready, decision: _handoff("recovery_required", decision, closed_ready_sha256="0" * 64),
     lambda ready, decision: _handoff("recovery_required", decision, closed_ready_sha256=ready, recovery_proof_sha256="0" * 64),
     lambda ready, decision: _handoff("recovery_required", decision | {"recovery_deadline": c.utc(9999)},
-                                     closed_ready_sha256=ready)])
+                                     closed_ready_sha256=ready),
+    lambda ready, decision: _handoff("recovery_required", _later_f(decision), closed_ready_sha256=ready)],
+    ids=["rolled-back-null", "required-null", "closed-ready", "proof", "recovery-deadline", "fixed-deadline"])
 def test_host_sem_decisao_amarrada_fica_retido_no_estagio_api(monkeypatch, handoff):
     from test_cnesdata_stage_events import B_REFERENCE, HOST_REFERENCE, _prepared_world
     from tools.cnesdata_delivery import application_gate as ag
@@ -715,6 +718,26 @@ def test_host_sem_decisao_amarrada_fica_retido_no_estagio_api(monkeypatch, hando
     assert world.store.get()[0]["lifecycle"] == before[0]["lifecycle"] and world.store.get()[0]["status"] == "held"
 
 
+def test_host_recovery_required_com_incerteza_do_keeper_fica_retido_no_estagio_api(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE, HOST_REFERENCE, _prepared_world
+    from tools.cnesdata_delivery import application_gate as ag
+    _shared_state(monkeypatch)
+    world = _prepared_world(monkeypatch)
+    world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
+    world.clock.value = 1200
+    window = world.store.get()[0]["lifecycle"]
+    decision = _decision(choice_at=1200, deadline=min(window["fixed_deadline"], 1620), fixed=window["fixed_deadline"])
+    raw = _handoff("recovery_required", decision, closed_ready_sha256=c.sha(world.ready_raw))
+    monkeypatch.setattr(ag, "authenticate_host_handoff", lambda api, owner, *, guard, **names: raw)
+    world.keeper._contexts.append(SimpleNamespace(_request={"operation": "rollout"}, _observations=[], _observation_bytes={},
+                                                  _failed=False, _inflight=None, unknown=[],
+                                                  pending=[{"kind": "sdk-call", "reference_sha256": "f" * 64}]))
+    before = world.store.get()
+    with pytest.raises(ValueError, match="^host handoff with unresolved keeper uncertainty$"):
+        world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    assert world.store.get() == before and before[0]["lifecycle"]["stage"] == "api"
+
+
 def test_ponta_a_ponta_fecha_failed_closed_quiescent_e_libera_o_lease(monkeypatch):
     from tools.cnesdata_delivery import application_gate as ag, terminal_gate as tg
     world, state = _recovery_world(monkeypatch)
@@ -729,6 +752,7 @@ def test_ponta_a_ponta_fecha_failed_closed_quiescent_e_libera_o_lease(monkeypatc
                                                          ("terminal-readback", "recovery")]
     rollback, reopen, readback = (call[3] for call in world.terminal.calls)
     assert rollback["recovery-decision"] == readback["decision"] == state["recovery-decision"]
+    assert rollback["host-recovery-receipt"] == world.handoff_raws[0] == state["host-recovery-receipt"]
     assert rollback["publication"] == b"null" and set(reopen) == {"activation", "routing", "canaries", "membership"}
     assert reopen["canaries"] == b"null" and reopen["membership"] == readback["membership"]
     assert reopen["activation"] == state["activation"] and world.terminal.sources == []
@@ -745,14 +769,29 @@ def test_ponta_a_ponta_fecha_failed_closed_quiescent_e_libera_o_lease(monkeypatc
     assert set(result["checkpoint"]["inputs"]) == {"decision", "restoration", "routing", "membership", "quiescence"}
 
 
-@pytest.mark.parametrize("rolled_back", [
-    lambda ready: _handoff("recovery_required", _decision(choice_at=1200, deadline=1620, fixed=1620), closed_ready_sha256=ready),
-    lambda ready: _handoff("rolled_back", _decision(choice_at=1199), closed_ready_sha256=ready),
-    lambda ready: _handoff("rolled_back", None, closed_ready_sha256=ready)])
-def test_host_recovery_sem_rolled_back_amarrado_a_decisao_mantem_o_lease(monkeypatch, rolled_back):
+def _later_f(decision):
+    return decision | {"fixed_deadline": c.utc(int(c.instant(decision["fixed_deadline"])) + 100)}
+
+
+BOUND = "^host-recovery rolled_back bound to the keeper decision$"
+
+
+@pytest.mark.parametrize("rolled_back, message", [
+    (lambda ready, decision: _handoff("recovery_required", _decision(choice_at=1200, deadline=1620, fixed=1620),
+                                      closed_ready_sha256=ready), "^host recovery decision binding$"),
+    (lambda ready, decision: _handoff("rolled_back", _decision(choice_at=1199), closed_ready_sha256=ready),
+     "^host recovery decision binding$"),
+    (lambda ready, decision: _handoff("rolled_back", None, closed_ready_sha256=ready), "^closed object fields$"),
+    (lambda ready, decision: _handoff("rolled_back", decision, closed_ready_sha256="9" * 64), BOUND),
+    (lambda ready, decision: _handoff("rolled_back", decision | {"checkpoint_sha256": "4" * 64}, closed_ready_sha256=ready),
+     BOUND),
+    (lambda ready, decision: _handoff("rolled_back", _later_f(decision), closed_ready_sha256=ready),
+     "^host recovery decision binding$")],
+    ids=["recovery-required", "choice-at", "decision-null", "closed-ready", "checkpoint-sha256", "fixed-deadline"])
+def test_host_recovery_sem_rolled_back_amarrado_a_decisao_mantem_o_lease(monkeypatch, rolled_back, message):
     world, _ = _recovery_world(monkeypatch, rolled_back=rolled_back)
     world.next_event = lambda window: {"kind": "host-recovery", "reference": {"job_id": 95}}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         _loop(world)
     assert world.store.get()[0]["status"] == "held" and world.terminal.calls == [] and world.evidence.objects == {}
 
@@ -873,6 +912,19 @@ def test_failed_prepare_com_journal_incerto_mantem_o_lease_retido(monkeypatch):
     with pytest.raises(ValueError, match="^close-drain single observation without uncertainty$"):
         _loop(world)
     assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
+
+
+def test_failed_prepare_recusa_janela_do_prepare_fora_da_sequencia_zero(monkeypatch):
+    from test_cnesdata_stage_events import _stage_world
+    state = _shared_state(monkeypatch)
+    world = _stage_world(monkeypatch)
+    _terminal_fakes(monkeypatch, world, state)
+    value, etag = world.store.get()
+    assert value["lifecycle"]["stage"] == "application-prepare" and value["lifecycle"]["close"] is None
+    world.keeper.lease.etag = world.store.put(value | {"lifecycle": value["lifecycle"] | {"sequence": 1}}, etag)
+    with pytest.raises(ValueError, match="^failed prepare window$"):
+        world.steps.prepare_failure(world.keeper, ValueError("prepared refused"))
+    assert world.terminal.calls == [] and world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
 
 
 def _successor(world, *, mutation=None):
