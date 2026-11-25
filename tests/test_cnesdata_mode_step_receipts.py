@@ -75,3 +75,21 @@ def test_resultado_final_continua_aceito_sem_passo(monkeypatch):
     _describe(journal)
     assert journal.observe(lc.ADAPTER_OBSERVATIONS["recovery-start"], c.canonical({"fixture": "result"}))
 
+
+def test_passo_liga_a_ultima_resposta_quando_o_filho_descreve_de_novo(monkeypatch):
+    broker, journal, native, _ = _ecs_broker(monkeypatch)
+    _run(journal)
+    first, _ = _describe(journal)
+    inner = broker.session.client.call
+
+    def call(service, name, **parameters):
+        response = inner(service, name, **parameters)
+        response["tasks"][0]["containers"][0]["exitCode"] = 1
+        return response
+    broker.session.client.call = call
+    second, _ = _describe(journal)
+    assert first["value"]["tasks"][0] != second["value"]["tasks"][0]
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("recovery-task", c.canonical(first["value"]["tasks"][0]))
+    body = c.canonical(second["value"]["tasks"][0])
+    assert journal.observe("recovery-task", body) == c.sha(body)
