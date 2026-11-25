@@ -776,9 +776,11 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     world.b_moments = {"artifact_created_at": c.utc(1115), "job_completed_at": c.utc(1125)}
     _api_stage_fakes(monkeypatch, world, ready, probe)
     world.operation_session = lambda operation, role, stage: pytest.fail("the capability fake never mints the operation session")
+    world.phase_c_runtime = object()
     world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
                                        authority=world.authority, product="product", credential_limit=credential_limit,
-                                       operation_session=world.operation_session, clock=clock)
+                                       operation_session=world.operation_session, clock=clock,
+                                       phase_c_runtime=world.phase_c_runtime)
     return world
 
 

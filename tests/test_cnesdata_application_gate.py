@@ -5494,6 +5494,7 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
             return result() if callable(result) else result
         return spy
     monkeypatch.setattr(ag, "authenticate_adapter_closure", record("closure"))
+    monkeypatch.setattr(lr, "phase_c_runtime", record("runtime", "phase-c-runtime"))
     monkeypatch.setattr(session_owner, "authenticate_lifecycle", record("authority", authority))
     arn = "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-application/cnesdata-4242-1"
     fake_aws = SimpleNamespace(identity={"Account": "111122223333", "Arn": arn, "UserId": "AROAFIXTURE:cnesdata-4242-1"} | (identity or {}))
@@ -5526,10 +5527,11 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     validators = {"quiescence": ("synthetic-quiescence", object()), "routing": ("synthetic-routing", object())}
     with pytest.raises(_Stop, match="loop reached"):
         ag.execute(admitted, validators=validators, event_source=event_source, product="product")
-    assert [name for name, _, _ in calls] == ["closure", "authority", "aws", "readback", "store", "keeper", "register", "acquire",
-                                              "events", "handlers", "loop"]
+    assert [name for name, _, _ in calls] == ["closure", "runtime", "authority", "aws", "readback", "store", "keeper", "register",
+                                              "acquire", "events", "handlers", "loop"]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
     assert by_name["closure"][0] == ("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)
+    assert by_name["runtime"][0] == (os.environ,)
     assert by_name["authority"][0][:5] == (governance, world.api, "b" * 40, "application", "application-prepare")
     assert abs(by_name["authority"][0][5] - time.time()) < 60
     assert by_name["aws"][0] == (governance,) and by_name["store"][0] == (world.aws,)
@@ -5548,12 +5550,26 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert type(events_kwargs["guard"]) is ag.KeeperGuard and events_kwargs["run"] == world.run and events_kwargs["clock"]() == 1000.4
     handler_kwargs = by_name["handlers"][1]
     assert set(handler_kwargs) == {"keeper", "aws", "api", "governance", "request", "run", "authority", "product", "credential_limit",
-                                   "operation_session", "clock"}
+                                   "operation_session", "clock", "phase_c_runtime"}
+    assert handler_kwargs["phase_c_runtime"] == "phase-c-runtime"
     assert callable(handler_kwargs["operation_session"]) and handler_kwargs["operation_session"] is not world.aws
     assert handler_kwargs["authority"] is world.authority and handler_kwargs["product"] == "product"
     assert handler_kwargs["credential_limit"] == world.now + 5000 and handler_kwargs["clock"]() == 1000.4
     assert by_name["loop"][0][0] is by_name["register"][0][0] and by_name["loop"][1] == {"next_event": "next-event", "handlers": {"prepared": "h1", "phase-b": "h2", "host": "h3"}}
     assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
+
+
+def test_execute_refuses_the_phase_c_child_runtime_before_owner_authority_credentials_and_the_lease(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    ag, admitted, calls, _ = _execute_case(monkeypatch)
+
+    def refused(environ):
+        calls.append(("runtime", (environ,), {}))
+        raise ValueError("phase_c=runtime")
+    monkeypatch.setattr(lr, "phase_c_runtime", refused)
+    with pytest.raises(ValueError, match="^phase_c=runtime$"):
+        ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source"), product="product")
+    assert [name for name, _, _ in calls] == ["closure", "runtime"]
 
 
 @pytest.mark.parametrize("authority_ttl, enabled_ttl, expiration_ttl, expected", [(5000, 9000, 7000, 5000), (9000, 4000, 7000, 4000),
@@ -5581,8 +5597,8 @@ def test_execute_refuses_before_the_next_effect(monkeypatch, mutation, message):
     with pytest.raises(ValueError, match=message):
         ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
     names = [name for name, _, _ in calls]
-    expected = {"no-release": [], "no-expiration": ["closure", "authority"], "expired": ["closure", "authority"],
-                "identity": ["closure", "authority", "aws", "readback"]}[mutation]
+    expected = {"no-release": [], "no-expiration": ["closure", "runtime", "authority"], "expired": ["closure", "runtime", "authority"],
+                "identity": ["closure", "runtime", "authority", "aws", "readback"]}[mutation]
     assert names == expected
 
 
@@ -5593,7 +5609,7 @@ def test_execute_refuses_a_credential_expiring_exactly_now(monkeypatch):
         ag_mod, admitted, calls, world = _execute_case(pinned, expiration=c.utc(1_800_000_000))
         with pytest.raises(ValueError, match="application credential expiration"):
             ag.execute(admitted, event_source=lambda **kwargs: pytest.fail("no event source before the keeper"), product="product")
-    assert [name for name, _, _ in calls] == ["closure", "authority"]
+    assert [name for name, _, _ in calls] == ["closure", "runtime", "authority"]
 
 
 def _operation_factory_case(monkeypatch, *, expiry_delta=0, identity_change=None):
@@ -5902,6 +5918,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "host", "KeeperGuard"),
         (gate, "host", "static_window"),
         (gate, "handler", "KeeperGuard"),                                       # phase-c handlers (DD-3)
+        (gate, "phase_c_sources", "KeeperGuard"),
         (gate, "mode", "mode_stage"),                                           # stage_handlers' mode run
         (gate, "mode_stage", "run_mode_operation"),
         (gate, "mode_stage", "mode_stage_window"),

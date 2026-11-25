@@ -409,6 +409,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     from test_cnesdata_stage_events import HOST_REFERENCE
     from test_cnesdata_static_stage import _static_world
     from tools.cnesdata_delivery import application_gate as ag
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
     real_stage = ag.mode_stage
     world = _static_world(monkeypatch, static={"unit": "stub" if host else "real"})
     if host:
@@ -474,8 +475,19 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
 
     def deploy_publication(api, aws, governance, request, run, owner, guard, now, purpose):
         world.mode.publications.append((purpose, owner, type(guard).__name__, now))
-        return world.c_files[purpose], {}
+        moments = {"artifact_created_at": c.utc(now - 30), "job_completed_at": c.utc(now - 20)}
+        world.mode.moments.append((purpose, moments))
+        return world.c_files[purpose], moments
     monkeypatch.setattr(ag, "_deploy_publication", deploy_publication)
+
+    def phase_c_element(sources, *, product, runtime, run=None):
+        world.events.append(("element", sources.purpose))
+        world.mode.elements.append((sources, product, runtime, run))
+        if world.mode.element_refusal is not None:
+            raise ValueError(world.mode.element_refusal)
+        return c.canonical({"fixture_element": sources.purpose})
+    monkeypatch.setattr(lr, "phase_c_element", phase_c_element)
+    world.mode.moments, world.mode.elements, world.mode.element_refusal = [], [], None
     world.c_files = {}
     return world
 
@@ -1042,7 +1054,8 @@ def _c_files(world, purpose, **changes):
                   "owner": world.owner, "purpose": purpose, "plan_sha256": "2" * 64, "readbacks": []} | changes.get("checkpoint", {})
     approval = {"checkpoint_sha256": window["checkpoint_sha256"], "plan_sha256": "2" * 64, "purpose": purpose,
                 "direction": "advance"} | changes.get("approval", {})
-    world.c_files[purpose] = {"checkpoint.json": c.canonical(checkpoint), "approval.json": c.canonical(approval)}
+    world.c_files[purpose] = {"checkpoint.json": c.canonical(checkpoint), "approval.json": c.canonical(approval),
+                              "apply-output.bin": f"Apply complete! {purpose}\n".encode()}
     return world.c_files[purpose]
 
 
