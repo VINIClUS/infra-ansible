@@ -514,6 +514,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
             commands.append(command[1])
             if command[1] == "apply" and not after_apply:
                 raise ApplyBoundary()
+            if command[1] == "apply":
+                Path(kwargs["output"]).write_bytes(b"Apply complete!\n")
             if command[1] == "plan":
                 var_files.append(Path(command[4].split("=", 1)[1]).read_bytes())
                 Path(command[5].split("=", 1)[1]).write_bytes(b"synthetic-plan")
