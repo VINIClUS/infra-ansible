@@ -5,6 +5,7 @@ import time
 from tools.cnesdata_delivery import contract as c
 
 POLL_SECONDS = 5
+ASSUMED_RATE_LIMIT = 5000
 MARKER_UPLOAD_SECONDS = 30
 STAGE_OPEN_LATENCY_SECONDS = MARKER_UPLOAD_SECONDS + POLL_SECONDS
 TIMEOUT_MINUTES = 90
@@ -35,8 +36,18 @@ def wait_ceiling(stage, windows):
     return min(MAX_WAIT_SECONDS, PREPARATION_ALLOWANCE_SECONDS + sum(windows["stages"][name] for name in through))
 
 
-def timing_line(stage, *, setup_seconds, wait_seconds):
-    return f"stage_wait stage={stage} setup_seconds={setup_seconds} wait_seconds={wait_seconds}"
+def timing_line(stage, *, setup_seconds, wait_seconds, rate=None):
+    line = f"stage_wait stage={stage} setup_seconds={setup_seconds} wait_seconds={wait_seconds}"
+    if rate:
+        line += f" x_ratelimit_limit={rate['limit']} x_ratelimit_used={rate['used']} x_ratelimit_remaining={rate['remaining']}"
+    return line
+
+
+def require_rate_limit(api):
+    """Fail closed unless the first REST response reported at least the assumed GITHUB_TOKEN limit."""
+    rate = getattr(api, "rate", None)
+    c.require(rate is not None and rate["limit"] >= ASSUMED_RATE_LIMIT,
+              f"github=rate_limit value={rate['limit'] if rate else 'na'}")
 
 
 def own_job(api, run, runner_name):
@@ -164,14 +175,27 @@ def wait_for_payloads(api, run, *, producers, ceiling, clock=time.time, sleep=ti
 
 KEEPER_POLL_SECONDS = 5
 HANDLER_READS_PER_STAGE = 12
-ADMISSION_READS = 9
-PAYLOAD_READS_PER_ADMISSION = 5
-PRODUCERS_READS = 4
+SESSION_OWNER_READS_PER_JOB = 6
+ADMISSION_PREFLIGHT_READS = 9
+ADMISSION_FULL_READS = 9
+LIFECYCLE_ARTIFACT_READS = 4
+PAYLOAD_READS_PER_ADMISSION = 2 + LIFECYCLE_ARTIFACT_READS
+PRODUCERS_READS = 3
 MARKER_HIT_READS = 3
+UPLOAD_READBACK_SECONDS = 30
+POST_STEP_ALLOWANCE_SECONDS = 60
+COMPLETION_LAG_SECONDS = 60
+PRODUCER_TAIL_SECONDS = UPLOAD_READBACK_SECONDS + POST_STEP_ALLOWANCE_SECONDS + COMPLETION_LAG_SECONDS
+PROBE_POLL_SECONDS = 5
+PROBE_ARTIFACT_READS_PER_POLL = 1
+PROBE_JOBS_READS_PER_MINUTE = 1
+REST_BUDGET = 60 * ASSUMED_RATE_LIMIT // 100
+REST_BUDGET_NO_JOBS_CREDIT = 90 * ASSUMED_RATE_LIMIT // 100
+MEASURED_HIT_RATES = {"jobs": 0.141, "artifacts": 0.929}
 G_JOBS = {"application-prepare": 6, "phase-b": 3, "phase-c-recovery": 3, "phase-c-audit": 3}
 PAYLOAD_CONSUMERS = {"application-prepare": 4, "phase-b": 2, "phase-c-recovery": 2, "phase-c-audit": 2}
 CODE_BOUND_WINDOW_SECONDS = 360
-PROBE_END_STAGES = {"closed-ready": "api", "static-inventory": "static"}
+PROBE_END_STAGES = {"closed-ready": "api"}
 HOUR_SECONDS = 3600
 
 
@@ -185,6 +209,9 @@ def _stage_opens():
 
 def rest_model(hit_rates=None, *, include_keeper=True):
     """Pure per-run GITHUB_TOKEN REST read count (one bucket per repository) at the code-bound windows.
+
+    A 304 is free only at the passed hit rate of its listing; every other read counts one. Counted constants come
+    from fixtures and the code; HANDLER_READS_PER_STAGE and SESSION_OWNER_READS_PER_JOB stay estimates.
 
     Args: 304 hit rate per listing (jobs, artifacts; 0 unless measured), whether the keeper term is counted.
     Returns: dict with the worst rolling-hour count and the per-component totals.
@@ -212,14 +239,16 @@ def rest_model(hit_rates=None, *, include_keeper=True):
         for _ in range(count):
             add("marker_waiters", 0, opens[stage], artifacts)
             point("marker_waiters", opens[stage], MARKER_HIT_READS)
-            point("admission", opens[stage], 3 * ADMISSION_READS)
+            point("admission", opens[stage], ADMISSION_PREFLIGHT_READS + 2 * ADMISSION_FULL_READS + SESSION_OWNER_READS_PER_JOB)
         window = PREPARATION_ALLOWANCE_SECONDS if stage == "application-prepare" else CODE_BOUND_WINDOW_SECONDS
         for _ in range(PAYLOAD_CONSUMERS[stage]):
-            add("payload_waiters", opens[stage], opens[stage] + window, artifacts + jobs)
+            add("payload_waiters", opens[stage], opens[stage] + window, artifacts)
+            add("payload_waiters", opens[stage] + window - PRODUCER_TAIL_SECONDS, opens[stage] + window, jobs)
             point("payload_waiters", opens[stage], PRODUCERS_READS)
             point("admission", opens[stage], 2 * PAYLOAD_READS_PER_ADMISSION)
     for stage in PROBE_END_STAGES.values():
-        add("probes", 0, opens[stage], 1)
+        add("probes", 0, opens[stage], PROBE_ARTIFACT_READS_PER_POLL * artifacts, PROBE_POLL_SECONDS)
+        add("probes", 0, opens[stage], PROBE_JOBS_READS_PER_MINUTE * jobs, 60)
     prefix = [0.0]
     for value in seconds:
         prefix.append(prefix[-1] + value)
@@ -280,14 +309,21 @@ def main():
     began = time.time()
     job = own_job(api, run, os.environ["RUNNER_NAME"])
     setup = int(began - c.instant(job["started_at"]))
-    windows = lc.stage_windows(json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]))
+    try:
+        require_rate_limit(api)
+        _wait_and_export(api, run, job, stage, lc.stage_windows(json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"])), began)
+    finally:
+        print(timing_line(stage, setup_seconds=setup, wait_seconds=int(time.time() - began), rate=getattr(api, "rate", None)))
+
+
+def _wait_and_export(api, run, job, stage, windows, began):
+    import json
     index = wait_for_stage(api, run, job=job, stage=stage, windows=windows)
     producers = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]),
                            json.loads(os.environ["REQUEST_DESCRIPTOR"]))
     wait_for_payloads(api, run, producers=producers, ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
         handle.write(f"STAGE_OPEN_OWNER_SHA256={index['owner_sha256']}\nSTAGE_OPEN_GENERATION={index['generation']}\n")
-    print(timing_line(stage, setup_seconds=setup, wait_seconds=int(time.time() - began)))
 
 
 if __name__ == "__main__":

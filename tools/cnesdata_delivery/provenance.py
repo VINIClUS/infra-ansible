@@ -284,6 +284,7 @@ class GitHub:
         self.sample = None
         self.expiries = {}
         self.cache = {}
+        self.rate = None
 
     def read(self, path, *, raw=False, maximum=192 * 1024**2):
         from tools.cnesdata_delivery.aws_boundary import bounded
@@ -293,6 +294,12 @@ class GitHub:
         """Poll read: sends the last etag and reuses the cached full body on 304; never treats 304 as empty."""
         from tools.cnesdata_delivery.aws_boundary import bounded
         return bounded(lambda: self._read(path, raw=False, maximum=maximum, conditional=True))
+
+    def _record_rate(self, headers):
+        names = ("limit", "used", "remaining")
+        values = [headers.get("x-ratelimit-" + name) for name in names]
+        if all(value is not None and value.isdigit() for value in values):
+            self.rate = dict(zip(names, map(int, values)))
 
     def _read(self, path, *, raw, maximum, conditional=False):
         require(path.startswith("repos/") and not any(x in path for x in ("..", "\n", "\r", "://")), "GitHub API path")
@@ -309,6 +316,7 @@ class GitHub:
         try:
             response = urllib.request.build_opener(NoRedirect).open(request, timeout=20)
         except urllib.error.HTTPError as error:
+            self._record_rate(error.headers)
             if error.code == 304 and cached is not None:
                 return cached[1]
             _refuse_rate_limited(error)
@@ -320,6 +328,7 @@ class GitHub:
                     (host.hostname.endswith(".blob.core.windows.net") or host.hostname.endswith(".actions.githubusercontent.com")), "artifact redirect host")
             response = urllib.request.urlopen(target, timeout=20)  # no Authorization
         with response:
+            self._record_rate(response.headers)
             date = response.headers.get("Date")
             require(bool(date), "authenticated Date missing")
             server = parsedate_to_datetime(date).timestamp()

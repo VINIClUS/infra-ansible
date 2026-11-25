@@ -117,3 +117,25 @@ def test_403_sem_cabecalhos_de_limite_continua_falha_comum(monkeypatch):
     api, _ = _api(monkeypatch, _error(403))
     with pytest.raises(ValueError, match="GitHub HTTP failure"):
         api.read(PATH)
+
+
+def test_leitura_registra_os_numeros_de_limite_da_ultima_resposta(monkeypatch):
+    api, _ = _api(monkeypatch, Response(b"{}", x_ratelimit_limit="5000", x_ratelimit_used="7", x_ratelimit_remaining="4993"))
+    assert api.rate is None
+    api.read(PATH)
+    assert api.rate == {"limit": 5000, "used": 7, "remaining": 4993}
+
+
+def test_304_tambem_atualiza_os_numeros_de_limite(monkeypatch):
+    api, _ = _api(monkeypatch, Response(b"{}", ETag='"v1"', x_ratelimit_limit="5000", x_ratelimit_used="7", x_ratelimit_remaining="4993"),
+                  _error(304, ETag='"v1"', x_ratelimit_limit="5000", x_ratelimit_used="7", x_ratelimit_remaining="4993"))
+    api.read_conditional(PATH)
+    api.rate = None
+    api.read_conditional(PATH)
+    assert api.rate == {"limit": 5000, "used": 7, "remaining": 4993}
+
+
+def test_resposta_sem_cabecalhos_de_limite_deixa_o_registro_vazio(monkeypatch):
+    api, _ = _api(monkeypatch, Response(b"{}"))
+    api.read(PATH)
+    assert api.rate is None

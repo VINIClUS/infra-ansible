@@ -34,7 +34,7 @@ def test_304_so_zera_a_leitura_na_taxa_de_acerto_medida_da_listagem():
     hits = stage_wait.rest_model({"jobs": 1.0, "artifacts": 1.0})["components"]
     assert hits["marker_waiters"] == sum(stage_wait.G_JOBS.values()) * stage_wait.MARKER_HIT_READS
     assert hits["keeper"] == len(stage_wait.WINDOW_ORDER) * stage_wait.HANDLER_READS_PER_STAGE + stage_wait.HANDLER_READS_PER_STAGE
-    assert hits["probes"] == full["probes"] and hits["admission"] == full["admission"]
+    assert hits["admission"] == full["admission"]
     half = stage_wait.rest_model({"artifacts": 0.5})["components"]["marker_waiters"]
     assert hits["marker_waiters"] < half < full["marker_waiters"]
 
@@ -49,3 +49,66 @@ def test_corrida_do_modelo_cobre_a_reserva_de_preparacao_e_as_sete_janelas_do_co
     model = stage_wait.rest_model()
     assert model["run_seconds"] == stage_wait.PREPARATION_ALLOWANCE_SECONDS + 7 * stage_wait.CODE_BOUND_WINDOW_SECONDS
     assert sum(stage_wait.G_JOBS.values()) == 15
+
+
+def test_cauda_do_produtor_soma_upload_passos_pos_e_defasagem_de_conclusao():
+    assert stage_wait.PRODUCER_TAIL_SECONDS == (stage_wait.UPLOAD_READBACK_SECONDS + stage_wait.POST_STEP_ALLOWANCE_SECONDS
+                                                + stage_wait.COMPLETION_LAG_SECONDS) == 30 + 60 + 60
+
+
+def test_execute_e_o_ultimo_passo_do_job_produtor_nos_tres_gates_de_infra():
+    import yaml
+    root = pathlib.Path(__file__).resolve().parents[1] / ".github/workflows"
+    for role in ("plan", "deploy", "audit"):
+        workflow = yaml.safe_load((root / f"reusable-cnesdata-infra-{role}-gate.yml").read_text(encoding="utf-8"))
+        (job,) = [value for value in workflow["jobs"].values() if "steps" in value]
+        assert job["steps"][-1]["run"].endswith(" execute")
+
+
+def test_jobs_listing_dos_consumidores_so_e_cobrada_pela_cauda_do_produtor():
+    consumers = sum(stage_wait.PAYLOAD_CONSUMERS.values())
+    polls = lambda seconds: math.ceil(seconds / stage_wait.POLL_SECONDS)
+    windows = stage_wait.PREPARATION_ALLOWANCE_SECONDS + 3 * stage_wait.CODE_BOUND_WINDOW_SECONDS
+    per_consumer_tail = polls(stage_wait.PRODUCER_TAIL_SECONDS)
+    only_jobs = stage_wait.rest_model({"artifacts": 1.0})["components"]["payload_waiters"]
+    fixed = consumers * stage_wait.PRODUCERS_READS
+    assert only_jobs == fixed + consumers * per_consumer_tail
+    only_artifacts = stage_wait.rest_model({"jobs": 1.0})["components"]["payload_waiters"]
+    assert only_artifacts > only_jobs and windows > 0
+
+
+def test_leituras_contadas_dos_fixtures_sao_as_constantes_do_modelo():
+    assert (stage_wait.ADMISSION_PREFLIGHT_READS, stage_wait.ADMISSION_FULL_READS) == (9, 9)
+    assert stage_wait.PRODUCERS_READS == 3 and stage_wait.MARKER_HIT_READS == 3
+    assert stage_wait.PAYLOAD_READS_PER_ADMISSION == 2 + stage_wait.LIFECYCLE_ARTIFACT_READS == 6
+
+
+def test_leituras_do_lifecycle_artifact_sao_as_chamadas_api_read_da_funcao():
+    import ast
+    source = (pathlib.Path(__file__).resolve().parents[1] / "tools/cnesdata_delivery/provenance.py").read_text(encoding="utf-8")
+    (function,) = [n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == "lifecycle_artifact"]
+    calls = [n for n in ast.walk(function) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "read" and getattr(n.func.value, "id", "") == "api"]
+    assert len(calls) == stage_wait.LIFECYCLE_ARTIFACT_READS == 4
+
+
+def test_sondas_do_cnesdata_entram_com_as_constantes_que_o_p35c_entrega():
+    assert (stage_wait.PROBE_POLL_SECONDS, stage_wait.PROBE_ARTIFACT_READS_PER_POLL, stage_wait.PROBE_JOBS_READS_PER_MINUTE) == (5, 1, 1)
+    probes = stage_wait.rest_model()["components"]["probes"]
+    assert probes > 0
+    assert stage_wait.rest_model({"artifacts": 1.0, "jobs": 1.0})["components"]["probes"] == 0
+
+
+def test_limite_assumido_e_orcamento_da_regra_dos_60_por_cento():
+    assert stage_wait.ASSUMED_RATE_LIMIT == 5000
+    assert stage_wait.REST_BUDGET == 3000 == 60 * stage_wait.ASSUMED_RATE_LIMIT // 100
+    assert stage_wait.REST_BUDGET_NO_JOBS_CREDIT == 4500 == 90 * stage_wait.ASSUMED_RATE_LIMIT // 100
+
+
+def test_pior_hora_cabe_no_orcamento_com_as_taxas_de_304_medidas():
+    assert stage_wait.rest_model(stage_wait.MEASURED_HIT_RATES)["worst_rolling_hour"] <= stage_wait.REST_BUDGET
+
+
+def test_pior_hora_cabe_em_90_por_cento_sem_credito_de_304_nos_jobs_e_com_artefatos_a_0_8():
+    model = stage_wait.rest_model({"jobs": 0.0, "artifacts": 0.8})
+    assert model["worst_rolling_hour"] <= stage_wait.REST_BUDGET_NO_JOBS_CREDIT

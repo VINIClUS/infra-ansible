@@ -49,7 +49,8 @@ class Pins:
                            "EXPECTED_SOURCE_SHA": "b" * 40, "RUNNER_NAME": "r", "GITHUB_ENV": str(self.env),
                            "CNESDATA_DELIVERY_GOVERNANCE": "{}", "REQUEST_DESCRIPTOR": "{}"}.items():
             monkeypatch.setenv(key, value)
-        monkeypatch.setattr(provenance, "GitHub", lambda: "api")
+        self.api = type("FakeApi", (), {"rate": {"limit": 5000, "used": 12, "remaining": 4988}})()
+        monkeypatch.setattr(provenance, "GitHub", lambda: self.api)
         monkeypatch.setattr(stage_wait, "own_job", lambda api, run, runner: OWN)
         monkeypatch.setattr(stage_wait.lc if hasattr(stage_wait, "lc") else __import__(
             "tools.cnesdata_delivery.lifecycle_contract", fromlist=["x"]), "stage_windows", lambda governance: WINDOWS)
@@ -157,3 +158,45 @@ class ConditionalOnly(Api):
 
 def test_espera_do_marcador_sonda_a_listagem_so_com_get_condicional():
     assert _wait(ConditionalOnly()) == INDEX
+
+
+def test_limite_abaixo_do_assumido_recusa_antes_de_qualquer_espera_e_registra_os_numeros(monkeypatch, tmp_path, capsys):
+    pins = Pins(monkeypatch, tmp_path)
+    pins.api.rate = {"limit": 1000, "used": 3, "remaining": 997}
+    def waited(*args, **kwargs):
+        raise AssertionError("waited before the limit check")
+    monkeypatch.setattr(stage_wait, "wait_for_stage", waited)
+    with pytest.raises(ValueError, match="github=rate_limit value=1000"):
+        stage_wait.main()
+    assert "x_ratelimit_limit=1000 x_ratelimit_used=3 x_ratelimit_remaining=997" in capsys.readouterr().out
+    assert pins.calls == [] and not pins.env.exists()
+
+
+def test_resposta_sem_numero_de_limite_recusa_do_mesmo_modo(monkeypatch, tmp_path):
+    pins = Pins(monkeypatch, tmp_path)
+    pins.api.rate = None
+    with pytest.raises(ValueError, match="github=rate_limit value=na"):
+        stage_wait.main()
+
+
+def test_linha_de_tempo_da_saida_bem_sucedida_leva_os_numeros_de_limite(monkeypatch, tmp_path, capsys):
+    Pins(monkeypatch, tmp_path)
+    stage_wait.main()
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    assert line.startswith("stage_wait stage=phase-b setup_seconds=")
+    assert line.endswith("x_ratelimit_limit=5000 x_ratelimit_used=12 x_ratelimit_remaining=4988")
+
+
+@pytest.mark.parametrize("failing", ["wait_for_stage", "wait_for_payloads"])
+def test_linha_de_tempo_sai_tambem_na_recusa_da_espera(monkeypatch, tmp_path, capsys, failing):
+    Pins(monkeypatch, tmp_path)
+    def refuse(*args, **kwargs):
+        raise ValueError("stage_wait=ceiling")
+    monkeypatch.setattr(stage_wait, failing, refuse)
+    with pytest.raises(ValueError, match="stage_wait=ceiling"):
+        stage_wait.main()
+    assert "x_ratelimit_limit=5000" in capsys.readouterr().out
+
+
+def test_estimador_de_limite_assumido_e_o_medido(monkeypatch):
+    assert stage_wait.ASSUMED_RATE_LIMIT == 5000
