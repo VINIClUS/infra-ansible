@@ -34,7 +34,7 @@ PROPOSAL_CASES = (
        "ux-stop-execution", "ux-put-recovery-run", "ux-check-fence", "ux-update-semaphore", "ux-consume-attempt",
        "ux-check-unit-run", "ux-check-semaphore", "ux-query-unit-run", "ux-update-unit-run", "ux-describe-own-execution"]
     + ["assume-uw", "assume-uw-other-session", "uw-expired", "uw-describe-own-execution", "uw-describe-own-task",
-       "uw-describe-foreign-cluster-task", "uw-start-execution"]
+       "uw-describe-foreign-cluster-task", "uw-start-execution", "uw-describe-other-machine-execution"]
     + ["rx-run-recovery", "rx-pass-recovery-role", "rx-put-ticket", "rx-run-audit-revision", "rx-run-other-cluster",
        "rx-pass-unit-role", "rx-put-run-partition", "rx-start-execution"]
     + ["ax-run-audit", "ax-pass-audit-role", "ax-run-recovery-revision", "ax-pass-other-role", "ax-get-tenant"]
@@ -72,7 +72,7 @@ def _prepare(documents=None, scope=None, observed=OBSERVED):
 
 
 def test_casos_de_modo_sao_os_da_tabela_aceita_no_ruling_4():
-    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 94
+    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 95
     assert set(lc.MODE_EVALUATION_CASES) == set(PROPOSAL_CASES)
     assert all(lc.MODE_EVALUATION_CASES[case][0] in set(CODES) | set(PARTS) for case in PROPOSAL_CASES)
     assert lc.MODE_SESSION_PARTS == PARTS
@@ -305,11 +305,13 @@ def test_casos_do_q1_no_ux_fixam_as_chaves_do_caminho_nativo_do_unit(case_id, ac
     ("uw-describe-own-execution", "states:DescribeExecution", "execution", True),
     ("uw-describe-own-task", "ecs:DescribeTasks", "task", True),
     ("uw-describe-foreign-cluster-task", "ecs:DescribeTasks", "foreign", False),
-    ("uw-start-execution", "states:StartExecution", "machine", False)])
+    ("uw-start-execution", "states:StartExecution", "machine", False),
+    ("uw-describe-other-machine-execution", "states:DescribeExecution", "other-machine", False)])
 def test_casos_da_divisao_do_ux_separam_o_inicio_da_espera(case_id, action, resource, expected):
     report = _prepare()
     tasks = RESOURCES["cluster_arn"].replace(":cluster/", ":task/")
-    resources = {"execution": RESOURCES["machine_arn"].replace(":stateMachine:", ":execution:") + ":probe",
+    execution = RESOURCES["machine_arn"].replace(":stateMachine:", ":execution:")
+    resources = {"execution": execution + ":probe", "other-machine": execution + "-other:probe",
                  "task": tasks + "/" + "0" * 32, "foreign": tasks + "-foreign/" + "0" * 32, "machine": RESOURCES["machine_arn"]}
     case = _case(report, case_id)
     assert (case["action"], case["resource"], case["expected"], case["observed"]) == (action, resources[resource], expected,
