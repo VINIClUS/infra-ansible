@@ -193,7 +193,7 @@ def test_application_gate_bootstrap_fetches_complete_runtime_import_closure():
     _, found = _fetch_lists("reusable-cnesdata-application-gate.yml")
     assert len(found) == 1
     assert len(found[0]) == len(set(found[0]))
-    assert set(found[0]) == _import_closure({"application_gate"})
+    assert set(found[0]) == _import_closure({"application_gate"}) | {"phase-c-child-requirements.txt"}
 
 
 def test_purpose_cost_pre_requires_real_guardrail_context(contract):
