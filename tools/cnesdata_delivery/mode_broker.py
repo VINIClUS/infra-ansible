@@ -497,7 +497,8 @@ def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
               "mode describe_tasks own task")
 
 
-MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe"}
+MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe",
+                       "phase-c": ("recovery-observe", "audit-observe")}
 
 
 def _lease_original(keeper, operation, kind, label):
@@ -510,15 +511,27 @@ def _lease_original(keeper, operation, kind, label):
     return journals[0]._observation_bytes[found[0]["sha256"]]
 
 
+def _origin_open(name, mode, operation):
+    origin = MODE_KEEPER_ORIGINS.get(name, False)
+    return operation in origin if type(origin) is tuple else origin in (None, mode, operation)
+
+
+def _phase_c_original(keeper, mode):
+    purposes = lc.PHASE_C_PURPOSES[:lc.PHASE_C_PURPOSES.index("phase-c-" + mode) + 1]
+    elements = keeper.phase_c_elements
+    c.require(type(elements) is dict and set(elements) == set(purposes), "phase-c original")
+    return c.canonical([c.loads(elements[purpose]) for purpose in purposes])
+
+
 def mode_input_source(*, keeper, owner, window, operation, names):
     """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null; (s) the audit mode-seed
-    and recovery-readbacks from this lease's recovery journals. Any other origin is not connected and refuses first.
+    and recovery-readbacks from this lease's recovery journals; phase-c, the list of this keeper's accepted phase-c
+    elements in mode order (P17 ruling 6). Any other origin is not connected and refuses first.
 
     Returns: {name: bytes}. Raises: ValueError.
     """
     mode = operation.partition("-")[0]
-    c.require(all(name in MODE_KEEPER_ORIGINS and MODE_KEEPER_ORIGINS[name] in (None, mode, operation) for name in names),
-              "mode_inputs=source_unconnected")
+    c.require(all(_origin_open(name, mode, operation) for name in names), "mode_inputs=source_unconnected")
     inputs = {}
     for name in names:
         if name == "mode-start":
@@ -529,6 +542,8 @@ def mode_input_source(*, keeper, owner, window, operation, names):
             inputs[name] = c.canonical(None)
         elif name == "mode-seed":
             inputs[name] = _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
+        elif name == "phase-c":
+            inputs[name] = _phase_c_original(keeper, mode)
         else:
             inputs[name] = _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
     return inputs
