@@ -174,6 +174,7 @@ REFUSALS = {
     "sem-if-none-match": (("s3", "put_object", {key: value for key, value in _put_object().items() if key != "IfNoneMatch"},
                            "mode_seed"), "^mode s3 call$"),
     "corpo-cru": (("s3", "put_object", _put_object(Body="PAR1"), "mode_seed"), "^mode s3 call$"),
+    "if-none-match-outro": (("s3", "put_object", _put_object(IfNoneMatch='"etag"'), "mode_seed"), "^mode s3 call$"),
 }
 
 
@@ -229,3 +230,33 @@ def test_janela_da_sessao_vencida_recusa_antes_da_reserva(monkeypatch):
     with pytest.raises(ValueError, match="^mode finite SDK request/window$"):
         ag._adapter_message(_frame("dynamodb", "put_item", _put_item()), journal)
     assert native == [] and evidence.objects == {}
+
+
+def test_evidencia_de_modo_revalida_a_chamada_antes_de_qualquer_gravacao(monkeypatch):
+    broker, journal, evidence, _ = _broker(monkeypatch)
+    raw = c.canonical({"role": "mode_dispatch", "service": "dynamodb", "operation": "put_item", "parameters": _put_item()})
+    with pytest.raises(ValueError, match="^mode call alias$"):
+        _mb().ModeEvidence(evidence, broker.governance, journal, raw, prepared_sha256="3" * 64,
+                           role_session_sha256=broker.session.commitment, scope=broker.scope)
+    assert evidence.objects == {}
+
+
+def test_resposta_do_get_item_com_campo_alem_do_item_envenena(monkeypatch):
+    broker, journal, _, native = _broker(monkeypatch)
+
+    def sdk(service, name, **parameters):
+        native.append((service, name, parameters))
+        return {"Item": {"pk": parameters["Key"]["pk"]}, "ConsumedCapacity": {"TableName": TABLE}, "ResponseMetadata": _metadata()}
+    broker.session.client.call = sdk
+    with pytest.raises(ValueError, match="^finite native DynamoDB response$"):
+        ag._adapter_message(_frame("dynamodb", "get_item", _get_item()), journal)
+    assert len(native) == 1 and broker.uncertainty and journal._failed
+
+
+def test_journal_do_efeito_so_aceita_o_erro_definitivo_da_propria_chamada(monkeypatch):
+    broker, journal, _, _ = _broker(monkeypatch)
+    raw = c.canonical({"role": "mode_seed", "service": "dynamodb", "operation": "put_item", "parameters": _put_item()})
+    ticket = journal.begin_sdk_call(raw, role_session_sha256=broker.session.commitment)
+    with pytest.raises(ValueError, match="^SDK response already sanitized before journal$"):
+        journal.complete_sdk_call(ticket, c.canonical({"Error": {"Code": "PreconditionFailed"}}), request_id="native-id",
+                                  server_date=formatdate(time.time(), usegmt=True))
