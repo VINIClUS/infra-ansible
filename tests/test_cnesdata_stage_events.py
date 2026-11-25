@@ -1329,9 +1329,10 @@ def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_af
     assert lc.CLOSE_EXPIRATION_KINDS - {"envelope"} == PRODUCT_EXPIRATION_KINDS
 
 
-def test_keeper_para_no_estagio_unit_com_o_lease_retido_quando_o_modo_unit_recusa_as_origens_desconectadas(monkeypatch):
+def test_keeper_para_no_estagio_unit_com_o_lease_retido_quando_o_modo_unit_recusa_o_primeiro_original_nao_autenticado(monkeypatch):
     """R18 and R15 after P15 and P16b ruling 4 item 6: prepared -> B -> API (closed-ready) -> host -> static (publish-static,
-    internal) -> unit, whose mode run (internal) refuses at its unconnected originals; the lease stays held at unit."""
+    internal) -> unit, whose mode run (internal) refuses at the first original it cannot authenticate (the fixture
+    manifest, with no product checkout in this world); the lease stays held at unit."""
     from test_cnesdata_application_gate import _ReraisingTerminal
     from test_cnesdata_static_stage import _install_static, _static_carrier
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
@@ -1347,7 +1348,7 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_quando_o_modo_unit_recus
     triggers = {"application-prepare": {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)},
                 "phase-b": {"kind": "phase-b", "reference": dict(B_REFERENCE)},
                 "api": {"kind": "host", "reference": dict(HOST_REFERENCE)}}
-    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+    with pytest.raises(ValueError, match="^mode fixture original$"):
         ag.keeper_loop(world.keeper, next_event=lambda window: triggers.get(window["stage"]) or real(window),
                        handlers=world.handlers | {"host-recovery": lambda *a: pytest.fail("host-recovery reached")},
                        terminal=_ReraisingTerminal(), sleep=lambda seconds: None)

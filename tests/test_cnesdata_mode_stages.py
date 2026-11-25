@@ -419,7 +419,8 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     inner = ag.invoke_adapter
     world.mode = SimpleNamespace(calls=[], sources=[], capabilities=[], dropped=[], checks=checks or {},
                                  capability=capability, observations=observations, pending=pending, publications=[],
-                                 fail=fail, late=late, brokers=brokers or {}, contexts=[], steps=steps or {})
+                                 fail=fail, late=late, brokers=brokers or {}, contexts=[], steps=steps or {},
+                                 source_contexts=[])
 
     def invoke_adapter(**kwargs):
         journal = kwargs["journal"]
@@ -451,7 +452,9 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
                 world.keeper.tick()
     monkeypatch.setattr(ag, "invoke_adapter", invoke_adapter)
 
-    def mode_input_source(*, keeper, owner, window, operation, names):
+    def mode_input_source(*, keeper, owner, window, operation, names, context):
+        assert type(context) is ag.ModeContext or context is None
+        world.mode.source_contexts.append(context)
         world.events.append(("source", operation))
         world.mode.sources.append((operation, list(names), window["stage"]))
         return {name: c.canonical({"fixture_original": name, "operation": operation}) for name in names}
@@ -856,7 +859,8 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
 def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker_de_efeito(operation):
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag
-    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+    message = "^mode_unit_start=p16d_pending$" if operation == "unit-start" else "^mode_inputs=source_unconnected$"
+    with pytest.raises(ValueError, match=message):
         ag.mode_input_source(keeper=None, owner={}, window={}, operation=operation, names=["record"])
     journal = SimpleNamespace(_failed=False, _request={"operation": operation})
     with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
@@ -872,7 +876,7 @@ def test_capability_de_producao_do_observe_e_a_do_fence_preparado_com_o_contexto
     calls = []
     monkeypatch.setattr(mb, "fence_observe_capability", lambda **kwargs: calls.append(kwargs) or "fence-read-broker")
     context = ag.ModeContext(governance="g", authority="a", prepared="p", credential_limit=6000, operation_session="o",
-                             clock="k")
+                             clock="k", aws="evidence", activation_sha256="1" * 64, product="product")
     journal = SimpleNamespace(_failed=False, _request={"operation": operation})
     assert ag.mode_capability(journal=journal, keeper="keeper", guard="guard", context=context) == "fence-read-broker"
     assert calls == [{"governance": "g", "authority": "a", "journal": journal, "keeper": "keeper", "prepared": "p",
@@ -1039,10 +1043,11 @@ def test_recovery_readbacks_do_audit_observe_sao_os_readbacks_ligados_ao_recover
         _source("audit-observe", ["recovery-readbacks"])
 
 
-@pytest.mark.parametrize("operation, names", [("unit-seed", ["mode-start", "fixture-manifest"]),
-                                              ("unit-record", ["mode-input"]), ("unit-seed", ["readbacks"]),
-                                              ("recovery-observe", ["network"]), ("unit-seed", ["mode-seed"]),
-                                              ("unit-observe", ["recovery-readbacks"]), ("unit-start", ["mode-seed"])])
+@pytest.mark.parametrize("operation, names", [("unit-seed", ["mode-start", "mode-input"]),
+                                              ("unit-seed", ["readbacks"]), ("unit-observe", ["network"]),
+                                              ("recovery-start", ["network"]), ("unit-seed", ["mode-seed"]),
+                                              ("recovery-start", ["fixture-manifest"]),
+                                              ("unit-observe", ["recovery-readbacks"]), ("recovery-start", ["mode-seed"])])
 def test_origem_ainda_nao_conectada_recusa_sem_derivar_nenhuma_outra(operation, names):
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         _source(operation, names)
@@ -1148,7 +1153,7 @@ def test_handler_c_de_producao_sem_nada_falsificado_recusa_primeiro_a_fonte_dos_
         monkeypatch.setattr(ag, name, function)
     before, contexts = _record(world), len(world.keeper._contexts)
     world.mode.calls.clear()
-    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+    with pytest.raises(ValueError, match="^mode fixture original$"):
         world.handlers[purpose](world.keeper, dict(B_REFERENCE))
     assert world.mode.calls == [] and _record(world) == before and len(world.keeper._contexts) == contexts
     assert world.store.get()[0]["status"] == "held"
@@ -1161,7 +1166,8 @@ def test_capability_de_modo_e_injetada_pelo_handler_e_nao_tem_padrao():
         parameter = inspect.signature(function).parameters["capability"]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY and parameter.default is inspect.Parameter.empty
     assert list(inspect.signature(ag.mode_capability).parameters) == ["journal", "keeper", "guard", "context"]
-    assert ag.ModeContext._fields == ("governance", "authority", "prepared", "credential_limit", "operation_session", "clock")
+    assert ag.ModeContext._fields == ("governance", "authority", "prepared", "credential_limit", "operation_session", "clock",
+                                      "aws", "activation_sha256", "product")
 
 
 def test_handler_do_c_entrega_ao_capability_o_contexto_do_keeper_e_o_fence_preparado(monkeypatch):
@@ -1176,6 +1182,8 @@ def test_handler_do_c_entrega_ao_capability_o_contexto_do_keeper_e_o_fence_prepa
     assert (context.governance, context.authority, context.credential_limit) == (world.governance, world.authority, 6000)
     assert context.operation_session is world.operation_session and context.clock is world.clock
     assert type(context.prepared).__name__ == "PreparedFence"
+    assert world.mode.source_contexts and all(item is context for item in world.mode.source_contexts)
+    assert context.aws is world.aws and context.activation_sha256 == c.sha(world.activation) and context.product == "product"
 
 
 C_REFUSALS = {
