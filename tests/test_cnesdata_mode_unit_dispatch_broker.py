@@ -230,7 +230,9 @@ def _unknown_ticket(table):
     tenant = frames.tenant_partition(TENANT_ID)
     for key, item in table.items.items():
         if key[0] == tenant and key[1].startswith("PROD_CANARY_EFFECT#"):
-            item["payload"]["S"] = json.dumps(json.loads(item["payload"]["S"]) | {"state": "UNKNOWN"})
+            changed = frames.parse_mapping(item["payload"]["S"], "ticket") | {"state": "UNKNOWN"}
+            item["payload"]["S"] = frames.canonical_text(changed)
+            assert frames.parse_ticket(item["payload"]["S"]).state == "UNKNOWN"
 
 
 def test_b3_recusa_ticket_que_nao_esta_pendente_sem_start(monkeypatch):
@@ -314,3 +316,28 @@ def test_dispatch_unit_sem_parte_de_espera_recusa_antes_de_qualquer_chamada(monk
     with pytest.raises(ValueError, match="^mode method outside table$"):
         _dispatch(broker)
     assert table.calls == []
+
+
+@pytest.mark.parametrize("operation, parameters", [
+    ("describe_execution", {"executionArn": MACHINE.replace(":stateMachine:", ":execution:") + ":outro"}),
+    ("describe_execution", {"executionArn": MACHINE.replace(":stateMachine:", ":execution:") + ":*"}),
+    ("start_execution", {"stateMachineArn": MACHINE, "name": "outro", "input": "{}"}),
+])
+def test_validador_do_dispatch_recusa_execucao_fora_do_arn_exato_e_do_construtor(monkeypatch, operation, parameters):
+    broker, _, _, plan = _world(monkeypatch)
+    scope = broker._call_scope() | {"unit": broker._unit_scope()}
+    native = {"role": "mode_dispatch", "service": "stepfunctions", "operation": operation, "parameters": parameters}
+    with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+        _mb().validate_mode_dispatch_call("unit-start", native, scope)
+    exact = {"executionArn": plan.execution} if operation == "describe_execution" else broker._unit_scope()["start"]
+    assert _mb().validate_mode_dispatch_call("unit-start", native | {"parameters": exact}, scope) == exact
+
+
+@pytest.mark.parametrize("operation", ["recovery-start", "audit-start", "unit-seed"])
+def test_validador_do_dispatch_e_so_do_unit_start(monkeypatch, operation):
+    broker, _, _, plan = _world(monkeypatch)
+    scope = broker._call_scope() | {"unit": broker._unit_scope()}
+    native = {"role": "mode_dispatch", "service": "stepfunctions", "operation": "describe_execution",
+              "parameters": {"executionArn": plan.execution}}
+    with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+        _mb().validate_mode_dispatch_call(operation, native, scope)
