@@ -1508,9 +1508,9 @@ def _static_binding(governance, journal):
     candidate = c.loads(journal._inputs["candidate"], limit=1024**2)
     release = candidate.get("release_id") if type(candidate) is dict else None
     c.require(type(candidate) is dict and candidate.get("source_sha") == owner["source_sha"] and type(release) is str
-              and re.fullmatch(r"candidate-[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*", release) is not None
               and release.startswith("candidate-" + owner["source_sha"] + "-"), "static binding candidate")
-    return {"release_id": "r" + c.sha(release.encode())[:31], "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
+    from tools.cnesdata_delivery.static_inputs import binding_release_id
+    return {"release_id": binding_release_id(release), "run_id": owner["run_id"], "run_attempt": owner["run_attempt"],
             "generation": owner["generation"], "product_source_sha": owner["source_sha"],
             "shared_source_sha": c.digest(governance["gate_shas"]["application"], 40),
             "static_plan_sha256": None if journal._request["operation"] == "inventory" else c.sha(journal._inputs["static-plan"])}

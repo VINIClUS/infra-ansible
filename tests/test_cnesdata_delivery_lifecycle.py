@@ -445,7 +445,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
                                              "lock_sha256": c.sha((root / ".terraform.lock.hcl").read_bytes())},
                                "cost_context": {}, "cost_evidence": {}, "cost_manifest": {}, "source_manifest_sha256": "9" * 64,
                                "backend": {"configuration": {"type": "s3", "workspace": "default"}}}}
-    request = {"source_sha": owner["source_sha"], "application_purpose": purpose, "caller_binding_sha256": owner["caller_binding_sha256"]}
+    request = {"source_sha": owner["source_sha"], "application_purpose": purpose, "caller_binding_sha256": owner["caller_binding_sha256"],
+               "step": "plan-fixture"}
     monkeypatch.setattr(lr, "admission", lambda role: (governance, request, step, None,
         {"id": owner["run_id"], "run_attempt": owner["run_attempt"]},
         {name: {"index.json": name.encode()} for name in step["input_jobs"]}))
@@ -471,7 +472,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     def private_payload(*args, **kwargs):
         audit = args[4]["index.json"] == b"audit"
         approval_here = audit != (approval_flag == "approval_from_plan")
-        files = {name: raw for name, raw in payload.items() if name != "approval.json"}
+        files = {name: raw for name, raw in payload.items() if name != "approval.json" and not (plan_operational and name == "inputs.json")}
         if audit:
             files = {}
         if approval_here and "approval.json" in payload:
@@ -481,6 +482,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         returned["index"].append(index)
         return index, files
     monkeypatch.setattr(lr, "private_payload", private_payload)
+    from tools.cnesdata_delivery import plan_inputs
+    monkeypatch.setattr(plan_inputs, "read_plan_inputs", lambda **context: payload["inputs.json"])
     monkeypatch.setattr(lr.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=owner["source_sha"]))
     monkeypatch.setattr(lr, "authenticate_infrastructure_closure", lambda *args: None)
     monkeypatch.setattr(iam_boundary, "authenticate_sources", lambda *args: sources)

@@ -187,6 +187,28 @@ def predecessor_policy(governance, selector):
     ]}
 
 
+PLAN_INPUTS_PREFIX = "plan-inputs-"
+PLAN_INPUTS_MEMBER = "inputs.json"
+
+
+def plan_step_names(catalog):
+    """Args: lifecycle step catalog. Returns: sorted plan step names. Raises: ValueError on a reserved name or an over-long plan name."""
+    c.require(not any(name.startswith(PLAN_INPUTS_PREFIX) for name in catalog), "reserved plan-inputs step")
+    names = sorted(name for name, step in catalog.items() if step["role"] == "plan")
+    c.require(all(len(PLAN_INPUTS_PREFIX) + len(name) <= 64 for name in names), "plan step name length")
+    return names
+
+
+def refuse_reserved_step(step):
+    c.require(not step.startswith(PLAN_INPUTS_PREFIX), "reserved plan-inputs step")
+
+
+def plan_inputs_keys(run_prefix, governance):
+    """Args: run object-ARN prefix, governance. Returns: the exact keeper object ARNs, none without a catalog."""
+    return [run_prefix + PLAN_INPUTS_PREFIX + name + "/" + PLAN_INPUTS_MEMBER
+            for name in plan_step_names(governance.get("lifecycle_steps", {}))]
+
+
 def lifecycle_request(governance, source, run_id, attempt, role, step, *, direction, delete_resources=(), predecessor=None):
     """Same-run evidence, read-only original lease, exact inverse resources.
 
@@ -198,6 +220,7 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
     c.integer(run_id)
     c.integer(attempt)
     c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", step) and direction in {"advance", "converge"}, "lifecycle session step")
+    refuse_reserved_step(step)
     base = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + _prefix(governance)
     run = base + f"lifecycle/{source}/{run_id}/{attempt}/"
     own = run + step + "/*"
@@ -249,6 +272,7 @@ def application_request(governance, source, run_id, attempt, step, *, applicatio
     c.integer(run_id)
     c.integer(attempt)
     c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", step), "application session step")
+    refuse_reserved_step(step)
     from tools.cnesdata_delivery import lifecycle_contract as lc
     c.require(application_purpose in lc.APPLICATION_CONTEXTS, "closed application purpose")
     keeper = step == "keeper"
@@ -277,6 +301,7 @@ def application_request(governance, source, run_id, attempt, step, *, applicatio
     run = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + _prefix(governance) + f"lifecycle/{source}/{run_id}/{attempt}/"
     lease = "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY
     own = [run + name + "/*" for name in (("keeper", "terminal") if keeper else (step,))]
+    own += plan_inputs_keys(run, governance) if keeper else []
     statements = [
         {"Effect": "Allow", "Action": "s3:GetObject", "Resource": run + "*"},
         {"Effect": "Allow", "Action": "s3:PutObject", "Resource": own},

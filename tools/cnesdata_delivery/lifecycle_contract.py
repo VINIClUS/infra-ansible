@@ -622,7 +622,7 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                      "static_inputs.py", "runtime-requirements.txt")
+                      "static_inputs.py", "plan_inputs.py", "runtime-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))
 
@@ -653,7 +653,7 @@ def validate_fence_checkpoint_chain(chain, checkpoint_raw, owner, *, predecessor
     c.require(chain["owner_sha256"] == owner["owner_sha256"] and type(chain["generation"]) is int and chain["generation"] == owner["generation"]
               and type(chain["entries"]) is list and 1 <= len(chain["entries"]) <= 256, "fence current keeper ancestry")
     checkpoint = c.loads(checkpoint_raw, canonical=True)
-    c.closed(checkpoint, "state state_object owner purpose plan_sha256 readbacks phase_a_originals")
+    c.closed(checkpoint, "state state_object owner purpose plan_sha256 readbacks phase_a_originals previous_checkpoint_sha256")
     original_state, _ = fence_predecessor_baseline(predecessor_raw, predecessor_reference, checkpoint["phase_a_originals"])
     previous, serial = c.digest(chain["anchor_sha256"]), original_state["serial"]
     c.require(previous == c.sha(predecessor_raw) == predecessor_reference["checkpoint_sha256"], "fence original selected predecessor anchor")

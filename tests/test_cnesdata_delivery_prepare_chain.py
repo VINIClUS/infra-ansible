@@ -37,7 +37,8 @@ def _publish(s3, governance, owner, step, files):
     return {"index.json": c.canonical(index)}
 
 
-def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap):
+def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap, previous=None, producer_mode="observer-bootstrap",
+          purpose="application-prepare", drop_previous=False):
     from fixtures.cnesdata_delivery_lifecycle import mode_source_case
     from test_cnesdata_application_gate import _phase_a_carrier_case
     from test_cnesdata_delivery_lifecycle import held
@@ -51,12 +52,15 @@ def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap):
     moved = c.canonical({"lineage": "fixture", "serial": 2, "resources": [{"address": "observer"}]})
     moved_object = {"version_id": "after-bootstrap"}
     anchor = original["raw"]["checkpoint.json"]
-    bootstrap = c.canonical({"owner": owner, "state": c.state_identity(moved), "state_object": moved_object,
-                             "phase_a_originals": carrier, "previous_checkpoint_sha256": c.sha(anchor)})
+    link = {"previous_checkpoint_sha256": previous or c.sha(anchor)}
+    bootstrap = c.canonical({"owner": owner, "state": c.state_identity(moved), "state_object": moved_object, "purpose": purpose,
+                             "phase_a_originals": carrier} | ({} if drop_previous else link))
     governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "account_id": "111122223333",
                   "context_kind": owner["context_kind"], "source_closure": {}, "cost": {}, "lifecycle_predecessor": {},
                   "predecessor_read": {"protocol": "legacy-infra"},
-                  "lifecycle_steps": {"operational-audit": {"role": "audit", "job_name": "audit"}},
+                  "lifecycle_steps": {"operational-audit": {"role": "audit", "job_name": "audit"},
+                                      "bootstrap-deploy": {"role": "deploy", "purpose": "application-prepare",
+                                                           "mode": producer_mode, "job_name": "d"}},
                   "baseline": {"toolchain": {"opentofu": {"binary_sha256": ""}, "lock_sha256": ""},
                                "cost_context": {}, "cost_evidence": {}, "cost_manifest": {}, "source_manifest_sha256": "9" * 64,
                                "backend": {"configuration": {"type": "s3", "workspace": "default"}}}}
@@ -106,13 +110,28 @@ def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap):
     return lr
 
 
-@pytest.mark.parametrize("historical", [True, False])
-def test_deploy_operacional_apos_bootstrap_admite_checkpoint_predecessor_encadeado(tmp_path, monkeypatch, historical):
-    lr = _case(tmp_path, monkeypatch, historical=historical, window_on_bootstrap=False)
-    try:
+def test_deploy_operacional_apos_bootstrap_admite_checkpoint_predecessor_encadeado(tmp_path, monkeypatch):
+    lr = _case(tmp_path, monkeypatch, historical=False, window_on_bootstrap=False)
+    with pytest.raises(ValueError, match="closed object fields"):
         lr.execute("deploy")
-    except ValueError as error:
-        assert "real predecessor checkpoint" not in str(error)
+
+
+def test_deploy_historico_apos_bootstrap_continua_recusado(tmp_path, monkeypatch):
+    lr = _case(tmp_path, monkeypatch, historical=True, window_on_bootstrap=False)
+    with pytest.raises(ValueError, match="real predecessor checkpoint"):
+        lr.execute("deploy")
+
+
+@pytest.mark.parametrize("change", [
+    {"previous": "f" * 64},
+    {"producer_mode": "operational"},
+    {"purpose": "phase-b"},
+    {"drop_previous": True},
+], ids=["dois-saltos", "outro-produtor", "proposito-divergente", "campo-ausente"])
+def test_deploy_operacional_recusa_encadeamento_invalido(tmp_path, monkeypatch, change):
+    lr = _case(tmp_path, monkeypatch, historical=False, window_on_bootstrap=False, **change)
+    with pytest.raises(ValueError, match="real predecessor checkpoint"):
+        lr.execute("deploy")
 
 
 def test_deploy_operacional_passa_do_checkpoint_predecessor_quando_a_janela_avanca(tmp_path, monkeypatch):

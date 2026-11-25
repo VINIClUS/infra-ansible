@@ -111,6 +111,13 @@ def static_plan_bytes(raw, *, binding, inventory):
     return raw
 
 
+def binding_release_id(candidate_id):
+    """CnesData publish_dashboard.binding_release_id: "r" + 31 hex of the sha256 of the candidate id (#498 binding release_id)."""
+    c.require(type(candidate_id) is str and re.fullmatch(r"candidate-[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*", candidate_id) is not None,
+              "static binding candidate")
+    return "r" + c.sha(candidate_id.encode())[:31]
+
+
 def carrier_binding(terraform):
     """static_promotion.binding of the authenticated operational inputs (canonical tfvars JSON).
 
