@@ -1057,7 +1057,7 @@ class AdapterJournal:
         value = c.loads(raw, canonical=True, limit=1024**2)
         c.require(type(value) is dict and value, "adapter observation requires original domain object")
         c._secrets(value)
-        if kind in lc.MODE_TASK_STEPS:
+        if kind in lc.MODE_TASK_STEPS | {"unit-execution"}:
             from tools.cnesdata_delivery.mode_broker import ModeBroker
             broker = getattr(self, "_broker", None)
             c.require(type(broker) is ModeBroker and c.canonical(broker.described) == raw, "mode step receipt")

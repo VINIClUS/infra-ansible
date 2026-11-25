@@ -1448,6 +1448,7 @@ class ModeBroker:
                                   child_deadline=min(stage["deadline"] - 38, self.wait.deadline), clock=self.clock,
                                   sleep=self.sleep)
         self.journal.__dict__.setdefault("_timings", []).append(timing)
+        self.described = reply
         return reply
 
     def readbacks(self):
