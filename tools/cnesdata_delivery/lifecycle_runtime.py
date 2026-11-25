@@ -486,7 +486,8 @@ def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, 
     Used by ClosedReadyEvidence (fence, inventory and publish-static) and by the prepared evaluation scope (item 2);
     closed-ready bytes are unchanged.
     """
-    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static"), "fence evidence operation")
+    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static")
+              or operation in lc.MODE_EFFECT_CALLS, "fence evidence operation")
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
     digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,

@@ -1,4 +1,6 @@
 """Mode SDK broker, fence-read broker and mode readbacks of the promotion mode stages (P16b)."""
+import base64
+import binascii
 import importlib.util
 import pathlib
 import re
@@ -8,8 +10,9 @@ from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
-from tools.cnesdata_delivery.application_gate import (AdapterJournal, ClosedReadyBroker, Keeper, _assume_fence_session,
-                                                      _fence_operation_iam, _operation_journals)
+from tools.cnesdata_delivery.application_gate import (AdapterJournal, ClosedReadyBroker, ClosedReadyEvidence, Keeper,
+                                                      _assume_fence_session, _fence_operation_iam, _operation_journals,
+                                                      _poison_call)
 
 MODE_PHASES = ("unit", "recovery", "audit")
 MODE_SEED_KEYS = frozenset((family, action) for family in ("seed-raw", "seed-run", "seed-unit") for action in ("put", "get"))
@@ -637,15 +640,172 @@ def assume_mode_session(*, governance, application, authority, journal, credenti
     return _ModeSession(client, commitment, scope, deadline, binding, operation, code=code, alias=alias)
 
 
+_MODE_BODY_LIMIT = 256 * 1024
+
+
+def _mode_call_scope(governance, journal, session):
+    from tools.cnesdata_delivery.session_policy import MODE_SEED_RUN_PREFIXES
+    resources, operation = session.scope["resources"], journal._request["operation"]
+    owner, phase = journal._request["owner"]["owner_sha256"], lc.MODE_SESSION_OPERATIONS[operation][3]
+    names = {f"{prefix}-{owner[:16]}" for prefix in MODE_SEED_RUN_PREFIXES.get(phase, ())}
+    binding = {"canary_id": resources["scope"]["tenant_id"].removeprefix("prod-canary-"), "owner_sha256": owner,
+               "run_ids": [run for run in resources["scope"]["run_ids"] if run in names], "dispatch_id": None}
+    return {"account": governance["account_id"], "table": resources["table_arn"].rsplit("/", 1)[1],
+            "bucket": resources["data_bucket_arn"].removeprefix("arn:aws:s3:::"),
+            "raw_keys": list(resources["scope"]["raw_object_keys"]),
+            "binding": binding if operation.endswith("-seed") else None}
+
+
+def _mode_dynamodb_call(operation, name, parameters, scope):
+    put = name == "put_item"
+    fields = {"TableName", "Item", "ConditionExpression"} if put else {"TableName", "Key", "ConsistentRead"}
+    c.require(type(parameters) is dict and set(parameters) == fields and parameters["TableName"] == scope["table"]
+              and (parameters["ConditionExpression"] == "attribute_not_exists(pk)" if put else parameters["ConsistentRead"] is True),
+              "mode dynamodb call")
+    item = parameters["Item"] if put else parameters["Key"]
+    c.require(type(item) is dict and (put or set(item) == {"pk", "sk"})
+              and all(type(item.get(part)) is dict and set(item[part]) == {"S"} and type(item[part]["S"]) is str
+                      for part in ("pk", "sk")), "mode dynamodb call")
+    admit_mode_key(operation, "put" if put else "get", (item["pk"]["S"], item["sk"]["S"]), binding=scope["binding"])
+    return parameters
+
+
+def _mode_s3_call(name, parameters, scope):
+    put = name == "put_object"
+    body = parameters.get("Body") if type(parameters) is dict else None
+    c.require(type(parameters) is dict and set(parameters) == ({"Bucket", "Key", "Body", "IfNoneMatch"} if put else {"Bucket", "Key"})
+              and parameters["Bucket"] == scope["bucket"] and type(parameters["Key"]) is str and parameters["Key"] in scope["raw_keys"]
+              and (not put or parameters["IfNoneMatch"] == "*" and type(body) is dict and set(body) == {"bytes"}
+                   and type(body["bytes"]) is str), "mode s3 call")
+    if not put:
+        return parameters
+    try:
+        raw = base64.b64decode(body["bytes"], validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("mode s3 call") from error
+    c.require(len(raw) <= _MODE_BODY_LIMIT, "mode s3 call")
+    return parameters | {"Body": raw}
+
+
+def validate_mode_call(operation, native, scope):
+    """Design 4.1 closed table: alias, MODE_EFFECT_CALLS[operation], then the per-service validator.
+
+    Returns: the native SDK parameters (wire bytes decoded). Raises: ValueError before any SDK call.
+    """
+    c.closed(native, "role service operation parameters")
+    role, service, name, parameters = (native[key] for key in ("role", "service", "operation", "parameters"))
+    c.require(role == lc.MODE_SESSION_OPERATIONS[operation][1], "mode call alias")
+    c.require((role, service, name) in lc.MODE_EFFECT_CALLS[operation], "mode call outside table")
+    if service == "dynamodb":
+        return _mode_dynamodb_call(operation, name, parameters, scope)
+    if service == "s3":
+        return _mode_s3_call(name, parameters, scope)
+    raise ValueError("mode call outside table")
+
+
+class ModeEvidence(ClosedReadyEvidence):
+    """ClosedReadyEvidence over one mode effect call, re-validated against the ModeBroker call scope."""
+    @staticmethod
+    def _native(journal, native_raw, scope, governance):
+        c.require(scope["account"] == governance["account_id"], "original mode journal account")
+        native = c.loads(native_raw, canonical=True, limit=128 * 1024)
+        validate_mode_call(journal._request["operation"], native, scope)
+        return native
+
+
+def _mode_body(stream):
+    chunks, size = [], 0
+    while size <= _MODE_BODY_LIMIT:
+        chunk = stream.read(_MODE_BODY_LIMIT + 1 - size)
+        c.require(type(chunk) is bytes, "mode S3 Body stream bytes")
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    c.require(size <= _MODE_BODY_LIMIT, "mode S3 Body bound")
+    return base64.b64encode(b"".join(chunks)).decode()
+
+
+def _mode_response(service, operation, response):
+    if (service, operation) == ("dynamodb", "get_item"):
+        c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
+        return {key: response[key] for key in ("Item",) if key in response}
+    if (service, operation) == ("s3", "get_object"):
+        return {"Body": {"bytes": _mode_body(response["Body"])}}
+    return {}
+
+
 class ModeBroker:
     """Finite private SDK dispatcher of one mode seed/start operation, on its own derived mc-* session.
 
-    The read session serves mode_readbacks and the unit outputs; any unknown native outcome poisons, never retries.
+    A durable reservation precedes native IO; only lc.MODE_DEFINITE_ERRORS are definite, any other outcome poisons.
     """
+    def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None):
+        c.require(type(journal) is AdapterJournal and type(session) is _ModeSession
+                  and session.request_binding == c.sha(c.canonical(journal._request))
+                  and getattr(journal, "_broker", None) is None, "one original admitted mode broker")
+        self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
+        self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
+        self.clock = clock or time.time
+        self.scope = _mode_call_scope(governance, journal, session)
+        self.evidence = []
+        journal._broker = self
 
     @property
     def uncertainty(self):
         return [item for ledger in self.evidence for item in ledger.uncertainty]
+
+    def call(self, *, role, service, operation, parameters):
+        journal, session = self.journal, self.session
+        journal.guard()
+        c.require(session.request_binding == c.sha(c.canonical(journal._request)) and self.clock() + 20 < session.deadline,
+                  "mode finite SDK request/window")
+        native = {"role": role, "service": service, "operation": operation, "parameters": parameters}
+        sdk = validate_mode_call(journal._request["operation"], native, self.scope)
+        return self._native_call(c.canonical(native, limit=128 * 1024), service, operation, sdk)
+
+    def _native_call(self, raw, service, operation, sdk):
+        from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
+        journal, session = self.journal, self.session
+        ledger = ModeEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
+                              role_session_sha256=session.commitment, scope=self.scope)
+        self.evidence.append(ledger)
+        ticket, created = None, False
+        try:
+            c.require(ledger.reserve() == "created", "existing durable call is historical/unknown; no fresh SDK replay")
+            created = True
+            ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
+            c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
+            journal._guard.check(20)
+            response, code = self._sdk(service, operation, sdk)
+            metadata = response.get("ResponseMetadata", {})
+            status = 200 if code is None else lc.MODE_DEFINITE_ERRORS[(service, operation)][1]
+            c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == status,
+                      "mode native SDK authenticated status")
+            value = {"Error": {"Code": code}} if code is not None else _mode_response(service, operation, response)
+            response_raw = c.canonical(_exact_sdk_dates(value), limit=1024**2)
+            c.require(self.clock() < session.deadline, "native response exceeded original mode window")
+            receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],
+                                                server_date=metadata["HTTPHeaders"]["date"])
+            ledger.complete(response_raw, receipt)
+            journal.guard()
+            c.require(self.clock() < session.deadline, "durable receipt exceeded original mode window")
+            if code is not None:
+                return {"kind": "sdk-error", "code": code}
+            return {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
+        except BaseException:
+            _poison_call(journal, ledger, ticket, created)
+            raise
+
+    def _sdk(self, service, operation, sdk):
+        try:
+            return self.session.client.call(service, operation, **sdk), None
+        except Exception as error:
+            response = getattr(error, "response", None)
+            code = response.get("Error", {}).get("Code") if type(response) is dict else None
+            definite = lc.MODE_DEFINITE_ERRORS.get((service, operation))
+            c.require(definite is not None and code == definite[0], "mode native SDK outcome unknown")
+            return response, code
 
 
 class FenceReadBroker(ClosedReadyBroker):

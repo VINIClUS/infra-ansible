@@ -879,7 +879,8 @@ class AdapterJournal:
         c.require((request["role"] == "fence_operator"
                    and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(operation, ()))
                   or (operation in STATIC_OPERATIONS
-                      and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation]),
+                      and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation])
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -916,10 +917,15 @@ class AdapterJournal:
             _sdk_private_fields(response)
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
             static = STATIC_RESPONSE_FIELDS.get(request["operation"]) if self._request["operation"] in STATIC_OPERATIONS else None
+            mode = self._request["operation"] in lc.MODE_EFFECT_CALLS
+            native = (request["service"], request["operation"])
             allowed = (set(static[0].split()) | set(static[1]) if static is not None else
+                       lc.MODE_RESPONSE_FIELDS[native] if mode else
                        {"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
-            absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
+            absence = ((not mode and request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}})
+                       or (mode and native in lc.MODE_DEFINITE_ERRORS
+                           and response == {"Error": {"Code": lc.MODE_DEFINITE_ERRORS[native][0]}}))
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
             server = parsedate_to_datetime(server_date)
             c.require(server.tzinfo is not None and 0 <= ended - intent["started_monotonic_ns"] <= 20 * 10**9

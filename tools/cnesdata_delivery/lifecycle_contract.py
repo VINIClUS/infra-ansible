@@ -244,6 +244,24 @@ ADAPTER_STEPS = {
     "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),
 }
 MODE_SINGLE_STEPS = frozenset({"unit-execution", "recovery-task", "audit-task"})
+# Vendored from CnesData P16c 1c5bbd82 scripts/promotion/_adapter_abi.py MODE_EFFECT_CALLS and MODE_EFFECT_METHODS
+# (parity test against the vendored product ABI): the closed SDK table and context methods of each mode effect.
+_MODE_SEED_CALLS = frozenset(("mode_seed", service, name) for service, name in (
+    ("dynamodb", "put_item"), ("dynamodb", "get_item"), ("s3", "put_object"), ("s3", "get_object")))
+MODE_EFFECT_CALLS = {
+    "unit-seed": _MODE_SEED_CALLS, "recovery-seed": _MODE_SEED_CALLS, "unit-start": frozenset(),
+    "recovery-start": frozenset({("mode_dispatch", "ecs", "run_task"), ("mode_dispatch", "ecs", "describe_tasks")}),
+    "audit-start": frozenset({("mode_audit_launch", "ecs", "run_task"), ("mode_audit_launch", "ecs", "describe_tasks")}),
+}
+MODE_EFFECT_METHODS = {
+    "unit-seed": frozenset(), "recovery-seed": frozenset(), "unit-start": frozenset({"dispatch_unit", "mode_readbacks"}),
+    "recovery-start": frozenset({"ledger_admit_effect", "ledger_mark_unknown", "ledger_settle", "mode_readbacks"}),
+    "audit-start": frozenset({"mode_readbacks"}),
+}
+MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", 400),
+                        ("s3", "put_object"): ("PreconditionFailed", 412)}
+MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
+                        ("s3", "get_object"): {"Body"}}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
