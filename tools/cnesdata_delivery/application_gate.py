@@ -544,16 +544,37 @@ class Context:
     def observe(self, kind, raw):
         c.require(type(raw) is bytes, "original observation bytes")
         return self.exchange({"kind": "observe", "observation_kind": kind, "bytes": base64.b64encode(raw).decode()})["sha256"]
+    ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", "PutItem"),
+              ("s3", "put_object"): ("PreconditionFailed", "PutObject")}
     def call(self, role, service, operation, parameters):
-        reply = self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": parameters})
+        wire = parameters
+        if (service, operation) == ("s3", "put_object") and type(parameters) is dict and type(parameters.get("Body")) is bytes:
+            wire = dict(parameters, Body={"bytes": base64.b64encode(parameters["Body"]).decode()})
+        reply = self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": wire})
         if reply.get("kind") == "sdk-error":
             c.closed(reply, "kind code")
-            c.require(reply["code"] == "ExecutionDoesNotExist", "closed shared SDK error")
+            absent = ("ExecutionDoesNotExist", "DescribeExecution") if service == "stepfunctions" else (None, None)
+            code, name = self.ERRORS.get((service, operation), absent)
+            c.require(reply["code"] == code, "closed shared SDK error")
             from botocore.exceptions import ClientError
-            raise ClientError({"Error": {"Code": reply["code"]}}, "DescribeExecution")
+            raise ClientError({"Error": {"Code": code}}, name)
         c.closed(reply, "kind value")
         c.require(reply["kind"] == "sdk-result", "original shared SDK result")
-        return reply["value"]
+        if (service, operation) != ("s3", "get_object"):
+            return reply["value"]
+        c.closed(reply["value"], "Body")
+        c.closed(reply["value"]["Body"], "bytes")
+        return {"Body": base64.b64decode(reply["value"]["Body"]["bytes"], validate=True)}
+    def ledger_admit_effect(self, kind, request_sha256, target_sha256, admitted_at):
+        reply = self.exchange({"kind": "ledger-admit", "effect_kind": kind, "request_sha256": request_sha256,
+                               "target_sha256": target_sha256, "admitted_at": admitted_at})
+        c.closed(reply, "effect_id")
+        return c.digest(reply["effect_id"])
+    def ledger_mark_unknown(self, effect_id):
+        c.require(self.exchange({"kind": "ledger-unknown", "effect_id": effect_id}) == {}, "mode ledger reply")
+    def ledger_settle(self, effect_id, receipt_sha256):
+        reply = self.exchange({"kind": "ledger-settle", "effect_id": effect_id, "receipt_sha256": receipt_sha256})
+        c.require(reply == {}, "mode ledger reply")
 start = receive()
 c.closed(start, "kind request")
 c.require(start["kind"] == "start", "fixed adapter start")
