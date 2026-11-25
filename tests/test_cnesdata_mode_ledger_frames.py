@@ -187,8 +187,8 @@ def test_ledger_settle_so_com_recibo_de_uma_observacao_de_tarefa_desta_operacao(
     with pytest.raises(ValueError, match="^mode ledger settle receipt$"):
         _send(journal, "ledger-settle", effect_id=_effect_id(), receipt_sha256="9" * 64)
     assert len(table.calls) == calls
-    body = b'{"lastStatus":"STOPPED"}\n'
-    receipt = journal.observe("recovery-task", body)
+    broker.described = {"lastStatus": "STOPPED"}
+    receipt = journal.observe("recovery-task", b'{"lastStatus":"STOPPED"}\n')
     reply, _ = _send(journal, "ledger-settle", effect_id=_effect_id(), receipt_sha256=receipt)
     assert reply == {} and json.loads(table.items[ticket])["state"] == "SETTLED"
     assert json.loads(table.items[ticket])["receipt_sha256"] == receipt

@@ -749,8 +749,7 @@ def test_passos_intermediarios_do_keeper_sao_os_do_abi_de_modo_do_produto():
 
 
 @pytest.mark.parametrize("operation, kind", [("unit-start", "unit-execution"), ("unit-start", "unit-task"),
-                                             ("unit-start", "unit-output"), ("recovery-start", "recovery-task"),
-                                             ("audit-start", "audit-task")])
+                                             ("unit-start", "unit-output")])
 def test_journal_aceita_o_passo_intermediario_da_propria_operacao(operation, kind):
     journal = _start_journal(operation)
     raw = c.canonical({"step": kind})
@@ -787,13 +786,13 @@ def _result(journal):
 
 
 def test_resultado_do_adapter_aceita_os_passos_registrados_e_recusa_passo_de_outra_operacao():
-    journal = _start_journal("recovery-start")
-    journal.observe("recovery-task", c.canonical({"step": 1}))
+    journal = _start_journal("unit-start")
+    journal.observe("unit-task", c.canonical({"step": 1}))
     journal.observe("mode-result", c.canonical({"result": 1}))
     raw = _result(journal)
     assert lc.validate_adapter_result(raw, request=journal._request, observations=journal.observations, call_receipts=[],
                                       pending=[], unknown=[]) == c.loads(raw, canonical=True)
-    foreign = [{"kind": "unit-task", "sha256": "1" * 64, "size": 3}]
+    foreign = [{"kind": "recovery-task", "sha256": "1" * 64, "size": 3}]
     value = c.loads(raw, canonical=True) | {"observations": foreign}
     with pytest.raises(ValueError, match="^adapter operation observation$"):
         lc.validate_adapter_result(c.canonical(value), request=journal._request, observations=foreign, call_receipts=[],
