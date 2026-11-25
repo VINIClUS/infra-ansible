@@ -47,7 +47,7 @@ def _application(pin=None):
                            pin={"document": copy.deepcopy(IDENTITY) if pin is None else pin})
 
 
-def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES):
+def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES, deadline=DEADLINE):
     from tools.cnesdata_delivery import session_policy
     documents = {"application_identity": IDENTITY, "application_managed": managed}
     for code, (operation, alias) in CODES.items():
@@ -56,19 +56,19 @@ def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES):
                                                      sessions={alias: NAMES[code]})
         documents["application_session." + code] = json.loads(request["Policy"])
         documents["session." + code] = session_policy.mode_session_policy(operation, resources=resources, owner_sha256=OWNER,
-                                                                          deadline=DEADLINE)
+                                                                          deadline=deadline)
         documents["role." + alias] = ROLES["roles"][alias]["policy"]["PolicyDocument"]
     return documents
 
 
-def _authority(governance, owner, managed=IDENTITY, resources=RESOURCES):
+def _authority(governance, owner, managed=IDENTITY, resources=RESOURCES, deadline=DEADLINE):
     from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation
     roles = copy.deepcopy(ROLES["roles"])
     for alias, entry in roles.items():
         entry["role"]["Role"]["RoleId"] = ROLE_IDS[alias]
     scope = {"resources": resources, "owner_sha256": OWNER, "role_arns": dict(ROLE_ARNS), "session_names": dict(NAMES),
-             "deadline": DEADLINE}
-    documents = _documents(governance, owner, managed, resources)
+             "deadline": deadline}
+    documents = _documents(governance, owner, managed, resources, deadline)
     evaluation = mode_effective_evaluation(documents, scope, evaluator_source_sha="c" * 40, observed_at=OBSERVED)
     return _mb().ModeAuthority(evaluation, documents, scope, roles)
 
@@ -236,3 +236,15 @@ def test_prazo_da_sessao_e_o_menor_entre_o_estagio_e_o_prazo_avaliado(monkeypatc
     session = _mb().assume_mode_session(**args)
     assert session.deadline == stage["deadline"] < DEADLINE
     assert session.scope == args["authority"].scope
+
+
+def test_prazo_avaliado_anterior_ao_estagio_limita_a_sessao_e_a_politica(monkeypatch):
+    from tools.cnesdata_delivery.session_policy import mode_session_policy
+    args, calls, _ = _case(monkeypatch)
+    stage = args["journal"]._request["stage"]
+    earlier = stage["deadline"] - 10
+    args["authority"] = _authority(args["governance"], args["journal"]._request["owner"], deadline=earlier)
+    session = _mb().assume_mode_session(**args)
+    policy = mode_session_policy("recovery-start", resources=RESOURCES, owner_sha256=OWNER, deadline=earlier)
+    assert session.deadline == earlier < stage["deadline"]
+    assert calls[0][2]["Policy"] == c.canonical(policy).decode().strip()
