@@ -24,12 +24,20 @@ def _puts(request):
             return statement["Resource"]
 
 
-def test_keeper_escreve_apenas_as_chaves_exatas_dos_passos_de_plano():
+WILDCARD = RUN_ARN + "plan-inputs-*/inputs.json"
+
+
+def test_keeper_escreve_apenas_keeper_terminal_e_um_recurso_limitado_de_plan_inputs():
     from tools.cnesdata_delivery.session_policy import application_request
     request = application_request(_governance(), SOURCE, RUN, ATTEMPT, "keeper", application_purpose="promotion")
-    assert _puts(request) == [RUN_ARN + "keeper/*", RUN_ARN + "terminal/*",
-                              *[RUN_ARN + "plan-inputs-" + name + "/inputs.json" for name in sorted(PLANS)]]
-    assert not any(resource.endswith("plan-inputs-*") or resource.endswith("plan-inputs-*/*") for resource in _puts(request))
+    assert _puts(request) == [RUN_ARN + "keeper/*", RUN_ARN + "terminal/*", WILDCARD]
+
+
+def test_recurso_de_plan_inputs_nao_e_alargado_nem_perde_o_membro():
+    from tools.cnesdata_delivery.session_policy import application_request
+    resources = _puts(application_request(_governance(), SOURCE, RUN, ATTEMPT, "keeper", application_purpose="promotion"))
+    assert RUN_ARN + "*" not in resources and not any(r.endswith("plan-inputs-*") or r.endswith("plan-inputs-*/*") for r in resources)
+    assert [r for r in resources if "plan-inputs-" in r] == [WILDCARD]
 
 
 def test_chaves_do_keeper_ficam_presas_a_execucao_e_tentativa_pedidas():
@@ -39,12 +47,20 @@ def test_chaves_do_keeper_ficam_presas_a_execucao_e_tentativa_pedidas():
     assert not any(f"/{RUN}/{ATTEMPT}/" in resource for resource in _puts(other))
 
 
-def test_keeper_sem_catalogo_de_passos_nao_ganha_chave_de_plan_inputs():
+@pytest.mark.parametrize("step, delegations, sessions", [
+    ("publish-static", ["normal", "observer"], {"normal": "sp-publish-" + "a" * 40, "observer": "sp-i-" + "a" * 40}),
+    ("unit-start", ["mode_dispatch"], {"mode_dispatch": "mc-ux-" + "a" * 40}),
+    ("closed-ready", [], None),
+], ids=["publish-static", "sessao-de-modo", "closed-ready"])
+def test_sessao_de_aplicacao_que_nao_e_keeper_nunca_escreve_em_plan_inputs(step, delegations, sessions):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
     from tools.cnesdata_delivery.session_policy import application_request
-    governance = _governance()
-    del governance["lifecycle_steps"]
-    request = application_request(governance, SOURCE, RUN, ATTEMPT, "keeper", application_purpose="promotion")
-    assert _puts(request) == [RUN_ARN + "keeper/*", RUN_ARN + "terminal/*"]
+    governance = _governance() | {"application_delegations": {name: f"arn:aws:iam::111122223333:role/cnesdata-prod-{suffix}"
+                                                              for name, suffix in lc.APPLICATION_DELEGATIONS.items()}}
+    request = application_request(governance, SOURCE, RUN, ATTEMPT, step, application_purpose="promotion",
+                                  delegations=delegations, sessions=sessions)
+    resources = _puts(request)
+    assert resources == [RUN_ARN + step + "/*"] and "plan-inputs-" not in request["Policy"]
 
 
 @pytest.mark.parametrize("role", ["plan", "audit", "deploy"])

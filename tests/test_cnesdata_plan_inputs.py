@@ -112,6 +112,31 @@ def test_recusa_artefato_ausente():
         _read(FakeS3(), FakeApi())
 
 
+def test_recusa_artefato_criado_exatamente_no_inicio_do_job():
+    s3, api = FakeS3(), FakeApi()
+    _published(s3, api)
+    api.artifacts[0]["created_at"] = "2026-11-25T10:00:00Z"
+    with pytest.raises(ValueError, match="plan_inputs=publication_interval"):
+        _read(s3, api)
+
+
+def test_recusa_artefato_criado_depois_do_relogio_atual():
+    s3, api = FakeS3(), FakeApi()
+    _published(s3, api)
+    api.artifacts[0]["created_at"] = "2026-11-25T11:00:01Z"
+    with pytest.raises(ValueError, match="plan_inputs=publication_interval"):
+        _read(s3, api)
+
+
+def test_static_promotion_recusa_inventario_diferente_do_registrado_no_plano():
+    from tools.cnesdata_delivery import plan_inputs
+    vector = _vector()
+    with pytest.raises(ValueError, match="plan_inputs=static_plan_inventory"):
+        plan_inputs.static_promotion_input(
+            binding=vector["binding"], application_promotion=vector["application_promotion"], enabled_until=vector["enabled_until"],
+            plan=bytes.fromhex(vector["plan_hex"]), inventory=bytes.fromhex(vector["inventory_hex"]) + b" ")
+
+
 @pytest.mark.parametrize("change", [{"owner_sha256": "f" * 64}, {"generation": 4}])
 def test_recusa_dono_ou_geracao_diferentes_do_lease(change):
     s3, api = FakeS3(), FakeApi()

@@ -38,7 +38,7 @@ def _publish(s3, governance, owner, step, files):
 
 
 def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap, previous=None, producer_mode="observer-bootstrap",
-          purpose="application-prepare", drop_previous=False):
+          purpose="application-prepare", drop_previous=False, other_owner=False):
     from fixtures.cnesdata_delivery_lifecycle import mode_source_case
     from test_cnesdata_application_gate import _phase_a_carrier_case
     from test_cnesdata_delivery_lifecycle import held
@@ -53,7 +53,7 @@ def _case(tmp_path, monkeypatch, *, historical, window_on_bootstrap, previous=No
     moved_object = {"version_id": "after-bootstrap"}
     anchor = original["raw"]["checkpoint.json"]
     link = {"previous_checkpoint_sha256": previous or c.sha(anchor)}
-    bootstrap = c.canonical({"owner": owner, "state": c.state_identity(moved), "state_object": moved_object, "purpose": purpose,
+    bootstrap = c.canonical({"owner": owner | ({"run_id": owner["run_id"] + 1} if other_owner else {}), "state": c.state_identity(moved), "state_object": moved_object, "purpose": purpose,
                              "phase_a_originals": carrier} | ({} if drop_previous else link))
     governance = {"evidence_prefix": "cnesdata/prod/evidence/", "evidence_bucket": "evidence", "account_id": "111122223333",
                   "context_kind": owner["context_kind"], "source_closure": {}, "cost": {}, "lifecycle_predecessor": {},
@@ -138,3 +138,25 @@ def test_deploy_operacional_passa_do_checkpoint_predecessor_quando_a_janela_avan
     lr = _case(tmp_path, monkeypatch, historical=False, window_on_bootstrap=True)
     with pytest.raises(ValueError, match="closed object fields"):
         lr.execute("deploy")
+
+
+def test_deploy_operacional_recusa_checkpoint_encadeado_de_outro_dono(tmp_path, monkeypatch):
+    lr = _case(tmp_path, monkeypatch, historical=False, window_on_bootstrap=False, other_owner=True)
+    with pytest.raises(ValueError, match="same-owner checkpoint"):
+        lr.execute("deploy")
+
+
+HOP_GOVERNANCE = {"lifecycle_steps": {"bootstrap-deploy": {"role": "deploy", "purpose": "application-prepare", "mode": "observer-bootstrap"}}}
+HOP_CHECKPOINT = {"purpose": "application-prepare", "previous_checkpoint_sha256": "a" * 64}
+HOP_WINDOW = {"checkpoint_sha256": "a" * 64}
+HOP_ORIGINS = {"checkpoint.json": "bootstrap-deploy"}
+
+
+@pytest.mark.parametrize("step, expected", [
+    ({"purpose": "application-prepare"}, True),
+    ({"purpose": "application-prepare", "historical_entry": True}, False),
+    ({"purpose": "phase-b"}, False),
+], ids=["encadeado", "entrada-historica", "proposito-do-passo"])
+def test_salto_do_bootstrap_so_vale_para_passo_nao_historico_de_application_prepare(step, expected):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    assert lr.bootstrap_hop(HOP_GOVERNANCE, step, HOP_CHECKPOINT, HOP_ORIGINS, HOP_WINDOW) is expected
