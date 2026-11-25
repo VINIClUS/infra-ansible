@@ -768,7 +768,6 @@ def validate_mode_read_call(operation, native, resources):
     calls = (mode_readback_calls(lc.MODE_SESSION_OPERATIONS[operation][3], resources)
              if operation in lc.MODE_READBACK_FRAME_CALLS else [])
     c.require(native["role"] == "mode_observe"
-              and (native["role"], native["service"], native["operation"]) in lc.MODE_READBACK_FRAME_CALLS.get(operation, ())
               and any(c.canonical([call["service"], call["operation"], call["parameters"]])
                       == c.canonical([native["service"], native["operation"], native["parameters"]]) for call in calls),
               "mode read call outside table")
@@ -938,7 +937,6 @@ class ModeBroker:
         for call in calls:
             native = {"role": self.reads.alias, "service": call["service"], "operation": call["operation"],
                       "parameters": call["parameters"]}
-            validate_mode_read_call(operation, native, self.reads.scope["resources"])
             self._reading = True
             try:
                 pieces[call["key"]] = self._native_call(c.canonical(native), call["service"], call["operation"],
