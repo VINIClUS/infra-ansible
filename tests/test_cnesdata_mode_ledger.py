@@ -113,11 +113,11 @@ class _Ledger:
         return [self.control, ticket], build
 
     def transition(self, change):
-        identifier = json.loads(self.case["ticket"])["effect_id"]
+        identifier = self.case["effect_id"]
         ticket = (self.pk, self.frames.ticket_key(self.binding.owner_sha256, identifier))
 
         def build(texts):
-            item = self.frames.transition(TABLE, self.binding, texts[ticket], change)
+            item = self.frames.transition(TABLE, self.binding, (identifier, texts[ticket]), change)
             return None if item is None else ("put_item", item)
         return ticket, build
 

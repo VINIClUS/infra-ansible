@@ -32,7 +32,9 @@ PRODUCT_FRAMES = (
     ("cnes_domain.orchestration.mode_canary", "product_mode_canary.py",
      "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2"),
     ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
-     "3b95d77a70c9c121c6dc77cea9b71d0cac5fab359fd4b6d655269f3a61a315a6"))
+     "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33"),
+    ("cnes_infra.aws.mode_canary_dispatch", "product_mode_canary_dispatch.py",
+     "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c"))
 _PRODUCT = {}
 _RUN = re.compile(r"[a-z0-9-]{1,64}")
 _DISPATCH = re.compile(r"[A-Za-z0-9._:-]{1,128}")
@@ -47,12 +49,13 @@ def _load_product_frames(folder):
         c.require(c.sha(raw) == digest, f"mode product frames sha256 file={file}")
         verified.append((name, str(folder / file), raw))
     saved = {name: sys.modules.get(name) for name, _, _ in verified}
+    modules = {}
     try:
         for name, origin, raw in verified:
             module = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader=None, origin=origin))
-            sys.modules[name] = module
+            sys.modules[name] = modules[name] = module
             exec(compile(raw, origin, "exec"), module.__dict__)
-        return sys.modules[PRODUCT_FRAMES[-1][0]]
+        return modules
     finally:
         for name, previous in saved.items():
             if previous is None:
@@ -61,14 +64,26 @@ def _load_product_frames(folder):
                 sys.modules[name] = previous
 
 
+def _product_module(name):
+    if "modules" not in _PRODUCT:
+        _PRODUCT["modules"] = _load_product_frames(pathlib.Path(__file__).resolve().parent)
+    return _PRODUCT["modules"][name]
+
+
 def product_frames():
     """C2 vendored product ledger builders (ruling 3): the pinned product bytes, run under their product module names.
 
     Returns: the cnes_infra.aws.mode_canary_frames module. Raises: ValueError on any byte drift, before executing.
     """
-    if "frames" not in _PRODUCT:
-        _PRODUCT["frames"] = _load_product_frames(pathlib.Path(__file__).resolve().parent)
-    return _PRODUCT["frames"]
+    return _product_module("cnes_infra.aws.mode_canary_frames")
+
+
+def product_dispatch():
+    """Vendored product unit-start builders (P16c addendum 3), loaded with the frames from the same verified bytes.
+
+    Returns: the cnes_infra.aws.mode_canary_dispatch module. Raises: ValueError on any byte drift, before executing.
+    """
+    return _product_module("cnes_infra.aws.mode_canary_dispatch")
 
 
 def _hex(value):
@@ -1015,7 +1030,7 @@ class ModeBroker:
                           for entry in journal._observations), "mode ledger settle receipt")
 
         def build(texts):
-            item = frames.transition(self.scope["table"], binding, texts[ticket], change)
+            item = frames.transition(self.scope["table"], binding, (value["effect_id"], texts[ticket]), change)
             return None if item is None else ("put_item", item)
         self._ledger_write(kind, [ticket], build, keys)
         return {}

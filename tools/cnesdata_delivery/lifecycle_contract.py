@@ -710,8 +710,8 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
                       "static_inputs.py", "terminal_gate.py", "mode_broker.py", "product_dynamodb_keys.py",
-                      "product_mode_canary.py", "product_mode_canary_frames.py", "runtime-requirements.txt",
-                      "phase-c-child-requirements.txt")
+                      "product_mode_canary.py", "product_mode_canary_frames.py", "product_mode_canary_dispatch.py",
+                      "runtime-requirements.txt", "phase-c-child-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))
 
@@ -1991,7 +1991,7 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
 PHASE_C_ROUTE_MODES = ("recovery", "audit")
 PHASE_C_PURPOSES = ("phase-c-recovery", "phase-c-audit")
 PHASE_C_PRODUCT_FILES = {
-    "scripts/promotion/phase_c_recovery.py": "3fdc5c959823044b91f6e647e436a15e77d7c01c7d1a17f72001a7c54059ba20",
+    "scripts/promotion/phase_c_recovery.py": "42d5ae7f7f2b61a0470d49fa410e93f23af804f3244057c9382c3d0282516a36",
     "scripts/promotion/_phase_c_core.py": "2bcc1649c92ac5071e91104400291dee0adb514fe2ca2b36d9a30b0626083fcb"}
 
 

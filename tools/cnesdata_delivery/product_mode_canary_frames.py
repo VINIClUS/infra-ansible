@@ -332,24 +332,27 @@ def admission(table: str, state: LedgerState, effect: Effect, now: datetime) -> 
     return Admission(identifier, _transaction(table, state, effect, (identifier, ticket)))
 
 
-def transition(table: str, binding: ModeCanaryBinding, ticket_text: str | None,
+def transition(table: str, binding: ModeCanaryBinding, ticket: tuple[str, str | None],
                change: tuple[str, str | None]) -> dict[str, Any] | None:
-    """Returns: PutItem CAS do ticket para UNKNOWN/SETTLED; None quando já aplicado.
+    """Returns: PutItem CAS do ticket (effect_id do caller, texto lido) para UNKNOWN/SETTLED.
 
-    Raises: SyntheticContextRequired: ticket_missing, ticket_settled ou ticket inválido.
+    None quando já aplicado.
+    Raises: SyntheticContextRequired: ticket_missing, ticket_mismatch, ticket_settled ou inválido.
     """
+    effect_id, ticket_text = ticket
     if ticket_text is None:
         raise refuse("ticket_missing")
-    ticket = parse_ticket(ticket_text)
+    parsed = parse_ticket(ticket_text)
+    if parsed.effect_id != effect_id:
+        raise refuse("ticket_mismatch")
     state, receipt = change
-    if ticket.state == state and ticket.receipt_sha256 == receipt:
+    if parsed.state == state and parsed.receipt_sha256 == receipt:
         return None
-    if ticket.state == "SETTLED":
+    if parsed.state == "SETTLED":
         raise refuse("ticket_settled")
     changed = parse_mapping(ticket_text, "ticket") | {"state": state, "receipt_sha256": receipt}
-    item = _item(tenant_partition(binding.tenant_id),
-                 ticket_key(binding.owner_sha256, ticket.effect_id), EFFECT_ENTITY,
-                 canonical_text(changed))
+    item = _item(tenant_partition(binding.tenant_id), ticket_key(binding.owner_sha256, effect_id),
+                 EFFECT_ENTITY, canonical_text(changed))
     return cast("dict[str, Any]", put(table, item, SWAP, {":old": {"S": ticket_text}})["Put"])
 
 
