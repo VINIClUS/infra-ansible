@@ -547,10 +547,18 @@ class _ModeSession:
         self.code, self.alias = code, alias
 
 
-def _mode_window(journal, credential_limit, clock):
-    stage = journal._request["stage"]
+_ModeTarget = namedtuple("_ModeTarget", "operation owner stage reserve guard")
+
+
+def _journal_target(journal):
+    request = journal._request
+    return _ModeTarget(request["operation"], request["owner"], request["stage"], journal._guard.check, journal.guard)
+
+
+def _mode_window(target, credential_limit, clock):
+    stage = target.stage
     seconds = lc.governed_windows(stage["windows"])["stages"].get(stage["stage"])
-    c.require({stage["stage"]} == lc.ADAPTER_STAGES[journal._request["operation"]] and stage["close"] is not None
+    c.require({stage["stage"]} == lc.ADAPTER_STAGES[target.operation] and stage["close"] is not None
               and stage["decision"] is None and seconds is not None
               and stage["deadline"] == min(stage["fixed_deadline"], stage["admitted_at"] + seconds)
               and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
@@ -572,14 +580,13 @@ def _mode_role(governance, authority, code, alias):
     return {"role_arn": role["Arn"], "role_id": role["RoleId"], "session_name": name}
 
 
-def _mode_application(governance, application, documents, journal, role, clock):
+def _mode_application(governance, application, documents, target, role, clock):
     from tools.cnesdata_delivery import session_policy
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_owner import application_identity_document
-    request = journal._request
-    owner, (code, alias) = request["owner"], lc.MODE_SESSION_OPERATIONS[request["operation"]][:2]
+    owner, (code, alias) = target.owner, lc.MODE_SESSION_OPERATIONS[target.operation][:2]
     inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
-        request["operation"], application_purpose="promotion", delegations=[alias],
+        target.operation, application_purpose="promotion", delegations=[alias],
         sessions={alias: role["session_name"]})["Policy"].encode())
     identity = application_identity_document(governance, application.application_fragment)
     c.require(all(c.canonical(value) == c.canonical(documents[name]) for name, value in (
@@ -592,13 +599,13 @@ def _mode_application(governance, application, documents, journal, role, clock):
               "mode session operation effective IAM")
 
 
-def _mode_sts(governance, journal, role, policy, *, deadline, credential_limit, operation_session, clock):
+def _mode_sts(governance, target, role, policy, *, deadline, credential_limit, operation_session, clock):
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.session_policy import validate_response
-    alias = lc.MODE_SESSION_OPERATIONS[journal._request["operation"]][1]
-    journal._guard.check(40)
-    journal.guard()
-    operation = operation_session(journal._request["operation"], role, journal._request["stage"])
+    alias = lc.MODE_SESSION_OPERATIONS[target.operation][1]
+    target.reserve(40)
+    target.guard()
+    operation = operation_session(target.operation, role, target.stage)
     c.require(clock() + 40 < deadline and clock() + 900 <= credential_limit, "mode original window after operation session")
     response = operation.call("sts", "assume_role", RoleArn=role["role_arn"], RoleSessionName=role["session_name"],
                               DurationSeconds=900, Policy=policy)
@@ -609,7 +616,7 @@ def _mode_sts(governance, journal, role, policy, *, deadline, credential_limit, 
     c.require(all(type(credentials[field]) is str and credentials[field] and "\n" not in credentials[field]
                   and "\r" not in credentials[field] for field in ("AccessKeyId", "SecretAccessKey", "SessionToken")),
               "mode temporary credential shape")
-    journal.guard()
+    target.guard()
     client = AWS(governance | {"role": alias, "roles": {alias: role["role_arn"]}}, credentials=credentials)
     expected_arn = (role["role_arn"].replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/"
                     + role["session_name"])
@@ -618,7 +625,7 @@ def _mode_sts(governance, journal, role, policy, *, deadline, credential_limit, 
               and client.identity["UserId"] == expected_id
               and response["AssumedRoleUser"] == {"Arn": expected_arn, "AssumedRoleId": expected_id},
               "mode exact native role ID/session/account")
-    journal.guard()
+    target.guard()
     c.require(clock() + 20 < deadline, "mode STS completed in original window")
     return client, operation, expiry, expected_arn, expected_id
 
@@ -630,30 +637,53 @@ def assume_mode_session(*, governance, application, authority, journal, credenti
     Args: application is the authenticated application authority; authority the ModeAuthority of the stage.
     Returns: _ModeSession. Raises: ValueError, minting no credential on any refusal before STS.
     """
-    from tools.cnesdata_delivery.iam_boundary import mode_stage_evaluation
-    from tools.cnesdata_delivery.session_policy import mode_session_policy
     c.require(type(journal) is AdapterJournal and journal._request["operation"] in MODE_EFFECTS
               and journal._identity["application_purpose"] == "promotion" and type(authority) is ModeAuthority,
               "mode session original operation")
-    request = journal._request
-    code, alias = lc.MODE_SESSION_OPERATIONS[request["operation"]][:2]
-    stage = _mode_window(journal, credential_limit, clock)
+    return _mode_assume(governance, application, authority, (_journal_target(journal), c.sha(c.canonical(journal._request))),
+                        credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+
+
+def assume_readback_session(*, governance, application, authority, guard, mode, credential_limit, operation_session,
+                            clock=time.time):
+    """Ruling 5: the mode_observe session of one mode on the same prepared authority as assume_mode_session, bound to
+    the <mode>-readbacks request of the held keeper window, that ModeReadback and the mode-readbacks frame admit.
+
+    Args: guard is the KeeperGuard of the held lease; mode one of unit, recovery, audit.
+    Returns: _ModeSession. Raises: ValueError, minting no credential on any refusal before STS.
+    """
+    from tools.cnesdata_delivery.application_gate import KeeperGuard
+    keeper = guard.keeper if type(guard) is KeeperGuard else None
+    record = keeper.lease.check() if type(keeper) is Keeper else None
+    c.require(record is not None and type(authority) is ModeAuthority, "mode readback original context")
+    request = mode_readback_request(lc.owner_binding(record), record["lifecycle"], mode)
+    c.require(request["caller"]["application_purpose"] == "promotion", "mode readback original context")
+    target = _ModeTarget(mode + "-observe", request["owner"], request["stage"], guard.check, guard.check)
+    return _mode_assume(governance, application, authority, (target, c.sha(c.canonical(request))),
+                        credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+
+
+def _mode_assume(governance, application, authority, bound, *, credential_limit, operation_session, clock):
+    from tools.cnesdata_delivery.iam_boundary import mode_stage_evaluation
+    from tools.cnesdata_delivery.session_policy import mode_session_policy
+    target, binding = bound
+    code, alias = lc.MODE_SESSION_OPERATIONS[target.operation][:2]
+    stage = _mode_window(target, credential_limit, clock)
     scope = authority.scope
-    c.require(type(scope) is dict and scope.get("owner_sha256") == request["owner"]["owner_sha256"], "mode session original owner")
+    c.require(type(scope) is dict and scope.get("owner_sha256") == target.owner["owner_sha256"], "mode session original owner")
     names = {"application_identity", "application_managed", "application_session." + code, "session." + code, "role." + alias}
     documents = {name: authority.documents[name] for name in names if name in authority.documents}
     mode_stage_evaluation(authority.evaluation, documents, scope, code=code)
     role = _mode_role(governance, authority, code, alias)
-    _mode_application(governance, application, documents, journal, role, clock)
-    policy = mode_session_policy(request["operation"], resources=scope["resources"], owner_sha256=scope["owner_sha256"],
+    _mode_application(governance, application, documents, target, role, clock)
+    policy = mode_session_policy(target.operation, resources=scope["resources"], owner_sha256=scope["owner_sha256"],
                                  deadline=scope["deadline"])
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "mode STS policy limit")
     deadline = min(stage["deadline"], scope["deadline"])
     c.require(clock() + 40 < deadline, "mode session original stage/credential window")
-    client, operation, expiry, arn, user_id = _mode_sts(governance, journal, role, encoded, deadline=deadline,
+    client, operation, expiry, arn, user_id = _mode_sts(governance, target, role, encoded, deadline=deadline,
         credential_limit=credential_limit, operation_session=operation_session, clock=clock)
-    binding = c.sha(c.canonical(request))
     commitment = c.sha(c.canonical({"evaluation_sha256": c.sha(c.canonical(authority.evaluation)), "request_sha256": binding,
         "role_arn": role["role_arn"], "role_id": role["role_id"], "session_name": role["session_name"],
         "policy_sha256": c.sha(c.canonical(policy)), "expires_at": c.utc(expiry.timestamp()),
