@@ -2748,9 +2748,10 @@ def _drop_operation_clients(broker):
         broker.session.clients = None
     else:
         broker.session.client = None
-    read = getattr(broker, "read_session", None)
-    if read is not None:
-        read.client = read.evidence = None
+    for name in ("read_session", "reads", "wait"):
+        session = getattr(broker, name, None)
+        if session is not None:
+            session.client = session.evidence = None
 
 
 def _frozen_membership(close_raw):
@@ -2957,20 +2958,26 @@ ModeContext = namedtuple("ModeContext", "governance authority prepared credentia
 
 
 def mode_capability(*, journal, keeper, guard, context):
-    """Production mode capability per operation class, with the keeper context the stage handler binds: the pure record
-    operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; the seed and start effect
-    broker is not connected, so their journal fails and the lease stays held. Returns: the admitted broker or None.
-    Raises: ValueError."""
-    if journal._request["operation"].endswith("-record"):
+    """Production mode capability per operation class, with the keeper context the stage handler binds: unit-start
+    refuses first while mode_broker.MODE_UNIT_START_OPEN is closed (ruling 8 amendment 1 layer 2); the pure record
+    operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; seed and start get the
+    ModeBroker of mode_effect_capability. A refusal fails the journal and keeps the lease held.
+
+    Returns: the admitted broker or None. Raises: ValueError.
+    """
+    from tools.cnesdata_delivery import mode_broker
+    operation = journal._request["operation"]
+    if operation == "unit-start" and mode_broker.MODE_UNIT_START_OPEN is not True:
+        journal._failed = True
+        raise ValueError("mode_unit_start=p16d_pending")
+    if operation.endswith("-record"):
         return None
-    if journal._request["operation"] in lc.MODE_OBSERVES:
-        from tools.cnesdata_delivery import mode_broker
+    if operation in lc.MODE_OBSERVES:
         return mode_broker.fence_observe_capability(
             governance=context.governance, authority=context.authority, journal=journal, keeper=keeper,
             prepared=context.prepared, credential_limit=context.credential_limit,
             operation_session=context.operation_session, clock=context.clock)
-    journal._failed = True
-    raise ValueError("mode_broker=unconnected")
+    return mode_broker.mode_effect_capability(journal=journal, keeper=keeper, context=context)
 
 
 def _mode_broker_class(operation):

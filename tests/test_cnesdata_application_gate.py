@@ -5870,7 +5870,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
                "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
                "static_plan_source", "static_role_facts", "_observer_publication", "ModeBroker", "FenceReadBroker",
-               "fence_observe_capability", "terminal_capability", "run_terminal_operation", "TerminalSteps",
+               "fence_observe_capability", "mode_effect_capability", "terminal_capability", "run_terminal_operation", "TerminalSteps",
                "enter_recovery", "restoration_validator", "publication_guard"}
     broker_module = "tools/cnesdata_delivery/mode_broker.py"
     terminal_module = "tools/cnesdata_delivery/terminal_gate.py"
@@ -5973,6 +5973,9 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "mode_capability", "fence_observe_capability"),
         (broker_module, "fence_observe_capability", "_assume_fence_session"),
         (broker_module, "fence_observe_capability", "FenceReadBroker"),
+        (gate, "mode_capability", "mode_effect_capability"),
+        (broker_module, "mode_effect_capability", "ModeBroker"),
+        (broker_module, "_readbacks_original", "KeeperGuard"),
         (gate, "execute", "TerminalSteps"),
         (gate, "host", "enter_recovery"),
         (gate, "_restoration_validator", "restoration_validator"),

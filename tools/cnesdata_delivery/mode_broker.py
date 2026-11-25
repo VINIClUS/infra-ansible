@@ -822,7 +822,7 @@ def mode_input_source(*, keeper, owner, window, operation, names, context=None):
 
     Args: context is the ModeContext of the stage handler. Returns: {name: bytes}. Raises: ValueError.
     """
-    c.require(operation != "unit-start" or MODE_UNIT_START_OPEN, "mode_unit_start=p16d_pending")
+    c.require(operation != "unit-start" or MODE_UNIT_START_OPEN is True, "mode_unit_start=p16d_pending")
     mode = operation.partition("-")[0]
     c.require(all(_origin_open(name, mode, operation) for name in names), "mode_inputs=source_unconnected")
     fixtures = [name for name in names if name.startswith("fixture-")]
@@ -1739,6 +1739,55 @@ class ModeReadback:
             raise
         stored, _ = self.aws.get(self.governance["evidence_bucket"], key, maximum=1024**2, absent=True)
         c.require(stored == raw, "mode readback evidence readback")
+
+
+def _start_reads(keeper, operation):
+    if not operation.endswith("-start"):
+        return None
+    mode = operation.partition("-")[0]
+    found = [item for item in keeper._contexts if type(item) is ModeReadback and item.mode == mode]
+    c.require(len(found) == 1, "mode readback original context")
+    return found[0].session
+
+
+def mode_effect_capability(*, journal, keeper, context):
+    """Seed and start capability (fix round 1 item 2): the stage ModeAuthority revalidated from the PreparedFence for the
+    lease owner, the readback session of this keeper's single ModeReadback of the mode as reads of a start, for unit-start
+    the plan before any mint and then ux and uw, the mc-* session and the ModeBroker attached to the keeper.
+
+    Every check precedes STS; a refusal fails the journal and keeps the lease held.
+    Returns: ModeBroker. Raises: ValueError.
+    """
+    try:
+        operation = journal._request["operation"]
+        c.require(type(context) is ModeContext and type(keeper) is Keeper and type(journal) is AdapterJournal
+                  and operation in MODE_EFFECTS and getattr(journal, "_broker", None) is None
+                  and journal._request["activation_sha256"] == context.activation_sha256, "mode effect original context")
+        owner = lc.owner_binding(keeper.lease.check())
+        c.require(journal._request["owner"] == {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+                  "mode effect original context")
+        authority = mode_prepared_authority(context.prepared, governance=context.governance,
+                                            application=context.authority, owner=owner,
+                                            activation_sha256=context.activation_sha256)
+        reads = _start_reads(keeper, operation)
+        unit = (unit_start_plan(keeper, journal, resources=authority.scope["resources"], now=context.clock())
+                if operation == "unit-start" else None)
+        arguments = {"governance": context.governance, "application": context.authority, "authority": authority,
+                     "journal": journal, "credential_limit": context.credential_limit,
+                     "operation_session": context.operation_session, "clock": context.clock}
+        session, wait = (assume_unit_start_sessions(**arguments) if unit is not None
+                         else (assume_mode_session(**arguments), None))
+        broker = ModeBroker(context.aws, context.governance, journal, session,
+                            prepared_sha256=c.sha(context.prepared["fence-prepared.json"]),
+                            credential_limit=context.credential_limit, clock=context.clock, reads=reads, wait=wait,
+                            unit=unit)
+        keeper.attach(broker)
+        return broker
+    except BaseException:
+        journal._failed = True
+        if type(keeper) is Keeper and type(journal) is AdapterJournal:
+            keeper.attach(journal)
+        raise
 
 
 def _readback_response(call, response):
