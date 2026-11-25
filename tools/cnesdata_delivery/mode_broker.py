@@ -717,14 +717,62 @@ def _mode_ecs_call(operation, name, parameters, scope):
     return parameters
 
 
+def validate_mode_frame_call(operation, frame, native, scope):
+    """Design 4.2: a native call of the active keeper ledger frame, its keys inside the C1 set of that frame.
+
+    Returns: the native SDK parameters. Raises: ValueError before any SDK call.
+    """
+    c.closed(native, "role service operation parameters")
+    role, service, name, parameters = (native[key] for key in ("role", "service", "operation", "parameters"))
+    c.require(frame is not None and (role, service, name) in lc.MODE_FRAME_CALLS.get(operation, ()), "mode frame call outside table")
+    if name != "get_item":
+        for key in _ledger_keys(scope["table"], name, parameters):
+            admit_mode_key(frame["name"], "put", key, binding=frame["binding"])
+        return parameters
+    key = parameters.get("Key") if type(parameters) is dict else None
+    c.require(type(parameters) is dict and set(parameters) == {"TableName", "Key", "ConsistentRead"}
+              and parameters["TableName"] == scope["table"] and parameters["ConsistentRead"] is True
+              and type(key) is dict and set(key) == {"pk", "sk"}
+              and all(type(key[part]) is dict and set(key[part]) == {"S"} and type(key[part]["S"]) is str for part in key),
+              "mode dynamodb call")
+    admit_mode_key(frame["name"], "get", (key["pk"]["S"], key["sk"]["S"]), binding=frame["binding"])
+    return parameters
+
+
 class ModeEvidence(ClosedReadyEvidence):
     """ClosedReadyEvidence over one mode effect call, re-validated against the ModeBroker call scope."""
     @staticmethod
     def _native(journal, native_raw, scope, governance):
         c.require(scope["account"] == governance["account_id"], "original mode journal account")
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
-        validate_mode_call(journal._request["operation"], native, scope)
+        if scope.get("frame") is not None:
+            validate_mode_frame_call(journal._request["operation"], scope["frame"], native, scope)
+        else:
+            validate_mode_call(journal._request["operation"], native, scope)
         return native
+
+
+_LEDGER_FRAME_FIELDS = {"ledger-admit": "kind effect_kind request_sha256 target_sha256 admitted_at",
+                        "ledger-unknown": "kind effect_id", "ledger-settle": "kind effect_id receipt_sha256"}
+_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def _ledger_frame(value, clock):
+    fields = set(_LEDGER_FRAME_FIELDS[value["kind"]].split())
+    digests = [value[name] for name in ("request_sha256", "target_sha256", "effect_id", "receipt_sha256") if name in value]
+    admitted = value.get("admitted_at")
+    c.require(set(value) == fields and all(type(item) is str and _HEX64.fullmatch(item) is not None for item in digests)
+              and (value["kind"] != "ledger-admit" or type(value["effect_kind"]) is str and type(admitted) is str
+                   and _STAMP.fullmatch(admitted) is not None and abs(c.instant(admitted) - clock()) <= 5),
+              "mode ledger frame")
+    return admitted
+
+
+def _mode_reply(value):
+    if "Error" in value:
+        return {"kind": "sdk-error", "code": value["Error"]["Code"]}
+    return {"kind": "sdk-result", "value": value}
 
 
 def _mode_body(stream):
@@ -793,7 +841,7 @@ class ModeBroker:
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
         self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
-        self.evidence = []
+        self.evidence, self._frame = [], None
         journal._broker = self
 
     @property
@@ -809,9 +857,9 @@ class ModeBroker:
         sdk = validate_mode_call(journal._request["operation"], native, self._call_scope())
         raw = c.canonical(native, limit=128 * 1024)
         if (service, operation) != ("ecs", "describe_tasks"):
-            return self._native_call(raw, service, operation, sdk)
+            return _mode_reply(self._native_call(raw, service, operation, sdk))
         stage = journal._request["stage"]
-        reply, timing = mode_wait(lambda: self._native_call(raw, service, operation, sdk), terminal=_mode_task_terminal,
+        reply, timing = mode_wait(lambda: _mode_reply(self._native_call(raw, service, operation, sdk)), terminal=_mode_task_terminal,
                                   child_deadline=min(stage["deadline"] - 38, session.deadline),
                                   clock=self.clock, sleep=self.sleep)
         journal.__dict__.setdefault("_timings", []).append(timing)
@@ -819,8 +867,91 @@ class ModeBroker:
 
     def _call_scope(self):
         launches = [entry["response"] for entry in self.journal._settled_calls() if entry["call"]["operation"] == "run_task"]
-        return self.scope | {"launches": len(launches),
+        return self.scope | {"launches": len(launches), "frame": self._frame,
                              "launched": [task["taskArn"] for response in launches for task in response.get("tasks", [])]}
+
+    def frame(self, value):
+        """Design 4.2 keeper ledger frame of a recovery-start child method, on the vendored product builders.
+
+        Returns: {"effect_id"} for ledger-admit, {} for the transitions. Raises: ValueError (product refusals included).
+        """
+        journal, session, operation = self.journal, self.session, self.journal._request["operation"]
+        kind = value.get("kind") if type(value) is dict else None
+        c.require(lc.MODE_LEDGER_FRAMES.get(kind) in lc.MODE_EFFECT_METHODS[operation], "mode method outside table")
+        journal.guard()
+        c.require(session.request_binding == c.sha(c.canonical(journal._request)) and self.clock() + 20 < session.deadline,
+                  "mode finite SDK request/window")
+        admitted = _ledger_frame(value, self.clock)
+        frames, record, binding, keys = self._ledger_context()
+        pk, owner = frames.tenant_partition(binding.tenant_id), record.owner_sha256
+        if kind == "ledger-admit":
+            return self._ledger_admit(value, admitted, (frames, record, binding, keys), pk)
+        ticket = (pk, frames.ticket_key(owner, value["effect_id"]))
+        change = ("UNKNOWN", None) if kind == "ledger-unknown" else ("SETTLED", value["receipt_sha256"])
+        if kind == "ledger-settle":
+            c.require(any(entry["kind"] in lc.ADAPTER_STEPS[operation] and entry["sha256"] == change[1]
+                          for entry in journal._observations), "mode ledger settle receipt")
+
+        def build(texts):
+            item = frames.transition(self.scope["table"], binding, texts[ticket], change)
+            return None if item is None else ("put_item", item)
+        self._ledger_write(kind, [ticket], build, keys)
+        return {}
+
+    def _ledger_admit(self, value, admitted, context, pk):
+        import datetime
+        frames, record, binding, keys = context
+        now = datetime.datetime.fromtimestamp(c.instant(admitted), datetime.timezone.utc)
+        effect = frames.ledger_effect(value["effect_kind"], value["request_sha256"], value["target_sha256"])
+        identifier = frames.effect_id(binding.record_sha256, effect.kind, effect.request_sha256)
+        control, ticket = (pk, frames.control_key(record.owner_sha256)), (pk, frames.ticket_key(record.owner_sha256, identifier))
+
+        def build(texts):
+            plan = frames.admission(self.scope["table"], frames.LedgerState(binding, record, texts[control], texts[ticket]),
+                                    effect, now)
+            return None if plan.items is None else ("transact_write_items", {"TransactItems": plan.items})
+        self._ledger_write("ledger-admit", [control, ticket], build, keys)
+        return {"effect_id": identifier}
+
+    def _ledger_context(self):
+        frames, raw, operation = product_frames(), self.journal._inputs["record"], self.journal._request["operation"]
+        try:
+            record = frames.ModeCanaryRecord.from_mapping(json.loads(raw))
+        except (ValueError, TypeError, KeyError, AttributeError) as error:
+            raise ValueError("mode ledger record") from error
+        c.require(record.owner_sha256 == self.journal._request["owner"]["owner_sha256"]
+                  and "prod-canary-" + record.canary_id == self.session.scope["resources"]["scope"]["tenant_id"]
+                  and record.phase == lc.MODE_SESSION_OPERATIONS[operation][3], "mode ledger record")
+        binding = frames.ModeCanaryBinding("prod-canary-" + record.canary_id, record.run_ids, record.owner_sha256, c.sha(raw),
+                                           record.phase, record.context_kind)
+        keys = {"canary_id": record.canary_id, "owner_sha256": record.owner_sha256, "run_ids": list(record.run_ids),
+                "dispatch_id": None}
+        return frames, record, binding, keys
+
+    def _ledger_write(self, frame, reads, build, keys):
+        self._frame = {"name": frame, "binding": keys}
+        try:
+            ledger_write(frame, table=self.scope["table"], binding=keys, reads=reads, read=self._ledger_read, build=build,
+                         execute=self._frame_call)
+        finally:
+            self._frame = None
+
+    def _ledger_read(self, keys):
+        texts = {}
+        for pk, sk in keys:
+            value = self._frame_call("get_item", {"TableName": self.scope["table"], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
+                                                  "ConsistentRead": True})
+            item = value.get("Item")
+            payload = item.get("payload") if type(item) is dict else None
+            c.require(item is None or (item.get("pk") == {"S": pk} and item.get("sk") == {"S": sk} and type(payload) is dict
+                                       and set(payload) == {"S"} and type(payload["S"]) is str), "mode ledger read")
+            texts[(pk, sk)] = None if item is None else payload["S"]
+        return texts
+
+    def _frame_call(self, name, parameters):
+        native = {"role": self.session.alias, "service": "dynamodb", "operation": name, "parameters": parameters}
+        validate_mode_frame_call(self.journal._request["operation"], self._frame, native, self.scope)
+        return self._native_call(c.canonical(native, limit=128 * 1024), "dynamodb", name, parameters)
 
     def _native_call(self, raw, service, operation, sdk):
         from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
@@ -835,12 +966,11 @@ class ModeBroker:
             ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
             c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
             journal._guard.check(20)
-            response, code = self._sdk(service, operation, sdk)
+            response, failure, status = self._sdk(service, operation, sdk)
             metadata = response.get("ResponseMetadata", {})
-            status = 200 if code is None else lc.MODE_DEFINITE_ERRORS[(service, operation)][1]
             c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == status,
                       "mode native SDK authenticated status")
-            value = {"Error": {"Code": code}} if code is not None else _mode_response(service, operation, response)
+            value = failure if failure is not None else _mode_response(service, operation, response)
             response_raw = c.canonical(_exact_sdk_dates(value), limit=1024**2)
             c.require(self.clock() < session.deadline, "native response exceeded original mode window")
             receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],
@@ -848,22 +978,24 @@ class ModeBroker:
             ledger.complete(response_raw, receipt)
             journal.guard()
             c.require(self.clock() < session.deadline, "durable receipt exceeded original mode window")
-            if code is not None:
-                return {"kind": "sdk-error", "code": code}
-            return {"kind": "sdk-result", "value": c.loads(response_raw, canonical=True)}
+            return c.loads(response_raw, canonical=True)
         except BaseException:
             _poison_call(journal, ledger, ticket, created)
             raise
 
     def _sdk(self, service, operation, sdk):
         try:
-            return self.session.client.call(service, operation, **sdk), None
+            return self.session.client.call(service, operation, **sdk), None, 200
         except Exception as error:
             response = getattr(error, "response", None)
+            if self._frame is not None:
+                cancel = ledger_cancel_response(operation, error)
+                c.require(cancel is not None, "mode native SDK outcome unknown")
+                return response, cancel, 400
             code = response.get("Error", {}).get("Code") if type(response) is dict else None
             definite = lc.MODE_DEFINITE_ERRORS.get((service, operation))
             c.require(definite is not None and code == definite[0], "mode native SDK outcome unknown")
-            return response, code
+            return response, {"Error": {"Code": code}}, definite[1]
 
 
 class FenceReadBroker(ClosedReadyBroker):

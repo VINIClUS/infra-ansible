@@ -567,6 +567,15 @@ send({"kind": "result", "bytes": base64.b64encode(raw).decode()})
 '''
 
 
+def _mode_ledger_cancel(native, response):
+    from tools.cnesdata_delivery.mode_broker import LEDGER_CANCELS, ledger_cancel_codes
+    try:
+        codes = ledger_cancel_codes(response)
+    except ValueError:
+        return False
+    return codes is not None and response["Error"] == {"Code": LEDGER_CANCELS.get(native[1])}
+
+
 def _adapter_message(frame, journal):
     import base64
     value = c.loads(frame, canonical=True, limit=2 * 1024**2)
@@ -585,6 +594,10 @@ def _adapter_message(frame, journal):
         c.closed(value, "kind role service operation parameters")
         c.require(type(getattr(journal, "_broker", None)) in _brokers(), "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
+    if kind in lc.MODE_LEDGER_FRAMES:
+        from tools.cnesdata_delivery.mode_broker import ModeBroker
+        c.require(type(getattr(journal, "_broker", None)) is ModeBroker, "mode method outside table")
+        return journal._broker.frame(value), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
         raw = base64.b64decode(value["bytes"], validate=True)
@@ -880,7 +893,8 @@ class AdapterJournal:
                    and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(operation, ()))
                   or (operation in STATIC_OPERATIONS
                       and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation])
-                  or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ()),
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_FRAME_CALLS.get(operation, ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -923,9 +937,11 @@ class AdapterJournal:
                        lc.MODE_RESPONSE_FIELDS[native] if mode else
                        {"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
+            call = (request["role"], request["service"], request["operation"])
             absence = ((not mode and request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}})
-                       or (mode and native in lc.MODE_DEFINITE_ERRORS
-                           and response == {"Error": {"Code": lc.MODE_DEFINITE_ERRORS[native][0]}}))
+                       or (call in lc.MODE_EFFECT_CALLS.get(self._request["operation"], ()) and native in lc.MODE_DEFINITE_ERRORS
+                           and response == {"Error": {"Code": lc.MODE_DEFINITE_ERRORS[native][0]}})
+                       or (call in lc.MODE_FRAME_CALLS.get(self._request["operation"], ()) and _mode_ledger_cancel(native, response)))
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
             server = parsedate_to_datetime(server_date)
             c.require(server.tzinfo is not None and 0 <= ended - intent["started_monotonic_ns"] <= 20 * 10**9

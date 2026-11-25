@@ -262,7 +262,12 @@ MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedExcept
                         ("s3", "put_object"): ("PreconditionFailed", 412)}
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
                         ("s3", "get_object"): {"Body"}, ("ecs", "run_task"): {"tasks", "failures"},
-                        ("ecs", "describe_tasks"): {"tasks", "failures"}}
+                        ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set()}
+# Design 4.2: the keeper ledger frames of recovery-start (child method -> frame) and their native calls under rx.
+MODE_LEDGER_FRAMES = {"ledger-admit": "ledger_admit_effect", "ledger-unknown": "ledger_mark_unknown",
+                      "ledger-settle": "ledger_settle"}
+MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", name)
+                                                for name in ("get_item", "put_item", "transact_write_items"))}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.

@@ -51,7 +51,7 @@ class _Dynamo:
         self.calls.append((name, parameters))
         if name == "get_item":
             key = (parameters["Key"]["pk"]["S"], parameters["Key"]["sk"]["S"])
-            item = {"pk": parameters["Key"]["pk"], "sk": parameters["Key"]["sk"], "payload": {"S": self.items[key]}}
+            item = {"pk": parameters["Key"]["pk"], "sk": parameters["Key"]["sk"], "payload": {"S": self.items.get(key)}}
             return ({"Item": item} if key in self.items else {}) | {"ResponseMetadata": _metadata()}
         if self.error is not None:
             raise self.error
@@ -158,11 +158,12 @@ def test_escrita_do_ledger_com_resultado_desconhecido_envenena(monkeypatch):
 
 
 def test_conflito_de_ticket_recusa_pela_regra_do_produto(monkeypatch):
-    control, ticket = _keys(_effect_id())
-    other = json.loads(_shifted(CASES["ticket-conflict"]["ticket"]))
-    broker, journal, table = _ledger_broker(monkeypatch, items={control: CONTROL, ticket: json.dumps(other)})
+    case = CASES["ticket-conflict"]
+    control, ticket = _keys(_effect_id(case["effect"]["kind"]))
+    items = {control: _shifted(case["control"]), ticket: _shifted(case["ticket"])}
+    broker, journal, table = _ledger_broker(monkeypatch, items=items)
     with pytest.raises(ValueError, match="^reason=ticket_conflict field=tenant_id$"):
-        _admit(journal)
+        _admit(journal, effect_kind=case["effect"]["kind"])
     assert [name for name, _ in table.calls] == ["get_item", "get_item"]
 
 
