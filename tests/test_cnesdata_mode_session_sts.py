@@ -103,7 +103,6 @@ def _journal(operation, inputs=None, source=None):
 
 
 def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
-    from tools.cnesdata_delivery import aws_boundary
     journal, owner = _journal(operation, source=source)
     now = journal._request["stage"]["deadline"] - 40 if mutation == "late" else START + 30
     governance, application = _governance(), _application()
@@ -140,6 +139,15 @@ def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
         application.pin["document"] = {"Version": "2012-10-17", "Statement": []}
     if mutation == "inline":
         governance["evidence_bucket"] = "synthetic-other"
+    factory, calls, native = _native(monkeypatch, code, alias, now, mutation)
+    credential_limit = now + 899 if mutation == "credential" else now + 3000
+    args = dict(governance=governance, application=application, authority=authority, journal=journal,
+                credential_limit=credential_limit, operation_session=factory, clock=lambda: now)
+    return args, calls, native
+
+
+def _native(monkeypatch, code, alias, now, mutation=None):
+    from tools.cnesdata_delivery import aws_boundary
     calls, native = [], []
     arn, role_id = ROLE_ARNS[alias], ROLE_IDS[alias]
     assumed = arn.replace("arn:aws:iam::", "arn:aws:sts::").replace(":role/", ":assumed-role/") + "/" + NAMES[code]
@@ -166,10 +174,7 @@ def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
             native.append((service, operation_name, parameters))
             return dict(identity)
     monkeypatch.setattr(aws_boundary, "AWS", Delegated)
-    credential_limit = now + 899 if mutation == "credential" else now + 3000
-    args = dict(governance=governance, application=application, authority=authority, journal=journal,
-                credential_limit=credential_limit, operation_session=_Factory(Operation()), clock=lambda: now)
-    return args, calls, native
+    return _Factory(Operation()), calls, native
 
 
 @pytest.mark.parametrize("operation", EFFECTS)
