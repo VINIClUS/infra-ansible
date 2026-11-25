@@ -4477,10 +4477,13 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
     account, role_name = "111122223333", "cnesdata-prod-promotion-fence-operator"
     fence_arn = fragment["delegations"]["fence_operator"]
     lifecycle = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/"
+    mode_arns = sorted(fragment["delegations"][alias] for alias in lc.MODE_ALIASES)
     coordination = {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
-        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": lifecycle + ("*" if mutation != "evaluation" else "keeper/*")}]}
-    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn}]}
+        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": lifecycle + ("*" if mutation != "evaluation" else "keeper/*")},
+        {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": mode_arns}]}
+    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
+                                                      {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": mode_arns}]}
     fragment["policy_sha256"] = _terraform_document_digest(coordination)
     pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": c.utc(5000)}
     governance = {"account_id": account, "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/",
@@ -4488,7 +4491,13 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
         "gate_shas": {"deploy": "c" * 40}, "source_closure": {"infra/opentofu/env/prod/main.tf": "1" * 64},
         "application_coordination_policy": c.canonical(coordination).decode().strip(),
         "application_delegations": fragment["delegations"], "roles": {"application": fragment["application_role_arn"]}}
+    from test_cnesdata_mode_package import governance as mode_governance, mode_input, mode_roles
+    gate = mode_governance(owner)
+    governance |= {key: gate[key] for key in ("application_product_source_closure_sha256", "application_source_closure_sha256",
+                                              "application_product_source_manifest")}
+    governance["gate_shas"] |= gate["gate_shas"]
     history = lc.phase_a_originals(carrier)
+    mode = mode_input(owner, release_id=history["envelope"]["plan"]["release"]["release_id"], activation_sha256="1" * 64)
     previous_raw = history["raw"]["checkpoint.json"]
     checkpoint_raw = c.canonical(args["checkpoint"])
     approval = {"version": 1, "owner": owner, "purpose": "application-prepare", "direction": "advance",
@@ -4541,7 +4550,8 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
         authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
         plan_index=args["current_index"], plan_raw=args["plan_raw"], inputs_raw=args["inputs_raw"], terraform_raw=args["inputs_raw"],
         approval_raw=c.canonical(approval), previous_raw=previous_raw, checkpoint_raw=checkpoint_raw, state_raw=args["state_raw"],
-        sources=args["sources"], activation_sha256="1" * 64, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s))
+        sources=args["sources"], activation_sha256="1" * 64, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s),
+        mode_input_raw=c.canonical(mode), mode_readbacks=mode_roles(owner, mode, {"admitted_at": 1000, "deadline": 1900}))
     return kwargs, calls, fragment
 
 

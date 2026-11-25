@@ -209,3 +209,56 @@ def test_contrato_do_pacote_recusa_arquivo_de_modo_fora_da_forma_fechada(mutatio
         del files["mode-roles.json"], originals["mode-roles.json"]
     with pytest.raises(ValueError, match=message):
         lc.validate_fence_prepared_package(files, originals=originals, **kwargs)
+
+
+def _producer(monkeypatch):
+    from test_cnesdata_application_gate import _fence_prepare_package_case
+    return _fence_prepare_package_case(monkeypatch)
+
+
+def test_produtor_grava_os_tres_arquivos_de_modo_que_o_contrato_aceita(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    kwargs, _, fragment = _producer(monkeypatch)
+    files = lr.fence_prepare_package(**kwargs)
+    manifest = c.loads(files["fence-prepared.json"], canonical=True)
+    evaluation = c.loads(files["mode-evaluation.json"], canonical=True)
+    assert set(files) == lc.FENCE_PREPARE_FILES
+    assert files["mode-input.json"] == kwargs["mode_input_raw"]
+    assert files["mode-roles.json"] == c.canonical(kwargs["mode_readbacks"])
+    assert evaluation["evaluator_source_sha"] == manifest["producer"]["workflow_sha"]
+    assert len(evaluation["cases"]) == len(lc.MODE_EVALUATION_CASES) == 95
+    assume = next(case for case in evaluation["cases"] if case["case_id"] == "assume-us")
+    assert assume["context"]["aws:CurrentTime"] == c.utc(manifest["preparation"]["observed_at"]) and assume["observed"] is True
+    lc.validate_fence_prepared_package(files, owner=kwargs["owner"], fragment=fragment, activation_sha256="1" * 64,
+        producer=manifest["producer"], preparation=manifest["preparation"],
+        originals={name: raw for name, raw in files.items() if name != "fence-prepared.json"},
+        predecessor_raw=kwargs["previous_raw"], predecessor_reference=kwargs["predecessor"])
+
+
+@pytest.mark.parametrize("mutation, message", [
+    ("activation", "^mode context original producer commitments$"),
+    ("release", "^mode context original producer commitments$"),
+    ("fixture-manifest", "^mode context original producer commitments$"),
+    ("principal", "^mode application principal$"),
+    ("roles-window", "^fence mode roles readback rounds$"),
+])
+def test_produtor_recusa_entrada_ou_papeis_de_modo_antes_de_qualquer_github_ou_iam(monkeypatch, mutation, message):
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    kwargs, calls, fragment = _producer(monkeypatch)
+    if mutation == "activation":
+        kwargs["activation_sha256"] = "9" * 64
+    if mutation == "release":
+        mode = c.loads(kwargs["mode_input_raw"])
+        manifest = json.loads(mode["mode_canary"]["context_manifest"]["canonical_utf8"])
+        owner = dict(kwargs["owner"])
+        kwargs["mode_input_raw"] = c.canonical(mode_input(owner, release_id="other-release", activation_sha256="1" * 64))
+        assert manifest["release_id"] != "other-release"
+    if mutation == "fixture-manifest":
+        kwargs["governance"]["application_product_source_manifest"]["files"][lc.MODE_FIXTURE_MANIFEST] = "6" * 63 + "7"
+    if mutation == "principal":
+        fragment["application_role_arn"] = fragment["application_role_arn"] + "-other"
+    if mutation == "roles-window":
+        kwargs["mode_readbacks"]["readbacks"][0]["observed_at"] = 999
+    with pytest.raises(ValueError, match=message):
+        lr.fence_prepare_package(**kwargs)
+    assert calls == []
