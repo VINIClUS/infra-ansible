@@ -41,6 +41,20 @@ def test_mode_broker_entra_no_pyboot_e_nas_cinco_listas_dos_reusables():
         assert (root / f"reusable-cnesdata-{name}.yml").read_text().count('"mode_broker.py"') == count, name
 
 
+def test_todo_modulo_comum_as_quatro_listas_dos_gates_esta_nas_duas_listas_do_observer():
+    import ast
+    import re
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    gates = [set(ast.literal_eval(value)) for name in REUSABLE_LISTS if name != "observer"
+             for value in re.findall(r"files = (\[[\s\S]*?\])", (root / f"reusable-cnesdata-{name}.yml").read_text())]
+    observer = [set(re.findall(r'"([^"]+)"', block)) for block in re.findall(
+        r"const modules = \[([\s\S]*?)\];", (root / "reusable-cnesdata-observer.yml").read_text())]
+    common = {name for name in set.intersection(*gates) if name.endswith(".py")}
+    assert len(gates) == 4 and len(observer) == 2 and "mode_broker.py" in common
+    assert {name for _, name, _ in _mode_broker_module().PRODUCT_FRAMES} | {"product_dynamodb_keys.py"} <= common
+    assert [sorted(common - modules) for modules in observer] == [[], []]
+
+
 @pytest.mark.parametrize("kind", ["ModeBroker", "FenceReadBroker"])
 def test_frame_call_vai_para_o_broker_de_modo_admitido_no_journal(kind):
     journal = SimpleNamespace()
