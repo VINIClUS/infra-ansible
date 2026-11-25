@@ -50,6 +50,8 @@ REFUSALS = {
     "subconjunto-em-readbacks": ("unit-readbacks", _without(_readback(), "previous")),
     "subconjunto-em-operacao": ("closed-ready", _without(_adapter(), "prepared_sha256")),
     "intent-de-outro-namespace": ("unit-readbacks", _readback("audit-readbacks")),
+    "forma-do-adapter-com-tag-3-em-readbacks": ("unit-readbacks", _adapter("unit-readbacks", schema_version=3)),
+    "forma-de-readback-com-tag-2-em-operacao": ("closed-ready", _readback("closed-ready", schema_version=2)),
 }
 
 
