@@ -244,6 +244,7 @@ ADAPTER_STEPS = {
     "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),
 }
 MODE_SINGLE_STEPS = frozenset({"unit-execution", "recovery-task", "audit-task"})
+MODE_TASK_STEPS = frozenset({"recovery-task", "audit-task"})
 MODE_READBACK_OPERATIONS = {"unit": "unit-readbacks", "recovery": "recovery-readbacks", "audit": "audit-readbacks"}
 _MODE_SEED_CALLS = frozenset(("mode_seed", service, name) for service, name in (
     ("dynamodb", "put_item"), ("dynamodb", "get_item"), ("s3", "put_object"), ("s3", "get_object")))

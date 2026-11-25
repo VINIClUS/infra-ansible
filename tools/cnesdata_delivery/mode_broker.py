@@ -922,7 +922,7 @@ class ModeBroker:
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
         self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
-        self.evidence, self._frame, self._reading = [], None, False
+        self.evidence, self._frame, self._reading, self.described = [], None, False, None
         journal._broker = self
 
     @property
@@ -944,6 +944,8 @@ class ModeBroker:
                                   child_deadline=min(stage["deadline"] - 38, session.deadline),
                                   clock=self.clock, sleep=self.sleep)
         journal.__dict__.setdefault("_timings", []).append(timing)
+        tasks = reply["value"]["tasks"]
+        self.described = tasks[0] if tasks else None
         return reply
 
     def _call_scope(self):
