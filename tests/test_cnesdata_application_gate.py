@@ -1659,6 +1659,9 @@ def _fence_contract_case(*, original_serial=1, probe=False):
             "cases": [{"case_id": key, "action": action, "resource": "synthetic-only", "context": {}, "expected": False, "observed": False}
                       for key, action in lc.FENCE_EVALUATION_CASES.items()]}}
     preparation = {"admitted_at": 1000, "deadline": 1900, "observed_at": 1010}
+    from test_cnesdata_mode_package import mode_payloads
+    payloads |= mode_payloads(owner, release_id=old_plan["release"]["release_id"], activation_sha256="1" * 64,
+                              preparation=preparation, workflow_sha=producer["workflow_sha"])
     manifest = {"schema_version": 1, "proof_kind": "iam-readback-and-evaluation", "operation": "closed-ready", "application_purpose": "promotion",
         "context_kind": "promotion", "owner": owner, "caller_binding_sha256": owner["caller_binding_sha256"], "activation_sha256": "1" * 64,
         "application_fragment_sha256": c.sha(c.canonical(fragment)), "producer": producer, "preparation": preparation, "files": [], "outcome": "observed"}
