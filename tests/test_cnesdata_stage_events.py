@@ -1375,6 +1375,15 @@ def test_prepared_handler_anuncia_a_janela_do_phase_b_depois_do_checkpoint_do_le
     assert world.keeper.lease.check()["lifecycle"]["stage"] == "phase-b"
 
 
+def test_anuncio_do_phase_b_so_roda_com_a_janela_ja_checkpointada(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ag, "_publish_stage_open", lambda keeper, *rest: seen.append(keeper.lease.check()["lifecycle"]["stage"]))
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert seen == ["phase-b"]
+
+
 def test_prepared_handler_nao_avanca_alem_do_checkpoint_se_o_anuncio_recusa(monkeypatch, stage_open_published):
     from tools.cnesdata_delivery import application_gate as ag
     world = _stage_world(monkeypatch)

@@ -109,15 +109,42 @@ def wait_for_stage(api, run, *, job, stage, windows, clock=time.time, sleep=time
         sleep(POLL_SECONDS)
 
 
-def wait_for_payloads(api, run, *, steps, ceiling, clock=time.time, sleep=time.sleep):
-    """Credential-free presence wait for the unique lifecycle-<step> artifact of every named producer."""
+def payload_names(payloads, input_jobs):
+    """Name-only payload shape against the governed input jobs; returns the producer of each payload name."""
+    c.require(set(payloads) == set(input_jobs), "complete payload inventory")
+    for name, named in payloads.items():
+        c.closed(named, "step")
+        c.require(named["step"] == input_jobs[name]["step"], "payload producer step")
+    return {name: input_jobs[name] for name in payloads}
+
+
+def payload_publication(job, artifacts, step):
+    """The one publication predicate: None while the producer job is missing or unfinished, ValueError on anything else.
+
+    Args: producer job or None, run artifact listing, producer step.
+    Returns: the unique lifecycle-<step> artifact created strictly inside the completed-success job interval.
+    """
+    if job is None or job["status"] != "completed":
+        return None
+    c.require(job["conclusion"] == "success", "completed payload producer")
+    found = [item for item in artifacts if item["name"] == "lifecycle-" + step
+             and c.instant(job["started_at"]) < c.instant(item["created_at"]) < c.instant(job["completed_at"])]
+    c.require(len(found) == 1, "unique payload publication in job interval")
+    return found[0]
+
+
+def wait_for_payloads(api, run, *, producers, ceiling, clock=time.time, sleep=time.sleep):
+    """Credential-free wait until every producer is completed-success with its artifact, by payload_publication."""
+    from tools.cnesdata_delivery.application_gate import _same_run_job
     started = clock()
     while True:
+        jobs = [_same_run_job(api, run, kind="payload", job_name=producer["name"], guard=NoReservation())
+                for producer in producers]
         listing = api.read(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
         c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
-        counts = [sum(item["name"] == "lifecycle-" + step for item in listing["artifacts"]) for step in steps]
-        c.require(max(counts, default=0) <= 1, "unique payload publication")
-        if all(counts):
+        published = [payload_publication(job, listing["artifacts"], producer["step"])
+                     for job, producer in zip(jobs, producers)]
+        if all(item is not None for item in published):
             return
         c.require(clock() - started < ceiling, f"stage_wait=ceiling payloads seconds={ceiling}")
         sleep(POLL_SECONDS)
@@ -153,6 +180,15 @@ def publish_stage_open(*, keeper, guard, api, run, owner, window, first_job, cre
                                         credential_limit=credential_limit, clock=clock)
 
 
+def _producers(api, run, governance, request):
+    """Governed producers of the request payloads, from the authenticated catalog (GITHUB_TOKEN only)."""
+    from tools.cnesdata_delivery.provenance import lifecycle_objects, product_source_manifest
+    manifest = product_source_manifest(api, governance, time.time())
+    step = lifecycle_objects(api, governance, manifest)["lifecycle_steps"].get(request["step"])
+    c.require(type(step) is dict, "governed step")
+    return list(payload_names(request["payloads"], step["input_jobs"]).values())
+
+
 def main():
     """Workflow entry: wait for the marker, export the bound owner for the later lease check, print one timing line."""
     import json
@@ -169,9 +205,9 @@ def main():
     setup = int(began - c.instant(job["started_at"]))
     windows = lc.stage_windows(json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]))
     index = wait_for_stage(api, run, job=job, stage=stage, windows=windows)
-    request = json.loads(os.environ["REQUEST_DESCRIPTOR"])
-    steps = [named["step"] for named in request["payloads"].values()]
-    wait_for_payloads(api, run, steps=steps, ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
+    producers = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]),
+                           json.loads(os.environ["REQUEST_DESCRIPTOR"]))
+    wait_for_payloads(api, run, producers=producers, ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
         handle.write(f"STAGE_OPEN_OWNER_SHA256={index['owner_sha256']}\nSTAGE_OPEN_GENERATION={index['generation']}\n")
     print(timing_line(stage, setup_seconds=setup, wait_seconds=int(time.time() - began)))

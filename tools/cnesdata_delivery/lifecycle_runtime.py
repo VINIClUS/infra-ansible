@@ -89,25 +89,19 @@ def payload_references(api, run, payloads, input_jobs):
     Returns: reference per payload. Raises: ValueError on the id shape or any ambiguity.
     """
     from tools.cnesdata_delivery.application_gate import _same_run_job
-    from tools.cnesdata_delivery.stage_wait import NoReservation
-    c.require(set(payloads) == set(input_jobs), "complete payload inventory")
+    from tools.cnesdata_delivery.stage_wait import NoReservation, payload_names, payload_publication
     references = {}
-    for name, named in payloads.items():
-        producer = input_jobs[name]
-        c.closed(named, "step")
-        c.require(named["step"] == producer["step"], "payload producer step")
+    for name, producer in payload_names(payloads, input_jobs).items():
         job = _same_run_job(api, run, kind="payload", job_name=producer["name"], guard=NoReservation())
-        c.require(job is not None and job["status"] == "completed" and job["conclusion"] == "success", "completed payload producer")
+        c.require(job is not None and job["status"] == "completed", "completed payload producer")
         listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100&page=1")
         c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
-        found = [item for item in listing["artifacts"] if item["name"] == "lifecycle-" + producer["step"]
-                 and c.instant(job["started_at"]) < c.instant(item["created_at"]) < c.instant(job["completed_at"])]
-        c.require(len(found) == 1, "unique payload publication in job interval")
-        references[name] = {"job_id": job["id"], "artifact_id": found[0]["id"], "artifact_digest": found[0]["digest"]}
+        found = payload_publication(job, listing["artifacts"], producer["step"])
+        references[name] = {"job_id": job["id"], "artifact_id": found["id"], "artifact_digest": found["digest"]}
     return references
 
 
-def admission(role):
+def admission(role, *, resolve_payloads=True):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
@@ -155,6 +149,10 @@ def admission(role):
     document = api.read(f"repos/{contract['repository']}/contents/{contract['path']}?ref={contract['source_sha']}")
     c.require(c.sha(base64.b64decode(document["content"])) == c.digest(contract["sha256"]), "authority original bytes")
     payloads = {}
+    if not resolve_payloads:
+        from tools.cnesdata_delivery.stage_wait import payload_names
+        payload_names(request["payloads"], step["input_jobs"])
+        return governance | {"role": role}, request, step, api, run, payloads
     references = payload_references(api, run, request["payloads"], step["input_jobs"])
     for name, reference in references.items():
         producer = step["input_jobs"][name]
@@ -1680,7 +1678,7 @@ def export_credentials(value):
 def main(role, operation):
     c.require(role in {"plan", "deploy", "audit"} and operation in {"preflight", "credentials", "execute"}, "closed lifecycle command")
     if operation == "preflight":
-        admission(role)
+        admission(role, resolve_payloads=False)
     elif operation == "credentials":
         credentials(role)
     else:

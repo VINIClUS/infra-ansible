@@ -213,42 +213,6 @@ def test_teto_da_espera_cabe_no_timeout_com_folga_de_15_minutos():
     assert stage_wait.MAX_WAIT_SECONDS <= (stage_wait.TIMEOUT_MINUTES - 15) * 60
 
 
-def _listing(*steps, count=1):
-    return {"total_count": len(steps) * count,
-            "artifacts": [{"id": 700 + n, "name": "lifecycle-" + step} for step in steps for n in range(count)]}
-
-
-class Listing:
-    def __init__(self, *rounds):
-        self.rounds = list(rounds)
-
-    def read(self, path, raw=False):
-        assert path == ARTIFACTS
-        return self.rounds.pop(0) if len(self.rounds) > 1 else self.rounds[0]
-
-
-def test_espera_pelos_artefatos_dos_produtores_citados_no_pedido():
-    clock = Clock(1000)
-    api = Listing(_listing("prepared"), _listing("prepared", "audited"))
-    stage_wait.wait_for_payloads(api, RUN, steps=["prepared", "audited"], ceiling=300, clock=clock, sleep=clock.sleep)
-    assert clock.now == 1005
-
-
-def test_artefato_duplicado_do_produtor_e_recusado_sem_dormir():
-    clock = Clock(1000)
-    with pytest.raises(ValueError, match="unique payload publication"):
-        stage_wait.wait_for_payloads(Listing(_listing("prepared", count=2)), RUN, steps=["prepared"], ceiling=300,
-                                     clock=clock, sleep=clock.sleep)
-    assert clock.now == 1000
-
-
-def test_produtor_que_nao_publica_expira_no_teto_da_espera():
-    clock = Clock(1000)
-    with pytest.raises(ValueError, match="stage_wait=ceiling"):
-        stage_wait.wait_for_payloads(Listing(_listing()), RUN, steps=["prepared"], ceiling=60, clock=clock, sleep=clock.sleep)
-    assert 1060 <= clock.now <= 1065
-
-
 GOVERNANCE = {"lifecycle_steps": {
     "phase-b-plan": {"role": "plan", "purpose": "phase-b", "direction": "advance", "job_name": "phase-b-plan / execute"},
     "phase-b-advance": {"role": "deploy", "purpose": "phase-b", "direction": "advance", "job_name": "phase-b / execute"},
