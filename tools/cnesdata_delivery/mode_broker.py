@@ -1179,7 +1179,7 @@ class ModeReadback:
         native = {"role": self.session.alias, "service": call["service"], "operation": call["operation"],
                   "parameters": call["parameters"]}
         request = self._request
-        return c.canonical({"schema_version": 2, "operation": request["operation"], "owner": request["owner"],
+        return c.canonical({"schema_version": 3, "operation": request["operation"], "owner": request["owner"],
                             "caller": request["caller"], "checkpoint_sha256": request["checkpoint_sha256"],
                             "sequence": sequence, "previous": previous, "role_session_sha256": self.session.commitment,
                             "call": native})
@@ -1192,9 +1192,11 @@ class ModeReadback:
                                           operation=request["operation"])
 
     def _link(self, sequence, call, previous):
+        from tools.cnesdata_delivery.lifecycle_runtime import evidence_intent
         keys, bucket = self._keys(sequence), self.governance["evidence_bucket"]
         intent, response, receipt = (self.aws.get(bucket, keys[name], maximum=1024**2, absent=True)[0]
                                      for name in ("intent", "response", "receipt"))
+        evidence_intent(intent, operation=self._request["operation"])
         c.require(intent == self._intent(sequence, call, previous), "mode readback chain")
         seal = c.loads(receipt, canonical=True)
         c.closed(seal, _READBACK_RECEIPT)

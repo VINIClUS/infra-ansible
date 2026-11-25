@@ -483,18 +483,42 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
+_READBACK_INTENT = "schema_version operation owner caller checkpoint_sha256 sequence previous role_session_sha256 call"
+_ADAPTER_INTENT = ("schema_version operation owner sequence previous_receipt_sha256 caller adapter_request_sha256 "
+                   "checkpoint_sha256 activation_sha256 prepared_sha256 role_session_sha256 call")
+
+
+def _evidence_tag(operation):
+    readback = operation in lc.MODE_READBACK_OPERATIONS.values()
+    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static")
+              or operation in lc.MODE_EFFECT_CALLS or readback, "fence evidence operation")
+    return 3 if readback else 2
+
+
+def evidence_intent(raw, *, operation):
+    """Ruling 5a: the intent verifier, dispatching on namespace, tag and closed field set; tag 3 and the readback
+    fields only in the three <mode>-readbacks namespaces, tag 2 and the adapter fields in every operation namespace.
+
+    Returns: the intent mapping. Raises: ValueError outside the namespace, its tag or its fields.
+    """
+    tag = _evidence_tag(operation)
+    value = c.loads(raw, canonical=True, limit=128 * 1024)
+    c.require(type(value) is dict and value.get("schema_version") == tag and value.get("operation") == operation,
+              "evidence intent shape")
+    c.closed(value, _READBACK_INTENT if tag == 3 else _ADAPTER_INTENT)
+    return value
+
+
 def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence, operation="closed-ready"):
     """Single derivation of own-run SDK intent/response/receipt keys, one namespace per operation.
 
     Used by ClosedReadyEvidence (fence, inventory and publish-static) and by the prepared evaluation scope (item 2);
     closed-ready bytes are unchanged.
     """
-    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static")
-              or operation in lc.MODE_EFFECT_CALLS or operation in lc.MODE_READBACK_OPERATIONS.values(),
-              "fence evidence operation")
+    tag = _evidence_tag(operation)
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
-    digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,
+    digest = c.sha(c.canonical({"schema_version": tag, "operation": operation, "owner": owner, "caller": caller,
                                 "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
     prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": operation},
                        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
