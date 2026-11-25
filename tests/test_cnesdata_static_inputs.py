@@ -337,8 +337,10 @@ def test_com_o_inventario_liquidado_o_gatilho_do_prepare_volta_a_ser_o_prepared(
 
 def test_tabela_de_gatilho_de_operacao_e_a_do_inventario_no_prepare():
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
-    assert lc.OPERATION_TRIGGERS == {"inventory": ("application-prepare", "observer-bootstrap")}
-    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert lc.OPERATION_TRIGGERS == {"inventory": ("application-prepare", "observer-bootstrap"),
+                                     "rollback-api-static": ("recovery", "host-recovery")}
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit",
+                                "host-recovery")
     assert lc.STAGE_TRIGGERS["application-prepare"] == ("prepared", "phase-b")
 
 

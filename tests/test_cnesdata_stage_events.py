@@ -1256,7 +1256,8 @@ def test_host_handler_admite_a_janela_static_com_o_handoff_aceito_do_closed_read
 
 _HOST_REFUSALS = {
     "rolled-back": ({"handoff": {"status": "rolled_back"}}, "host handoff accepted for the keeper closed-ready"),
-    "recovery": ({"handoff": {"status": "recovery_required"}}, "host handoff accepted for the keeper closed-ready"),
+    "recovery": ({"handoff": {"status": "recovery_required"}},
+                 "host recovery_required handoff with the decision of the keeper closed-ready"),
     "other-ready": ({"handoff": {"closed_ready_sha256": "0" * 64}}, "host handoff accepted for the keeper closed-ready"),
     "kind": ({"handoff": {"kind": "closed-ready"}}, "terminal source kind=host-handoff"),
     "extra": ({"handoff": {"extra": 1}}, "closed object fields"),
@@ -1329,6 +1330,7 @@ def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_af
 def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish_static_despachados(monkeypatch):
     """R18 and R15 after P15: the reachable end is the unit stage; prepared -> B -> API (closed-ready) -> host -> static
     (publish-static, internal) -> unit."""
+    from test_cnesdata_application_gate import _ReraisingTerminal
     from test_cnesdata_static_stage import _install_static, _static_carrier
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
     world = _install_static(monkeypatch, _stage_world(monkeypatch, carrier=_static_carrier()))
@@ -1345,7 +1347,8 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
                 "api": {"kind": "host", "reference": dict(HOST_REFERENCE)}}
     with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
         ag.keeper_loop(world.keeper, next_event=lambda window: triggers.get(window["stage"]) or real(window),
-                       handlers=world.handlers, sleep=lambda seconds: None)
+                       handlers=world.handlers | {"host-recovery": lambda *a: pytest.fail("host-recovery reached")},
+                       terminal=_ReraisingTerminal(), sleep=lambda seconds: None)
     record = world.store.get()[0]
     assert record["status"] == "held" and set(statuses) == {"held"} and record["lifecycle"]["stage"] == "unit"
     assert [item["journal"]._request["operation"] for item in world.invoke] == ["close-drain", "closed-ready", "publish-static"]

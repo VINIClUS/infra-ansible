@@ -462,7 +462,8 @@ def test_gatilho_static_e_interno_e_o_event_source_nunca_o_consulta():
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
     assert lc.STAGE_TRIGGERS["static"] == ("publish-static", "unit")
     assert "publish-static" not in ag.KEEPER_EVENTS
-    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit",
+                                "host-recovery")
     assert ag.BROKERS == (ag.ClosedReadyBroker, ag.StaticBroker)
 
 

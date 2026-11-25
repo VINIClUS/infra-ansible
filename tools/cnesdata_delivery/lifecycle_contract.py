@@ -622,7 +622,7 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                      "static_inputs.py", "runtime-requirements.txt")
+                      "static_inputs.py", "terminal_gate.py", "runtime-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))
 
@@ -1266,7 +1266,8 @@ STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("p
                   "unit": ("unit", "phase-c-recovery"),
                   "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
                   "phase-c-audit": ("phase-c-audit", "final")}
-OPERATION_TRIGGERS = {"inventory": ("application-prepare", "observer-bootstrap")}
+OPERATION_TRIGGERS = {"inventory": ("application-prepare", "observer-bootstrap"),
+                      "rollback-api-static": ("recovery", "host-recovery")}
 MODE_STAGE_PREVIOUS = {"phase-c-recovery": "unit", "phase-c-audit": "phase-c-recovery", "final": "phase-c-audit"}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision windows")
@@ -1865,9 +1866,11 @@ def terminal_result(value, *, now, deadline):
     common = "kind fence accepted_modes routes_match state_clean quiescent pending unknown observed_at"
     failure = value.get("kind") in {"failed-closed-quiescent", "failed-prepare-quiescent"}
     c.closed(value, common + (" restoration" if failure else ""))
+    prepare = value["kind"] == "failed-prepare-quiescent"
+    routes = (value["fence"], value["routes_match"]) == (None, None) if prepare else value["routes_match"] is True
     c.require(value["state_clean"] is True and value["quiescent"] is True
               and value["pending"] == [] and value["unknown"] == []
-              and value["routes_match"] is True and value["observed_at"] <= now < deadline
+              and routes and value["observed_at"] <= now < deadline
               and now - value["observed_at"] <= 30, "terminal uncertainty/drift/expiry")
     if value["kind"] == "accepted-open":
         c.require(value["fence"] == "OPEN" and set(value["accepted_modes"]) == {"unit", "recovery", "audit"}
@@ -1878,7 +1881,7 @@ def terminal_result(value, *, now, deadline):
     c.closed(restored, "unit recovery audit api static first_static_absent")
     c.require(all(restored[k] is True for k in ("unit", "recovery", "audit", "api"))
               and (restored["static"] is True or restored["first_static_absent"] is True), "original recovery incomplete")
-    c.require(value["fence"] == "CLOSED" or value["kind"] == "failed-prepare-quiescent", "failed promotion must remain CLOSED")
+    c.require(value["fence"] == "CLOSED" or prepare, "failed promotion must remain CLOSED")
     return "failed"
 
 
