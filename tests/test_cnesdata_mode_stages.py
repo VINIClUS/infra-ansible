@@ -1042,7 +1042,7 @@ def test_recovery_readbacks_do_audit_observe_sao_os_readbacks_ligados_ao_recover
 @pytest.mark.parametrize("operation, names", [("unit-seed", ["mode-start", "fixture-manifest"]),
                                               ("unit-record", ["mode-input"]), ("unit-seed", ["readbacks"]),
                                               ("recovery-observe", ["network"]), ("unit-seed", ["mode-seed"]),
-                                              ("unit-observe", ["recovery-readbacks"])])
+                                              ("unit-observe", ["recovery-readbacks"]), ("unit-start", ["mode-seed"])])
 def test_origem_ainda_nao_conectada_recusa_sem_derivar_nenhuma_outra(operation, names):
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         _source(operation, names)
