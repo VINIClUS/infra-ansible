@@ -856,14 +856,15 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
 
 
 @pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
-def test_producao_recusa_o_modo_sem_fonte_dos_originais_nem_broker_de_efeito(operation):
+def test_producao_recusa_o_modo_sem_fonte_dos_originais_e_o_efeito_sem_contexto_do_estagio(operation):
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag
     message = "^mode_unit_start=p16d_pending$" if operation == "unit-start" else "^mode_inputs=source_unconnected$"
     with pytest.raises(ValueError, match=message):
         ag.mode_input_source(keeper=None, owner={}, window={}, operation=operation, names=["record"])
     journal = SimpleNamespace(_failed=False, _request={"operation": operation})
-    with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
+    message = "^mode_unit_start=p16d_pending$" if operation == "unit-start" else "^mode effect original context$"
+    with pytest.raises(ValueError, match=message):
         ag.mode_capability(journal=journal, keeper=None, guard=None, context=None)
     assert journal._failed is True
 
@@ -1124,7 +1125,7 @@ def test_handler_do_c_audit_leva_o_resultado_do_recovery_e_avanca_para_o_final(m
 
 
 @pytest.mark.parametrize("purpose", ["phase-c-recovery", "phase-c-audit"])
-def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_lease_retido(monkeypatch, purpose):
+def test_handler_c_de_producao_recusa_o_seed_sem_pacote_de_modo_sem_child_e_com_o_lease_retido(monkeypatch, purpose):
     from test_cnesdata_stage_events import B_REFERENCE
     from tools.cnesdata_delivery import application_gate as ag
     production = ag.mode_capability
@@ -1136,7 +1137,7 @@ def test_handler_c_de_producao_recusa_mode_broker_unconnected_sem_child_e_com_o_
     monkeypatch.setattr(ag, "mode_capability", production)
     before = _record(world)
     world.mode.calls.clear()
-    with pytest.raises(ValueError, match="^mode_broker=unconnected$"):
+    with pytest.raises(ValueError, match="^mode prepared authority package$"):
         world.handlers[purpose](world.keeper, dict(B_REFERENCE))
     assert [call[0] for call in world.mode.calls] == [purpose.removeprefix("phase-c-") + "-record"]
     assert _record(world) == before
