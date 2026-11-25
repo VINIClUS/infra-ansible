@@ -139,3 +139,59 @@ def test_filho_real_recebe_o_documento_de_readbacks(tmp_path, monkeypatch):
     broker, journal, native = _broker(monkeypatch, source=source)
     result = _invoke(monkeypatch, product, source, manifest, journal)
     assert _product_text(result) == journal._inputs["readbacks"] and len(native.calls) == 4
+
+
+def test_frame_em_seed_com_sessao_de_leitura_recusa(monkeypatch):
+    args, _, _ = _case(monkeypatch, "unit-seed")
+    session = _mb().assume_mode_session(**args)
+    native = _Client("unit")
+    broker = _mb().ModeBroker(_Evidence(), args["governance"], args["journal"], session, prepared_sha256="3" * 64,
+                              credential_limit=args["credential_limit"], clock=args["clock"],
+                              reads=_reads(args["journal"], "unit", native))
+    with pytest.raises(ValueError, match="^mode method outside table$"):
+        ag._adapter_message(FRAME, args["journal"])
+    assert native.calls == [] and broker.uncertainty == []
+
+
+def test_frame_perto_do_prazo_da_sessao_de_leitura_recusa_antes_do_io(monkeypatch):
+    broker, journal, native = _broker(monkeypatch)
+    broker.reads.deadline = broker.clock() + 20
+    with pytest.raises(ValueError, match="^mode finite SDK request/window$"):
+        ag._adapter_message(FRAME, journal)
+    assert native.calls == [] and journal.call_receipts == []
+
+
+def test_run_task_depois_do_frame_segue_a_tabela_da_operacao(monkeypatch):
+    from test_cnesdata_mode_effect_ecs import _run, _task
+    args, _, _ = _case(monkeypatch, "recovery-start")
+    args["journal"], _ = _journal("recovery-start", {"readbacks": c.canonical(_readbacks("recovery")),
+                                                     "record": c.canonical({"revisions": dict(REVISIONS)})})
+    session = _mb().assume_mode_session(**args)
+    session.client.call = lambda service, name, **parameters: {
+        "tasks": [_task("recovery", "PROVISIONING")], "failures": [], "ResponseMetadata": _metadata()}
+    _mb().ModeBroker(_Evidence(), args["governance"], args["journal"], session, prepared_sha256="3" * 64,
+                     credential_limit=args["credential_limit"], clock=args["clock"],
+                     reads=_reads(args["journal"], "recovery", _Client("recovery")))
+    ag._adapter_message(FRAME, args["journal"])
+    reply, _ = _run(args["journal"])
+    assert reply["kind"] == "sdk-result" and reply["value"]["tasks"][0]["lastStatus"] == "PROVISIONING"
+
+
+@pytest.mark.parametrize("role", ["mode_dispatch", "mode_seed"])
+def test_validador_de_leitura_recusa_outro_alias(role):
+    call = _mb().mode_readback_calls("recovery", RESOURCES)[0]
+    native = {"role": "mode_observe", "service": call["service"], "operation": call["operation"],
+              "parameters": call["parameters"]}
+    assert _mb().validate_mode_read_call("recovery-start", native, RESOURCES) == call["parameters"]
+    with pytest.raises(ValueError, match="^mode read call outside table$"):
+        _mb().validate_mode_read_call("recovery-start", native | {"role": role}, RESOURCES)
+
+
+@pytest.mark.parametrize("reply", [{}, []])
+def test_filho_recusa_resposta_vazia_do_frame(tmp_path, monkeypatch, reply):
+    from test_cnesdata_mode_child_context import _forged
+    product, source, manifest = _product(tmp_path, READBACKS)
+    broker, journal, native = _broker(monkeypatch, source=source)
+    _forged(monkeypatch, {"mode-readbacks": reply})
+    with pytest.raises(ValueError, match="^adapter complete result frame$"):
+        _invoke(monkeypatch, product, source, manifest, journal)
