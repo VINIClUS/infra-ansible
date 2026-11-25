@@ -578,7 +578,9 @@ def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
 
 
 MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe",
-                       "phase-c": ("recovery-observe", "audit-observe")}
+                       "phase-c": ("recovery-observe", "audit-observe"),
+                       "readbacks": ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start",
+                                     "audit-observe")}
 
 
 def _lease_original(keeper, operation, kind, label):
@@ -603,10 +605,17 @@ def _phase_c_original(keeper, mode):
     return c.canonical([c.loads(elements[purpose]) for purpose in purposes])
 
 
+def _readbacks_original(keeper, mode):
+    found = [item for item in keeper._contexts if type(item) is ModeReadback and item.mode == mode]
+    c.require(len(found) == 1, "readbacks original")
+    return found[0].original()
+
+
 def mode_input_source(*, keeper, owner, window, operation, names):
     """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null; (s) the audit mode-seed
     and recovery-readbacks from this lease's recovery journals; phase-c, the list of this keeper's accepted phase-c
-    elements in mode order (P17 ruling 6). Any other origin is not connected and refuses first.
+    elements in mode order (P17 ruling 6); readbacks, the handoff of this keeper's single ModeReadback of the mode
+    (ruling 5). Any other origin is not connected and refuses first.
 
     Returns: {name: bytes}. Raises: ValueError.
     """
@@ -624,6 +633,8 @@ def mode_input_source(*, keeper, owner, window, operation, names):
             inputs[name] = _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
         elif name == "phase-c":
             inputs[name] = _phase_c_original(keeper, mode)
+        elif name == "readbacks":
+            inputs[name] = _readbacks_original(keeper, mode)
         else:
             inputs[name] = _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
     return inputs
