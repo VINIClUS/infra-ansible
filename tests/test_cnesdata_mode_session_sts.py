@@ -58,6 +58,7 @@ def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES, deadlin
         documents["session." + code] = session_policy.mode_session_policy(operation, resources=resources, owner_sha256=OWNER,
                                                                           deadline=deadline)
         documents["role." + alias] = ROLES["roles"][alias]["policy"]["PolicyDocument"]
+    documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=resources, deadline=deadline)
     return documents
 
 

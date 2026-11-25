@@ -86,7 +86,8 @@ def test_nenhum_frame_do_ux_nem_do_vetor_tem_cancelamento():
 
 
 def test_conditioncheck_no_semaforo_fica_fora_do_papel_e_da_sessao_ux_sem_mudanca_de_iam():
-    """mode-canary.tf:68 grants SEMAPHORE GetItem and UpdateItem only; ux keeps neither."""
+    """mode-canary.tf:68 grants SEMAPHORE GetItem and UpdateItem only; ux keeps the acquire UpdateItem (Q1) and denies the
+    ConditionCheckItem on its own, even under a role that allows everything."""
     from tools.cnesdata_delivery.session_policy import mode_session_policy
     role = ROLES["roles"]["mode_dispatch"]["policy"]["PolicyDocument"]
     session = mode_session_policy("unit-start", resources=RESOURCES, owner_sha256=OWNER, deadline=DEADLINE)
@@ -96,5 +97,7 @@ def test_conditioncheck_no_semaforo_fica_fora_do_papel_e_da_sessao_ux_sem_mudanc
     assert not effective_iam(role, [role], "dynamodb:ConditionCheckItem", table, context)
     assert not effective_iam(role, [session], "dynamodb:ConditionCheckItem", table, context)
     assert effective_iam(role, [role], "dynamodb:UpdateItem", table, context)
-    assert not effective_iam(role, [session], "dynamodb:UpdateItem", table, context)
+    assert effective_iam(role, [session], "dynamodb:UpdateItem", table, context)
+    broad = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+    assert not effective_iam(broad, [session], "dynamodb:ConditionCheckItem", table, context)
     assert lc.MODE_SESSION_OPERATIONS["unit-start"][:2] == ("ux", "mode_dispatch")

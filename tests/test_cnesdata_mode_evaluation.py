@@ -17,6 +17,7 @@ CODES = {code: (operation, alias) for operation, (code, alias, context, _) in lc
          if context == "promotion"}
 NAMES = {name.split("-")[1]: name for names in ROLES["fields"]["delegation_sessions"].values() for name in names}
 ROLE_ARNS = {alias: ROLES["roles"][alias]["role"]["Role"]["Arn"] for alias in lc.MODE_ALIASES}
+PARTS = {"uw": "ux"}
 SCOPE = {"resources": RESOURCES, "owner_sha256": OWNER, "role_arns": ROLE_ARNS, "session_names": NAMES, "deadline": DEADLINE}
 GOVERNANCE = {"account_id": "111122223333", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
               "evidence_prefix": "cnesdata/prod/evidence/", "evidence_kms_key_arn":
@@ -29,10 +30,11 @@ PROPOSAL_CASES = (
     [f"assume-{code}" for code in CODES] + [f"assume-{code}-other-session" for code in CODES] + [f"{code}-expired" for code in CODES]
     + [f"{code}-{name}" for code in ("us", "rs") for name in ("put-tenant", "put-own-run", "put-raw", "put-foreign-tenant",
                                                                "put-other-mode-run", "get-fence", "put-output")]
-    + ["ux-put-ticket", "ux-put-binding", "ux-start-execution", "ux-describe-own-task", "ux-update-control", "ux-run-task",
-       "ux-stop-execution", "ux-put-recovery-run", "ux-describe-foreign-cluster-task", "ux-check-fence",
-       "ux-update-semaphore", "ux-consume-attempt", "ux-check-unit-run", "ux-check-semaphore", "ux-query-unit-run",
-       "ux-update-unit-run"]
+    + ["ux-put-ticket", "ux-put-binding", "ux-start-execution", "ux-update-control", "ux-run-task",
+       "ux-stop-execution", "ux-put-recovery-run", "ux-check-fence", "ux-update-semaphore", "ux-consume-attempt",
+       "ux-check-unit-run", "ux-check-semaphore", "ux-query-unit-run", "ux-update-unit-run", "ux-describe-own-execution"]
+    + ["assume-uw", "assume-uw-other-session", "uw-expired", "uw-describe-own-execution", "uw-describe-own-task",
+       "uw-describe-foreign-cluster-task", "uw-start-execution"]
     + ["rx-run-recovery", "rx-pass-recovery-role", "rx-put-ticket", "rx-run-audit-revision", "rx-run-other-cluster",
        "rx-pass-unit-role", "rx-put-run-partition", "rx-start-execution"]
     + ["ax-run-audit", "ax-pass-audit-role", "ax-run-recovery-revision", "ax-pass-other-role", "ax-get-tenant"]
@@ -59,6 +61,8 @@ def _documents(codes=tuple(CODES), deadline=DEADLINE):
         documents["session." + code] = session_policy.mode_session_policy(operation, resources=RESOURCES, owner_sha256=OWNER,
                                                                           deadline=deadline)
         documents["role." + alias] = ROLES["roles"][alias]["policy"]["PolicyDocument"]
+    if "ux" in codes:
+        documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=RESOURCES, deadline=deadline)
     return documents
 
 
@@ -68,9 +72,10 @@ def _prepare(documents=None, scope=None, observed=OBSERVED):
 
 
 def test_casos_de_modo_sao_os_da_tabela_aceita_no_ruling_4():
-    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 88
+    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 94
     assert set(lc.MODE_EVALUATION_CASES) == set(PROPOSAL_CASES)
-    assert all(lc.MODE_EVALUATION_CASES[case][0] in CODES for case in PROPOSAL_CASES)
+    assert all(lc.MODE_EVALUATION_CASES[case][0] in set(CODES) | set(PARTS) for case in PROPOSAL_CASES)
+    assert lc.MODE_SESSION_PARTS == PARTS
     assert all(case.startswith(("assume-" + code, code + "-")) for case, (code, _) in lc.MODE_EVALUATION_CASES.items())
 
 
@@ -80,7 +85,8 @@ def test_avaliacao_de_modo_tem_a_forma_da_fence_evaluation():
     assert set(report) == {"schema_version", "evaluator_source_sha", "documents", "cases"}
     assert report["schema_version"] == 1 and report["evaluator_source_sha"] == "c" * 40
     assert report["documents"] == {name: c.sha(c.canonical(value)) for name, value in documents.items()}
-    assert len(report["documents"]) == 22 and set(report["documents"]) == lc.MODE_EVALUATION_DOCUMENTS
+    assert len(report["documents"]) == 23 and set(report["documents"]) == lc.MODE_EVALUATION_DOCUMENTS
+    assert "session.uw" in report["documents"] and "application_session.uw" not in report["documents"]
     assert [case["case_id"] for case in report["cases"]] == list(lc.MODE_EVALUATION_CASES)
     for case in report["cases"]:
         assert set(case) == {"case_id", "action", "resource", "context", "expected", "observed"}
@@ -95,9 +101,10 @@ def _case(report, case_id):
 def test_casos_permitidos_e_negados_seguem_a_tabela():
     report = _prepare()
     allowed = {case["case_id"] for case in report["cases"] if case["expected"]}
-    assert allowed == {f"assume-{code}" for code in CODES} | {
+    assert allowed == {f"assume-{code}" for code in [*CODES, *PARTS]} | {
         "us-put-tenant", "us-put-own-run", "us-put-raw", "rs-put-tenant", "rs-put-own-run", "rs-put-raw", "ux-put-ticket",
-        "ux-put-binding", "ux-start-execution", "ux-describe-own-task", "ux-check-fence", "ux-update-semaphore",
+        "ux-put-binding", "ux-start-execution", "uw-describe-own-execution", "uw-describe-own-task", "ux-check-fence",
+        "ux-update-semaphore",
         "ux-consume-attempt", "ux-check-unit-run", "rx-run-recovery", "rx-pass-recovery-role",
         "rx-put-ticket", "ax-run-audit", "ax-pass-audit-role", "uo-describe-machine", "uo-describe-task-definition",
         "uo-get-output", "ro-describe-machine", "ro-describe-task-definition", "ro-get-own-schedule", "ro-describe-own-alarm",
@@ -107,7 +114,8 @@ def test_casos_permitidos_e_negados_seguem_a_tabela():
 def test_caso_expirado_e_o_primeiro_caso_permitido_da_sessao_no_prazo():
     report = _prepare()
     first = {"us": "us-put-tenant", "rs": "rs-put-tenant", "ux": "ux-put-ticket", "rx": "rx-run-recovery",
-             "ax": "ax-run-audit", "uo": "uo-describe-machine", "ro": "ro-describe-machine", "ao": "ao-describe-machine"}
+             "ax": "ax-run-audit", "uo": "uo-describe-machine", "ro": "ro-describe-machine", "ao": "ao-describe-machine",
+             "uw": "uw-describe-own-execution"}
     for code, case_id in first.items():
         expired, allowed = _case(report, code + "-expired"), _case(report, case_id)
         assert expired["context"] == allowed["context"] | {"aws:CurrentTime": c.utc(DEADLINE)}
@@ -122,6 +130,15 @@ def test_casos_de_assume_usam_o_nome_de_sessao_exato_da_operacao():
         assert exact["resource"] == other["resource"] == ROLE_ARNS[alias]
         assert exact["context"]["sts:RoleSessionName"] == NAMES[code]
         assert other["context"]["sts:RoleSessionName"] != NAMES[code]
+
+
+def test_parte_de_espera_assume_o_mesmo_papel_e_nome_do_ux_sem_documento_de_aplicacao_proprio():
+    report = _prepare()
+    for suffix in ("", "-other-session"):
+        part, session = _case(report, f"assume-uw{suffix}"), _case(report, f"assume-ux{suffix}")
+        assert {key: part[key] for key in ("action", "resource", "context", "expected")} == {
+            key: session[key] for key in ("action", "resource", "context", "expected")}
+    assert "uw" not in SCOPE["session_names"] and lc.MODE_SESSION_OPERATIONS["unit-start"][0] == "ux"
 
 
 @pytest.mark.parametrize("name, change, case_id", [
@@ -178,14 +195,15 @@ def test_documentos_fora_do_conjunto_fechado_recusam():
 
 
 def _stage(code, report=None, documents=None, scope=None):
-    alias = CODES[code][1]
-    names = {"application_identity", "application_managed", "application_session." + code, "role." + alias, "session." + code}
+    alias = CODES[PARTS.get(code, code)][1]
+    names = {"application_identity", "application_managed", "application_session." + PARTS.get(code, code), "role." + alias,
+             "session." + code}
     documents = {name: value for name, value in _documents().items() if name in names} if documents is None else documents
     return _ib().mode_stage_evaluation(_prepare() if report is None else report, documents, SCOPE if scope is None else scope,
                                        code=code)
 
 
-@pytest.mark.parametrize("code", list(CODES))
+@pytest.mark.parametrize("code", [*CODES, *PARTS])
 def test_estagio_recalcula_os_casos_da_propria_sessao_e_exige_igualdade(code):
     report = _prepare()
     rows = _stage(code, report)
@@ -205,6 +223,12 @@ def test_estagio_recusa_documento_diferente_do_preparado():
         _stage("ux", report, documents | {"session.rx": _documents(("rx",))["session.rx"]})
     with pytest.raises(ValueError, match="^mode stage evaluation documents$"):
         _stage("ux", report, documents | {"session.ux": _documents(("ux",), DEADLINE + 60)["session.ux"]})
+    wait = {name: value for name, value in documents.items() if name != "session.ux"} | {"session.uw": _documents()["session.uw"]}
+    assert _stage("uw", report, wait)
+    with pytest.raises(ValueError, match="^mode stage evaluation documents$"):
+        _stage("uw", report, wait | {"session.uw": documents["session.ux"]})
+    with pytest.raises(ValueError, match="^mode stage evaluation documents$"):
+        _stage("uw", report, documents | {"session.uw": wait["session.uw"]})
 
 
 def test_estagio_recusa_caso_preparado_adulterado():
@@ -273,3 +297,19 @@ def test_casos_do_q1_no_ux_fixam_as_chaves_do_caminho_nativo_do_unit(case_id, ac
     assert (case["action"], case["resource"], case["expected"], case["observed"]) == (
         action, RESOURCES["table_arn"], expected, expected)
     assert case["context"]["dynamodb:LeadingKeys"] == [run if key == "unit" else key]
+
+
+@pytest.mark.parametrize("case_id, action, resource, expected", [
+    ("ux-describe-own-execution", "states:DescribeExecution", "execution", False),
+    ("uw-describe-own-execution", "states:DescribeExecution", "execution", True),
+    ("uw-describe-own-task", "ecs:DescribeTasks", "task", True),
+    ("uw-describe-foreign-cluster-task", "ecs:DescribeTasks", "foreign", False),
+    ("uw-start-execution", "states:StartExecution", "machine", False)])
+def test_casos_da_divisao_do_ux_separam_o_inicio_da_espera(case_id, action, resource, expected):
+    report = _prepare()
+    tasks = RESOURCES["cluster_arn"].replace(":cluster/", ":task/")
+    resources = {"execution": RESOURCES["machine_arn"].replace(":stateMachine:", ":execution:") + ":probe",
+                 "task": tasks + "/" + "0" * 32, "foreign": tasks + "-foreign/" + "0" * 32, "machine": RESOURCES["machine_arn"]}
+    case = _case(report, case_id)
+    assert (case["action"], case["resource"], case["expected"], case["observed"]) == (action, resources[resource], expected,
+                                                                                    expected)

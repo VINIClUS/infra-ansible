@@ -179,14 +179,14 @@ def test_papel_e_sessao_admitem_cada_chave_que_o_fence_c1_admite_nos_frames_da_o
 
 def _calls(operation):
     """Labelled literal of CnesData develop 1d0054c8 scripts/promotion/_adapter_abi.py (sha256 c485be2e93de45b2...):
-    MODE_EFFECT_CALLS per operation and the unit-start keeper steps unit-execution and unit-task."""
+    MODE_EFFECT_CALLS per operation; the unit-start keeper steps unit-execution and unit-task run under the ux wait
+    part (ruling 5 item 3 (2))."""
     phase, data = _phase(operation), RESOURCES["data_bucket_arn"]
     if operation.endswith("-seed"):
         return [(action, data + "/" + key, {}) for key in RESOURCES["scope"]["raw_object_keys"]
                 for action in ("s3:PutObject", "s3:GetObject")]
     if operation == "unit-start":
-        return [("states:StartExecution", RESOURCES["machine_arn"], {}), ("states:DescribeExecution", EXECUTION, {}),
-                ("ecs:DescribeTasks", TASK, CLUSTER)]
+        return [("states:StartExecution", RESOURCES["machine_arn"], {})]
     if operation.endswith("-start"):
         return [("ecs:RunTask", RESOURCES["revisions"][phase], CLUSTER), ("ecs:DescribeTasks", TASK, CLUSTER),
                 ("iam:PassRole", RESOURCES["task_role_arns"][phase], PASSED), ("iam:PassRole", RESOURCES["execution_role_arn"], PASSED)]
@@ -223,10 +223,32 @@ def _probes(policy):
                     yield action, concrete, context | ({"dynamodb:LeadingKeys": [key]} if key else {})
 
 
-@pytest.mark.parametrize("operation", [name for name in OPERATIONS if name != "unit-start"])
+def _wait(deadline=DEADLINE):
+    return _sp().mode_unit_wait_policy(resources=RESOURCES, deadline=deadline)
+
+
+def test_papel_e_espera_do_ux_admitem_as_etapas_unit_execution_e_unit_task():
+    for action, resource, context in (("states:DescribeExecution", EXECUTION, {}), ("ecs:DescribeTasks", TASK, CLUSTER)):
+        assert effective_iam(_role("unit-start"), [_wait()], action, resource, {"aws:CurrentTime": NOW} | context)
+
+
+def test_cada_permissao_da_espera_do_ux_esta_na_concessao_do_papel():
+    probes = list(_probes(_wait()))
+    assert probes
+    for action, resource, context in probes:
+        assert _role_allows("unit-start", action, resource, context), (action, resource, context)
+
+
+@pytest.mark.parametrize("change", [{"machine_arn": "arn:aws:states:us-east-1:111122223333:stateMachine:cnesdata-prod-processing"},
+                                    {"cluster_arn": "arn:aws:ecs:us-east-2:111122223333:cluster/*"}],
+                         ids=["maquina-de-outra-regiao", "cluster-curinga"])
+def test_espera_do_ux_recusa_recursos_fora_da_forma(change):
+    with pytest.raises(ValueError, match="^mode session resources$"):
+        _sp().mode_unit_wait_policy(resources=RESOURCES | change, deadline=DEADLINE)
+
+
+@pytest.mark.parametrize("operation", OPERATIONS)
 def test_cada_permissao_da_sessao_esta_na_concessao_do_papel(operation):
-    """unit-start merges statements where the role makes it neutral (ruling 5); its effect is pinned per action
-    in test_cnesdata_mode_unit_start_session."""
     probes = list(_probes(_session(operation)))
     assert probes
     for action, resource, context in probes:

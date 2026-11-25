@@ -29,6 +29,10 @@ DERIVED = {"dynamodb:GetItem": {TENANT, RUN, FENCE, SEMAPHORE}, "dynamodb:PutIte
 ACTIONS = ("GetItem", "PutItem", "UpdateItem", "ConditionCheckItem", "Query", "DeleteItem", "BatchGetItem", "BatchWriteItem",
            "Scan")
 PROBE_KEYS = (TENANT, RUN, OTHER_RUN, FOREIGN, FENCE, SEMAPHORE, ATTEMPTS, "OUTBOX#CURSOR", "ENV#prod#OTHER")
+BROAD = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+EXECUTION = RESOURCES["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + "1" * 32
+TASK = RESOURCES["cluster_arn"].replace(":cluster/", ":task/") + "/" + "f" * 32
+CLUSTER = {"ecs:cluster": RESOURCES["cluster_arn"]}
 STEPS = ("reserve", "admit", "claim", "bind", "confirm")
 
 
@@ -42,9 +46,18 @@ def _session():
     return session_policy.mode_session_policy("unit-start", resources=RESOURCES, owner_sha256=OWNER, deadline=DEADLINE)
 
 
-def _effective(policy, action, key, at=NOW):
-    return effective_iam(ROLE, [policy], "dynamodb:" + action, RESOURCES["table_arn"],
+def _wait():
+    from tools.cnesdata_delivery import session_policy
+    return session_policy.mode_unit_wait_policy(resources=RESOURCES, deadline=DEADLINE)
+
+
+def _effective(policy, action, key, at=NOW, role=ROLE):
+    return effective_iam(role, [policy], "dynamodb:" + action, RESOURCES["table_arn"],
                          {"aws:CurrentTime": at, "dynamodb:LeadingKeys": [key]})
+
+
+def _size(policy):
+    return len(c.canonical(policy).decode().strip())
 
 
 def _locator(case, **changes):
@@ -104,8 +117,12 @@ def test_alvos_seguem_o_tenant_o_run_e_as_unidades_do_estagio_e_nao_o_gate_do_ve
     rename = {unit["unit_id"]: format(index, "032x") for index, unit in enumerate(case["units"], start=7)}
     locator = _locator(case, tenant_id=tenant, run_ids=[UNIT_RUN], owner_sha256=OWNER, record_sha256="5" * 64)
     _, _, targets = _targets(case, locator, _rekeyed(case, tenant, UNIT_RUN, rename), TABLE)
-    gate = {tuple(target) for target in VECTOR["dispatch"]["gate"]}
-    assert not set(targets) & gate and {pk for _, _, pk, _ in targets} == {TENANT, RUN, FENCE, SEMAPHORE, ATTEMPTS}
+    gate, original = {tuple(target) for target in VECTOR["dispatch"]["gate"]}, set(_targets(case)[2])
+
+    def scoped(found):
+        return {target for target in found if target[2].startswith("TENANT#")}
+    assert not scoped(targets) & gate and set(targets) - scoped(targets) == original - scoped(original) <= gate
+    assert {pk for _, _, pk, _ in targets} == {TENANT, RUN, FENCE, SEMAPHORE, ATTEMPTS}
     units = {sk for _, _, pk, sk in targets if sk.startswith("UNIT#")}
     assert units == {"UNIT#" + rename[unit_id].encode().hex() for unit_id in case["result"]["unit_ids"]}
 
@@ -136,12 +153,13 @@ def test_projecao_por_particao_vem_dos_construtores_e_nao_depende_das_unidades()
     assert {action: set(keys) for action, keys in grants.items()} == projected == DERIVED
 
 
+@pytest.mark.parametrize("role", [ROLE, BROAD], ids=["papel", "papel-amplo"])
 @pytest.mark.parametrize("action", ACTIONS)
-def test_dynamodb_do_ux_tem_o_efeito_exato_dos_alvos_derivados_sobre_o_papel(action):
+def test_dynamodb_do_ux_tem_o_efeito_exato_dos_alvos_derivados_com_o_papel_e_sem_ele(action, role):
     session = _session()
     for key in PROBE_KEYS:
-        assert _effective(session, action, key) is (key in DERIVED.get("dynamodb:" + action, set())), (action, key)
-        assert _effective(session, action, key, c.utc(DEADLINE)) is False
+        assert _effective(session, action, key, role=role) is (key in DERIVED.get("dynamodb:" + action, set())), (action, key)
+        assert _effective(session, action, key, c.utc(DEADLINE), role) is False
 
 
 def test_cada_alvo_derivado_esta_no_grant_do_mode_dispatch():
@@ -149,6 +167,16 @@ def test_cada_alvo_derivado_esta_no_grant_do_mode_dispatch():
         for key in keys:
             assert effective_iam(ROLE, [ROLE], action, RESOURCES["table_arn"],
                                  {"aws:CurrentTime": NOW, "dynamodb:LeadingKeys": [key]}), (action, key)
+
+
+def test_dynamodb_do_ux_sao_os_quatro_retangulos_exatos_agrupados_pelo_conjunto_de_acoes_de_cada_chave():
+    """Four is the minimum: (PutItem, TENANT), (ConditionCheckItem, FENCE), (UpdateItem, ATTEMPTS), (GetItem, SEMAPHORE)
+    never share an exact rectangle."""
+    groups = [(statement["Action"], statement["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"])
+              for statement in _session()["Statement"] if statement["Action"][0].startswith("dynamodb:")]
+    assert groups == [(["dynamodb:ConditionCheckItem", "dynamodb:GetItem"], [FENCE]),
+                      (["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem"], [TENANT, RUN]),
+                      (["dynamodb:GetItem", "dynamodb:UpdateItem"], [SEMAPHORE]), (["dynamodb:UpdateItem"], [ATTEMPTS])]
 
 
 def _separate(session):
@@ -162,21 +190,54 @@ def _separate(session):
         + statements}
 
 
-def test_fundir_declaracoes_do_ux_nao_muda_a_permissao_efetiva_do_papel():
-    """Ruling 5 item 3 (1): effective(role and merged) equals effective(role and one statement per action)."""
+@pytest.mark.parametrize("role", [ROLE, BROAD], ids=["papel", "papel-amplo"])
+def test_fundir_declaracoes_do_ux_nao_muda_a_permissao_efetiva_nem_sem_o_papel(role):
+    """Ruling 5 item 3 (1): the grouped session equals one statement per action, under the role and under Allow *."""
     session = _session()
     separate = _separate(session)
-    dynamodb = [statement for statement in session["Statement"] if statement["Action"][0].startswith("dynamodb:")]
-    assert len(dynamodb) == 2 and dynamodb[1]["Action"] == ["dynamodb:UpdateItem"]
     for at in (NOW, c.utc(DEADLINE)):
         for action in ACTIONS:
             for key in PROBE_KEYS:
-                assert _effective(session, action, key, at) is _effective(separate, action, key, at), (action, key, at)
+                assert (_effective(session, action, key, at, role)
+                        is _effective(separate, action, key, at, role)), (action, key, at)
 
 
-def test_ux_fundido_cabe_no_limite_de_2048_do_sts_e_o_por_acao_nao():
-    session = _session()
-    assert len(c.canonical(session).decode().strip()) <= 2048 < len(c.canonical(_separate(session)).decode().strip())
+def test_ux_dividido_cabe_no_limite_de_2048_do_sts_e_o_documento_unico_nao():
+    """Ruling 5 item 3 (2): exact grouping plus the three start statements exceeds 2048, so the wait part splits."""
+    start, wait = _session(), _wait()
+    single = {"Version": "2012-10-17", "Statement": start["Statement"] + wait["Statement"]}
+    assert _size(start) <= 2048 and _size(wait) <= 2048 < _size(single) and _size(start) < _size(_separate(start))
+
+
+def test_inicio_do_ux_inicia_a_execucao_e_nao_descreve():
+    start = _session()
+    actions = [action for statement in start["Statement"] for action in statement["Action"]]
+    assert [action for action in actions if not action.startswith("dynamodb:")] == ["states:StartExecution"]
+    for role in (ROLE, BROAD):
+        now = {"aws:CurrentTime": NOW}
+        assert effective_iam(role, [start], "states:StartExecution", RESOURCES["machine_arn"], now)
+        assert not effective_iam(role, [start], "states:DescribeExecution", EXECUTION, now)
+        assert not effective_iam(role, [start], "ecs:DescribeTasks", TASK, now | CLUSTER)
+
+
+@pytest.mark.parametrize("role", [ROLE, BROAD], ids=["papel", "papel-amplo"])
+def test_espera_do_ux_so_descreve_a_execucao_e_as_tarefas_do_cluster_ate_o_prazo(role):
+    wait, now, expired = _wait(), {"aws:CurrentTime": NOW}, {"aws:CurrentTime": c.utc(DEADLINE)}
+    assert [statement["Action"] for statement in wait["Statement"]] == [["states:DescribeExecution"], ["ecs:DescribeTasks"]]
+    assert effective_iam(role, [wait], "states:DescribeExecution", EXECUTION, now)
+    assert effective_iam(role, [wait], "ecs:DescribeTasks", TASK, now | CLUSTER)
+    assert not effective_iam(role, [wait], "states:DescribeExecution", EXECUTION, expired)
+    assert not effective_iam(role, [wait], "states:StartExecution", RESOURCES["machine_arn"], now)
+    assert not effective_iam(role, [wait], "ecs:DescribeTasks", TASK.replace("/cnesdata-prod/", "/cnesdata-prod-foreign/"),
+                             now | {"ecs:cluster": RESOURCES["cluster_arn"] + "-foreign"})
+    for action in ACTIONS:
+        assert not _effective(wait, action, TENANT, role=role)
+
+
+def test_espera_do_ux_esta_na_concessao_do_mode_dispatch():
+    now = {"aws:CurrentTime": NOW}
+    assert effective_iam(ROLE, [ROLE], "states:DescribeExecution", EXECUTION, now)
+    assert effective_iam(ROLE, [ROLE], "ecs:DescribeTasks", TASK, now | CLUSTER)
 
 
 @pytest.mark.parametrize("action, key", [("ConditionCheckItem", SEMAPHORE), ("Query", RUN), ("UpdateItem", TENANT),
@@ -186,6 +247,7 @@ def test_ux_fundido_cabe_no_limite_de_2048_do_sts_e_o_por_acao_nao():
                               "check-outro-run", "put-tenant-alheio"])
 def test_ux_nega_o_que_o_caminho_nativo_do_unit_nao_usa(action, key):
     assert _effective(_session(), action, key) is False
+    assert _effective(_session(), action, key, role=BROAD) is False
 
 
 @pytest.mark.parametrize("action, key", [("Query", RUN), ("UpdateItem", TENANT), ("UpdateItem", RUN),
