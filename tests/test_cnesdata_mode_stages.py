@@ -1040,7 +1040,7 @@ def test_recovery_readbacks_do_audit_observe_sao_os_readbacks_ligados_ao_recover
 
 
 @pytest.mark.parametrize("operation, names", [("unit-seed", ["mode-start", "fixture-manifest"]),
-                                              ("unit-record", ["mode-input"]), ("unit-start", ["readbacks"]),
+                                              ("unit-record", ["mode-input"]), ("unit-seed", ["readbacks"]),
                                               ("recovery-observe", ["network"]), ("unit-seed", ["mode-seed"]),
                                               ("unit-observe", ["recovery-readbacks"])])
 def test_origem_ainda_nao_conectada_recusa_sem_derivar_nenhuma_outra(operation, names):
