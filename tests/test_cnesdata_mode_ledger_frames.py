@@ -103,15 +103,15 @@ def _admit(journal, **changes):
     return _send(journal, "ledger-admit", **(EFFECT | {"admitted_at": c.utc(NOW)} | changes))
 
 
-def _expected_admission(control_text=CONTROL, ticket_text=None):
+def _expected_admission(control_text=CONTROL, ticket_text=None, now=NOW):
     frames = _frames()
     record = frames.ModeCanaryRecord.from_mapping(json.loads(RECORD))
     binding = frames.ModeCanaryBinding("prod-canary-" + record.canary_id, record.run_ids, record.owner_sha256,
                                        c.sha(RECORD.encode()), record.phase, record.context_kind)
     state = frames.LedgerState(binding, record, control_text, ticket_text)
-    now = datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
     return frames.admission("cnesdata-prod-control-plane", state, frames.ledger_effect(**{
-        "kind": EFFECT["effect_kind"], "request_sha256": EFFECT["request_sha256"], "target_sha256": EFFECT["target_sha256"]}), now)
+        "kind": EFFECT["effect_kind"], "request_sha256": EFFECT["request_sha256"], "target_sha256": EFFECT["target_sha256"]}), moment)
 
 
 def test_ledger_admit_le_forte_e_grava_uma_vez_a_transacao_do_produto(monkeypatch):
@@ -241,3 +241,169 @@ def test_chamada_direta_do_filho_ao_dynamodb_no_recovery_start_recusa(monkeypatc
     with pytest.raises(ValueError, match="^mode call outside table$"):
         ag._adapter_message(_frame("dynamodb", "get_item", parameters, "mode_dispatch"), journal)
     assert table.calls == []
+
+
+def test_frame_do_ledger_sem_mode_broker_no_journal_recusa(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch)
+    journal._broker = None
+    with pytest.raises(ValueError, match="^mode method outside table$"):
+        _admit(journal)
+    assert table.calls == []
+
+
+def test_frame_fora_da_janela_da_sessao_recusa_antes_do_io(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch)
+    late = broker.session.deadline - 20
+    broker.clock = lambda: late
+    with pytest.raises(ValueError, match="^mode finite SDK request/window$"):
+        _admit(journal, admitted_at=c.utc(late))
+    assert table.calls == [] and broker.aws.events == []
+
+
+def test_frame_com_guard_perdido_recusa_antes_da_reserva(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch)
+
+    def lost(seconds=0):
+        raise ValueError("lease lost")
+    monkeypatch.setattr(journal._guard, "check", lost)
+    with pytest.raises(ValueError, match="^lease lost$"):
+        _admit(journal)
+    assert table.calls == [] and broker.aws.events == []
+
+
+def test_record_de_outro_tenant_recusa_antes_do_io(monkeypatch):
+    other = json.loads(RECORD) | {"canary_id": "f" * 32}
+    broker, journal, table = _ledger_broker(monkeypatch, record=json.dumps(other, sort_keys=True, separators=(",", ":")))
+    with pytest.raises(ValueError, match="^mode ledger record$"):
+        _admit(journal)
+    assert table.calls == []
+
+
+def test_record_de_outra_fase_recusa_antes_do_io(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch, record=_shifted(CASES["dispatch-unit"]["record"]))
+    with pytest.raises(ValueError, match="^mode ledger record$"):
+        _admit(journal)
+    assert table.calls == []
+
+
+def test_settle_com_recibo_da_observacao_final_recusa(monkeypatch):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    broker, journal, table = _ledger_broker(monkeypatch)
+    _pending(journal, table)
+    calls = len(table.calls)
+    receipt = journal.observe(lc.ADAPTER_OBSERVATIONS["recovery-start"], b'{"lastStatus":"STOPPED"}\n')
+    with pytest.raises(ValueError, match="^mode ledger settle receipt$"):
+        _send(journal, "ledger-settle", effect_id=_effect_id(), receipt_sha256=receipt)
+    assert len(table.calls) == calls
+
+
+def test_admissao_usa_o_carimbo_do_produto_e_nao_o_relogio_do_keeper(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch)
+    _admit(journal, admitted_at=c.utc(NOW - 3))
+    assert table.calls[2][1] == {"TransactItems": _expected_admission(now=NOW - 3).items}
+    assert table.calls[2][1] != {"TransactItems": _expected_admission().items}
+
+
+class _Skewed(_Dynamo):
+    def __call__(self, service, name, **parameters):
+        reply = super().__call__(service, name, **parameters)
+        if name == "get_item" and "Item" in reply:
+            reply["Item"]["sk"] = {"S": reply["Item"]["sk"]["S"] + "-other"}
+        return reply
+
+
+def test_leitura_do_ledger_com_item_de_outra_chave_recusa(monkeypatch):
+    broker, journal, table = _ledger_broker(monkeypatch)
+    skewed = _Skewed(table.items)
+    broker.session.client.call = skewed
+    with pytest.raises(ValueError, match="^mode ledger read$"):
+        _admit(journal)
+    assert [name for name, _ in skewed.calls] == ["get_item"]
+
+
+def _frame_scope(broker):
+    control, ticket = _keys(_effect_id())
+    keys = {"canary_id": json.loads(RECORD)["canary_id"], "owner_sha256": json.loads(RECORD)["owner_sha256"],
+            "run_ids": json.loads(RECORD)["run_ids"], "dispatch_id": None}
+    return broker._call_scope() | {"frame": {"name": "ledger-admit", "binding": keys}}, control, ticket
+
+
+def _get(key, role="mode_dispatch", consistent=True):
+    return {"role": role, "service": "dynamodb", "operation": "get_item", "parameters": {
+        "TableName": "cnesdata-prod-control-plane", "Key": {"pk": {"S": key[0]}, "sk": {"S": key[1]}},
+        "ConsistentRead": consistent}}
+
+
+@pytest.mark.parametrize("case", ["fraca", "fora-do-c1", "papel", "operacao", "put-fora-do-c1"])
+def test_validador_das_chamadas_do_frame_recusa_fora_do_c1_e_da_tabela(monkeypatch, case):
+    broker, journal, table = _ledger_broker(monkeypatch)
+    scope, control, ticket = _frame_scope(broker)
+    foreign = (control[0], "PROD_CANARY_CONTROL#" + "b" * 64)
+    native = {"fraca": _get(control, consistent=False), "fora-do-c1": _get(foreign), "papel": _get(control, "mode_seed"),
+              "operacao": _get(control), "put-fora-do-c1": {
+                  "role": "mode_dispatch", "service": "dynamodb", "operation": "put_item", "parameters": {
+                      "TableName": "cnesdata-prod-control-plane", "ConditionExpression": "attribute_not_exists(pk)",
+                      "Item": {"pk": {"S": foreign[0]}, "sk": {"S": foreign[1]}, "entity": {"S": "x"},
+                               "payload": {"S": "{}"}}}}}[case]
+    operation = "audit-start" if case == "operacao" else "recovery-start"
+    assert _mb().validate_mode_frame_call("recovery-start", scope["frame"], _get(control), scope)
+    with pytest.raises(ValueError, match="^(mode dynamodb call|mode key outside frame|mode frame call outside table)$"):
+        _mb().validate_mode_frame_call(operation, scope["frame"], native, scope)
+    with pytest.raises(ValueError):
+        _mb().ModeEvidence._native(journal if operation == "recovery-start" else _foreign_journal(), c.canonical(native),
+                                   scope, broker.governance)
+
+
+def _foreign_journal():
+    from test_cnesdata_mode_session_sts import _journal
+    return _journal("audit-start")[0]
+
+
+def _journal_call(journal, native):
+    ticket = journal.begin_sdk_call(c.canonical(native), role_session_sha256="4" * 64)
+    return ticket
+
+
+@pytest.mark.parametrize("response", [
+    {"Error": {"Code": "ValidationException"}},
+    {"Error": {"Code": "TransactionCanceledException"}, "CancellationReasons": [{"Code": "ConditionalCheckFailed"}]},
+    {"Error": {"Code": "ConditionalCheckFailedException"}, "CancellationReasons": []},
+], ids=["erro-qualquer", "cancelamento-de-outra-operacao", "sem-motivos"])
+def test_journal_so_aceita_o_cancelamento_definitivo_da_propria_escrita_do_frame(monkeypatch, response):
+    import time
+    from email.utils import formatdate
+    broker, journal, table = _ledger_broker(monkeypatch)
+    journal._broker = None
+    control, _ = _keys(_effect_id())
+    put = {"role": "mode_dispatch", "service": "dynamodb", "operation": "put_item", "parameters": {
+        "TableName": "cnesdata-prod-control-plane", "ConditionExpression": "attribute_not_exists(pk)",
+        "Item": {"pk": {"S": control[0]}, "sk": {"S": control[1]}, "entity": {"S": "x"}, "payload": {"S": "{}"}}}}
+    ticket = _journal_call(journal, put)
+    with pytest.raises(ValueError, match="^SDK response already sanitized before journal$"):
+        journal.complete_sdk_call(ticket, c.canonical(response), request_id="native-id",
+                                  server_date=formatdate(time.time(), usegmt=True))
+    definite = {"Error": {"Code": "ConditionalCheckFailedException"}, "CancellationReasons": [{"Code": "ConditionalCheckFailed"}]}
+    _, clean, _ = _ledger_broker(monkeypatch)
+    clean._broker = None
+    ticket = _journal_call(clean, put)
+    receipt = clean.complete_sdk_call(ticket, c.canonical(definite), request_id="native-id",
+                                      server_date=formatdate(time.time(), usegmt=True))
+    assert receipt["response_sha256"] == c.sha(c.canonical(definite))
+
+
+def test_run_task_depois_do_ledger_admit_segue_a_tabela_da_operacao(monkeypatch):
+    from test_cnesdata_mode_effect_ecs import _run, _task
+    from test_cnesdata_mode_run_task import REVISIONS
+    record = json.dumps(json.loads(RECORD) | {"revisions": dict(REVISIONS)}, sort_keys=True, separators=(",", ":"))
+    control = _keys(_effect_id())[0]
+    broker, journal, table = _ledger_broker(monkeypatch, record=record, items={control: CONTROL})
+
+    def sdk(service, name, **parameters):
+        if service == "dynamodb":
+            return table(service, name, **parameters)
+        return {"tasks": [_task("recovery", "PROVISIONING")], "failures": [], "ResponseMetadata": _metadata()}
+    broker.session.client.call = sdk
+    reply, _ = _admit(journal)
+    assert set(reply) == {"effect_id"}
+    run, _ = _run(journal)
+    assert run["kind"] == "sdk-result" and run["value"]["tasks"][0]["lastStatus"] == "PROVISIONING"
