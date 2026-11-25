@@ -261,7 +261,10 @@ MODE_EFFECT_METHODS = {
 }
 MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", 400),
                         ("s3", "put_object"): ("PreconditionFailed", 412)}
+MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate")
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
+                        ("dynamodb", "update_item"): set(), ("stepfunctions", "start_execution"): {"executionArn", "startDate"},
+                        ("stepfunctions", "describe_execution"): set(MODE_UNIT_EXECUTION_FIELDS),
                         ("s3", "get_object"): {"Body"}, ("ecs", "run_task"): {"tasks", "failures"},
                         ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set(),
                         ("stepfunctions", "describe_state_machine"): {"stateMachineArn", "definition"},
@@ -277,7 +280,11 @@ MODE_READBACK_FRAME_CALLS = {
 MODE_LEDGER_FRAMES = {"ledger-admit": "ledger_admit_effect", "ledger-unknown": "ledger_mark_unknown",
                       "ledger-settle": "ledger_settle"}
 MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", name)
-                                                for name in ("get_item", "put_item", "transact_write_items"))}
+                                                for name in ("get_item", "put_item", "transact_write_items")),
+                    "unit-start": frozenset(("mode_dispatch", "dynamodb", name) for name in ("get_item", "transact_write_items"))}
+MODE_UNIT_CALLS = {"unit-start": frozenset(("mode_dispatch", *call) for call in (
+    ("dynamodb", "get_item"), ("dynamodb", "transact_write_items"), ("dynamodb", "update_item"),
+    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution")))}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.

@@ -122,7 +122,8 @@ class _Table:
 
 def _start(case):
     now = datetime.datetime.fromisoformat(case["now"])
-    return _mb().unit_start_targets(_locator(case), case["units"], table=case["table"], now=now)[0]
+    return _mb().unit_start_targets(_locator(case), case["units"], table=case["table"], now=now,
+                                    promotion_id=case["promotion_id"])[0]
 
 
 def _steps(table, start):

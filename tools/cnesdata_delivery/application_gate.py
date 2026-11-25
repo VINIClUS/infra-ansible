@@ -933,6 +933,7 @@ class AdapterJournal:
                       and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation])
                   or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ())
                   or (request["role"], request["service"], request["operation"]) in lc.MODE_FRAME_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_UNIT_CALLS.get(operation, ())
                   or (request["role"], request["service"], request["operation"]) in lc.MODE_READBACK_FRAME_CALLS.get(operation, ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")

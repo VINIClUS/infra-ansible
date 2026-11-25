@@ -22,7 +22,7 @@ MODE_KEY_FRAMES = {
     "unit-seed": MODE_SEED_KEYS | {("record-unit", "put"), ("record-unit", "get"), ("control", "put"), ("control", "get")},
     "recovery-seed": MODE_SEED_KEYS | {("record-recovery", "put"), ("record-recovery", "get"), ("control", "get")},
     "dispatch-unit": frozenset({("binding", "put"), ("ticket", "put"), ("ticket", "get"), ("control", "put"),
-                                ("control", "get")}),
+                                ("control", "get"), ("record-unit", "get")}),
     "ledger-admit": frozenset({("ticket", "put"), ("ticket", "get"), ("control", "put"), ("control", "get")}),
     "ledger-unknown": frozenset({("ticket", "put"), ("ticket", "get")}),
     "ledger-settle": frozenset({("ticket", "put"), ("ticket", "get")}),
@@ -111,7 +111,7 @@ def _unit_requests(start):
             + [("update_item", request) for request in dispatch.confirm_requests(start, permit, reference)])
 
 
-def unit_start_targets(locator, units, *, table, now):
+def unit_start_targets(locator, units, *, table, now, promotion_id):
     """Q1 (B2): the product unit-start of the stage over the keeper-written seed units at the stage clock, with its
     (IAM action, table, pk, sk) targets: request_targets of every keeper request, the dispatch-unit frame writes and the
     record, control and ticket reads. Keys never depend on read values.
@@ -121,7 +121,7 @@ def unit_start_targets(locator, units, *, table, now):
     frames, dispatch = product_frames(), product_dispatch()
     c.require(type(locator) is UnitLocator and locator.phase == "unit", "mode unit locator")
     unit = dispatch.unit_dispatch(locator, units, now)
-    start = dispatch.UnitStart(unit, table, now, UNIT_LEASE_SECONDS, locator.owner_sha256)
+    start = dispatch.UnitStart(unit, table, now, UNIT_LEASE_SECONDS, promotion_id)
     holder = UnitHolder(unit.dispatch_id, unit.run_id, unit.tenant_id)
     effect = frames.effect_id(locator.record_sha256, "start-execution", frames.start_request(holder, unit.unit_ids))
     owner, tenant = locator.owner_sha256, frames.tenant_partition(unit.tenant_id)
@@ -146,7 +146,8 @@ def unit_start_grants(resources, owner_sha256):
               "depends_on_unit_ids": []}]
     epoch = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
     grants = {}
-    for action, _, pk, _ in unit_start_targets(locator, probe, table=resources["table_arn"].rsplit("/", 1)[1], now=epoch)[2]:
+    table = resources["table_arn"].rsplit("/", 1)[1]
+    for action, _, pk, _ in unit_start_targets(locator, probe, table=table, now=epoch, promotion_id=owner_sha256)[2]:
         grants.setdefault("dynamodb:" + action, set()).add(pk)
     return {action: frozenset(keys) for action, keys in grants.items()}
 
@@ -227,7 +228,43 @@ def _unit_active(start, item, state):
         payload = json.loads(item["payload"]["S"])
     except (TypeError, KeyError, ValueError):
         return False
-    return type(payload) is dict and (payload.get("dispatch_id"), payload.get("state")) == (start.dispatch.dispatch_id, state)
+    return (type(payload) is dict and payload.get("dispatch_id") == start.dispatch.dispatch_id
+            and (state is None or payload.get("state") == state))
+
+
+UnitPlan = namedtuple("UnitPlan", "locator record start effect targets execution")
+
+
+def unit_start_plan(keeper, journal, *, resources, now):
+    """Q1b (B1, B2): the unit-start of the stage before any mint or write: locator and promotion_id of the record input,
+    the units of the single unit-seed journal of this keeper, UnitStart on the stage clock, its C1 targets and the exact
+    execution ARN of StartExecution name = dispatch_id.
+
+    Returns: UnitPlan. Raises: ValueError (product refusals included).
+    """
+    frames, raw, owner = product_frames(), journal._inputs.get("record"), journal._request["owner"]["owner_sha256"]
+    try:
+        record = frames.ModeCanaryRecord.from_mapping(json.loads(raw))
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise ValueError("mode unit plan record") from error
+    c.require(journal._request["operation"] == "unit-start" and record.owner_sha256 == owner and record.phase == "unit"
+              and "prod-canary-" + record.canary_id == resources["scope"]["tenant_id"]
+              and record.machine_arn == resources["machine_arn"], "mode unit plan record")
+    locator = UnitLocator("prod-canary-" + record.canary_id, tuple(record.run_ids), owner, c.sha(raw), "unit",
+                          record.context_kind)
+    seeds = _operation_journals(keeper, "unit-seed")
+    c.require(len(seeds) == 1 and not seeds[0]._unknown and not seeds[0]._failed, "mode unit seed journal")
+    units = unit_seed_units(seeds[0]._settled_calls(), locator)
+    moment = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
+    start, effect, targets = unit_start_targets(locator, units, table=resources["table_arn"].rsplit("/", 1)[1], now=moment,
+                                                promotion_id=record.promotion_id)
+    execution = resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + start.dispatch.dispatch_id
+    return UnitPlan(locator, record, start, effect, targets, execution)
+
+
+def _unit_binding(locator):
+    return {"tenant_id": locator.tenant_id, "run_ids": list(locator.run_ids), "owner_sha256": locator.owner_sha256,
+            "record_sha256": locator.record_sha256, "phase": locator.phase, "context_kind": locator.context_kind}
 
 
 def _hex(value):
@@ -1005,6 +1042,30 @@ def validate_mode_frame_call(operation, frame, native, scope):
     return parameters
 
 
+def validate_mode_dispatch_call(operation, native, scope):
+    """Q1b C1 per request: a unit-start call of the closed table whose (action, table, pk, sk) targets are inside the
+    stage targets, StartExecution exactly the builder request and DescribeExecution only the exact execution ARN.
+
+    Returns: the native SDK parameters. Raises: ValueError before any SDK call.
+    """
+    c.closed(native, "role service operation parameters")
+    unit, role, service, name, parameters = scope.get("unit"), *(native[key] for key in ("role", "service", "operation",
+                                                                                         "parameters"))
+    c.require(type(unit) is dict and (role, service, name) in lc.MODE_UNIT_CALLS.get(operation, ()), "mode unit dispatch call")
+    if service == "stepfunctions":
+        c.require(parameters == (unit["start"] if name == "start_execution" else {"executionArn": unit["execution"]}),
+                  "mode unit dispatch call")
+        return parameters
+    try:
+        found = product_dispatch().request_targets([(name, parameters)])
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise ValueError("mode unit dispatch call") from error
+    c.require(bool(found) and {tuple(target) for target in found} <= unit["targets"]
+              and (name != "get_item" or (set(parameters) == {"TableName", "Key", "ConsistentRead"}
+                                          and parameters["ConsistentRead"] is True)), "mode unit dispatch call")
+    return parameters
+
+
 def validate_mode_read_call(operation, native, resources):
     """Design 4.2 mode-readbacks: one read of the ModeReadback key set of the start operation, on the observe alias.
 
@@ -1028,6 +1089,8 @@ class ModeEvidence(ClosedReadyEvidence):
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
         if scope.get("frame") is not None:
             validate_mode_frame_call(journal._request["operation"], scope["frame"], native, scope)
+        elif scope.get("unit") is not None:
+            validate_mode_dispatch_call(journal._request["operation"], native, scope)
         elif scope.get("reads") is not None:
             validate_mode_read_call(journal._request["operation"], native, scope["reads"])
         else:
@@ -1115,6 +1178,8 @@ def _mode_response(service, operation, response, sdk):
         return {key: response[key] for key in ("Item",) if key in response}
     if (service, operation) == ("s3", "get_object"):
         return {"Body": {"bytes": _mode_body(response["Body"])}}
+    if service == "stepfunctions":
+        return {key: response[key] for key in sorted(lc.MODE_RESPONSE_FIELDS[(service, operation)]) if key in response}
     return {}
 
 
@@ -1124,7 +1189,7 @@ class ModeBroker:
     A durable reservation precedes native IO; only lc.MODE_DEFINITE_ERRORS are definite, any other outcome poisons.
     """
     def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None, sleep=None,
-                 reads=None, wait=None):
+                 reads=None, wait=None, unit=None):
         c.require(type(journal) is AdapterJournal and type(session) is _ModeSession
                   and session.request_binding == c.sha(c.canonical(journal._request))
                   and getattr(journal, "_broker", None) is None, "one original admitted mode broker")
@@ -1137,8 +1202,11 @@ class ModeBroker:
         c.require(wait is None or (type(wait) is _ModeSession and journal._request["operation"] == "unit-start"
                                    and wait.code == "uw" and wait.alias == session.alias
                                    and wait.request_binding == session.request_binding), "mode wait original context")
+        c.require(unit is None or (type(unit) is UnitPlan and journal._request["operation"] == "unit-start"
+                                   and unit.locator.owner_sha256 == journal._request["owner"]["owner_sha256"]),
+                  "mode unit original context")
         self.aws, self.governance, self.journal, self.session, self.reads = aws, governance, journal, session, reads
-        self.wait = wait
+        self.wait, self.unit, self._dispatching, self._dispatched = wait, unit, False, False
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
         self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
@@ -1172,7 +1240,110 @@ class ModeBroker:
         launches = [entry["response"] for entry in self.journal._settled_calls() if entry["call"]["operation"] == "run_task"]
         return self.scope | {"launches": len(launches), "frame": self._frame,
                              "reads": self.reads.scope["resources"] if self._reading else None,
+                             "unit": self._unit_scope() if self._dispatching else None,
                              "launched": [task["taskArn"] for response in launches for task in response.get("tasks", [])]}
+
+    def _unit_scope(self):
+        plan = self.unit
+        start = {"stateMachineArn": self.scope["resources"]["machine_arn"], **product_dispatch().start_execution(plan.start.dispatch)}
+        return {"targets": plan.targets, "start": start, "execution": plan.execution}
+
+    def dispatch_unit(self, value):
+        """Q1b: the unit-start sequence of the plan on ux (C1 per request, dispatch-unit frame, B3 on a fresh clock, exact
+        StartExecution), then the bounded DescribeExecution wait of the exact execution ARN on uw.
+
+        Returns: {"execution", "tasks", "outputs"}; tasks and outputs stay empty until P16d. Raises: ValueError.
+        """
+        journal, plan = self.journal, self.unit
+        c.require("dispatch_unit" in lc.MODE_EFFECT_METHODS[journal._request["operation"]] and plan is not None
+                  and self.wait is not None, "mode method outside table")
+        c.require(type(value) is dict and set(value) == {"kind", "binding"} and value["kind"] == "dispatch-unit"
+                  and value["binding"] == _unit_binding(plan.locator), "mode unit dispatch binding")
+        c.require(not self._dispatched, "mode unit dispatch once")
+        self._dispatched = True
+        journal.guard()
+        c.require(self.clock() + 20 < min(self.session.deadline, self.wait.deadline), "mode finite SDK request/window")
+        unit_dispatch_steps(plan.start, read=self._unit_read, write=self._unit_write, admit=self._unit_admit,
+                            live=self._unit_live, launch=self._unit_launch)
+        return {"execution": self._unit_wait(), "tasks": [], "outputs": []}
+
+    def _unit_call(self, service, operation, parameters, session=None):
+        native = {"role": (session or self.session).alias, "service": service, "operation": operation, "parameters": parameters}
+        self._dispatching = True
+        try:
+            validate_mode_dispatch_call(self.journal._request["operation"], native, self._call_scope())
+            return self._native_call(c.canonical(native, limit=128 * 1024), service, operation, parameters, session=session)
+        finally:
+            self._dispatching = False
+
+    def _unit_read(self, request):
+        return self._unit_call("dynamodb", "get_item", request).get("Item")
+
+    def _unit_write(self, operation, request):
+        self._unit_call("dynamodb", operation, request)
+
+    def _unit_launch(self, request):
+        response = self._unit_call("stepfunctions", "start_execution",
+                                   {"stateMachineArn": self.scope["resources"]["machine_arn"], **request})
+        c.require(response.get("executionArn") == self.unit.execution, "mode unit execution")
+        return self.unit.execution
+
+    def _unit_ledger(self):
+        frames, plan = product_frames(), self.unit
+        owner, record = plan.locator.owner_sha256, plan.record
+        tenant = frames.tenant_partition(plan.locator.tenant_id)
+        keys = {"canary_id": record.canary_id, "owner_sha256": owner, "run_ids": list(plan.locator.run_ids),
+                "dispatch_id": plan.start.dispatch.dispatch_id}
+        return frames, keys, [(tenant, frames.record_key(owner, "unit")), (tenant, frames.control_key(owner)),
+                              (tenant, frames.ticket_key(owner, plan.effect))]
+
+    def _unit_admit(self):
+        plan = self.unit
+        active = self._unit_read(product_dispatch().step_reads(plan.start, "claim")[0])
+        c.require(_unit_active(plan.start, active, None), "mode unit dispatch mismatch")
+        frames, keys, (record, control, ticket) = self._unit_ledger()
+        binding = frames.ModeCanaryBinding(*plan.locator)
+        holder = UnitHolder(plan.start.dispatch.dispatch_id, plan.start.dispatch.run_id, plan.start.dispatch.tenant_id)
+        effect = frames.dispatch_effect(binding, plan.record, holder, plan.start.dispatch.unit_ids)
+
+        def build(texts):
+            c.require(texts[record] is not None and c.sha(texts[record].encode()) == plan.locator.record_sha256,
+                      "mode unit record")
+            admitted = frames.admission(self.scope["table"], frames.LedgerState(binding, plan.record, texts[control],
+                                                                               texts[ticket]), effect, plan.start.now)
+            c.require(admitted.effect_id == plan.effect, "mode unit record")
+            return None if admitted.items is None else ("transact_write_items", {"TransactItems": admitted.items})
+        self._ledger_write("dispatch-unit", [record, control, ticket], build, keys)
+
+    def _unit_live(self):
+        plan = self.unit
+        frames, keys, (record, control, ticket) = self._unit_ledger()
+        self._frame = {"name": "dispatch-unit", "binding": keys}
+        try:
+            texts = self._ledger_read([record, control, ticket])
+        finally:
+            self._frame = None
+        now = datetime.datetime.fromtimestamp(self.clock(), datetime.timezone.utc)
+        try:
+            c.require(texts[record] is not None and c.sha(texts[record].encode()) == plan.locator.record_sha256
+                      and texts[ticket] is not None, "mode unit live")
+            state, parsed = frames.require_control(texts[control], plan.record), frames.parse_ticket(texts[ticket])
+            live = (parsed.effect_id == plan.effect and parsed.state == "PENDING"
+                    and now < min(parsed.deadline, state.deadline, plan.record.canary_deadline))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError("mode unit live") from error
+        c.require(live, "mode unit live")
+
+    def _unit_wait(self):
+        stage, execution = self.journal._request["stage"], self.unit.execution
+
+        def poll():
+            return self._unit_call("stepfunctions", "describe_execution", {"executionArn": execution}, session=self.wait)
+        reply, timing = mode_wait(poll, terminal=lambda value: value.get("status") != "RUNNING",
+                                  child_deadline=min(stage["deadline"] - 38, self.wait.deadline), clock=self.clock,
+                                  sleep=self.sleep)
+        self.journal.__dict__.setdefault("_timings", []).append(timing)
+        return reply
 
     def readbacks(self):
         """Design 4.2 mode-readbacks frame: the ModeReadback key set and projection on the stage observe session, each

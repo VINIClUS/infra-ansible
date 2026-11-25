@@ -68,7 +68,8 @@ def _locator(case, **changes):
 
 def _targets(case, locator=None, units=None, table=None):
     return _mb().unit_start_targets(locator or _locator(case), case["units"] if units is None else units,
-                                    table=table or case["table"], now=datetime.datetime.fromisoformat(case["now"]))
+                                    table=table or case["table"], now=datetime.datetime.fromisoformat(case["now"]),
+                                    promotion_id=case["promotion_id"])
 
 
 def _requests(case):
