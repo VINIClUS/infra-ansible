@@ -275,7 +275,8 @@ def _mode_targets(scope):
             "output": data + "/" + resources["scope"]["output_object_keys"][0],
             "audit": resources["audit_bucket_arn"] + "/" + (resources["scope"]["audit_object_keys"] or ["probe"])[0],
             "task": tasks + "/" + "0" * 32, "foreign_task": tasks + "-foreign/" + "0" * 32,
-            "execution": resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":probe"}
+            "execution": resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":probe",
+            "other_execution": resources["machine_arn"].replace(":stateMachine:", ":execution:") + "-other:probe"}
 
 
 def _mode_seed_specs(targets, own, other):
@@ -308,7 +309,8 @@ def _mode_start_specs(targets):
                "describe-own-execution": (targets["execution"], {}, False)},
         "uw": {"describe-own-execution": (targets["execution"], {}, True), "describe-own-task": (targets["task"], cluster, True),
                "describe-foreign-cluster-task": (targets["foreign_task"], foreign, False),
-               "start-execution": (resources["machine_arn"], {}, False)},
+               "start-execution": (resources["machine_arn"], {}, False),
+               "describe-other-machine-execution": (targets["other_execution"], {}, False)},
         "rx": {"run-recovery": (revisions["recovery"], cluster, True), "pass-recovery-role": (roles["recovery"], passed, True),
                "put-ticket": (table, tenant, True), "run-audit-revision": (revisions["audit"], cluster, False),
                "run-other-cluster": (revisions["recovery"], foreign, False), "pass-unit-role": (roles["unit"], passed, False),
