@@ -112,7 +112,8 @@ def _rewrite(path, raw):
     path.write_bytes(raw)
 
 
-@pytest.mark.parametrize("mutation", ["manifest-byte", "fixture-byte", "symlink", "missing", "kind", "extra"])
+@pytest.mark.parametrize("mutation", ["manifest-byte", "fixture-byte", "symlink", "missing", "kind", "extra", "entry-sha",
+                                      "entry-size"])
 def test_original_de_fixture_recusa_byte_fora_do_manifesto_de_fonte_ou_do_de_fixture(monkeypatch, tmp_path, mutation):
     prepared, arguments, _, _ = _world(monkeypatch)
     local = f"{DIRECTORY}/cnes-local-v1.parquet"
@@ -130,10 +131,15 @@ def test_original_de_fixture_recusa_byte_fora_do_manifesto_de_fonte_ou_do_de_fix
         if mutation == "missing":
             (root / local).unlink()
     root, governance, _ = _product(tmp_path, arguments["governance"], change=change)
-    if mutation in ("kind", "extra"):
+    if mutation in ("kind", "extra", "entry-sha", "entry-size"):
         manifest = json.loads((root / lc.MODE_FIXTURE_MANIFEST).read_bytes())
+        entry = manifest["files"]["cnes-local-v1.parquet"]
         if mutation == "kind":
-            manifest["files"]["cnes-local-v1.parquet"]["source_type"] = "SIHD"
+            entry["source_type"] = "SIHD"
+        elif mutation == "entry-sha":
+            entry["sha256"] = "0" * 64
+        elif mutation == "entry-size":
+            entry["size"] += 1
         else:
             manifest["files"]["other.parquet"] = dict(manifest["files"]["cnes-local-v1.parquet"])
         raw = (json.dumps(manifest, indent=2) + "\n").encode()
