@@ -88,7 +88,7 @@ def _terminal_required(kind, window):
         c.require(kind == "failed-prepare-quiescent" and window["close"] is None
                   and window["stage"] == "application-prepare" and window["decision"] is None,
                   "closed terminal kind/phase")
-        required = {"restoration", "routing", "quiescence"}
+        required = {"restoration", "quiescence"}
     return required
 
 
@@ -100,9 +100,9 @@ TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-rea
                          "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision",
                          "unit": "mode", "recovery": "mode", "audit": "mode"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
-# SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
 TERMINAL_READBACK_FIELDS = "version kind members quiescent state_clean pending unknown observed_at"
+TERMINAL_PENDING_KINDS = frozenset({"member-unresolved", "permit-held"})
 # host_gate.validate_closed_ready: member identity (exact types of _closed_members), frozen member
 # shape, resolved set, closed-ready.
 MEMBER_IDENTITY_TYPES = {"dispatch_id": (str,), "request_sha256": (str,), "generation": (int,), "initial_state": (str,),
@@ -169,6 +169,7 @@ def _member(member, fields):
 
 def routing_terminal_validator(source, *, owner, window, observations):
     """Routing facts from the `routing` journal observation (reopen)."""
+    c.require(window["stage"] in {"final", "recovery"}, "terminal routing stage")
     value = _versioned(_terminal_sources("routing", source, observations)["routing"], "routing", ROUTING_FIELDS)
     c.require(value["fence"] in {"OPEN", "CLOSED"} and type(value["routes_match"]) is bool, "terminal routing facts")
     return {"sha256": c.sha(c.canonical(source)), "facts": {"fence": value["fence"], "routes_match": value["routes_match"]}}
@@ -218,8 +219,14 @@ def quiescence_terminal_validator(uncertainty):
     def validator(source, *, owner, window, observations):
         found = _terminal_sources("quiescence", source, observations)
         value = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
+        pending = value["pending"]
         c.require(type(value["quiescent"]) is bool and type(value["state_clean"]) is bool
-                  and type(value["pending"]) is list and type(value["unknown"]) is list, "terminal quiescence facts")
+                  and type(pending) is list and type(value["unknown"]) is list
+                  and value["quiescent"] is (pending == []), "terminal quiescence facts")
+        for entry in pending:
+            c.closed(entry, "kind reference_sha256")
+            c.require(entry["kind"] in TERMINAL_PENDING_KINDS, "terminal quiescence pending")
+            c.digest(entry["reference_sha256"])
         held = uncertainty()
         c.require(type(held) is list, "keeper uncertainty")
         return {"sha256": c.sha(c.canonical(source)), "facts": {
@@ -1759,12 +1766,17 @@ def _trigger_producer(governance, kind):
         return lc.FENCE_PREPARE_PRODUCER["job_name"], lc.FENCE_PREPARE_PRODUCER["step"]
     if kind == "host":
         return HOST_JOB, None
+    if kind == "host-recovery":
+        from tools.cnesdata_delivery.terminal_gate import HOST_RECOVERY_JOB
+        return HOST_RECOVERY_JOB, None
     name, step = _observer_step(governance) if kind == "observer-bootstrap" else _deploy_step(governance, kind)
     return step["job_name"], name
 
 
 def _stage_kind(stage, keeper):
     """The stage trigger, or the operation trigger (OPERATION_TRIGGERS) while that operation result is unsettled."""
+    if stage == "recovery":
+        return lc.OPERATION_TRIGGERS["rollback-api-static"][1]
     operation_stage, event = lc.OPERATION_TRIGGERS["inventory"]
     if stage == operation_stage and keeper.static_inventory is None:
         return event
@@ -1779,12 +1791,14 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
     event carries only the job: its handler authenticates the public host handoff (DD-3).
     Internal triggers (static, unit) are no event: the previous handler advances on its own observation.
     In application-prepare the observer-bootstrap deploy publication is the event until the keeper
-    holds its settled inventory (P15b); then the prepared publication is.
+    holds its settled inventory (P15b); then the prepared publication is. In recovery, with the lease
+    decision, the host rollback-previous job is the host-recovery event (DD-3 amendment, P17).
     """
     def next_event(window):
         stage = window["stage"]
-        c.require(window["decision"] is None and stage in lc.STAGE_TRIGGERS and lc.STAGE_TRIGGERS[stage][0] in KEEPER_EVENTS,
-                  f"stage trigger not connected stage={stage}")
+        recovery = stage == "recovery" and window["decision"] is not None
+        c.require(recovery or (window["decision"] is None and stage in lc.STAGE_TRIGGERS
+                               and lc.STAGE_TRIGGERS[stage][0] in KEEPER_EVENTS), f"stage trigger not connected stage={stage}")
         c.require((window["close"] is None) == (stage == "application-prepare"), "stage/close consistency")
         now = clock()
         c.require(now < lc.terminal_deadline(window), f"stage deadline elapsed stage={stage}")
@@ -1793,7 +1807,7 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
         job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard)
         if job is None or job["status"] != "completed" or job["conclusion"] != "success":
             return None
-        if kind == "host":
+        if kind in ("host", "host-recovery"):
             return {"kind": kind, "reference": {"job_id": job["id"]}}
         reference, _, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
         return {"kind": kind, "reference": reference}
@@ -2034,6 +2048,7 @@ class Keeper:
         self.static_inventory = None
         self.static_inputs = None
         self.phase_c_elements = {}
+        self.host_recovery = None
 
     def attach(self, context):
         """Register an original journal/broker/readback; its uncertainty keeps the lease held."""
@@ -2174,7 +2189,7 @@ class Keeper:
             c.closed(result, "sha256 facts")
             c.closed(result["facts"], TERMINAL_VALIDATOR_FACTS[kind])
             inputs[kind], facts[kind] = c.digest(result["sha256"]), result["facts"]
-        quiet, routing = facts["quiescence"], facts["routing"]
+        quiet, routing = facts["quiescence"], facts.get("routing", {"fence": None, "routes_match": None})
         assessment = {"kind": reference["kind"], "fence": routing["fence"], "routes_match": routing["routes_match"],
                       "state_clean": quiet["state_clean"], "quiescent": quiet["quiescent"], "pending": quiet["pending"],
                       "unknown": quiet["unknown"], "observed_at": quiet["observed_at"]}
@@ -2301,12 +2316,12 @@ HOST_REUSABLE = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host
 HOST_MEMBER, HOST_MEMBER_LIMIT, HOST_ZIP_LIMIT = "host-handoff.json", 32768, 65536
 
 
-def _host_job(api, owner, guard):
+def _host_job(api, owner, guard, name=HOST_JOB):
     run_id, attempt = owner["run_id"], owner["run_attempt"]
     guard.check(20)
     listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page=1")
     guard.check()
-    found = [job for job in listing["jobs"] if job["name"] == HOST_JOB]
+    found = [job for job in listing["jobs"] if job["name"] == name]
     c.require(listing["total_count"] == len(listing["jobs"]) <= 100 and len(found) == 1, "host handoff job inventory")
     job = found[0]
     c.require((job["run_id"], job["run_attempt"], job["head_sha"]) == (run_id, attempt, owner["source_sha"])
@@ -2320,13 +2335,13 @@ def _host_job(api, owner, guard):
     return job
 
 
-def _host_handoff_archive(api, owner, job, guard):
+def _host_handoff_archive(api, owner, job, guard, artifact="cnesdata-host-handoff"):
     run_id = owner["run_id"]
     guard.check(20)
     listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100&page=1")
     guard.check()
     c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "host handoff artifact inventory")
-    found = [item for item in listing["artifacts"] if item["name"] == f"cnesdata-host-handoff-{run_id}-{owner['run_attempt']}"]
+    found = [item for item in listing["artifacts"] if item["name"] == f"{artifact}-{run_id}-{owner['run_attempt']}"]
     c.require(len(found) == 1, "host handoff artifact unique")
     meta = found[0]
     c.require(meta["expired"] is False and meta["workflow_run"]["id"] == run_id
@@ -2360,10 +2375,11 @@ def _host_handoff_member(archive):
     return raw
 
 
-def authenticate_host_handoff(api, owner, *, guard):
+def authenticate_host_handoff(api, owner, *, guard, job=HOST_JOB, artifact="cnesdata-host-handoff"):
     """Authenticated host-handoff bytes of the owner run: job and steps, artifact, digest, member, canonical JSON.
 
-    Args: api GitHub reader, owner binding, keeper guard. Returns: the exact artifact member bytes.
+    Args: api GitHub reader, owner binding, keeper guard, the host job and artifact prefix (host-gate or the
+    rollback-previous host-recovery job). Returns: the exact artifact member bytes.
     Raises: ValueError on any missing or divergent proof.
     """
     run_id, attempt = owner["run_id"], owner["run_attempt"]
@@ -2373,8 +2389,8 @@ def authenticate_host_handoff(api, owner, *, guard):
     c.require((run["id"], run["run_attempt"], run["head_sha"]) == (run_id, attempt, owner["source_sha"]), "host handoff run")
     refs = [item for item in run.get("referenced_workflows", []) if item["path"].startswith(HOST_REUSABLE)]
     c.require(len(refs) == 1 and refs[0]["path"] == HOST_REUSABLE + c.digest(refs[0]["sha"], 40), "host handoff reusable")
-    job = _host_job(api, owner, guard)
-    raw = _host_handoff_member(_host_handoff_archive(api, owner, job, guard))
+    found = _host_job(api, owner, guard, job)
+    raw = _host_handoff_member(_host_handoff_archive(api, owner, found, guard, artifact))
     value = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)
     caller = value.get("caller") if type(value) is dict else None
     c.require(type(caller) is dict and value.get("producer_sha") == refs[0]["sha"]
@@ -2395,6 +2411,7 @@ def _handoff_validator(role):
     """Lazy artifact validator: the handoff is authenticated when the keeper invokes it, before the factory is built."""
     def provider(keeper):
         def validator(source, *, owner, window, observations):
+            c.closed(source, TERMINAL_SOURCE_ROLES["host" if role == "host-handoff" else "decision"])
             raw = authenticate_host_handoff(keeper.api, owner, guard=KeeperGuard(keeper))
             if role == "host-handoff":
                 return host_terminal_validator(raw)(source, owner=owner, window=window, observations=observations)
@@ -2443,18 +2460,22 @@ def _mode_validator(mode):
     return provider
 
 
+def _restoration_validator(keeper):
+    from tools.cnesdata_delivery.terminal_gate import restoration_validator
+    return restoration_validator(keeper)
+
+
 # Closed production registries. They are code constants, never read from governance, environment or
-# request. Each kind maps to a label and a provider that builds the validator for one keeper: SYNTHETIC
-# where the product has no handler (R3: routing, terminal-readback), product-mode where the DD-4
-# observation comes from the product observe handler. restoration stays without a validator, so
-# finish() refuses the failed-* terminals.
+# request. Each kind maps to a label naming the origin of its bytes and a provider that builds the
+# validator for one keeper.
 TERMINAL_VALIDATORS = {
-    "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
-    "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
-    "membership": ("synthetic-membership", _journal_validator(membership_terminal_validator)),
-    "quiescence": ("synthetic-quiescence", _quiescence_validator),
-    "host": ("synthetic-host", _handoff_validator("host-handoff")),
-    "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+    "routing": ("product-reopen", _journal_validator(routing_terminal_validator)),
+    "static": ("product-publication", _journal_validator(static_terminal_validator)),
+    "membership": ("product-membership", _journal_validator(membership_terminal_validator)),
+    "quiescence": ("product-terminal-readback", _quiescence_validator),
+    "host": ("infra-host-handoff", _handoff_validator("host-handoff")),
+    "decision": ("infra-recovery-decision", _handoff_validator("recovery-decision")),
+    "restoration": ("keeper-restoration", _restoration_validator),
     **{mode: ("product-mode-" + mode, _mode_validator(mode)) for mode in ("unit", "recovery", "audit")},
 }
 KEEPER_EVENT_SOURCE = stage_event_source
@@ -3011,7 +3032,7 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
 
 
 def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
-                   phase_c_runtime, clock=time.time):
+                   phase_c_runtime, clock=time.time, state=None):
     """Handlers of the keeper triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3, P15b).
 
     observer-bootstrap: authenticated inventory inputs, the inventory operation under the observer sp-i session and
@@ -3026,10 +3047,11 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     refusal or a lapse ends held. phase-c-recovery and phase-c-audit (DD-3, external): the C deploy publication,
     child of the keeper checkpoint, the keeper-side phase-c element (P17 ruling 6) over the B checkpoint re-read and
     bound by the window the CAS chain holds, then the mode run and its acceptance (DD-4), the next window with the C
-    deploy checkpoint.
+    deploy checkpoint. state is shared with the terminal producer (P17): the bytes of the current window checkpoint,
+    the accepted host receipt and, after a recovery_required host handoff with its decision, the recovery decision.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    state = {}
+    state = {} if state is None else state
 
     def observer_bootstrap(current, reference):
         guard = KeeperGuard(current)
@@ -3088,7 +3110,8 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  checkpoint_sha256=c.sha(files["checkpoint.json"]),
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
-        state.update({"prepared": files, "activation": activation, "terraform": terraform, "static-plan": static_plan,
+        state.update({"prepared": files, "checkpoint": files["checkpoint.json"], "activation": activation,
+                      "terraform": terraform, "static-plan": static_plan,
                       "close-drain": journal._observation_bytes[observed[0]["sha256"]],
                       "revisions": {"unit": targets["processor_active_unit_task_definition_arn"],
                                     "recovery": targets["scheduler_recovery_task_definition_arn"],
@@ -3109,6 +3132,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
         current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
                                                now=admitted))
+        state["checkpoint"] = published["checkpoint.json"]
         closed_ready(current, published, moments)
 
     def closed_ready(current, published, moments):
@@ -3150,6 +3174,10 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         guard = KeeperGuard(current)
         raw = authenticate_host_handoff(api, owner, guard=guard)
         handoff = _versioned(c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT), "host-handoff", HOST_HANDOFF_FIELDS)
+        if handoff["status"] == "recovery_required":
+            from tools.cnesdata_delivery.terminal_gate import enter_recovery
+            enter_recovery(current, raw, ready=ready, state=state, clock=clock)
+            return
         c.require(handoff["status"] == "accepted" and handoff["closed_ready_sha256"] == ready,
                   "host handoff accepted for the keeper closed-ready")
         c.require(not current.uncertainty(), "host handoff with unresolved keeper uncertainty")
@@ -3157,6 +3185,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window = current.lease.check()["lifecycle"]
         c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
         current.lease.checkpoint(lc.static_window(window, now=admitted))
+        state["host-receipt"] = raw
         publish_static(current, raw)
         mode(current, "unit", None)
 
@@ -3229,6 +3258,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             if purpose == "phase-c-recovery":
                 state["phase-c-recovery-window"] = window
             mode(current, purpose.removeprefix("phase-c-"), c.sha(published["checkpoint.json"]))
+            state["checkpoint"] = published["checkpoint.json"]
         return handler
 
     def phase_c_sources(current, purpose, publication, window, owner):
@@ -3252,30 +3282,49 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             "phase-c-recovery": phase_c("phase-c-recovery"), "phase-c-audit": phase_c("phase-c-audit")}
 
 
-KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit", "host-recovery")
 
 
-def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over the six external keeper triggers; it never returns.
+def _keeper_event(keeper, window, next_event, handlers):
+    event = next_event(window)
+    if event is None:
+        return False, None
+    c.closed(event, "kind reference")
+    c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
+    return True, handlers[event["kind"]](keeper, event["reference"])
 
-    next_event is the authenticated event producer and handlers holds exactly the KEEPER_EVENTS
-    handlers: the ratified stage triggers (prepared, phase-b, host and the two C rows) and the
-    observer-bootstrap operation trigger (P15b); static -> unit is internal to the host handler and
-    unit -> phase-c-recovery is internal (DD-3). At the unit stage the producer refuses and the lease
-    stays held (R18): there is no finish, terminal publication or dispatch here. Any exception leaves
-    the lease held.
+
+def keeper_loop(keeper, *, next_event, handlers, terminal, poll=5, sleep=time.sleep):
+    """The single keeper polling loop over the external keeper triggers; it returns the terminal outcome.
+
+    next_event is the authenticated event producer and handlers holds exactly the KEEPER_EVENTS handlers:
+    the ratified stage triggers (prepared, phase-b, host and the two C rows), the observer-bootstrap
+    operation trigger (P15b) and the host-recovery operation trigger (DD-3 amendment, P17), whose
+    failed-closed terminal outcome ends the loop. At the final stage terminal.final closes accepted-open
+    (internal). A refusal of the producer or a handler before the close goes to terminal.prepare_failure;
+    any other exception propagates unchanged (after a release too) and a recovery stage deadline passed without
+    host-recovery leaves the lease held.
     """
     c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
     while True:
         keeper.tick()
-        event = next_event(keeper.lease.check()["lifecycle"])
-        if event is None:
+        window = keeper.lease.check()["lifecycle"]
+        if window["stage"] == "final":
+            return terminal.final(keeper)
+        c.require(window["stage"] != "recovery" or keeper.clock() < window["deadline"],
+                  "recovery stage deadline elapsed without host-recovery")
+        try:
+            handled, outcome = _keeper_event(keeper, window, next_event, handlers)
+        except Exception as error:
+            record, _ = keeper.lease.store.get()
+            if record is None or record.get("status") != "held" or record["lifecycle"]["close"] is not None:
+                raise
+            return terminal.prepare_failure(keeper, error)
+        if outcome is not None:
+            return outcome
+        if not handled:
             sleep(poll)
-            continue
-        c.closed(event, "kind reference")
-        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
-        handlers[event["kind"]](keeper, event["reference"])
 
 
 def _verify_session(client, governance, authority, run, expires):
@@ -3295,10 +3344,11 @@ def _verify_session(client, governance, authority, run, expires):
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry: compose the original keeper and run the stage loop to the unit stage.
+    """Operational keeper entry: compose the original keeper and run the stage loop to its terminal outcome.
 
     The order is the contract: release, adapter closure, phase-c child runtime, owner authority, credential
     window, AWS and session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    Returns: the terminal outcome {kind, promotion_status, receipt}.
     """
     import os
     from pathlib import Path
@@ -3350,10 +3400,16 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
         c.require(value["Expiration"].timestamp() >= stage["deadline"], "operation session expiration")
         return client
 
+    from tools.cnesdata_delivery.terminal_gate import TerminalSteps
+    state = {}
     handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
                               authority=authority, product=product, credential_limit=credential_limit,
-                              operation_session=operation_session, phase_c_runtime=phase_c_runtime, clock=keeper.clock)
-    keeper_loop(keeper, next_event=next_event, handlers=handlers)
+                              operation_session=operation_session, phase_c_runtime=phase_c_runtime, clock=keeper.clock,
+                              state=state)
+    terminal = TerminalSteps(keeper=keeper, api=api, governance=governance, run=run, state=state, product=product,
+                             credential_limit=credential_limit, clock=keeper.clock)
+    return keeper_loop(keeper, next_event=next_event, handlers=dict(handlers) | {"host-recovery": terminal.host_recovery},
+                       terminal=terminal)
 
 
 def credentials(admitted, *, product=None):
@@ -3439,7 +3495,10 @@ def main(argv=None):
     if args.operation == "credentials":
         return credentials(admitted)
     if args.operation == "execute":
-        return execute(admitted)
+        outcome = execute(admitted)
+        if outcome["promotion_status"] != "accepted":
+            raise SystemExit(f"terminal promotion_status={outcome['promotion_status']} kind={outcome['kind']}")
+        return outcome
     return admitted
 
 

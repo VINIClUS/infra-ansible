@@ -395,7 +395,8 @@ def test_gatilho_interno_do_unit_nao_e_evento_do_produtor():
 
 def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
     from tools.cnesdata_delivery import application_gate as ag
-    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit",
+                                "host-recovery")
     assert {event for event, _ in lc.STAGE_TRIGGERS.values()} - set(ag.KEEPER_EVENTS) == {"publish-static", "unit"}
 
 
@@ -1219,4 +1220,5 @@ def test_handlers_do_keeper_sao_exatamente_os_eventos_externos(monkeypatch):
     from test_cnesdata_stage_events import _stage_world
     from tools.cnesdata_delivery import application_gate as ag
     world = _stage_world(monkeypatch)
-    assert set(world.handlers) == set(ag.KEEPER_EVENTS) and all(callable(item) for item in world.handlers.values())
+    assert set(world.handlers) == set(ag.KEEPER_EVENTS) - {"host-recovery"}
+    assert all(callable(item) for item in world.handlers.values())

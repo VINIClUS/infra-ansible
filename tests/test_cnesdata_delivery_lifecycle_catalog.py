@@ -794,10 +794,30 @@ def test_caminho_do_catalogo_existe_nos_membros_de_saida_do_botocore(tipo, attri
     botocore_walk(service, operation, path)
 
 
+LEAF_OMITTED_TYPES = {"aws_ecs_task_definition"}
+ECS_OMITTED_PATHS = [path for path in OMITTED_PATHS if path[0] in LEAF_OMITTED_TYPES]
+
+
+def omitted_member_is_optional(tipo, attribute):
+    service, operation, path, _ = catalog().CATALOG[tipo][attribute]
+    required = botocore_walk(service, operation, path)
+    return not required[-1] if tipo in LEAF_OMITTED_TYPES else not all(required)
+
+
 @pytest.mark.parametrize("tipo,attribute", OMITTED_PATHS)
 def test_omissao_declarada_aponta_para_membro_que_a_aws_pode_omitir(tipo, attribute):
+    assert omitted_member_is_optional(tipo, attribute)
+
+
+@pytest.mark.parametrize("tipo,attribute", ECS_OMITTED_PATHS)
+def test_omissao_declarada_com_a_folha_obrigatoria_no_botocore_e_recusada(tipo, attribute, monkeypatch, tmp_path):
+    document = json.loads(BOTOCORE_MEMBERS.read_text())
     service, operation, path, _ = catalog().CATALOG[tipo][attribute]
-    assert not all(botocore_walk(service, operation, path))
+    document["operations"][f"{service} {operation}"][".".join(path[:-1])][path[-1]][1] = True
+    mutated = tmp_path / "members.json"
+    mutated.write_text(json.dumps(document))
+    monkeypatch.setitem(globals(), "BOTOCORE_MEMBERS", mutated)
+    assert not omitted_member_is_optional(tipo, attribute)
 
 
 @pytest.mark.parametrize("tipo,attribute", sorted(REAL_PATHS))

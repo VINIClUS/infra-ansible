@@ -71,6 +71,15 @@ jobs:
           import json, os
           value = json.loads(os.environ["OBSERVER_CONFIG"])
           values = [item for item in value.values() if isinstance(item, str)] + list(value["roles"].values())
+          pending = [value["shared_outputs"]]
+          while pending:
+              node = pending.pop()
+              if isinstance(node, dict):
+                  pending += list(node.values())
+              elif isinstance(node, list):
+                  pending += node
+              elif isinstance(node, str) and len(node) >= 12:
+                  values.append(node)
           for item in values:
               print("::add-mask::" + item)
           PY
@@ -105,12 +114,14 @@ jobs:
               "iam_source.py",
               "lifecycle_contract.py",
               "lifecycle_runtime.py",
+              "mode_broker.py",
               "outputs.py",
               "producers/aws_reader.py",
               "producers/chain.py",
               "producers/drift_handoff.py",
               "producers/observer.py",
               "producers/phase_inputs.py",
+              "producers/rehearsal_plan.py",
               "provenance.py",
               "runtime.py",
               "session_grouping.py",
@@ -118,7 +129,7 @@ jobs:
               "session_policy.py",
               "signing_gate.py",
               "static_inputs.py",
-              "mode_broker.py",
+              "terminal_gate.py",
               "runtime-requirements.txt"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
@@ -149,11 +160,31 @@ jobs:
                     "observed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
           open(os.path.join(os.environ["RUNNER_TEMP"], "request.json"), "w").write(json.dumps(value))
           PY
+      - name: Install pinned OpenTofu
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/observer-bin"
+          release="https://github.com/opentofu/opentofu/releases/download/v1.13.2"
+          curl -fsSL --max-time 120 -o "${RUNNER_TEMP}/tofu.zip" "${release}/tofu_1.13.2_linux_amd64.zip"
+          echo "723bebb0df8411daff1e5fc3862e28ff5581fe5634087f4c29a9aa41d78208b5  ${RUNNER_TEMP}/tofu.zip" \
+            | sha256sum -c -
+          unzip -p "${RUNNER_TEMP}/tofu.zip" tofu > "${RUNNER_TEMP}/observer-bin/tofu"
+          chmod 755 "${RUNNER_TEMP}/observer-bin/tofu"
+          echo "${RUNNER_TEMP}/observer-bin" >> "${GITHUB_PATH}"
+      - name: Check out the product source at the pin
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: VINIClUS/CnesData
+          ref: ${{ inputs.source_sha }}
+          path: product
+          persist-credentials: false
       - name: Observe with the read-only role
         env:
           REPORT_HMAC_KEY: ${{ secrets.report_hmac_key }}
           OBSERVER_CONFIG: ${{ secrets.observer_config }}
           OBSERVER_ROLE_ARN: ${{ secrets.observer_role_arn }}
+          PRODUCT_ROOT: ${{ github.workspace }}/product
         run: >-
           python3 -m tools.cnesdata_delivery.producers.observer
           --request "${RUNNER_TEMP}/request.json" --out "${RUNNER_TEMP}/observed"
@@ -223,6 +254,7 @@ jobs:
               "iam_source.py",
               "lifecycle_contract.py",
               "lifecycle_runtime.py",
+              "mode_broker.py",
               "outputs.py",
               "producers/assembler.py",
               "producers/baseline_commitments.py",
@@ -239,7 +271,7 @@ jobs:
               "session_policy.py",
               "signing_gate.py",
               "static_inputs.py",
-              "mode_broker.py"
+              "terminal_gate.py"
             ];
             fs.mkdirSync("tools/cnesdata_delivery/producers", {recursive: true});
             for (const name of modules) {
