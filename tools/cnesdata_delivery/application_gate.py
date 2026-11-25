@@ -589,6 +589,12 @@ class Context:
         reply = self.exchange({"kind": "mode-readbacks"})
         c.require(type(reply) is dict and reply, "mode readbacks reply")
         return reply
+    def dispatch_unit(self, binding):
+        fields = ("tenant_id", "run_ids", "owner_sha256", "record_sha256", "phase", "context_kind")
+        value = {name: getattr(binding, name) for name in fields}
+        reply = self.exchange({"kind": "dispatch-unit", "binding": value | {"run_ids": list(value["run_ids"])}})
+        c.closed(reply, "execution tasks outputs")
+        return reply
 start = receive()
 c.closed(start, "kind request")
 c.require(start["kind"] == "start", "fixed adapter start")
@@ -629,12 +635,14 @@ def _adapter_message(frame, journal):
         c.closed(value, "kind role service operation parameters")
         c.require(type(getattr(journal, "_broker", None)) in _brokers(), "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
-    if kind in lc.MODE_LEDGER_FRAMES or kind == "mode-readbacks":
+    if kind in lc.MODE_LEDGER_FRAMES or kind in ("mode-readbacks", "dispatch-unit"):
         from tools.cnesdata_delivery.mode_broker import ModeBroker
         c.require(type(getattr(journal, "_broker", None)) is ModeBroker, "mode method outside table")
         if kind == "mode-readbacks":
             c.closed(value, "kind")
             return journal._broker.readbacks(), None
+        if kind == "dispatch-unit":
+            return journal._broker.dispatch_unit(value), None
         return journal._broker.frame(value), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
