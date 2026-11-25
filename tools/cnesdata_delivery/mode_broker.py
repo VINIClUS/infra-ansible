@@ -355,16 +355,36 @@ def mode_readback_bytes(mode, resources, responses):
     """
     calls = mode_readback_calls(mode, resources)
     c.require(type(responses) is dict and set(responses) == set(MODE_READBACK_KEYS[mode]), "mode readback key set")
+    return _readback_document(calls, {call["key"]: _readback_piece(call, responses[call["key"]]) for call in calls})
+
+
+def _readback_piece(call, response):
+    projected = _PROJECTIONS[call["key"].partition(".")[0]](response, call["parameters"])
+    _integral(projected)
+    return projected
+
+
+def _readback_document(calls, pieces):
     document = {}
     for call in calls:
         family, _, member = call["key"].partition(".")
-        projected = _PROJECTIONS[family](responses[call["key"]], call["parameters"])
-        _integral(projected)
         if member:
-            document.setdefault(family, {})[member] = projected
+            document.setdefault(family, {})[member] = pieces[call["key"]]
         else:
-            document[family] = projected
+            document[family] = pieces[call["key"]]
     return c.canonical(document)
+
+
+def mode_readback_request(owner, window, mode):
+    """Ruling 5: the binding of one ModeReadback run, its <mode>-readbacks namespace, owner, caller and held checkpoint.
+
+    Returns: the request mapping the session and every intent bind. Raises: ValueError outside the three modes.
+    """
+    c.require(mode in lc.MODE_READBACK_OPERATIONS, "mode readback original context")
+    return {"operation": lc.MODE_READBACK_OPERATIONS[mode],
+            "owner": {key: owner[key] for key in [*lc.OWNER_FIELDS, "owner_sha256"]},
+            "caller": lc.application_identity(owner, required=True), "checkpoint_sha256": c.digest(window["checkpoint_sha256"]),
+            "stage": {key: window[key] for key in lc.ADAPTER_STAGE_FIELDS.split()}}
 
 
 _SUBNET = re.compile(r"subnet-[0-9a-f]{8,17}")
@@ -996,6 +1016,160 @@ class ModeBroker:
             definite = lc.MODE_DEFINITE_ERRORS.get((service, operation))
             c.require(definite is not None and code == definite[0], "mode native SDK outcome unknown")
             return response, {"Error": {"Code": code}}, definite[1]
+
+
+_READBACK_RECEIPT = "schema_version intent_sha256 response_sha256 request_id server_date"
+
+
+class ModeReadback:
+    """Design 4.4 and ruling 5: the closed reads of one mode on the stage observe session, each behind a durable
+    <mode>-readbacks intent, response and receipt, and one observation whose handoff re-verifies the whole chain.
+
+    Attached to the keeper before any IO; a failure or an unreceipted call keeps the lease held.
+    """
+    def __init__(self, aws, governance, session, *, guard, mode, clock=None):
+        from tools.cnesdata_delivery.application_gate import KeeperGuard
+        keeper = guard.keeper if type(guard) is KeeperGuard else None
+        record = keeper.lease.check() if type(keeper) is Keeper else None
+        c.require(record is not None and type(session) is _ModeSession and mode in lc.MODE_READBACK_OPERATIONS
+                  and session.code == lc.MODE_SESSION_OPERATIONS[mode + "-observe"][0] and session.alias == "mode_observe",
+                  "mode readback original context")
+        self._request = mode_readback_request(lc.owner_binding(record), record["lifecycle"], mode)
+        c.require(session.request_binding == c.sha(c.canonical(self._request)), "mode readback original context")
+        self.aws, self.governance, self.keeper, self.session, self.mode = aws, governance, keeper, session, mode
+        self.resources, self.clock, self._guard = session.scope["resources"], clock or time.time, guard
+        self._failed, self._inflight, self._pending, self._unknown = False, None, [], []
+        self._observations, self._observation_bytes, self.head = [], {}, None
+        keeper.attach(self)
+
+    @property
+    def pending(self):
+        return c.loads(c.canonical(self._pending), canonical=True)
+
+    @property
+    def unknown(self):
+        return c.loads(c.canonical(self._unknown), canonical=True)
+
+    def guard(self):
+        c.require(not self._failed, "mode readback failed; original recovery required")
+        try:
+            self._guard.check()
+        except BaseException:
+            self._failed = True
+            raise
+
+    def read(self):
+        """Returns: the readbacks observation bytes. Raises: ValueError; a call without its receipt poisons."""
+        c.require(not self._observations and self.head is None, "mode readback once")
+        calls = mode_readback_calls(self.mode, self.resources)
+        pieces = {call["key"]: self._call(sequence, call) for sequence, call in enumerate(calls)}
+        raw = _readback_document(calls, pieces)
+        self.guard()
+        self._observation_bytes[c.sha(raw)] = raw
+        self._observations.append({"kind": "readbacks", "sha256": c.sha(raw), "size": len(raw)})
+        return raw
+
+    def original(self):
+        """Ruling 5 handoff: the chain re-read from sequence 0, each intent rebuilt byte for byte, each receipt over its
+        intent and response, the head equal and the document recomputed equal to the observation.
+
+        Returns: the readbacks bytes. Raises: ValueError mode readback chain.
+        """
+        c.require(len(self._observations) == 1 and not self._failed and self._inflight is None
+                  and not self._pending and not self._unknown, "mode readback original observation")
+        calls = mode_readback_calls(self.mode, self.resources)
+        pieces, previous = {}, None
+        try:
+            for sequence, call in enumerate(calls):
+                pieces[call["key"]], previous = self._link(sequence, call, previous)
+        except (ValueError, TypeError, KeyError) as error:
+            raise ValueError("mode readback chain") from error
+        raw = self._observation_bytes[self._observations[0]["sha256"]]
+        c.require(previous == self.head and _readback_document(calls, pieces) == raw, "mode readback chain")
+        return raw
+
+    def _intent(self, sequence, call, previous):
+        native = {"role": self.session.alias, "service": call["service"], "operation": call["operation"],
+                  "parameters": call["parameters"]}
+        request = self._request
+        return c.canonical({"schema_version": 2, "operation": request["operation"], "owner": request["owner"],
+                            "caller": request["caller"], "checkpoint_sha256": request["checkpoint_sha256"],
+                            "sequence": sequence, "previous": previous, "role_session_sha256": self.session.commitment,
+                            "call": native})
+
+    def _keys(self, sequence):
+        from tools.cnesdata_delivery.lifecycle_runtime import closed_ready_evidence_keys
+        request = self._request
+        return closed_ready_evidence_keys(self.governance, owner=request["owner"], caller=request["caller"],
+                                          checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence,
+                                          operation=request["operation"])
+
+    def _link(self, sequence, call, previous):
+        keys, bucket = self._keys(sequence), self.governance["evidence_bucket"]
+        intent, response, receipt = (self.aws.get(bucket, keys[name], maximum=1024**2, absent=True)[0]
+                                     for name in ("intent", "response", "receipt"))
+        c.require(intent == self._intent(sequence, call, previous), "mode readback chain")
+        seal = c.loads(receipt, canonical=True)
+        c.closed(seal, _READBACK_RECEIPT)
+        c.require(seal["schema_version"] == 2 and seal["intent_sha256"] == c.sha(intent)
+                  and seal["response_sha256"] == c.sha(response), "mode readback chain")
+        return c.loads(response, canonical=True), c.sha(receipt)
+
+    def _checkpoint(self):
+        held = self.keeper.lease.check()["lifecycle"]["checkpoint_sha256"]
+        c.require(held == self._request["checkpoint_sha256"], "mode readback original checkpoint")
+
+    def _call(self, sequence, call):
+        c.require(self.clock() + 20 < self.session.deadline, "mode readback window")
+        self._checkpoint()
+        intent, keys = self._intent(sequence, call, self.head), self._keys(sequence)
+        reference = {"kind": "sdk-call", "reference_sha256": c.sha(intent)}
+        self._pending.append(reference)
+        self._inflight = reference
+        try:
+            self._create(keys["intent"], intent, replay=True)
+            piece, metadata = _readback_response(call, self.session.client.call(call["service"], call["operation"],
+                                                                                  **call["parameters"]))
+            self._checkpoint()
+            body = c.canonical(piece)
+            receipt = c.canonical({"schema_version": 2, "intent_sha256": c.sha(intent), "response_sha256": c.sha(body)}
+                                  | metadata)
+            self._create(keys["response"], body)
+            self._create(keys["receipt"], receipt)
+        except BaseException as error:
+            self._failed, self._inflight = True, None
+            self._unknown.append(reference)
+            if isinstance(error, ValueError):
+                raise
+            raise ValueError("mode readback outcome unknown") from error
+        self._pending.remove(reference)
+        self._inflight, self.head = None, c.sha(receipt)
+        return piece
+
+    def _create(self, key, raw, *, replay=False):
+        self.guard()
+        try:
+            self.aws.put(self.governance["evidence_bucket"], key, raw)
+        except Exception as error:
+            response = getattr(error, "response", None)
+            code = response.get("Error", {}).get("Code") if type(response) is dict else None
+            c.require(not (replay and code == "PreconditionFailed"), "mode readback replay")
+            raise
+        stored, _ = self.aws.get(self.governance["evidence_bucket"], key, maximum=1024**2, absent=True)
+        c.require(stored == raw, "mode readback evidence readback")
+
+
+def _readback_response(call, response):
+    from email.utils import parsedate_to_datetime
+    metadata = response.get("ResponseMetadata") if type(response) is dict else None
+    headers = metadata.get("HTTPHeaders") if type(metadata) is dict else None
+    c.require(type(metadata) is dict and metadata.get("HTTPStatusCode") == 200 and type(metadata.get("RequestId")) is str
+              and 1 <= len(metadata["RequestId"]) <= 256 and type(headers) is dict and type(headers.get("date")) is str,
+              "mode readback native metadata")
+    server = parsedate_to_datetime(headers["date"])
+    c.require(server.tzinfo is not None and abs(time.time() - server.timestamp()) <= 30, "mode readback native clock")
+    piece = _readback_piece(call, {key: value for key, value in response.items() if key != "ResponseMetadata"})
+    return piece, {"request_id": metadata["RequestId"], "server_date": headers["date"]}
 
 
 class FenceReadBroker(ClosedReadyBroker):

@@ -2019,8 +2019,9 @@ class Keeper:
         self.static_inputs = None
 
     def attach(self, context):
-        """Register an original journal/broker; its uncertainty keeps the lease held."""
-        c.require(type(context) in (AdapterJournal, *_brokers()), "original adapter context")
+        """Register an original journal/broker/readback; its uncertainty keeps the lease held."""
+        from tools.cnesdata_delivery.mode_broker import ModeReadback
+        c.require(type(context) in (AdapterJournal, ModeReadback, *_brokers()), "original adapter context")
         if not any(item is context for item in self._contexts):
             self._contexts.append(context)
 

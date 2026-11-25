@@ -14,6 +14,7 @@ from tools.cnesdata_delivery import lifecycle_runtime as lr
 
 GOVERNANCE = {"evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/",
               "account_id": "111122223333", "role": "application"}
+SOURCE = ag.mode_input_source
 INTENT_FIELDS = {"schema_version", "operation", "owner", "caller", "checkpoint_sha256", "sequence", "previous",
                  "role_session_sha256", "call"}
 
@@ -80,14 +81,15 @@ def _readback(monkeypatch, mode="unit", code=None, binding=None, **client):
     session = _mb()._ModeSession(native, "c" * 64, {"resources": RESOURCES}, world.clock.value + 600,
                                  binding or c.sha(c.canonical(request)), None,
                                  code=code or lc.MODE_SESSION_OPERATIONS[mode + "-observe"][0], alias="mode_observe")
-    readback = _mb().ModeReadback(store, GOVERNANCE, world.keeper, session, mode=mode, clock=lambda: world.clock.value)
+    readback = _mb().ModeReadback(store, GOVERNANCE, session, guard=ag.KeeperGuard(world.keeper), mode=mode,
+                                  clock=lambda: world.clock.value)
     return readback, world, store, native, request
 
 
 def _keys(request, sequence):
-    return lr.closed_ready_evidence_keys(GOVERNANCE, owner=request["owner"], caller=lc.application_identity(
-        request["owner"], required=True), checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence,
-        operation=request["operation"])
+    return lr.closed_ready_evidence_keys(GOVERNANCE, owner=request["owner"], caller=request["caller"],
+                                         checkpoint_sha256=request["checkpoint_sha256"], sequence=sequence,
+                                         operation=request["operation"])
 
 
 def test_readback_le_o_conjunto_fechado_com_recibo_duravel_por_chamada(monkeypatch):
@@ -190,7 +192,7 @@ def test_sessao_de_outro_codigo_binding_ou_modo_recusa_antes_do_io(monkeypatch, 
         session = _mb()._ModeSession(_Client("unit"), "c" * 64, {"resources": RESOURCES}, world.clock.value + 600,
                                      "9" * 64, None, code="do", alias="mode_observe")
         with pytest.raises(ValueError, match="^mode readback original context$"):
-            _mb().ModeReadback(_Store(), GOVERNANCE, world.keeper, session, mode="readiness")
+            _mb().ModeReadback(_Store(), GOVERNANCE, session, guard=ag.KeeperGuard(world.keeper), mode="readiness")
         return
     with pytest.raises(ValueError, match="^mode readback original context$"):
         _readback(monkeypatch, **kwargs)
@@ -213,7 +215,8 @@ def test_recibo_nao_gravado_deixa_incerteza(monkeypatch):
     session = _mb()._ModeSession(_Client("unit"), "c" * 64, {"resources": RESOURCES}, world.clock.value + 600,
                                  c.sha(c.canonical(request)), None, code="uo", alias="mode_observe")
     store = _Store(broken="-receipt.json")
-    readback = _mb().ModeReadback(store, GOVERNANCE, world.keeper, session, mode="unit", clock=lambda: world.clock.value)
+    readback = _mb().ModeReadback(store, GOVERNANCE, session, guard=ag.KeeperGuard(world.keeper), mode="unit",
+                                  clock=lambda: world.clock.value)
     with pytest.raises(ValueError, match="^mode readback outcome unknown$"):
         readback.read()
     assert readback.unknown and world.keeper.uncertainty()
@@ -231,7 +234,8 @@ def test_checkpoint_trocado_entre_reserva_e_recibo_recusa(monkeypatch):
         monkeypatch.setattr(world.keeper.lease, "check", lambda: stale)
     session = _mb()._ModeSession(_Client("unit", during=moved), "c" * 64, {"resources": RESOURCES},
                                  world.clock.value + 600, c.sha(c.canonical(request)), None, code="uo", alias="mode_observe")
-    readback = _mb().ModeReadback(_Store(), GOVERNANCE, world.keeper, session, mode="unit", clock=lambda: world.clock.value)
+    readback = _mb().ModeReadback(_Store(), GOVERNANCE, session, guard=ag.KeeperGuard(world.keeper), mode="unit",
+                                  clock=lambda: world.clock.value)
     with pytest.raises(ValueError, match="^mode readback original checkpoint$"):
         readback.read()
     assert readback._failed and readback.unknown
@@ -270,8 +274,7 @@ def test_keeper_com_readback_anexado_ainda_serve_o_journal_do_observe_e_as_orige
     world.keeper.attach(start)
     assert ag._mode_journal(world.keeper, "unit") is observe
     assert world.keeper._latest_observation_bytes()[c.sha(raw)] == raw
-    found = ag.mode_input_source(keeper=world.keeper, owner={}, window={}, operation="audit-observe",
-                                 names=["recovery-readbacks"])
+    found = SOURCE(keeper=world.keeper, owner={}, window={}, operation="audit-observe", names=["recovery-readbacks"])
     assert found == {"recovery-readbacks": raw}
 
 
