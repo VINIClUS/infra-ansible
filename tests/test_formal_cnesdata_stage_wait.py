@@ -64,6 +64,11 @@ def oracle_ceiling(module):
     return bounded and covers and module.MAX_WAIT_SECONDS <= (module.TIMEOUT_MINUTES - 15) * 60
 
 
+def oracle_marker_latency(module):
+    stages = [stage for stage in module.STAGES_WITH_EXTERNAL_FIRST_JOB if stage != "application-prepare"]
+    return all(module.STAGE_OPEN_LATENCY_SECONDS < lc.STAGES[stage][0] for stage in stages)
+
+
 def oracle_unique_marker(module):
     clock, sleep = _clock()
     return _refuses(lambda: module.wait_for_stage(Api(count=2), RUN, job=OWN, stage="phase-b", windows=WINDOWS,
@@ -99,7 +104,7 @@ def oracle_order(text):
 
 def test_linha_de_base_satisfaz_todos_os_oraculos(monkeypatch):
     module = _module()
-    assert oracle_ceiling(module) and oracle_unique_marker(module) and oracle_owner_bound(_bind())
+    assert oracle_ceiling(module) and oracle_marker_latency(module) and oracle_unique_marker(module) and oracle_owner_bound(_bind())
     assert oracle_first_job_running(module, monkeypatch) and oracle_order(GATE_WORKFLOW)
 
 
@@ -123,6 +128,10 @@ def test_mutante_teto_acima_do_prazo_do_estagio_e_pego():
 
 def test_mutante_teto_acima_do_timeout_do_job_e_pego():
     assert not oracle_ceiling(_module(("CEILING_MARGIN_SECONDS = 900", "CEILING_MARGIN_SECONDS = 0")))
+
+
+def test_mutante_upload_do_marcador_maior_que_a_janela_do_estagio_e_pego():
+    assert not oracle_marker_latency(_module(("MARKER_UPLOAD_SECONDS = 30", "MARKER_UPLOAD_SECONDS = 300")))
 
 
 def test_mutante_dois_artefatos_aceitos_e_pego():
