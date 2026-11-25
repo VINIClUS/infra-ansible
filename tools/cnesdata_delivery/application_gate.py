@@ -2033,6 +2033,7 @@ class Keeper:
         self._contexts = []
         self.static_inventory = None
         self.static_inputs = None
+        self.phase_c_elements = {}
 
     def attach(self, context):
         """Register an original journal/broker/readback; its uncertainty keeps the lease held."""
@@ -3010,7 +3011,7 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
 
 
 def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
-                   clock=time.time):
+                   phase_c_runtime, clock=time.time):
     """Handlers of the keeper triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3, P15b).
 
     observer-bootstrap: authenticated inventory inputs, the inventory operation under the observer sp-i session and
@@ -3023,8 +3024,9 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     operation publish-static and, on its settled publication, the unit window (internal, DD-3) and in it the unit
     mode run (record, seed, start, observe); its acceptance opens the phase-c-recovery window (internal, DD-3); a
     refusal or a lapse ends held. phase-c-recovery and phase-c-audit (DD-3, external): the C deploy publication,
-    child of the keeper checkpoint, then the mode run and its acceptance (DD-4), the next window with the C deploy
-    checkpoint.
+    child of the keeper checkpoint, the keeper-side phase-c element (P17 ruling 6) over the B checkpoint re-read and
+    bound by the window the CAS chain holds, then the mode run and its acceptance (DD-4), the next window with the C
+    deploy checkpoint.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     state = {}
@@ -3215,14 +3217,36 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             c.require(state.get("closed-ready") is not None, f"{purpose} follows the closed-ready run of this keeper")
             record = current.lease.check()
             window, owner = record["lifecycle"], lc.owner_binding(record)
-            published, _ = _deploy_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock(), purpose)
+            published, moments = _deploy_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock(),
+                                                     purpose)
             checkpoint = c.loads(published["checkpoint.json"], canonical=True)
             approval = c.loads(published["approval.json"], canonical=True)
             c.require(approval["checkpoint_sha256"] == window["checkpoint_sha256"] and approval["plan_sha256"] == checkpoint["plan_sha256"]
                       and checkpoint["purpose"] == purpose and c.canonical(checkpoint["owner"]) == c.canonical(owner),
                       f"{purpose} checkpoint ancestry")
+            sources = phase_c_sources(current, purpose, (published, moments), window, owner)
+            current.phase_c_elements[purpose] = lr.phase_c_element(sources, product=product, runtime=phase_c_runtime)
+            if purpose == "phase-c-recovery":
+                state["phase-c-recovery-window"] = window
             mode(current, purpose.removeprefix("phase-c-"), c.sha(published["checkpoint.json"]))
         return handler
+
+    def phase_c_sources(current, purpose, publication, window, owner):
+        guard = KeeperGuard(current)
+        b_checkpoint = _phase_b_publication(api, aws, governance, request, run, owner, guard, clock())[0]["checkpoint.json"]
+        if purpose == "phase-c-recovery":
+            held, before = window, b_checkpoint
+        else:
+            held = state.get("phase-c-recovery-window")
+            c.require(held is not None, "phase_c=recovery_element")
+            c.require(c.sha(c.canonical(held)) in {event["lifecycle_sha256"] for event in current.lease.checkpoints},
+                      "phase_c=phase_b_chain")
+            before = _deploy_publication(api, aws, governance, request, run, owner, guard, clock(),
+                                         "phase-c-recovery")[0]["checkpoint.json"]
+        c.require(c.sha(b_checkpoint) == held["checkpoint_sha256"], "phase_c=phase_b_binding")
+        c.require(c.sha(before) == window["checkpoint_sha256"], "phase_c=before_binding")
+        published, moments = publication
+        return lr.PhaseCSources(purpose, published, before, b_checkpoint, state["close-drain"], moments["job_completed_at"])
 
     return {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host,
             "phase-c-recovery": phase_c("phase-c-recovery"), "phase-c-audit": phase_c("phase-c-audit")}
@@ -3273,8 +3297,8 @@ def _verify_session(client, governance, authority, run, expires):
 def execute(admitted, *, validators=None, event_source=None, product=None):
     """Operational keeper entry: compose the original keeper and run the stage loop to the unit stage.
 
-    The order is the contract: release, adapter closure, owner authority, credential window, AWS and
-    session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    The order is the contract: release, adapter closure, phase-c child runtime, owner authority, credential
+    window, AWS and session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
     """
     import os
     from pathlib import Path
@@ -3289,6 +3313,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     product = Path.cwd() / "product" if product is None else product
     authenticate_adapter_closure(product, request["source_sha"], governance["application_product_source_manifest"],
                                  governance["application_product_source_closure_sha256"])
+    phase_c_runtime = lr.phase_c_runtime(os.environ)
     authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"],
                                                      "application", "application-prepare", time.time())
     c.require(type(os.environ.get("AWS_CREDENTIAL_EXPIRATION")) is str, "application credential expiration")
@@ -3327,7 +3352,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
 
     handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
                               authority=authority, product=product, credential_limit=credential_limit,
-                              operation_session=operation_session, clock=keeper.clock)
+                              operation_session=operation_session, phase_c_runtime=phase_c_runtime, clock=keeper.clock)
     keeper_loop(keeper, next_event=next_event, handlers=handlers)
 
 
