@@ -177,8 +177,30 @@ def test_papel_e_sessao_admitem_cada_chave_que_o_fence_c1_admite_nos_frames_da_o
     assert checked > 0 and set(frames) <= set(_mb().MODE_KEY_FRAMES)
 
 
+
+BROAD = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
+
+
+def test_sessao_sob_papel_amplo_nega_pedido_dynamodb_sem_leading_keys():
+    """NIT 6: under Allow *, every DynamoDB statement of every mode session allows its own leading key and, by its
+    own Null guard, denies the same request without dynamodb:LeadingKeys."""
+    covered = set()
+    for operation in OPERATIONS:
+        for statement in _session(operation)["Statement"]:
+            if not statement["Action"][0].startswith("dynamodb:"):
+                continue
+            covered.add(operation)
+            key = statement["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"][0]
+            for action in statement["Action"]:
+                now = {"aws:CurrentTime": NOW}
+                assert effective_iam(BROAD, [_session(operation)], action, RESOURCES["table_arn"],
+                                     now | {"dynamodb:LeadingKeys": [key]}), (operation, action)
+                assert not effective_iam(BROAD, [_session(operation)], action, RESOURCES["table_arn"], now), (
+                    operation, action)
+    assert {"unit-start", "unit-seed", "recovery-start"} <= covered
+
 def _calls(operation):
-    """Labelled literal of CnesData develop 1d0054c8 scripts/promotion/_adapter_abi.py (sha256 c485be2e93de45b2...):
+    """Labelled literal of CnesData develop 06849119 scripts/promotion/_adapter_abi.py (sha256 1b0fd24e1e777...):
     MODE_EFFECT_CALLS per operation; the unit-start keeper steps unit-execution and unit-task run under the ux wait
     part (ruling 5 item 3 (2))."""
     phase, data = _phase(operation), RESOURCES["data_bucket_arn"]
