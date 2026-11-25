@@ -54,7 +54,7 @@ def _deploy(mode="recovery", readbacks=None, rendered=None, **changes):
     checkpoint = _point(8, "v8") | {"purpose": purpose, "plan_sha256": c.sha(PLAN),
                                     "readbacks": _after(mode) if readbacks is None else readbacks} | changes.pop(
         "checkpoint", {})
-    payload = {"plan.bin": PLAN, "plan.json": c.canonical({"variables": {name: {"value": value}
+    payload = {"plan.bin": changes.pop("plan", PLAN), "plan.json": c.canonical({"variables": {name: {"value": value}
                                                                          for name, value in variables.items()}}),
                "checkpoint.json": previous, "approval.json": c.canonical(approval)}
     return lr.PhaseCDeploy(changes.pop("purpose", purpose), payload, c.canonical(checkpoint), APPLY)
@@ -118,9 +118,9 @@ def test_produto_fora_do_pin_recusa_antes_do_filho(tmp_path, name):
 
 @pytest.mark.parametrize("changes", [{"approval": {"checkpoint_sha256": "0" * 64}}, {"approval": {"purpose": "phase-c-audit"}},
                                      {"approval": {"plan_sha256": "0" * 64}}, {"checkpoint": {"purpose": "phase-b"}},
-                                     {"checkpoint": {"plan_sha256": "0" * 64}}],
+                                     {"checkpoint": {"plan_sha256": "0" * 64}}, {"plan": b"another-plan-binary"}],
                          ids=["checkpoint-anterior", "proposito-aprovado", "plano-aprovado", "proposito-checkpoint",
-                              "plano-checkpoint"])
+                              "plano-checkpoint", "plano-binario"])
 def test_elemento_fora_da_ancestralidade_do_deploy_recusa_antes_do_filho(tmp_path, changes):
     seen = []
     with pytest.raises(ValueError, match="^phase_c=element_ancestry$"):
@@ -164,3 +164,11 @@ def test_recusa_do_construtor_do_produto_vira_falha_do_filho(tmp_path):
     with pytest.raises(ValueError, match="^phase_c=element_child$"):
         _publication(tmp_path, deploy)
 
+
+def test_close_drain_com_texto_nao_ascii_tem_o_digest_do_canonico_do_produto(tmp_path):
+    close = CLOSE | {"common": {"release_id": "liberação-fixture", "source_sha": "b" * 40}}
+    deploy = _deploy()
+    raw = _publication(tmp_path, deploy, close=close)["phase-c.json"]
+    element = json.loads(raw)
+    assert element["close_drain_sha256"] == c.sha(_product_text(close)) != c.sha(c.canonical(close))
+    assert element["common"] == close["common"] and b"\\u00e7" in raw and raw.isascii()
