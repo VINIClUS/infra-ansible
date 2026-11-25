@@ -82,9 +82,11 @@ class _Factory:
         return self.client
 
 
-def _journal(operation):
+def _journal(operation, inputs=None):
     from test_cnesdata_mode_stages import _mode_case
-    request, owner, window, inputs = _mode_case(operation)
+    request, owner, window, fixture = _mode_case(operation)
+    inputs = fixture | (inputs or {})
+    request["inputs"] = {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}
     shift = START - window["admitted_at"]
     for key in ("close", "fixed_deadline", "input_deadline", "admitted_at", "deadline", "preparation_deadline"):
         window[key] += shift
