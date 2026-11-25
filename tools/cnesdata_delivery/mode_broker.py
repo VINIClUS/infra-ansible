@@ -757,6 +757,33 @@ def mode_input_source(*, keeper, owner, window, operation, names):
 
 
 ModeAuthority = namedtuple("ModeAuthority", "evaluation documents scope roles")
+
+
+def mode_prepared_authority(prepared, *, governance, application, owner, activation_sha256):
+    """The stage ModeAuthority from the authenticated PreparedFence (P16b ruling 1 item 1, Falta 6): the mode-input
+    re-admitted against the same originals, the mode-roles readbacks, every document derived again and the
+    mode-evaluation recomputed with byte equality.
+
+    Args: application is the authenticated application authority. Returns: ModeAuthority. Raises: ValueError, no IO.
+    """
+    from tools.cnesdata_delivery import lifecycle_runtime as lr
+    c.require(type(prepared) is lr.PreparedFence and lc.FENCE_MODE_FILES | {"fence-prepared.json", "checkpoint.json"} <= set(prepared),
+              "mode prepared authority package")
+    manifest = c.loads(prepared["fence-prepared.json"], canonical=True)
+    c.require(manifest["activation_sha256"] == c.digest(activation_sha256)
+              and manifest["owner"]["owner_sha256"] == owner["owner_sha256"], "mode prepared authority binding")
+    historical = lc.phase_a_originals(c.loads(prepared["checkpoint.json"], canonical=True)["phase_a_originals"])
+    raw = prepared["mode-input.json"]
+    admitted = lr.mode_input_admission(raw, governance=governance, historical=historical, owner=owner,
+                                       activation_sha256=activation_sha256,
+                                       principal_arn=application.application_fragment["application_role_arn"])
+    roles = lc.mode_prepared_roles(c.loads(prepared["mode-roles.json"], canonical=True), account=governance["account_id"],
+                                   preparation=manifest["preparation"])
+    scope, documents, evaluation = lr.mode_prepared_evaluation(
+        governance=governance, authority=application, owner=owner, mode_input_raw=raw, admitted=admitted, roles=roles,
+        evaluator=(manifest["producer"]["workflow_sha"], manifest["preparation"]["observed_at"]))
+    c.require(c.canonical(evaluation) == prepared["mode-evaluation.json"], "mode prepared evaluation recompute")
+    return ModeAuthority(evaluation, documents, scope, roles)
 MODE_EFFECTS = ("unit-seed", "recovery-seed", "unit-start", "recovery-start", "audit-start")
 
 
