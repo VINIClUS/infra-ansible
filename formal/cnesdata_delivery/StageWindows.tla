@@ -5,7 +5,7 @@ CONSTANTS FixedWindow, AdmitMargin, InitTimeout, ShowTimeout, PlanTimeout, Apply
           ReadbackFloor, InitActual, ShowActual, ApplyActual, JobActual, PubActual, Over,
           ReviewPause, AllowEarly, CheckCompletion, ModeCeiling, InfeasibleStages, FirstStage,
           AdapterFloor, ReadbackPostGuards, PublishGuardsPerFile, TrailingGuards, PlanFiles,
-          AuditFiles, DeployFiles, StageDur, StageVar
+          AuditFiles, DeployFiles, DeployFilesC, StageDur, StageVar
 
 Never == 10000
 FinalReserve == 420
@@ -28,8 +28,8 @@ E2Var == <<
     [api_effect |-> 71, api_observe |-> 71],
     [static_publish |-> 135, static_settle |-> 7],
     [unit_seed |-> 48, unit_start |-> 47, unit_observe |-> 47],
-    [plan |-> 17, aread |-> 17, pread |-> 17, recovery_seed |-> 16, recovery_start |-> 16, recovery_observe |-> 16],
-    [plan |-> 20, aread |-> 20, pread |-> 20, audit_start |-> 20, audit_observe |-> 19],
+    [plan |-> 17, aread |-> 17, pread |-> 16, recovery_seed |-> 15, recovery_start |-> 15, recovery_observe |-> 15],
+    [plan |-> 20, aread |-> 19, pread |-> 19, audit_start |-> 19, audit_observe |-> 18],
     [reopen |-> 26, terminal_readback |-> 26]
 >>
 
@@ -39,8 +39,8 @@ CeilingVar == <<
     [api_effect |-> 71, api_observe |-> 71],
     [static_publish |-> 135, static_settle |-> 7],
     [unit_seed |-> 88, unit_start |-> 87, unit_observe |-> 87],
-    [plan |-> 24, aread |-> 24, pread |-> 24, recovery_seed |-> 24, recovery_start |-> 24, recovery_observe |-> 24],
-    [plan |-> 29, aread |-> 29, pread |-> 29, audit_start |-> 29, audit_observe |-> 28],
+    [plan |-> 24, aread |-> 24, pread |-> 23, recovery_seed |-> 23, recovery_start |-> 23, recovery_observe |-> 23],
+    [plan |-> 29, aread |-> 28, pread |-> 28, audit_start |-> 28, audit_observe |-> 27],
     [reopen |-> 11, terminal_readback |-> 11]
 >>
 
@@ -54,17 +54,18 @@ Publish(files) == Rep(<<"pub">>, PublishGuardsPerFile * files)
 Read(op, guard) == <<op>> \o Rep(<<guard>>, ReadbackPostGuards)
 Job1 == <<"job1", "init1", "plan", "show1">> \o Trail \o Publish(PlanFiles)
 Job2 == <<"job2", "init2", "show2">> \o Trail \o Publish(AuditFiles)
-Job3 == <<"job3", "init3">> \o Read("aread", "aread_g") \o <<"show3", "apply">> \o Read("pread", "pread_g")
-        \o Trail \o Publish(DeployFiles)
-DeployOps == Job1 \o Job2 \o Job3
+Job3(files) == <<"job3", "init3">> \o Read("aread", "aread_g") \o <<"show3", "apply">> \o Read("pread", "pread_g")
+        \o Trail \o Publish(files)
+DeployOps == Job1 \o Job2 \o Job3(DeployFiles)
+DeployOpsC == Job1 \o Job2 \o Job3(DeployFilesC)
 
 Ops(s) ==
     CASE s = 1 -> DeployOps
       [] s = 2 -> <<"api_effect", "api_observe">>
       [] s = 3 -> <<"static_publish", "static_settle">>
       [] s = 4 -> UnitModeOps
-      [] s = 5 -> DeployOps \o RecoveryModeOps
-      [] s = 6 -> DeployOps \o AuditModeOps
+      [] s = 5 -> DeployOpsC \o RecoveryModeOps
+      [] s = 6 -> DeployOpsC \o AuditModeOps
       [] s = 7 -> <<"reopen", "terminal_readback">>
 
 RECURSIVE SumLen(_)
