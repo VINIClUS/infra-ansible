@@ -122,10 +122,12 @@ def _effect(monkeypatch, operation, *, read=True, activation=None):
                            authorities=authorities, owner=owner, window=window)
 
 
-def _run(effect, operation):
+def _run(effect, operation, change=None):
     admitted = []
 
     def capability(*, journal, keeper, guard):
+        if change is not None:
+            change(journal)
         broker = CAPABILITY(journal=journal, keeper=keeper, guard=guard, context=effect.context)
         admitted.append(broker)
         return broker
@@ -165,7 +167,8 @@ def test_capability_de_seed_e_start_cunha_a_sessao_mc_e_admite_o_mode_broker_com
 
 @pytest.mark.parametrize("mutation, message", [("no-readback", "^mode readback original context$"),
                                                ("authority", "^mode prepared authority binding$"),
-                                               ("activation", "^mode effect original context$")])
+                                               ("activation", "^mode effect original context$"),
+                                               ("owner", "^mode effect original context$")])
 def test_capability_de_start_recusa_antes_do_sts_e_envenena_o_journal(monkeypatch, mutation, message):
     effect = _effect(monkeypatch, "recovery-start", read=mutation != "no-readback",
                      activation="9" * 64 if mutation == "activation" else None)
@@ -173,8 +176,11 @@ def test_capability_de_start_recusa_antes_do_sts_e_envenena_o_journal(monkeypatc
         def binding(prepared, **kwargs):
             raise ValueError("mode prepared authority binding")
         monkeypatch.setattr(mb, "mode_prepared_authority", binding)
+
+    def foreign(journal):
+        journal._request = journal._request | {"owner": journal._request["owner"] | {"owner_sha256": "f" * 64}}
     with pytest.raises(ValueError, match=message):
-        _run(effect, "recovery-start")
+        _run(effect, "recovery-start", foreign if mutation == "owner" else None)
     (journal,) = [item for item in effect.world.keeper._contexts
                   if type(item) is ag.AdapterJournal and item._request["operation"] == "recovery-start"]
     assert effect.calls == [] and journal._failed is True and getattr(journal, "_broker", None) is None
