@@ -194,13 +194,30 @@ def mode_session_policy(operation, *, resources, owner_sha256, deadline):
     c.require(type(owner_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", owner_sha256) is not None, "mode session owner")
     c.integer(deadline)
     phase, step = entry[3], operation.removeprefix(entry[3] + "-")
-    statements = _mode_dynamodb(operation, resources, owner_sha256)
+    statements = (_mode_unit_start(resources, owner_sha256) if operation == "unit-start"
+                  else _mode_dynamodb(operation, resources, owner_sha256))
     if step == "seed":
         statements.append(_mode_allow(["s3:PutObject", "s3:GetObject"], _mode_objects(resources, "raw_object_keys")))
     elif step == "start":
         statements += _mode_start(phase, resources)
     else:
         statements += _mode_observe(phase, resources)
+    return _mode_expiring(statements, deadline)
+
+
+def mode_unit_wait_policy(*, resources, deadline):
+    """ux wait part (P16b ruling 5 item 3 (2)): the unit-execution and unit-task reads after StartExecution, assumed on
+    the ux role and session name, until the deadline.
+
+    Raises: ValueError before any STS call.
+    """
+    _mode_session_resources(resources)
+    c.integer(deadline)
+    execution = resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":*"
+    return _mode_expiring([_mode_allow(["states:DescribeExecution"], execution), _mode_tasks(resources)], deadline)
+
+
+def _mode_expiring(statements, deadline):
     expiry = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
     return {"Version": "2012-10-17", "Statement": [statement | {"Condition": expiry | statement.get("Condition", {})}
                                                    for statement in statements]}
@@ -260,16 +277,33 @@ def _mode_dynamodb(operation, resources, owner):
             for found, actions in grouped.items()]
 
 
+def _mode_table(actions, resources, keys):
+    return _mode_allow(actions, resources["table_arn"], {"ForAllValues:StringEquals": {"dynamodb:LeadingKeys": sorted(keys)},
+                                                         "Null": {"dynamodb:LeadingKeys": "false"}})
+
+
+def _mode_unit_start(resources, owner):
+    from tools.cnesdata_delivery.mode_broker import unit_start_grants
+    actions, rectangles = {}, {}
+    for action, keys in unit_start_grants(resources, owner).items():
+        for key in keys:
+            actions.setdefault(key, set()).add(action)
+    for key, found in actions.items():
+        rectangles.setdefault(tuple(sorted(found)), set()).add(key)
+    return [_mode_table(list(found), resources, keys) for found, keys in sorted(rectangles.items())]
+
+
+def _mode_tasks(resources):
+    return _mode_allow(["ecs:DescribeTasks"], resources["cluster_arn"].replace(":cluster/", ":task/") + "/*",
+                       {"ArnEquals": {"ecs:cluster": resources["cluster_arn"]}})
+
+
 def _mode_start(phase, resources):
-    cluster = {"ArnEquals": {"ecs:cluster": resources["cluster_arn"]}}
-    tasks = _mode_allow(["ecs:DescribeTasks"], resources["cluster_arn"].replace(":cluster/", ":task/") + "/*", cluster)
     if phase == "unit":
-        machine = resources["machine_arn"]
-        return [_mode_allow(["states:StartExecution"], machine),
-                _mode_allow(["states:DescribeExecution"], machine.replace(":stateMachine:", ":execution:") + ":*"), tasks]
-    return [_mode_allow(["ecs:RunTask"], resources["revisions"][phase], cluster),
+        return [_mode_allow(["states:StartExecution"], resources["machine_arn"])]
+    return [_mode_allow(["ecs:RunTask"], resources["revisions"][phase], {"ArnEquals": {"ecs:cluster": resources["cluster_arn"]}}),
             _mode_allow(["iam:PassRole"], [resources["task_role_arns"][phase], resources["execution_role_arn"]],
-                        {"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}}), tasks]
+                        {"StringEquals": {"iam:PassedToService": "ecs-tasks.amazonaws.com"}}), _mode_tasks(resources)]
 
 
 def _mode_observe(phase, resources):

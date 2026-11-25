@@ -169,13 +169,19 @@ def mode_stage_evaluation(evaluation, documents, scope, *, code):
 
 def _mode_codes():
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    return {code: (operation, alias) for operation, (code, alias, context, _) in lc.MODE_SESSION_OPERATIONS.items()
-            if context == "promotion"}
+    codes = {code: (operation, alias) for operation, (code, alias, context, _) in lc.MODE_SESSION_OPERATIONS.items()
+             if context == "promotion"}
+    return codes | {part: codes[session] for part, session in lc.MODE_SESSION_PARTS.items()}
+
+
+def _mode_session_code(code):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    return lc.MODE_SESSION_PARTS.get(code, code)
 
 
 def _mode_document_names(codes):
     operations = _mode_codes()
-    return {"application_identity", "application_managed", *(f"application_session.{code}" for code in codes),
+    return {"application_identity", "application_managed", *(f"application_session.{_mode_session_code(code)}" for code in codes),
             *(f"session.{code}" for code in codes), *(f"role.{operations[code][1]}" for code in codes)}
 
 
@@ -184,7 +190,7 @@ def _mode_scope(scope, operations):
     c.closed(scope, "resources owner_sha256 role_arns session_names deadline")
     c.integer(scope["deadline"])
     c.closed(scope["role_arns"], " ".join(lc.MODE_ALIASES))
-    c.closed(scope["session_names"], " ".join(operations))
+    c.closed(scope["session_names"], " ".join(code for code in operations if code not in lc.MODE_SESSION_PARTS))
     c.require(all(type(arn) is str and re.fullmatch(r"arn:aws:iam::[0-9]{12}:role/cnesdata-prod-" + alias.replace("_", "-"), arn)
                   for alias, arn in scope["role_arns"].items())
               and all(type(name) is str and re.fullmatch(f"mc-{code}-[0-9a-f]{{40}}", name)
@@ -193,14 +199,12 @@ def _mode_scope(scope, operations):
 
 def _mode_reports(documents, scope, observed_at, codes):
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    from tools.cnesdata_delivery.session_policy import mode_session_policy
     operations = _mode_codes()
     c.require(type(documents) is dict and set(documents) == _mode_document_names(codes), "mode evaluation documents")
     _mode_scope(scope, operations)
     c.require(type(observed_at) is str and c.instant(observed_at) < scope["deadline"], "mode evaluation before session deadline")
     for code in codes:
-        expected = mode_session_policy(operations[code][0], resources=scope["resources"], owner_sha256=scope["owner_sha256"],
-                                       deadline=scope["deadline"])
+        expected = _mode_expected(code, operations[code][0], scope)
         c.require(c.canonical(documents["session." + code]) == c.canonical(expected), "mode evaluation session document")
     specs = _mode_case_specs(scope, operations)
     reports = []
@@ -211,7 +215,7 @@ def _mode_reports(documents, scope, observed_at, codes):
         context = {"aws:CurrentTime": c.utc(scope["deadline"]) if expired else observed_at} | context
         if case_id.startswith("assume-"):
             observed = effective_iam(documents["application_identity"], [documents["application_managed"],
-                                     documents["application_session." + code]], action, resource, context)
+                                     documents["application_session." + _mode_session_code(code)]], action, resource, context)
         else:
             observed = effective_iam(documents["role." + operations[code][1]], [documents["session." + code]], action,
                                      resource, context)
@@ -219,6 +223,15 @@ def _mode_reports(documents, scope, observed_at, codes):
         reports.append({"case_id": case_id, "action": action, "resource": resource, "context": context,
                         "expected": expected, "observed": observed})
     return reports
+
+
+def _mode_expected(code, operation, scope):
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    from tools.cnesdata_delivery.session_policy import mode_session_policy, mode_unit_wait_policy
+    if code in lc.MODE_SESSION_PARTS:
+        return mode_unit_wait_policy(resources=scope["resources"], deadline=scope["deadline"])
+    return mode_session_policy(operation, resources=scope["resources"], owner_sha256=scope["owner_sha256"],
+                               deadline=scope["deadline"])
 
 
 def _mode_case_specs(scope, operations):
@@ -229,7 +242,7 @@ def _mode_case_specs(scope, operations):
                 **{code: _mode_observe_specs(targets, mode) for code, mode in (("uo", "unit"), ("ro", "recovery"), ("ao", "audit"))}}
     specs = {}
     for code, cases in families.items():
-        role, name = scope["role_arns"][operations[code][1]], scope["session_names"][code]
+        role, name = scope["role_arns"][operations[code][1]], scope["session_names"][_mode_session_code(code)]
         specs[f"assume-{code}"] = (role, {"sts:RoleSessionName": name}, True, False)
         specs[f"assume-{code}-other-session"] = (role, {"sts:RoleSessionName": name + "-other"}, False, False)
         specs |= {f"{code}-{key}": value + (False,) for key, value in cases.items()}
@@ -277,11 +290,21 @@ def _mode_start_specs(targets):
     passed = {"iam:PassedToService": "ecs-tasks.amazonaws.com"}
     return {
         "ux": {"put-ticket": (table, tenant, True), "put-binding": (table, _mode_leading(targets["runs"]["unit"]), True),
-               "start-execution": (resources["machine_arn"], {}, True), "describe-own-task": (targets["task"], cluster, True),
+               "start-execution": (resources["machine_arn"], {}, True),
                "update-control": (table, tenant, False), "run-task": (revisions["recovery"], cluster, False),
                "stop-execution": (targets["execution"], {}, False),
                "put-recovery-run": (table, _mode_leading(targets["runs"]["recovery"]), False),
-               "describe-foreign-cluster-task": (targets["foreign_task"], foreign, False)},
+               "check-fence": (table, _mode_leading("ENV#prod#FENCE"), True),
+               "update-semaphore": (table, _mode_leading("ENV#prod#SEMAPHORE"), True),
+               "consume-attempt": (table, _mode_leading("ENV#prod#ATTEMPTS"), True),
+               "check-unit-run": (table, _mode_leading(targets["runs"]["unit"]), True),
+               "check-semaphore": (table, _mode_leading("ENV#prod#SEMAPHORE"), False),
+               "query-unit-run": (table, _mode_leading(targets["runs"]["unit"]), False),
+               "update-unit-run": (table, _mode_leading(targets["runs"]["unit"]), False),
+               "describe-own-execution": (targets["execution"], {}, False)},
+        "uw": {"describe-own-execution": (targets["execution"], {}, True), "describe-own-task": (targets["task"], cluster, True),
+               "describe-foreign-cluster-task": (targets["foreign_task"], foreign, False),
+               "start-execution": (resources["machine_arn"], {}, False)},
         "rx": {"run-recovery": (revisions["recovery"], cluster, True), "pass-recovery-role": (roles["recovery"], passed, True),
                "put-ticket": (table, tenant, True), "run-audit-revision": (revisions["audit"], cluster, False),
                "run-other-cluster": (revisions["recovery"], foreign, False), "pass-unit-role": (roles["unit"], passed, False),

@@ -197,6 +197,7 @@ MODE_SESSION_OPERATIONS = {
     "drill-hang-second": ("h2", "mode_dispatch", "readiness", "readiness"),
     "drill-observe": ("do", "mode_observe", "readiness", "readiness"),
 }
+MODE_SESSION_PARTS = {"uw": "ux"}
 CALLER_BINDING_FIELDS = ("application_purpose context_kind repository workflow_path ref environment source_sha "
                          "run_id run_attempt producer_workflow_sha producer_source_closure_sha256")
 ADAPTER_INPUTS = {
@@ -530,9 +531,14 @@ _MODE_CASE_ACTIONS = {
            "put-foreign-tenant": "dynamodb:PutItem", "put-other-mode-run": "dynamodb:PutItem", "get-fence": "dynamodb:GetItem",
            "put-output": "s3:PutObject"},
     "ux": {"put-ticket": "dynamodb:PutItem", "put-binding": "dynamodb:PutItem", "start-execution": "states:StartExecution",
-           "describe-own-task": "ecs:DescribeTasks", "update-control": "dynamodb:UpdateItem", "run-task": "ecs:RunTask",
-           "stop-execution": "states:StopExecution", "put-recovery-run": "dynamodb:PutItem",
-           "describe-foreign-cluster-task": "ecs:DescribeTasks"},
+           "update-control": "dynamodb:UpdateItem", "run-task": "ecs:RunTask", "stop-execution": "states:StopExecution",
+           "put-recovery-run": "dynamodb:PutItem", "check-fence": "dynamodb:ConditionCheckItem",
+           "update-semaphore": "dynamodb:UpdateItem", "consume-attempt": "dynamodb:UpdateItem",
+           "check-unit-run": "dynamodb:ConditionCheckItem", "check-semaphore": "dynamodb:ConditionCheckItem",
+           "query-unit-run": "dynamodb:Query", "update-unit-run": "dynamodb:UpdateItem",
+           "describe-own-execution": "states:DescribeExecution"},
+    "uw": {"describe-own-execution": "states:DescribeExecution", "describe-own-task": "ecs:DescribeTasks",
+           "describe-foreign-cluster-task": "ecs:DescribeTasks", "start-execution": "states:StartExecution"},
     "uo": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
            "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-output": "s3:GetObject"},
     "rs": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
@@ -565,7 +571,9 @@ def _mode_evaluation_cases():
 
 MODE_EVALUATION_CASES = _mode_evaluation_cases()
 MODE_EVALUATION_DOCUMENTS = frozenset({"application_identity", "application_managed",
-                                       *(f"{kind}.{code}" for code in _MODE_CASE_ACTIONS for kind in ("application_session", "session")),
+                                       *(f"session.{code}" for code in _MODE_CASE_ACTIONS),
+                                       *(f"application_session.{code}" for code in _MODE_CASE_ACTIONS
+                                         if code not in MODE_SESSION_PARTS),
                                        *(f"role.{alias}" for alias in MODE_ALIASES)})
 MODE_EVALUATION_CONTEXT = frozenset({"aws:CurrentTime", "sts:RoleSessionName", "dynamodb:LeadingKeys", "ecs:cluster",
                                      "iam:PassedToService"})

@@ -1,6 +1,7 @@
 """Mode SDK broker, fence-read broker and mode readbacks of the promotion mode stages (P16b)."""
 import base64
 import binascii
+import datetime
 import importlib.util
 import json
 import pathlib
@@ -84,6 +85,70 @@ def product_dispatch():
     Returns: the cnes_infra.aws.mode_canary_dispatch module. Raises: ValueError on any byte drift, before executing.
     """
     return _product_module("cnes_infra.aws.mode_canary_dispatch")
+
+
+UNIT_LEASE_SECONDS = 3600
+UnitLocator = namedtuple("UnitLocator", "tenant_id run_ids owner_sha256 record_sha256 phase context_kind")
+UnitHolder = namedtuple("UnitHolder", "dispatch_id run_id tenant_id")
+_PRODUCT_KEYS = "cnes_infra.control_plane.dynamodb_keys"
+
+
+def _unit_requests(start):
+    dispatch, keys = product_dispatch(), _product_module(_PRODUCT_KEYS)
+    unit, permit, reference = start.dispatch, dispatch.StartPermit(1, 0), "execution"
+    pk, sk = keys.run_entity_key(unit.tenant_id, unit.run_id)
+    run_item = {"pk": {"S": pk}, "sk": {"S": sk}, "payload": {"S": '{"state":"PROCESSING"}'}}
+    unit_items = [{"pk": {"S": key[0]}, "sk": {"S": key[1]}, "payload": {"S": "{}"}}
+                  for key in (keys.unit_key(unit.tenant_id, unit.run_id, unit_id) for unit_id in unit.unit_ids)]
+
+    def reads(step):
+        return [("get_item", request) for request in dispatch.step_reads(start, step)]
+    return (reads("reserve") + [("transact_write_items", dispatch.reserve_request(start, run_item, unit_items)),
+                                ("transact_write_items", dispatch.acquire_request(start))]
+            + reads("gate") + [("update_item", dispatch.attempt_request(start))] + reads("gate") + reads("claim")
+            + [("transact_write_items", dispatch.claim_request(start, permit))] + reads("bind")
+            + [("transact_write_items", dispatch.bind_request(start, permit, reference, run_item))]
+            + [("update_item", request) for request in dispatch.confirm_requests(start, permit, reference)])
+
+
+def unit_start_targets(locator, units, *, table, now):
+    """Q1 (B2): the product unit-start of the stage over the keeper-written seed units at the stage clock, with its
+    (IAM action, table, pk, sk) targets: request_targets of every keeper request, the dispatch-unit frame writes and the
+    record, control and ticket reads. Keys never depend on read values.
+
+    Returns: (UnitStart, effect_id, frozenset of targets). Raises: ValueError (product refusals included).
+    """
+    frames, dispatch = product_frames(), product_dispatch()
+    c.require(type(locator) is UnitLocator and locator.phase == "unit", "mode unit locator")
+    unit = dispatch.unit_dispatch(locator, units, now)
+    start = dispatch.UnitStart(unit, table, now, UNIT_LEASE_SECONDS, locator.owner_sha256)
+    holder = UnitHolder(unit.dispatch_id, unit.run_id, unit.tenant_id)
+    effect = frames.effect_id(locator.record_sha256, "start-execution", frames.start_request(holder, unit.unit_ids))
+    owner, tenant = locator.owner_sha256, frames.tenant_partition(unit.tenant_id)
+    run = _product_module(_PRODUCT_KEYS).dispatch_key(unit.tenant_id, unit.run_id)[0]
+    frame = {("GetItem", tenant, frames.record_key(owner, "unit")), ("GetItem", tenant, frames.control_key(owner)),
+             ("GetItem", tenant, frames.ticket_key(owner, effect)), ("PutItem", tenant, frames.control_key(owner)),
+             ("PutItem", tenant, frames.ticket_key(owner, effect)), ("PutItem", run, "PROD_CANARY#" + unit.dispatch_id)}
+    targets = frozenset(dispatch.request_targets(_unit_requests(start)))
+    return start, effect, targets | {(action, table, pk, sk) for action, pk, sk in frame}
+
+
+def unit_start_grants(resources, owner_sha256):
+    """Q1 ux LeadingKeys: the pk projection of unit_start_targets on the scope's unit run, independent of the unit ids,
+    so the prepare and the stage derive the same session.
+
+    Returns: {IAM action: frozenset of pks}. Raises: ValueError.
+    """
+    scope, run = resources["scope"], "unit-" + owner_sha256[:16]
+    c.require(run in scope["run_ids"], "mode session runs")
+    locator = UnitLocator(scope["tenant_id"], (run,), owner_sha256, "0" * 64, "unit", "promotion")
+    probe = [{"tenant_id": scope["tenant_id"], "run_id": run, "unit_id": "0" * 32, "state": "PENDING", "lease_until": None,
+              "depends_on_unit_ids": []}]
+    epoch = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+    grants = {}
+    for action, _, pk, _ in unit_start_targets(locator, probe, table=resources["table_arn"].rsplit("/", 1)[1], now=epoch)[2]:
+        grants.setdefault("dynamodb:" + action, set()).add(pk)
+    return {action: frozenset(keys) for action, keys in grants.items()}
 
 
 def _hex(value):
