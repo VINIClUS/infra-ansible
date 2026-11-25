@@ -40,7 +40,9 @@ def test_filho_real_com_binding_de_outro_run_recusa_no_keeper_sem_chamada(tmp_pa
 
 @pytest.mark.parametrize("reply", [{"execution": {}, "tasks": []}, {"execution": {}, "tasks": [], "outputs": [], "x": 1}])
 def test_filho_recusa_resposta_do_dispatch_fora_do_contrato(tmp_path, monkeypatch, reply):
-    product, source, manifest = _product(tmp_path, CATCH.replace("CALL", "context.dispatch_unit(None)"))
+    binding = ("__import__('types').SimpleNamespace(tenant_id='t', run_ids=('r',), owner_sha256='o', record_sha256='s', "
+               "phase='unit', context_kind='promotion')")
+    product, source, manifest = _product(tmp_path, CATCH.replace("CALL", f"context.dispatch_unit({binding})"))
     journal, _ = _seed_broker(monkeypatch, source)
     _forged(monkeypatch, {"dispatch-unit": reply})
     with pytest.raises(ValueError, match="^adapter complete result frame$"):
