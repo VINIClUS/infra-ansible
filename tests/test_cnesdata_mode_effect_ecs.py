@@ -176,3 +176,38 @@ def test_falha_do_run_task_volta_ao_filho_como_resposta_definitiva(monkeypatch):
         {"arn": "arn:x", "reason": "RESOURCE:MEMORY", "detail": "d"}]}}
     with pytest.raises(ValueError, match="^mode run_task once$"):
         _run(journal)
+
+
+def test_prazo_avaliado_anterior_ao_estagio_encurta_o_fim_da_espera(monkeypatch):
+    from test_cnesdata_mode_session_sts import _authority
+    operation = "recovery-start"
+    args, _, _ = _case(monkeypatch, operation)
+    args["journal"], _ = _journal(operation, {"readbacks": c.canonical(_readbacks("recovery")),
+                                              "record": c.canonical({"revisions": dict(REVISIONS)})})
+    stage = args["journal"]._request["stage"]
+    args["authority"] = _authority(args["governance"], args["journal"]._request["owner"], deadline=stage["deadline"] - 60)
+    clock = _Clock(args["clock"]())
+    args["clock"] = clock
+    session = _mb().assume_mode_session(**args)
+    session.client.call = lambda service, name, **parameters: {
+        "tasks": [_task("recovery", "PROVISIONING" if name == "run_task" else "STOPPED")], "failures": [],
+        "ResponseMetadata": _metadata()}
+    broker = _mb().ModeBroker(_Evidence(), args["governance"], args["journal"], session, prepared_sha256="3" * 64,
+                              credential_limit=args["credential_limit"], clock=clock, sleep=clock.sleep)
+    _run(broker.journal)
+    _describe(broker.journal)
+    assert broker.journal._timings[-1]["wait_end"] == stage["deadline"] - 60 - 30
+
+
+def test_so_a_resposta_do_run_task_amplia_as_tarefas_admitidas(monkeypatch):
+    broker, journal, native, _ = _ecs_broker(monkeypatch)
+    _run(journal)
+
+    def sdk(service, name, **parameters):
+        native.append((service, name, parameters))
+        return {"tasks": [_task("recovery", "STOPPED", taskArn=OTHER_TASK)], "failures": [], "ResponseMetadata": _metadata()}
+    broker.session.client.call = sdk
+    _describe(journal)
+    with pytest.raises(ValueError, match="^mode describe_tasks own task$"):
+        _describe(journal, task=OTHER_TASK)
+    assert len(native) == 2
