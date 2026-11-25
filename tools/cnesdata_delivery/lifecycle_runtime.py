@@ -1512,8 +1512,12 @@ def deploy_result_files(purpose, checkpoint_raw, approval_raw, apply_output):
     return files | {"apply-output.bin": apply_output} if purpose in lc.PHASE_C_PURPOSES else files
 
 
-PhaseCDeploy = namedtuple("PhaseCDeploy", "purpose payload checkpoint_raw apply_output")
-_PHASE_C_CHILD = r'''
+PhaseCSources = namedtuple("PhaseCSources", "purpose published before_raw phase_b_raw close_raw observed_at")
+PhaseCRuntime = namedtuple("PhaseCRuntime", "python target")
+_PHASE_C_MEMBERS = frozenset({"checkpoint.json", "approval.json", "apply-output.bin"})
+_PHASE_C_BEFORE = {"phase-c-recovery": "phase-b", "phase-c-audit": "phase-c-recovery"}
+_PHASE_C_CHILD = r"""
+sys.path.insert(1, sys.argv[2])
 import base64, json
 from datetime import datetime, timezone
 from scripts.promotion.phase_c_recovery import PhaseCEvidence, phase_c_evidence
@@ -1521,41 +1525,60 @@ request = json.loads(sys.stdin.buffer.read(8 * 1024**2 + 1))
 observed = datetime.strptime(request["observed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 sys.stdout.buffer.write(phase_c_evidence(PhaseCEvidence(request["mode"], request["close"], request["before"], request["after"],
     request["plan_sha256"], request["audit_sha256"], base64.b64decode(request["apply_output"]), request["routes"], observed)))
-'''
+"""
 
 
-def phase_c_publication(deploy, *, product, close_raw, phase_b, observed_at, run=None):
-    """Design 6 and P17 ruling 1g: the phase-c.json member of a C deploy publication. The product builder at the pinned
-    source shapes it; routes come from this deploy's own after readbacks, never from rendered targets.
+def phase_c_element(sources, *, product, runtime, run=None):
+    """Design 6 and 8 item 3 as amended by P17 ruling 6: the keeper-side phase-c element of one C deploy publication,
+    shaped by the product builder at the pinned source in a child under the pinned runtime; routes come from the deploy's
+    own after readbacks (ruling 1g), never from the plan or the approval delta.
 
-    Args: deploy PhaseCDeploy; product the authenticated tree; close-drain bytes; Phase B checkpoint readback rows.
-    Returns: {"phase-c.json": bytes} for the two C purposes, {} otherwise. Raises: ValueError phase_c=<reason>.
+    Args: sources PhaseCSources; product the authenticated tree; runtime PhaseCRuntime. Returns: the element bytes.
+    Raises: ValueError phase_c=<reason>.
     """
-    if deploy.purpose not in lc.PHASE_C_PURPOSES:
-        return {}
-    request = _phase_c_request(deploy, close_raw, phase_b, observed_at)
+    request = _phase_c_request(sources)
     for name, digest in lc.PHASE_C_PRODUCT_FILES.items():
         c.require(c.sha((Path(product) / name).read_bytes()) == digest, f"phase_c=product_pin file={name}")
-    raw = (run or _phase_c_child)(product, request)
-    c.require(raw == _phase_c_element(request, deploy.apply_output), "phase_c=element_parity")
-    return {"phase-c.json": raw}
+    raw = (run or _phase_c_child)(product, runtime, request)
+    c.require(raw == _phase_c_element(request, sources.published["apply-output.bin"]), "phase_c=element_parity")
+    return raw
 
 
-def _phase_c_request(deploy, close_raw, phase_b, observed_at):
-    payload = deploy.payload
-    close = c.closed(c.loads(close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
-    previous, checkpoint, approval = (c.loads(raw, canonical=True) for raw in (
-        payload["checkpoint.json"], deploy.checkpoint_raw, payload["approval.json"]))
-    plan = c.sha(payload["plan.bin"])
-    c.require(checkpoint["purpose"] == approval["purpose"] == deploy.purpose
-              and approval["checkpoint_sha256"] == c.sha(payload["checkpoint.json"])
-              and approval["plan_sha256"] == checkpoint["plan_sha256"] == plan, "phase_c=element_ancestry")
-    mode = deploy.purpose.removeprefix("phase-c-")
-    return {"mode": mode, "close": close, "before": lc.state_point(previous), "after": lc.state_point(checkpoint),
-            "plan_sha256": plan, "audit_sha256": c.sha(payload["approval.json"]),
-            "apply_output": base64.b64encode(deploy.apply_output).decode(),
-            "routes": lc.phase_c_routes(mode, after=checkpoint["readbacks"], phase_b=phase_b),
-            "observed_at": c.utc(observed_at)}
+def _phase_c_request(sources):
+    c.require(sources.purpose in lc.PHASE_C_PURPOSES, "phase_c=element_purpose")
+    c.require(type(sources.published) is dict and set(sources.published) == _PHASE_C_MEMBERS, "phase_c=element_members")
+    close = c.closed(c.loads(sources.close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
+    checkpoint, approval = (c.loads(sources.published[name], canonical=True) for name in ("checkpoint.json", "approval.json"))
+    before, phase_b = (c.loads(raw, canonical=True) for raw in (sources.before_raw, sources.phase_b_raw))
+    c.instant(sources.observed_at)
+    c.require(checkpoint["purpose"] == approval["purpose"] == sources.purpose and phase_b["purpose"] == "phase-b"
+              and before["purpose"] == _PHASE_C_BEFORE[sources.purpose]
+              and (sources.purpose != "phase-c-recovery" or sources.before_raw == sources.phase_b_raw)
+              and approval["checkpoint_sha256"] == c.sha(sources.before_raw)
+              and approval["plan_sha256"] == checkpoint["plan_sha256"], "phase_c=element_ancestry")
+    mode = sources.purpose.removeprefix("phase-c-")
+    return {"mode": mode, "close": close, "before": lc.state_point(before), "after": lc.state_point(checkpoint),
+            "plan_sha256": checkpoint["plan_sha256"], "audit_sha256": c.sha(sources.published["approval.json"]),
+            "apply_output": base64.b64encode(sources.published["apply-output.bin"]).decode(),
+            "routes": lc.phase_c_routes(mode, after=checkpoint["readbacks"], phase_b=phase_b["readbacks"]),
+            "observed_at": sources.observed_at}
+
+
+def phase_c_runtime(environ):
+    """P17 ruling 6 item 3: the hash-pinned Python 3.13 child runtime the application job provisioned before credentials.
+
+    Args: the job environment. Returns: PhaseCRuntime. Raises: ValueError phase_c=runtime.
+    """
+    python, target = environ.get("CNESDATA_PHASE_C_PYTHON"), environ.get("CNESDATA_PHASE_C_TARGET")
+    c.require(all(type(value) is str and os.path.isabs(value) for value in (python, target))
+              and os.access(python, os.X_OK) and os.path.isdir(target), "phase_c=runtime")
+    try:
+        done = subprocess.run([python, "-I", "-S", "-c", "import sys; sys.exit(sys.version_info[:2] != (3, 13))"],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("phase_c=runtime") from error
+    c.require(done.returncode == 0, "phase_c=runtime")
+    return PhaseCRuntime(python, target)
 
 
 def _product_text(value):
@@ -1571,14 +1594,14 @@ def _phase_c_element(request, apply_output):
                           "routes": request["routes"], "observed_at": request["observed_at"]})
 
 
-def _phase_c_child(product, request):
+def _phase_c_child(product, runtime, request):
     from tools.cnesdata_delivery.application_gate import PRODUCT_IMPORTS
     root = Path(product).resolve()
     with tempfile.TemporaryDirectory(prefix="cnesdata-phase-c-") as home:
         try:
-            done = subprocess.run([sys.executable, "-I", "-B", "-c", PRODUCT_IMPORTS + _PHASE_C_CHILD, str(root)], cwd=root,
-                                  env={"PATH": os.defpath, "HOME": home, "LANG": "C.UTF-8"}, input=c.canonical(request),
-                                  capture_output=True, timeout=20, check=False)
+            done = subprocess.run([runtime.python, "-I", "-S", "-B", "-c", PRODUCT_IMPORTS + _PHASE_C_CHILD, str(root),
+                                   runtime.target], cwd=root, env={"PATH": os.defpath, "HOME": home, "LANG": "C.UTF-8"},
+                                  input=c.canonical(request), capture_output=True, timeout=20, check=False)
         except subprocess.TimeoutExpired as error:
             raise ValueError("phase_c=element_child") from error
     c.require(done.returncode == 0, "phase_c=element_child")
