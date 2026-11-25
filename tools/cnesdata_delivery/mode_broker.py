@@ -759,6 +759,22 @@ def validate_mode_frame_call(operation, frame, native, scope):
     return parameters
 
 
+def validate_mode_read_call(operation, native, resources):
+    """Design 4.2 mode-readbacks: one read of the ModeReadback key set of the start operation, on the observe alias.
+
+    Returns: the native SDK parameters. Raises: ValueError before any SDK call.
+    """
+    c.closed(native, "role service operation parameters")
+    calls = (mode_readback_calls(lc.MODE_SESSION_OPERATIONS[operation][3], resources)
+             if operation in lc.MODE_READBACK_FRAME_CALLS else [])
+    c.require(native["role"] == "mode_observe"
+              and (native["role"], native["service"], native["operation"]) in lc.MODE_READBACK_FRAME_CALLS.get(operation, ())
+              and any(c.canonical([call["service"], call["operation"], call["parameters"]])
+                      == c.canonical([native["service"], native["operation"], native["parameters"]]) for call in calls),
+              "mode read call outside table")
+    return native["parameters"]
+
+
 class ModeEvidence(ClosedReadyEvidence):
     """ClosedReadyEvidence over one mode effect call, re-validated against the ModeBroker call scope."""
     @staticmethod
@@ -767,6 +783,8 @@ class ModeEvidence(ClosedReadyEvidence):
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
         if scope.get("frame") is not None:
             validate_mode_frame_call(journal._request["operation"], scope["frame"], native, scope)
+        elif scope.get("reads") is not None:
+            validate_mode_read_call(journal._request["operation"], native, scope["reads"])
         else:
             validate_mode_call(journal._request["operation"], native, scope)
         return native
@@ -837,7 +855,14 @@ def _mode_task_terminal(reply):
     return not (len(tasks) == 1 and tasks[0].get("lastStatus") != "STOPPED")
 
 
-def _mode_response(service, operation, response):
+_MODE_READ_FAMILIES = {"describe_state_machine": "state_machine", "get_schedule": "schedules",
+                       "describe_task_definition": "task_definitions", "describe_alarms": "alarms"}
+
+
+def _mode_response(service, operation, response, sdk):
+    if operation in _MODE_READ_FAMILIES:
+        native = {key: value for key, value in response.items() if key != "ResponseMetadata"}
+        return _readback_piece({"key": _MODE_READ_FAMILIES[operation], "parameters": sdk}, native)
     if service == "ecs":
         return _mode_ecs_response(response)
     if (service, operation) == ("dynamodb", "get_item"):
@@ -853,15 +878,22 @@ class ModeBroker:
 
     A durable reservation precedes native IO; only lc.MODE_DEFINITE_ERRORS are definite, any other outcome poisons.
     """
-    def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None, sleep=None):
+    def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None, sleep=None,
+                 reads=None):
         c.require(type(journal) is AdapterJournal and type(session) is _ModeSession
                   and session.request_binding == c.sha(c.canonical(journal._request))
                   and getattr(journal, "_broker", None) is None, "one original admitted mode broker")
-        self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
+        if reads is not None:
+            phase = lc.MODE_SESSION_OPERATIONS[journal._request["operation"]][3]
+            request = mode_readback_request(journal._request["owner"] | journal._identity, journal._request["stage"], phase)
+            c.require(type(reads) is _ModeSession and reads.code == lc.MODE_SESSION_OPERATIONS[phase + "-observe"][0]
+                      and reads.alias == "mode_observe" and reads.request_binding == c.sha(c.canonical(request)),
+                      "mode readback original context")
+        self.aws, self.governance, self.journal, self.session, self.reads = aws, governance, journal, session, reads
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
         self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
-        self.evidence, self._frame = [], None
+        self.evidence, self._frame, self._reading = [], None, False
         journal._broker = self
 
     @property
@@ -888,7 +920,32 @@ class ModeBroker:
     def _call_scope(self):
         launches = [entry["response"] for entry in self.journal._settled_calls() if entry["call"]["operation"] == "run_task"]
         return self.scope | {"launches": len(launches), "frame": self._frame,
+                             "reads": self.reads.scope["resources"] if self._reading else None,
                              "launched": [task["taskArn"] for response in launches for task in response.get("tasks", [])]}
+
+    def readbacks(self):
+        """Design 4.2 mode-readbacks frame: the ModeReadback key set and projection on the stage observe session, each
+        read receipted in this journal.
+
+        Returns: the readbacks document mapping. Raises: ValueError; an unknown read poisons.
+        """
+        journal, operation = self.journal, self.journal._request["operation"]
+        c.require("mode_readbacks" in lc.MODE_EFFECT_METHODS[operation] and self.reads is not None, "mode method outside table")
+        journal.guard()
+        c.require(self.clock() + 20 < min(self.session.deadline, self.reads.deadline), "mode finite SDK request/window")
+        calls = mode_readback_calls(lc.MODE_SESSION_OPERATIONS[operation][3], self.reads.scope["resources"])
+        pieces = {}
+        for call in calls:
+            native = {"role": self.reads.alias, "service": call["service"], "operation": call["operation"],
+                      "parameters": call["parameters"]}
+            validate_mode_read_call(operation, native, self.reads.scope["resources"])
+            self._reading = True
+            try:
+                pieces[call["key"]] = self._native_call(c.canonical(native), call["service"], call["operation"],
+                                                        call["parameters"], session=self.reads)
+            finally:
+                self._reading = False
+        return c.loads(_readback_document(calls, pieces), canonical=True)
 
     def frame(self, value):
         """Design 4.2 keeper ledger frame of a recovery-start child method, on the vendored product builders.
@@ -973,9 +1030,9 @@ class ModeBroker:
         validate_mode_frame_call(self.journal._request["operation"], self._frame, native, self.scope)
         return self._native_call(c.canonical(native, limit=128 * 1024), "dynamodb", name, parameters)
 
-    def _native_call(self, raw, service, operation, sdk):
+    def _native_call(self, raw, service, operation, sdk, session=None):
         from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
-        journal, session = self.journal, self.session
+        journal, session = self.journal, session or self.session
         ledger = ModeEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
                               role_session_sha256=session.commitment, scope=self._call_scope())
         self.evidence.append(ledger)
@@ -986,11 +1043,11 @@ class ModeBroker:
             ticket = journal.begin_sdk_call(raw, role_session_sha256=session.commitment)
             c.require(self.clock() + 20 < session.deadline, "SDK reservation consumed original budget")
             journal._guard.check(20)
-            response, failure, status = self._sdk(service, operation, sdk)
+            response, failure, status = self._sdk(session, service, operation, sdk)
             metadata = response.get("ResponseMetadata", {})
             c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == status,
                       "mode native SDK authenticated status")
-            value = failure if failure is not None else _mode_response(service, operation, response)
+            value = failure if failure is not None else _mode_response(service, operation, response, sdk)
             response_raw = c.canonical(_exact_sdk_dates(value), limit=1024**2)
             c.require(self.clock() < session.deadline, "native response exceeded original mode window")
             receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],
@@ -1003,9 +1060,9 @@ class ModeBroker:
             _poison_call(journal, ledger, ticket, created)
             raise
 
-    def _sdk(self, service, operation, sdk):
+    def _sdk(self, session, service, operation, sdk):
         try:
-            return self.session.client.call(service, operation, **sdk), None, 200
+            return session.client.call(service, operation, **sdk), None, 200
         except Exception as error:
             response = getattr(error, "response", None)
             if self._frame is not None:

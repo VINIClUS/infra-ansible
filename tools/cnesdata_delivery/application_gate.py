@@ -575,6 +575,10 @@ class Context:
     def ledger_settle(self, effect_id, receipt_sha256):
         reply = self.exchange({"kind": "ledger-settle", "effect_id": effect_id, "receipt_sha256": receipt_sha256})
         c.require(reply == {}, "mode ledger reply")
+    def mode_readbacks(self):
+        reply = self.exchange({"kind": "mode-readbacks"})
+        c.require(type(reply) is dict and reply, "mode readbacks reply")
+        return reply
 start = receive()
 c.closed(start, "kind request")
 c.require(start["kind"] == "start", "fixed adapter start")
@@ -615,9 +619,12 @@ def _adapter_message(frame, journal):
         c.closed(value, "kind role service operation parameters")
         c.require(type(getattr(journal, "_broker", None)) in _brokers(), "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
-    if kind in lc.MODE_LEDGER_FRAMES:
+    if kind in lc.MODE_LEDGER_FRAMES or kind == "mode-readbacks":
         from tools.cnesdata_delivery.mode_broker import ModeBroker
         c.require(type(getattr(journal, "_broker", None)) is ModeBroker, "mode method outside table")
+        if kind == "mode-readbacks":
+            c.closed(value, "kind")
+            return journal._broker.readbacks(), None
         return journal._broker.frame(value), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
@@ -915,7 +922,8 @@ class AdapterJournal:
                   or (operation in STATIC_OPERATIONS
                       and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation])
                   or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ())
-                  or (request["role"], request["service"], request["operation"]) in lc.MODE_FRAME_CALLS.get(operation, ()),
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_FRAME_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_READBACK_FRAME_CALLS.get(operation, ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:

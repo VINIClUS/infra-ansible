@@ -261,7 +261,17 @@ MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedExcept
                         ("s3", "put_object"): ("PreconditionFailed", 412)}
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
                         ("s3", "get_object"): {"Body"}, ("ecs", "run_task"): {"tasks", "failures"},
-                        ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set()}
+                        ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set(),
+                        ("stepfunctions", "describe_state_machine"): {"stateMachineArn", "definition"},
+                        ("scheduler", "get_schedule"): {"Target"}, ("ecs", "describe_task_definition"): {"taskDefinition"},
+                        ("cloudwatch", "describe_alarms"): {"AlarmName", "Dimensions", "EvaluationPeriods",
+                                                            "DatapointsToAlarm", "ActionsEnabled", "AlarmActions"}}
+_MODE_UNIT_READS = (("stepfunctions", "describe_state_machine"), ("ecs", "describe_task_definition"))
+MODE_READBACK_FRAME_CALLS = {
+    "unit-start": frozenset(("mode_observe", *call) for call in _MODE_UNIT_READS),
+    **{operation: frozenset(("mode_observe", *call) for call in (*_MODE_UNIT_READS, ("scheduler", "get_schedule"),
+                                                                 ("cloudwatch", "describe_alarms")))
+       for operation in ("recovery-start", "audit-start")}}
 MODE_LEDGER_FRAMES = {"ledger-admit": "ledger_admit_effect", "ledger-unknown": "ledger_mark_unknown",
                       "ledger-settle": "ledger_settle"}
 MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", name)
