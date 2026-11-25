@@ -614,14 +614,15 @@ def test_cada_insumo_do_publish_static_recusa_fonte_nao_autenticada_e_nunca_roda
     assert world.store.get()[0]["status"] == "held" and world.store.get()[0]["lifecycle"]["stage"] in {"api", "static"}
 
 
-def test_execute_de_producao_chega_ao_unit_e_o_modo_unit_recusa_as_origens_ainda_desconectadas(monkeypatch):
-    """Ruling 4 item 6: the host starts the real unit mode run in the unit window; its originals (a) are not connected
-    yet, so it refuses before any mode child and the lease stays held at unit."""
+def test_execute_de_producao_chega_ao_unit_e_o_modo_unit_recusa_o_primeiro_original_nao_autenticado(monkeypatch):
+    """Ruling 4 item 6: the host starts the real unit mode run in the unit window; it refuses at the first original it
+    cannot authenticate (the fixture manifest, with no product checkout in this world), before any mode child, and the
+    lease stays held at unit."""
     from test_cnesdata_stage_events import HOST_REFERENCE
     from tools.cnesdata_delivery import application_gate as ag
     world = _production_world(monkeypatch)
     reads = list(world.github.reads)
-    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
+    with pytest.raises(ValueError, match="^mode fixture original$"):
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     lifecycle = world.store.get()[0]["lifecycle"]
     assert lifecycle["stage"] == "unit" and lifecycle["sequence"] == 4 and world.store.get()[0]["status"] == "held"
