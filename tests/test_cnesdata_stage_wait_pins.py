@@ -134,3 +134,26 @@ def test_execute_segue_adiante_com_o_owner_e_a_geracao_do_marcador(monkeypatch):
     with pytest.raises(ValueError, match="original owner run/caller"):
         lr.execute("plan")
     assert after == ["identity"]
+
+
+def test_teto_dos_payloads_desconta_exatamente_o_tempo_ja_gasto_na_espera_do_marcador(monkeypatch, tmp_path):
+    pins = Pins(monkeypatch, tmp_path)
+    times = iter([1000.0, 1600.0])
+    monkeypatch.setattr(stage_wait, "time", type("T", (), {"time": staticmethod(lambda: next(times, 1600.0))}))
+    stage_wait.main()
+    (call,) = pins.calls
+    assert call["ceiling"] == stage_wait.wait_ceiling("phase-b", WINDOWS) - 600
+
+
+class ConditionalOnly(Api):
+    def read(self, path, raw=False):
+        if path == ARTIFACTS:
+            raise AssertionError("marker listing polled without a conditional GET")
+        return super().read(path, raw=raw)
+
+    def read_conditional(self, path):
+        return super().read(path)
+
+
+def test_espera_do_marcador_sonda_a_listagem_so_com_get_condicional():
+    assert _wait(ConditionalOnly()) == INDEX

@@ -1,0 +1,119 @@
+"""P35 fix round 2: conditional GETs reuse the cached body and a rate limit is a distinct fail-closed refusal."""
+import email.message
+import io
+import json
+import urllib.error
+import urllib.request
+from email.utils import formatdate
+
+import pytest
+
+from tools.cnesdata_delivery import provenance
+
+PATH = "repos/VINIClUS/CnesData/actions/runs/1/artifacts?per_page=100&page=1"
+
+
+def _headers(**values):
+    message = email.message.Message()
+    message["Date"] = formatdate(usegmt=True)
+    for key, value in values.items():
+        message[key.replace("_", "-")] = value
+    return message
+
+
+class Response:
+    def __init__(self, body, **headers):
+        self.body, self.headers = body, _headers(**headers)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, limit=None):
+        return self.body
+
+
+def _error(code, **headers):
+    return urllib.error.HTTPError("https://api.github.com/x", code, "x", _headers(**headers), io.BytesIO(b""))
+
+
+class Opener:
+    def __init__(self, *steps):
+        self.steps, self.requests = list(steps), []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request)
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def _api(monkeypatch, *steps):
+    opener = Opener(*steps)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: opener)
+    return provenance.GitHub("t"), opener
+
+
+def test_primeira_leitura_condicional_guarda_o_etag_e_a_segunda_o_envia(monkeypatch):
+    api, opener = _api(monkeypatch, Response(b'{"a": 1}', ETag='"v1"'), _error(304, ETag='"v1"'))
+    assert api.read_conditional(PATH) == {"a": 1}
+    assert api.read_conditional(PATH) == {"a": 1}
+    assert opener.requests[0].get_header("If-none-match") is None
+    assert opener.requests[1].get_header("If-none-match") == '"v1"'
+
+
+def test_corpo_novo_substitui_o_cache_e_o_etag(monkeypatch):
+    api, opener = _api(monkeypatch, Response(b'{"a": 1}', ETag='"v1"'), Response(b'{"a": 2}', ETag='"v2"'),
+                       _error(304, ETag='"v2"'))
+    assert [api.read_conditional(PATH) for _ in range(3)] == [{"a": 1}, {"a": 2}, {"a": 2}]
+    assert opener.requests[2].get_header("If-none-match") == '"v2"'
+
+
+def test_304_nunca_vira_listagem_vazia(monkeypatch):
+    api, _ = _api(monkeypatch, Response(json.dumps({"total_count": 1, "artifacts": [{"id": 1}]}).encode(), ETag='"v1"'),
+                  _error(304, ETag='"v1"'))
+    api.read_conditional(PATH)
+    assert api.read_conditional(PATH)["artifacts"] == [{"id": 1}]
+
+
+def test_304_sem_cache_e_recusado(monkeypatch):
+    api, _ = _api(monkeypatch, _error(304, ETag='"v1"'))
+    with pytest.raises(ValueError, match="GitHub HTTP failure"):
+        api.read_conditional(PATH)
+
+
+def test_leitura_comum_nao_envia_if_none_match(monkeypatch):
+    api, opener = _api(monkeypatch, Response(b"{}", ETag='"v1"'))
+    api.read(PATH)
+    assert opener.requests[0].get_header("If-none-match") is None
+
+
+@pytest.mark.parametrize("error", [
+    _error(403, x_ratelimit_remaining="0", x_ratelimit_limit="1000", x_ratelimit_used="1000", x_ratelimit_resource="core",
+           x_ratelimit_reset="9999999999"),
+    _error(429, retry_after="60"),
+    _error(403, retry_after="60"),
+])
+def test_limite_de_taxa_e_uma_recusa_distinta_e_nao_repete_a_leitura(monkeypatch, error):
+    api, opener = _api(monkeypatch, error, Response(b"{}"))
+    with pytest.raises(ValueError, match="github=rate_limited"):
+        api.read(PATH)
+    assert len(opener.requests) == 1
+
+
+def test_recusa_de_limite_registra_uma_linha_so_com_numeros_sem_token_nem_url(monkeypatch, capsys):
+    api, _ = _api(monkeypatch, _error(403, x_ratelimit_remaining="0", x_ratelimit_limit="1000", x_ratelimit_used="1000",
+                                      x_ratelimit_resource="core"))
+    with pytest.raises(ValueError):
+        api.read(PATH + "&secret=q")
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == ["github=rate_limited limit=1000 remaining=0 used=1000 resource=core"]
+
+
+def test_403_sem_cabecalhos_de_limite_continua_falha_comum(monkeypatch):
+    api, _ = _api(monkeypatch, _error(403))
+    with pytest.raises(ValueError, match="GitHub HTTP failure"):
+        api.read(PATH)

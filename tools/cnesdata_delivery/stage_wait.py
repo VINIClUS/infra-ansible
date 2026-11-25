@@ -76,7 +76,7 @@ def _marker(api, run, job, *, stage, now):
     """The unique marker inside this job's interval: None while it is not listed, ValueError on anything else."""
     from tools.cnesdata_delivery.provenance import unzip
     name = stage_open_name(stage, run["id"], run["run_attempt"])
-    listing = api.read(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
+    listing = api.read_conditional(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
     c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete stage-open inventory")
     found = [item for item in listing["artifacts"] if item["name"] == name]
     c.require(len(found) <= 1, "unique stage-open marker")
@@ -135,21 +135,96 @@ def payload_publication(job, artifacts, step):
     return found[0]
 
 
+def _jobs_by_name(api, run):
+    """The run attempt's jobs listing (one conditional read), keyed by job name; a duplicated name is refused."""
+    listing = api.read_conditional(f"{_root()}/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
+    c.require(listing["total_count"] == len(listing["jobs"]) <= 100, "complete payload publication inventory")
+    names = [job["name"] for job in listing["jobs"]]
+    c.require(len(names) == len(set(names)), "unique payload producer job")
+    return {job["name"]: job for job in listing["jobs"]}
+
+
 def wait_for_payloads(api, run, *, producers, ceiling, clock=time.time, sleep=time.sleep):
-    """Credential-free wait until every producer is completed-success with its artifact, by payload_publication."""
-    from tools.cnesdata_delivery.application_gate import _same_run_job
+    """Credential-free wait: poll the artifacts listing until every producer artifact is listed, then decide with
+    payload_publication over one jobs listing per poll (conditional GETs on both)."""
     started = clock()
     while True:
-        jobs = [_same_run_job(api, run, kind="payload", job_name=producer["name"], guard=NoReservation())
-                for producer in producers]
-        listing = api.read(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
+        listing = api.read_conditional(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
         c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
-        published = [payload_publication(job, listing["artifacts"], producer["step"])
-                     for job, producer in zip(jobs, producers)]
-        if all(item is not None for item in published):
-            return
+        listed = {item["name"] for item in listing["artifacts"]}
+        if all("lifecycle-" + producer["step"] in listed for producer in producers):
+            jobs = _jobs_by_name(api, run)
+            published = [payload_publication(jobs.get(producer["name"]), listing["artifacts"], producer["step"])
+                         for producer in producers]
+            if all(item is not None for item in published):
+                return
         c.require(clock() - started < ceiling, f"stage_wait=ceiling payloads seconds={ceiling}")
         sleep(POLL_SECONDS)
+
+
+KEEPER_POLL_SECONDS = 5
+HANDLER_READS_PER_STAGE = 12
+ADMISSION_READS = 9
+PAYLOAD_READS_PER_ADMISSION = 5
+PRODUCERS_READS = 4
+MARKER_HIT_READS = 3
+G_JOBS = {"application-prepare": 6, "phase-b": 3, "phase-c-recovery": 3, "phase-c-audit": 3}
+PAYLOAD_CONSUMERS = {"application-prepare": 4, "phase-b": 2, "phase-c-recovery": 2, "phase-c-audit": 2}
+CODE_BOUND_WINDOW_SECONDS = 360
+PROBE_END_STAGES = {"closed-ready": "api", "static-inventory": "static"}
+HOUR_SECONDS = 3600
+
+
+def _stage_opens():
+    opens, now = {"application-prepare": 0}, PREPARATION_ALLOWANCE_SECONDS
+    for stage in WINDOW_ORDER:
+        opens[stage] = now
+        now += CODE_BOUND_WINDOW_SECONDS
+    return opens, now
+
+
+def rest_model(hit_rates=None, *, include_keeper=True):
+    """Pure per-run GITHUB_TOKEN REST read count (one bucket per repository) at the code-bound windows.
+
+    Args: 304 hit rate per listing (jobs, artifacts; 0 unless measured), whether the keeper term is counted.
+    Returns: dict with the worst rolling-hour count and the per-component totals.
+    """
+    rates = {"jobs": 0.0, "artifacts": 0.0} | (hit_rates or {})
+    jobs, artifacts = 1 - rates["jobs"], 1 - rates["artifacts"]
+    opens, end = _stage_opens()
+    seconds = [0.0] * (end + 1)
+    totals = {"keeper": 0.0, "marker_waiters": 0.0, "payload_waiters": 0.0, "admission": 0.0, "probes": 0.0}
+
+    def add(component, start, stop, cost, every=POLL_SECONDS):
+        for second in range(int(start), min(int(stop), end), every):
+            seconds[second] += cost
+            totals[component] += cost
+
+    def point(component, at, cost):
+        seconds[min(int(at), end)] += cost
+        totals[component] += cost
+
+    if include_keeper:
+        add("keeper", 0, end, jobs, KEEPER_POLL_SECONDS)
+        for stage in opens:
+            point("keeper", opens[stage], HANDLER_READS_PER_STAGE)
+    for stage, count in G_JOBS.items():
+        for _ in range(count):
+            add("marker_waiters", 0, opens[stage], artifacts)
+            point("marker_waiters", opens[stage], MARKER_HIT_READS)
+            point("admission", opens[stage], 3 * ADMISSION_READS)
+        window = PREPARATION_ALLOWANCE_SECONDS if stage == "application-prepare" else CODE_BOUND_WINDOW_SECONDS
+        for _ in range(PAYLOAD_CONSUMERS[stage]):
+            add("payload_waiters", opens[stage], opens[stage] + window, artifacts + jobs)
+            point("payload_waiters", opens[stage], PRODUCERS_READS)
+            point("admission", opens[stage], 2 * PAYLOAD_READS_PER_ADMISSION)
+    for stage in PROBE_END_STAGES.values():
+        add("probes", 0, opens[stage], 1)
+    prefix = [0.0]
+    for value in seconds:
+        prefix.append(prefix[-1] + value)
+    worst = max(prefix[min(start + HOUR_SECONDS, len(seconds))] - prefix[start] for start in range(len(seconds)))
+    return {"worst_rolling_hour": worst, "components": totals, "run_seconds": end}
 
 
 def first_job_name(governance, stage):

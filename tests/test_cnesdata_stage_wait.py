@@ -32,6 +32,9 @@ class Api:
         self.reads = []
         self.index, self.created, self.count, self.jobs = index, created, count, list(jobs)
 
+    def read_conditional(self, path):
+        return self.read(path)
+
     def read(self, path, raw=False):
         self.reads.append(path)
         archive = _zip(self.index)

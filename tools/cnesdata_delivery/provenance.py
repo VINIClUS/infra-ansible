@@ -266,6 +266,16 @@ def producer_sha(run, role):
     return value
 
 
+def _refuse_rate_limited(error):
+    """A 403/429 that carries rate-limit headers or retry-after is github=rate_limited: logged once, never retried."""
+    headers = error.headers
+    if error.code not in {403, 429} or not (headers.get("x-ratelimit-remaining") == "0" or headers.get("retry-after")):
+        return
+    numbers = " ".join(f"{name}={headers.get('x-ratelimit-' + name, 'na')}" for name in ("limit", "remaining", "used", "resource"))
+    print("github=rate_limited " + numbers, flush=True)
+    raise ValueError("github=rate_limited")
+
+
 class GitHub:
     """Fixed-host HTTP; token never follows a cross-host download redirect."""
     def __init__(self, token=None):
@@ -273,15 +283,24 @@ class GitHub:
         require(bool(self.token), "GitHub ephemeral token missing")
         self.sample = None
         self.expiries = {}
+        self.cache = {}
 
     def read(self, path, *, raw=False, maximum=192 * 1024**2):
         from tools.cnesdata_delivery.aws_boundary import bounded
         return bounded(lambda: self._read(path, raw=raw, maximum=maximum))
 
-    def _read(self, path, *, raw, maximum):
+    def read_conditional(self, path, *, maximum=192 * 1024**2):
+        """Poll read: sends the last etag and reuses the cached full body on 304; never treats 304 as empty."""
+        from tools.cnesdata_delivery.aws_boundary import bounded
+        return bounded(lambda: self._read(path, raw=False, maximum=maximum, conditional=True))
+
+    def _read(self, path, *, raw, maximum, conditional=False):
         require(path.startswith("repos/") and not any(x in path for x in ("..", "\n", "\r", "://")), "GitHub API path")
         headers = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28"}
+        cached = self.cache.get(path) if conditional else None
+        if cached is not None:
+            headers["If-None-Match"] = cached[0]
         request = urllib.request.Request("https://api.github.com/" + path, headers=headers)
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, hdrs, newurl):
@@ -290,6 +309,9 @@ class GitHub:
         try:
             response = urllib.request.build_opener(NoRedirect).open(request, timeout=20)
         except urllib.error.HTTPError as error:
+            if error.code == 304 and cached is not None:
+                return cached[1]
+            _refuse_rate_limited(error)
             require(raw and error.code in {301, 302, 303, 307}, "GitHub HTTP failure")
             target = error.headers.get("Location", "")
             from urllib.parse import urlparse
@@ -306,7 +328,11 @@ class GitHub:
             self.sample = (start, end, server)
             data = response.read(maximum + 1)
             require(len(data) <= maximum, "GitHub response limit")
-        return data if raw else loads(data)
+            etag = response.headers.get("ETag")
+        value = data if raw else loads(data)
+        if conditional and etag:
+            self.cache[path] = (etag, value)
+        return value
 
     def run(self, reference, *, r2=False):
         run = self.read(f"repos/{reference['repository']}/actions/runs/{reference['run_id']}/attempts/{reference['run_attempt']}")

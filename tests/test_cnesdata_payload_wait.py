@@ -17,16 +17,22 @@ ARTIFACT = {"id": 9, "name": "lifecycle-prepared", "digest": "sha256:" + "a" * 6
 
 
 class Rounds:
+    """One round per artifacts poll; the jobs listing of that poll is the same round. Plain reads of listings refuse."""
     def __init__(self, *rounds):
-        self.rounds, self.reads = list(rounds), 0
+        self.rounds, self.polls, self.log = list(rounds), 0, []
 
     def read(self, path, raw=False):
-        jobs, artifacts = self.rounds[min(self.reads // 2, len(self.rounds) - 1)]
-        self.reads += 1
+        raise AssertionError(f"polled listing read without a conditional GET: {path}")
+
+    def read_conditional(self, path):
+        self.log.append("jobs" if path == JOBS else "artifacts")
+        if path == ARTIFACTS:
+            self.polls += 1
+        jobs, artifacts, *total = self.rounds[min(self.polls, len(self.rounds)) - 1]
         if path == JOBS:
             return {"total_count": len(jobs), "jobs": list(jobs)}
         assert path == ARTIFACTS
-        return {"total_count": len(artifacts), "artifacts": list(artifacts)}
+        return {"total_count": total[0] if total else len(artifacts), "artifacts": list(artifacts)}
 
 
 class Clock:
@@ -64,8 +70,8 @@ def test_espera_continua_enquanto_o_job_do_produtor_nao_existe():
 
 @pytest.mark.parametrize("round_", [
     ([dict(DONE, conclusion="failure")], [ARTIFACT]),
-    ([DONE], []),
     ([DONE], [ARTIFACT, dict(ARTIFACT, id=10)]),
+    ([DONE], [ARTIFACT], 2),
     ([DONE], [dict(ARTIFACT, created_at=c.utc(999))]),
     ([DONE], [dict(ARTIFACT, created_at=c.utc(1101))]),
     ([DONE, dict(DONE, id=78)], [ARTIFACT]),
@@ -75,6 +81,45 @@ def test_espera_recusa_de_imediato_o_que_a_admissao_recusaria(round_):
     with pytest.raises(ValueError):
         _wait(Rounds(round_), clock)
     assert clock.now == 1000
+
+
+def test_sem_artefato_do_produtor_a_espera_continua_ate_o_teto_sem_ler_a_listagem_de_jobs():
+    api, clock = Rounds(([DONE], [])), Clock()
+    with pytest.raises(ValueError, match="stage_wait=ceiling"):
+        _wait(api, clock, ceiling=30)
+    assert set(api.log) == {"artifacts"}
+
+
+def test_listagem_de_jobs_so_e_lida_depois_que_todos_os_artefatos_dos_produtores_aparecem():
+    other = {"name": "other / execute", "step": "audited"}
+    api, clock = Rounds(([], [ARTIFACT]), ([DONE], [ARTIFACT]),
+                        ([DONE, dict(DONE, id=78, name=other["name"])], [ARTIFACT, dict(ARTIFACT, id=10, name="lifecycle-audited")])), Clock()
+    _wait(api, clock, producers=[PRODUCER, other])
+    assert api.log == ["artifacts", "artifacts", "artifacts", "jobs"]
+
+
+def test_uma_so_listagem_de_jobs_por_sondagem_para_todos_os_produtores():
+    producers = [{"name": f"p{n} / execute", "step": f"s{n}"} for n in range(3)]
+    jobs = [dict(DONE, id=80 + n, name=producers[n]["name"]) for n in range(3)]
+    arts = [dict(ARTIFACT, id=20 + n, name=f"lifecycle-s{n}") for n in range(3)]
+    api, clock = Rounds((jobs, arts)), Clock()
+    _wait(api, clock, producers=producers)
+    assert api.log.count("jobs") == 1 and api.log.count("artifacts") == 1
+
+
+def test_dois_jobs_com_o_nome_do_produtor_sao_recusados():
+    clock = Clock()
+    with pytest.raises(ValueError, match="unique payload producer job"):
+        _wait(Rounds(([DONE, dict(DONE, id=78)], [ARTIFACT])), clock)
+
+
+def test_listagem_de_jobs_truncada_e_recusada():
+    class Truncated(Rounds):
+        def read_conditional(self, path):
+            value = super().read_conditional(path)
+            return value | {"total_count": 2} if path == JOBS else value
+    with pytest.raises(ValueError, match="complete payload publication inventory"):
+        _wait(Truncated(([DONE], [ARTIFACT])), Clock())
 
 
 def test_produtor_que_nao_conclui_expira_no_teto_da_espera():
@@ -100,15 +145,29 @@ CASES = [
     ([dict(DONE, conclusion="failure")], [ARTIFACT]),
     ([DONE], []),
     ([DONE], [ARTIFACT, dict(ARTIFACT, id=10)]),
+    ([DONE], [ARTIFACT], 2),
     ([DONE], [dict(ARTIFACT, created_at=c.utc(1000))]),
     ([DONE], [dict(ARTIFACT, created_at=c.utc(1100))]),
     ([DONE], [dict(ARTIFACT, created_at=c.utc(1099))]),
 ]
 
 
+class Plain:
+    """The post-credential admission read: one-shot, never conditional."""
+    def __init__(self, round_):
+        self.jobs, self.artifacts, *total = round_
+        self.total = total[0] if total else len(self.artifacts)
+
+    def read(self, path, raw=False):
+        if path == JOBS:
+            return {"total_count": len(self.jobs), "jobs": list(self.jobs)}
+        assert path == ARTIFACTS
+        return {"total_count": self.total, "artifacts": list(self.artifacts)}
+
+
 def _admits(round_):
     try:
-        lr.payload_references(Rounds(round_), RUN, {"plan": {"step": "prepared"}}, {"plan": PRODUCER})
+        lr.payload_references(Plain(round_), RUN, {"plan": {"step": "prepared"}}, {"plan": PRODUCER})
     except ValueError:
         return False
     return True
@@ -128,9 +187,9 @@ def test_espera_e_payload_references_decidem_igual_pelo_mesmo_predicado(round_):
     assert _wait_returns(round_) == _admits(round_)
 
 
-@pytest.mark.parametrize("round_", CASES)
+@pytest.mark.parametrize("round_", [case for case in CASES if len(case) == 2])
 def test_predicado_unico_aceita_so_o_que_a_admissao_aceita(round_):
-    jobs, artifacts = round_
+    jobs, artifacts, *_ = round_
     try:
         found = stage_wait.payload_publication(jobs[0], artifacts, "prepared") if len(jobs) == 1 else None
     except ValueError:
