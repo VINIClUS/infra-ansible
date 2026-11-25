@@ -95,7 +95,8 @@ SEED = {(family, action) for family in ("seed-raw", "seed-run", "seed-unit") for
 ADMITTED = {
     "unit-seed": SEED | {("record-unit", "put"), ("record-unit", "get"), ("control", "put"), ("control", "get")},
     "recovery-seed": SEED | {("record-recovery", "put"), ("record-recovery", "get"), ("control", "get")},
-    "dispatch-unit": {("binding", "put"), ("ticket", "put"), ("ticket", "get"), ("control", "put"), ("control", "get")},
+    "dispatch-unit": {("binding", "put"), ("ticket", "put"), ("ticket", "get"), ("control", "put"), ("control", "get"),
+                      ("record-unit", "get")},
     "ledger-admit": {("ticket", "put"), ("ticket", "get"), ("control", "put"), ("control", "get")},
     "ledger-unknown": {("ticket", "put"), ("ticket", "get")},
     "ledger-settle": {("ticket", "put"), ("ticket", "get")},

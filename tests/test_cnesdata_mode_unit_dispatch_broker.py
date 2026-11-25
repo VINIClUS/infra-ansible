@@ -85,7 +85,7 @@ class _Dynamo:
             item.update({"pk": {"S": key[0]}, "sk": {"S": key[1]}})
         self.calls, self.statuses, self.execution, self.after = [], list(statuses), execution, after or {}
 
-    def __call__(self, service, name, **parameters):
+    def __call__(self, service, name, /, **parameters):
         self.calls.append((name, copy.deepcopy(parameters)))
         if name == "get_item":
             item = self.items.get((parameters["Key"]["pk"]["S"], parameters["Key"]["sk"]["S"]))
@@ -110,7 +110,7 @@ class _Dynamo:
             hook(self)
         return {"ResponseMetadata": _metadata()}
 
-    def describe(self, service, name, **parameters):
+    def describe(self, service, name, /, **parameters):
         self.calls.append((name, copy.deepcopy(parameters)))
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
         return {"executionArn": parameters["executionArn"], "stateMachineArn": MACHINE, "name": parameters["executionArn"].rsplit(":", 1)[1],
