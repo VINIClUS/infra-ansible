@@ -6,6 +6,12 @@ from test_cnesdata_mode_readback_context import SOURCE, _keys, _readback
 OPERATIONS = ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start", "audit-observe")
 
 
+@pytest.fixture(autouse=True)
+def _unit_start_aberto(monkeypatch):
+    from tools.cnesdata_delivery import mode_broker
+    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
+
+
 @pytest.mark.parametrize("operation", ["unit-start", "unit-observe"])
 def test_origem_readbacks_entrega_os_bytes_relidos_pela_cadeia_do_readback_do_modo(monkeypatch, operation):
     readback, world, _, native, _ = _readback(monkeypatch)
@@ -27,11 +33,22 @@ def test_origem_readbacks_recusa_cadeia_adulterada_sem_devolver_a_observacao_em_
         SOURCE(keeper=world.keeper, owner={}, window={}, operation="unit-start", names=["readbacks"])
 
 
-def test_origem_readbacks_recusa_sem_readback_do_modo_no_keeper(monkeypatch):
+def test_origem_readbacks_recusa_observe_sem_readback_do_modo_no_keeper(monkeypatch):
     readback, world, _, _, _ = _readback(monkeypatch)
     readback.read()
     with pytest.raises(ValueError, match="^readbacks original$"):
+        SOURCE(keeper=world.keeper, owner={}, window={}, operation="recovery-observe", names=["readbacks"])
+
+
+def test_origem_readbacks_no_start_sem_readback_do_modo_recusa_sem_contexto_antes_de_qualquer_sessao(monkeypatch):
+    from tools.cnesdata_delivery import mode_broker
+    readback, world, _, _, _ = _readback(monkeypatch)
+    readback.read()
+    contexts = list(world.keeper._contexts)
+    monkeypatch.setattr(mode_broker, "assume_readback_session", lambda **_: pytest.fail("session"))
+    with pytest.raises(ValueError, match="^mode prepared origin context$"):
         SOURCE(keeper=world.keeper, owner={}, window={}, operation="recovery-start", names=["readbacks"])
+    assert world.keeper._contexts == contexts
 
 
 def test_origem_readbacks_recusa_readback_ainda_nao_lido(monkeypatch):

@@ -2945,13 +2945,15 @@ MODE_RUNS = {"unit": ("unit-record", "unit-seed", "unit-start", "unit-observe"),
 MODE_NEXT_STAGE = {"unit": "phase-c-recovery", "recovery": "phase-c-audit", "audit": "final"}
 
 
-def mode_input_source(*, keeper, owner, window, operation, names):
+def mode_input_source(*, keeper, owner, window, operation, names, context=None):
     """Mode originals the stage does not hold yet, from mode_broker.mode_input_source. Raises: ValueError."""
     from tools.cnesdata_delivery import mode_broker
-    return mode_broker.mode_input_source(keeper=keeper, owner=owner, window=window, operation=operation, names=names)
+    return mode_broker.mode_input_source(keeper=keeper, owner=owner, window=window, operation=operation, names=names,
+                                         context=context)
 
 
-ModeContext = namedtuple("ModeContext", "governance authority prepared credential_limit operation_session clock")
+ModeContext = namedtuple("ModeContext", "governance authority prepared credential_limit operation_session clock aws "
+                                        "activation_sha256 product")
 
 
 def mode_capability(*, journal, keeper, guard, context):
@@ -3010,7 +3012,7 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
     return journal._observation_bytes[observed[0]["sha256"]]
 
 
-def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None):
+def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None, context=None):
     """DD-3/DD-4: the mode operations in order, each fed by the previous observations, the accepted observe,
     then the next stage window. The journaled mode-record yields the record and audit-event-ids inputs.
     Returns the observation bytes by kind (mode-record, mode-seed, mode-result, mode) and the record inputs."""
@@ -3023,7 +3025,7 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
         missing = sorted(names - set(inputs))
         if missing:
             inputs |= dict(mode_input_source(keeper=keeper, owner=lc.owner_binding(record), window=record["lifecycle"],
-                                             operation=operation, names=missing))
+                                             operation=operation, names=missing, context=context))
         raw = run_mode_operation(keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke,
                                  capability=capability, credential_limit=credential_limit, clock=clock)
         produced[lc.ADAPTER_OBSERVATIONS[operation]] = raw
@@ -3241,12 +3243,14 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                   timeout=timeout)
 
         context = ModeContext(governance=governance, authority=authority, prepared=state["prepared"],
-                              credential_limit=credential_limit, operation_session=operation_session, clock=clock)
+                              credential_limit=credential_limit, operation_session=operation_session, clock=clock, aws=aws,
+                              activation_sha256=c.sha(state["activation"]), product=product)
 
         def capability(*, journal, keeper, guard):
             return mode_capability(journal=journal, keeper=keeper, guard=guard, context=context)
         produced = mode_stage(current, name, known=known, invoke=invoke, capability=capability,
-                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256)
+                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256,
+                              context=context)
         if name == "recovery":
             state["recovery-result"] = produced["mode-result"]
 

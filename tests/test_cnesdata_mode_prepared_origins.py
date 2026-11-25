@@ -200,7 +200,7 @@ def _readback_world(monkeypatch):
 def test_origem_readbacks_constroi_anexa_e_le_o_mode_readback_no_start_e_o_observe_recebe_o_mesmo(monkeypatch, mode):
     from tools.cnesdata_delivery import application_gate as ag
     world, owner, window, context, sessions, authorities = _readback_world(monkeypatch)
-    start = _ag().mode_input_source(keeper=world.keeper, owner=owner, window=window, operation=mode + "-start",
+    start = _mb().mode_input_source(keeper=world.keeper, owner=owner, window=window, operation=mode + "-start",
                                     names=["readbacks"], context=context)
     (made,) = _Readback.made
     assert start == {"readbacks": made.raw} and made in world.keeper._contexts
@@ -210,6 +210,6 @@ def test_origem_readbacks_constroi_anexa_e_le_o_mode_readback_no_start_e_o_obser
     assert session["governance"] == "g" and session["application"] == "a" and session["authority"] == "authority"
     assert session["mode"] == mode and session["credential_limit"] == 6000 and session["operation_session"] == "o"
     assert authorities == [{"governance": "g", "application": "a", "owner": owner, "activation_sha256": "1" * 64}]
-    observe = _ag().mode_input_source(keeper=world.keeper, owner=owner, window=window, operation=mode + "-observe",
+    observe = _mb().mode_input_source(keeper=world.keeper, owner=owner, window=window, operation=mode + "-observe",
                                       names=["readbacks"], context=context)
     assert observe == start and len(_Readback.made) == 1 and len(sessions) == 1

@@ -1010,14 +1010,19 @@ def _source(operation, names, *journals):
 
 
 @pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
-def test_mode_start_e_do_keeper_com_o_instante_de_abertura_da_janela_e_o_frozen_que_o_produto_aceita(operation):
+def test_mode_start_e_do_keeper_com_o_instante_de_abertura_da_janela_e_o_frozen_que_o_produto_aceita(monkeypatch,
+                                                                                                    operation):
+    from tools.cnesdata_delivery import mode_broker
+    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
     inputs, window = _source(operation, ["mode-start"])
     assert inputs == {"mode-start": c.canonical({"version": 1, "kind": "mode-start", "frozen": operation == "audit-start",
                                                  "started_at": c.utc(window["admitted_at"])})}
 
 
 @pytest.mark.parametrize("operation", ["unit-start", "recovery-start", "audit-start"])
-def test_previous_e_sempre_nulo_e_um_segundo_start_no_lease_recusa_reentrada(operation):
+def test_previous_e_sempre_nulo_e_um_segundo_start_no_lease_recusa_reentrada(monkeypatch, operation):
+    from tools.cnesdata_delivery import mode_broker
+    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
     assert _source(operation, ["previous"], _lease_journal(operation.replace("-start", "-observe")))[0] == {
         "previous": b"null\n"}
     with pytest.raises(ValueError, match="^mode reentry unavailable$"):
@@ -1175,6 +1180,7 @@ def test_handler_do_c_entrega_ao_capability_o_contexto_do_keeper_e_o_fence_prepa
     world = _through_unit(monkeypatch)
     _c_files(world, "phase-c-recovery")
     world.mode.contexts.clear()
+    world.mode.source_contexts.clear()
     world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
     contexts = world.mode.contexts
     assert len(contexts) == 4 and all(context is contexts[0] for context in contexts)

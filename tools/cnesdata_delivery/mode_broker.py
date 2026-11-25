@@ -13,8 +13,8 @@ from collections import namedtuple
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.application_gate import (AdapterJournal, ClosedReadyBroker, ClosedReadyEvidence, Keeper,
-                                                      _assume_fence_session, _fence_operation_iam, _operation_journals,
-                                                      _poison_call)
+                                                      KeeperGuard, ModeContext, _assume_fence_session, _fence_operation_iam,
+                                                      _operation_journals, _poison_call)
 
 MODE_PHASES = ("unit", "recovery", "audit")
 MODE_SEED_KEYS = frozenset((family, action) for family in ("seed-raw", "seed-run", "seed-unit") for action in ("put", "get"))
@@ -693,10 +693,19 @@ def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
               "mode describe_tasks own task")
 
 
+MODE_UNIT_START_OPEN = False
+_MODE_RECORDS = ("unit-record", "recovery-record", "audit-record")
 MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe",
                        "phase-c": ("recovery-observe", "audit-observe"),
                        "readbacks": ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start",
-                                     "audit-observe")}
+                                     "audit-observe"),
+                       "mode-input": _MODE_RECORDS, "network": ("recovery-observe", "audit-observe"),
+                       "fixture-manifest": (*_MODE_RECORDS, "unit-seed", "recovery-seed"),
+                       "fixture-cnes-local": ("unit-seed", "recovery-seed"),
+                       "fixture-cnes-nacional": ("unit-seed", "recovery-seed")}
+MODE_FIXTURE_FILES = {"fixture-cnes-local": ("cnes-local-v1.parquet", "CNES_LOCAL"),
+                      "fixture-cnes-nacional": ("cnes-nacional-v1.parquet", "CNES_NACIONAL")}
+_MODE_FIXTURE_ENTRY = "manifest_id origin row_count schema_version sha256 size source_type"
 
 
 def _lease_original(keeper, operation, kind, label):
@@ -721,39 +730,105 @@ def _phase_c_original(keeper, mode):
     return c.canonical([c.loads(elements[purpose]) for purpose in purposes])
 
 
-def _readbacks_original(keeper, mode):
+def _prepared_authority(context, owner):
+    c.require(type(context) is ModeContext, "mode prepared origin context")
+    return mode_prepared_authority(context.prepared, governance=context.governance, application=context.authority,
+                                   owner=owner, activation_sha256=context.activation_sha256)
+
+
+def _readbacks_original(keeper, mode, *, start, owner, context):
     found = [item for item in keeper._contexts if type(item) is ModeReadback and item.mode == mode]
+    if not found and start:
+        authority, guard = _prepared_authority(context, owner), KeeperGuard(keeper)
+        session = assume_readback_session(governance=context.governance, application=context.authority,
+                                          authority=authority, guard=guard, mode=mode,
+                                          credential_limit=context.credential_limit,
+                                          operation_session=context.operation_session, clock=context.clock)
+        ModeReadback(context.aws, context.governance, session, guard=guard, mode=mode, clock=context.clock).read()
+        found = [item for item in keeper._contexts if type(item) is ModeReadback and item.mode == mode]
     c.require(len(found) == 1, "readbacks original")
     return found[0].original()
 
 
-def mode_input_source(*, keeper, owner, window, operation, names):
+def _product_original(context, path):
+    manifest = context.governance.get("application_product_source_manifest")
+    files = manifest.get("files") if type(manifest) is dict else None
+    expected = files.get(path) if type(files) is dict else None
+    product = pathlib.Path(context.product)
+    target = product / path
+    c.require(type(expected) is str and product.is_dir() and not product.is_symlink() and target.is_file()
+              and not target.is_symlink() and product.resolve() in target.resolve().parents
+              and target.stat().st_size <= 8 * 1024**2, "mode fixture original")
+    raw = target.read_bytes()
+    c.require(c.sha(raw) == c.digest(expected), "mode fixture original")
+    return raw
+
+
+def _fixture_entries(raw):
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise ValueError("mode fixture original") from error
+    files = value.get("files") if type(value) is dict else None
+    kinds = dict(MODE_FIXTURE_FILES.values())
+    c.require(type(files) is dict and value.get("schema") == "cnesdata.mode-canary-fixtures/v1" and set(files) == set(kinds)
+              and all(type(entry) is dict and set(entry) == set(_MODE_FIXTURE_ENTRY.split())
+                      and entry["source_type"] == kinds[name] and type(entry["size"]) is int
+                      and type(entry["sha256"]) is str for name, entry in files.items()), "mode fixture original")
+    return files
+
+
+def _fixture_originals(context, names):
+    c.require(type(context) is ModeContext, "mode fixture original")
+    manifest = _product_original(context, lc.MODE_FIXTURE_MANIFEST)
+    entries, originals = _fixture_entries(manifest), {"fixture-manifest": manifest}
+    for name in set(names) & set(MODE_FIXTURE_FILES):
+        file = MODE_FIXTURE_FILES[name][0]
+        raw = _product_original(context, lc.MODE_FIXTURE_MANIFEST.rsplit("/", 1)[0] + "/" + file)
+        c.require(entries[file]["sha256"] == c.sha(raw) and entries[file]["size"] == len(raw), "mode fixture original")
+        originals[name] = raw
+    return originals
+
+
+def _source_original(name, *, keeper, owner, window, operation, context):
+    mode = operation.partition("-")[0]
+    if name == "mode-start":
+        return c.canonical({"version": 1, "kind": "mode-start", "frozen": mode == "audit",
+                            "started_at": c.utc(window["admitted_at"])})
+    if name == "previous":
+        c.require(not _operation_journals(keeper, operation), "mode reentry unavailable")
+        return c.canonical(None)
+    if name == "mode-seed":
+        return _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
+    if name == "phase-c":
+        return _phase_c_original(keeper, mode)
+    if name == "readbacks":
+        return _readbacks_original(keeper, mode, start=operation.endswith("-start"), owner=owner, context=context)
+    if name == "mode-input":
+        _prepared_authority(context, owner)
+        return context.prepared["mode-input.json"]
+    if name == "network":
+        return mode_network_input(_prepared_authority(context, owner).scope["resources"])
+    return _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
+
+
+def mode_input_source(*, keeper, owner, window, operation, names, context=None):
     """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null; (s) the audit mode-seed
     and recovery-readbacks from this lease's recovery journals; phase-c, the list of this keeper's accepted phase-c
-    elements in mode order (P17 ruling 6); readbacks, the handoff of this keeper's single ModeReadback of the mode
-    (ruling 5). Any other origin is not connected and refuses first.
+    elements in mode order (P17 ruling 6); readbacks, the handoff of this keeper's single ModeReadback of the mode,
+    built, attached and read at the start (ruling 5, Falta 7); (a) mode-input and network from the PreparedFence
+    revalidated by mode_prepared_authority, and the fixtures from the authenticated product checkout. unit-start
+    refuses first while MODE_UNIT_START_OPEN is closed (ruling 8 item 2); any other origin is not connected.
 
-    Returns: {name: bytes}. Raises: ValueError.
+    Args: context is the ModeContext of the stage handler. Returns: {name: bytes}. Raises: ValueError.
     """
+    c.require(operation != "unit-start" or MODE_UNIT_START_OPEN, "mode_unit_start=p16d_pending")
     mode = operation.partition("-")[0]
     c.require(all(_origin_open(name, mode, operation) for name in names), "mode_inputs=source_unconnected")
-    inputs = {}
-    for name in names:
-        if name == "mode-start":
-            inputs[name] = c.canonical({"version": 1, "kind": "mode-start", "frozen": mode == "audit",
-                                        "started_at": c.utc(window["admitted_at"])})
-        elif name == "previous":
-            c.require(not _operation_journals(keeper, operation), "mode reentry unavailable")
-            inputs[name] = c.canonical(None)
-        elif name == "mode-seed":
-            inputs[name] = _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
-        elif name == "phase-c":
-            inputs[name] = _phase_c_original(keeper, mode)
-        elif name == "readbacks":
-            inputs[name] = _readbacks_original(keeper, mode)
-        else:
-            inputs[name] = _lease_original(keeper, "recovery-start", None, "recovery-readbacks original")
-    return inputs
+    fixtures = [name for name in names if name.startswith("fixture-")]
+    found = _fixture_originals(context, fixtures) if fixtures else {}
+    return {name: found[name] if name in fixtures else _source_original(
+        name, keeper=keeper, owner=owner, window=window, operation=operation, context=context) for name in names}
 
 
 ModeAuthority = namedtuple("ModeAuthority", "evaluation documents scope roles")
