@@ -151,6 +151,85 @@ def unit_start_grants(resources, owner_sha256):
     return {action: frozenset(keys) for action, keys in grants.items()}
 
 
+def unit_seed_units(calls, locator):
+    """B1 (c-1125-p16b-repin item 2): the unit mappings of the RUNUNIT items this keeper put at the unit-seed of the same
+    lease, in put order; settled PutItem only, no read.
+
+    Returns: list of unit mappings. Raises: ValueError mode unit seed units.
+    """
+    keys, units = _product_module(_PRODUCT_KEYS), []
+    c.require(type(locator) is UnitLocator and len(locator.run_ids) == 1, "mode unit seed units")
+    tenant, run = locator.tenant_id, locator.run_ids[0]
+    for entry in calls:
+        call = entry["call"]
+        item = call["parameters"].get("Item") if (call["service"], call["operation"]) == ("dynamodb", "put_item") else None
+        if type(item) is not dict or item.get("entity") != {"S": "RUNUNIT"}:
+            continue
+        try:
+            unit = json.loads(item["payload"]["S"])
+            pk, sk = keys.unit_key(tenant, run, unit["unit_id"])
+        except (ValueError, TypeError, KeyError) as error:
+            raise ValueError("mode unit seed units") from error
+        c.require(entry["response"] == {} and (unit.get("tenant_id"), unit.get("run_id")) == (tenant, run)
+                  and (item["pk"], item["sk"]) == ({"S": pk}, {"S": sk}), "mode unit seed units")
+        units.append(unit)
+    c.require(bool(units), "mode unit seed units")
+    return units
+
+
+def unit_dispatch_steps(start, *, read, write, admit, live, launch):
+    """Q1b: the product unit-start of one UnitStart on the keeper callables, request for request the native path of the
+    vector, with the dispatch-unit frame after the reserve and B3 between the claim and StartExecution.
+
+    Args: read(GetItem request) -> item or None; write(operation, request); admit() the dispatch-unit frame; live() the
+    B3 read; launch(start_execution request) -> execution ARN.
+    Returns: (StartPermit, execution ARN). Raises: ValueError before the next write.
+    """
+    product = product_dispatch()
+
+    def reads(step):
+        return [read(request) for request in product.step_reads(start, step)]
+    run_item, active, *unit_items = reads("reserve")
+    c.require(run_item is not None and active is None and None not in unit_items, "mode unit dispatch reserve")
+    write("transact_write_items", product.reserve_request(start, run_item, unit_items))
+    admit()
+    write("transact_write_items", product.acquire_request(start))
+    token = _unit_permit(start, *reads("gate"))[0]
+    write("update_item", product.attempt_request(start))
+    permit = product.StartPermit(token, _unit_permit(start, *reads("gate"))[1])
+    active, semaphore = reads("claim")
+    c.require(_unit_active(start, active, "RESERVED") and _unit_permit(start, None, semaphore)[0] == token,
+              "mode unit dispatch claim")
+    write("transact_write_items", product.claim_request(start, permit))
+    live()
+    execution = launch(product.start_execution(start.dispatch))
+    run_item, active = reads("bind")
+    c.require(run_item is not None and _unit_active(start, active, "STARTING"), "mode unit dispatch bind")
+    write("transact_write_items", product.bind_request(start, permit, execution, run_item))
+    for request in product.confirm_requests(start, permit, execution):
+        write("update_item", request)
+    return permit, execution
+
+
+def _unit_permit(start, fence, semaphore):
+    dispatch, item = start.dispatch, semaphore or {}
+    holder = tuple(item.get(name, {}).get("S") for name in ("holder_tenant_id", "holder_run_id", "holder_dispatch_id"))
+    token = item.get("token", {}).get("N")
+    version = "0" if fence is None else fence.get("version", {}).get("N")
+    c.require(holder == (dispatch.tenant_id, dispatch.run_id, dispatch.dispatch_id)
+              and all(type(value) is str and value.isdigit() for value in (token, version)) and int(token) >= 1,
+              "mode unit dispatch permit")
+    return int(token), int(version)
+
+
+def _unit_active(start, item, state):
+    try:
+        payload = json.loads(item["payload"]["S"])
+    except (TypeError, KeyError, ValueError):
+        return False
+    return type(payload) is dict and (payload.get("dispatch_id"), payload.get("state")) == (start.dispatch.dispatch_id, state)
+
+
 def _hex(value):
     return value.encode().hex()
 
