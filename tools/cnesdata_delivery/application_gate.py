@@ -1714,12 +1714,13 @@ def _same_run_publication(api, run, owner, job, *, kind, step, guard, now):
 
 
 def _deploy_publication(api, aws, governance, request, run, owner, guard, now, purpose):
-    """Completed same-run advance deploy publication of the purpose (checkpoint + approval) and its authenticated moments."""
+    """Completed same-run deploy publication of the purpose (plus apply-output.bin for C) and its authenticated moments."""
     from tools.cnesdata_delivery.lifecycle_runtime import private_payload
     name, step = _deploy_step(governance, purpose)
     job = _same_run_job(api, run, kind=purpose, job_name=step["job_name"], guard=guard)
     _, public, artifact = _same_run_publication(api, run, owner, job, kind=purpose, step=name, guard=guard, now=now)
-    files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+    names = {"checkpoint.json", "approval.json"} | ({"apply-output.bin"} if purpose in lc.PHASE_C_PURPOSES else set())
+    files = private_payload(aws, governance, request, run, public, guard=guard, names=names)[1]
     return files, {"artifact_created_at": artifact["created_at"], "job_completed_at": job["completed_at"]}
 
 

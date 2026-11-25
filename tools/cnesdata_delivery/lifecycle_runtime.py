@@ -1487,7 +1487,8 @@ def execute(role):
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}
-            result_files = {"checkpoint.json": c.canonical(checkpoint), "approval.json": payload["approval.json"]}
+            result_files = deploy_result_files(step["purpose"], c.canonical(checkpoint), payload["approval.json"],
+                                               (temp / "apply.log").read_bytes())
             if step["purpose"] == "application-prepare" and step["mode"] == "operational":
                 # Amendment 2026-11-13 item 6: the eight-file observation is produced inside this running gate.
                 c.require(len(plan_indexes) == 1, "fence single authenticated current plan index")
@@ -1500,6 +1501,15 @@ def execute(role):
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)
+
+
+def deploy_result_files(purpose, checkpoint_raw, approval_raw, apply_output):
+    """P17 ruling 6 item 2: the deploy publication members; apply-output.bin only for the two C purposes.
+
+    Args: step purpose, checkpoint bytes, approval bytes, apply log bytes. Returns: member name -> bytes.
+    """
+    files = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw}
+    return files | {"apply-output.bin": apply_output} if purpose in lc.PHASE_C_PURPOSES else files
 
 
 PhaseCDeploy = namedtuple("PhaseCDeploy", "purpose payload checkpoint_raw apply_output")
