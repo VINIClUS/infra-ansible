@@ -158,9 +158,10 @@ def test_documento_que_muda_um_caso_recusa_a_preparacao(name, change, case_id):
         _prepare(documents)
 
 
-def test_sessao_avaliada_e_a_do_construtor_no_prazo_preparado():
+@pytest.mark.parametrize("name", ["session.ux", "session.uw"])
+def test_sessao_avaliada_e_a_do_construtor_no_prazo_preparado(name):
     documents = _documents()
-    documents["session.ux"] = _documents(("ux",), DEADLINE + 60)["session.ux"]
+    documents[name] = _documents(("ux",), DEADLINE + 60)[name]
     with pytest.raises(ValueError, match="^mode evaluation session document$"):
         _prepare(documents)
 
