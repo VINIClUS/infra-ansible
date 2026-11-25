@@ -110,7 +110,7 @@ def test_cadeia_comeca_em_zero_encadeia_o_recibo_anterior_e_fecha_o_intent(monke
     for sequence, call in enumerate(_mb().mode_readback_calls("unit", RESOURCES)):
         keys = _keys(request, sequence)
         intent = c.loads(store.objects[keys["intent"]], canonical=True)
-        assert set(intent) == INTENT_FIELDS and intent["schema_version"] == 2
+        assert set(intent) == INTENT_FIELDS and intent["schema_version"] == 3
         assert intent["operation"] == "unit-readbacks" and intent["sequence"] == sequence
         assert intent["previous"] == previous and intent["checkpoint_sha256"] == world.keeper.lease.check()["lifecycle"][
             "checkpoint_sha256"]
@@ -319,6 +319,7 @@ RESEALED = {
     "intent-com-campo-extra": {"intent": lambda value: value | {"extra": 1}},
     "intent-de-outra-operacao": {"intent": lambda value: value | {"operation": "unit-start"}},
     "intent-de-outro-schema": {"intent": lambda value: value | {"schema_version": 1}},
+    "intent-com-a-tag-do-closed-ready": {"intent": lambda value: value | {"schema_version": 2}},
     "outra-sessao": {"intent": lambda value: value | {"role_session_sha256": "d" * 64}},
     "outro-checkpoint": {"intent": lambda value: value | {"checkpoint_sha256": "e" * 64}},
     "outro-caller": {"intent": lambda value: value | {"caller": value["caller"] | {"caller_binding_sha256": "0" * 64}}},
