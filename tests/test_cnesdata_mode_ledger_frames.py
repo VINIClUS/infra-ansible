@@ -81,11 +81,11 @@ def _effect_id(kind="run-recovery", request="1" * 64):
     return _frames().effect_id(c.sha(RECORD.encode()), kind, request)
 
 
-def _ledger_broker(monkeypatch, operation="recovery-start", items=None, record=RECORD, **dynamo):
-    args, _, _ = _case(monkeypatch, operation)
+def _ledger_broker(monkeypatch, operation="recovery-start", items=None, record=RECORD, source=None, **dynamo):
+    args, _, _ = _case(monkeypatch, operation, source=source)
     inputs = {"record": record.encode()} | ({"readbacks": c.canonical(_readbacks(operation.split("-")[0]))}
                                             if operation in ("recovery-start", "audit-start") else {})
-    args["journal"], _ = _journal(operation, inputs)
+    args["journal"], _ = _journal(operation, inputs, source)
     session = _mb().assume_mode_session(**args)
     control, _ = _keys(_effect_id())
     table = _Dynamo({control: CONTROL} if items is None else items, **dynamo)

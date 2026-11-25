@@ -82,9 +82,11 @@ class _Factory:
         return self.client
 
 
-def _journal(operation, inputs=None):
+def _journal(operation, inputs=None, source=None):
     from test_cnesdata_mode_stages import _mode_case
     request, owner, window, fixture = _mode_case(operation)
+    if source is not None:
+        owner["source_sha"] = request["source_sha"] = request["owner"]["source_sha"] = source
     inputs = fixture | (inputs or {})
     request["inputs"] = {name: {"sha256": c.sha(raw), "size": len(raw)} for name, raw in inputs.items()}
     shift = START - window["admitted_at"]
@@ -100,9 +102,9 @@ def _journal(operation, inputs=None):
                              activation_sha256=request["activation_sha256"], guard=Guard()), owner
 
 
-def _case(monkeypatch, operation="recovery-start", mutation=None):
+def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
     from tools.cnesdata_delivery import aws_boundary
-    journal, owner = _journal(operation)
+    journal, owner = _journal(operation, source=source)
     now = journal._request["stage"]["deadline"] - 40 if mutation == "late" else START + 30
     governance, application = _governance(), _application()
     code, alias = lc.MODE_SESSION_OPERATIONS[operation][:2]
