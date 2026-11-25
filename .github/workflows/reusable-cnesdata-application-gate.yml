@@ -123,7 +123,7 @@ jobs:
                    "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
                    "static_inputs.py", "mode_broker.py",
                    "product_dynamodb_keys.py", "product_mode_canary.py", "product_mode_canary_frames.py",
-                   "runtime-requirements.txt"]
+                   "runtime-requirements.txt", "phase-c-child-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
           root.mkdir(parents=True, exist_ok=True)
           for name in files:
@@ -162,6 +162,28 @@ jobs:
           "${RUNNER_TEMP}/delivery-python/bin/pip" install --disable-pip-version-check --require-hashes \
             --only-binary=:all: -r tools/cnesdata_delivery/runtime-requirements.txt
           echo "${RUNNER_TEMP}/delivery-python/bin" >> "${GITHUB_PATH}"
+      - name: Set up the pinned phase-c child Python
+        id: phase-c-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+          update-environment: false
+      - name: Install the hash-pinned phase-c child runtime
+        shell: bash
+        env:
+          PHASE_C_PYTHON: ${{ steps.phase-c-python.outputs.python-path }}
+        run: |
+          set -euo pipefail
+          target="${RUNNER_TEMP}/phase-c-child"
+          started="$(date +%s%N)"
+          "${PHASE_C_PYTHON}" -I -m pip install --disable-pip-version-check --no-input --require-hashes \
+            --only-binary=:all: --target "${target}" -r tools/cnesdata_delivery/phase-c-child-requirements.txt
+          elapsed=$(( $(date +%s%N) - started ))
+          seconds=$(( elapsed / 1000000000 ))
+          millis=$(( elapsed / 1000000 % 1000 ))
+          printf 'phase_c_child_install seconds=%d.%03d\n' "${seconds}" "${millis}"
+          printf 'CNESDATA_PHASE_C_PYTHON=%s\n' "${PHASE_C_PYTHON}" >> "${GITHUB_ENV}"
+          printf 'CNESDATA_PHASE_C_TARGET=%s\n' "${target}" >> "${GITHUB_ENV}"
       - name: Bridge masked artifact runtime from Node action handler
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
