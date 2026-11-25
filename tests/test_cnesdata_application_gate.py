@@ -5463,8 +5463,9 @@ def test_application_main_execute_hands_the_admitted_tuple_to_execute(monkeypatc
     monkeypatch.setattr(lr, "admission", lambda role: admitted)
     monkeypatch.setattr(session_owner, "application_fragment", lambda governance, now: None)
     monkeypatch.setattr(ag, "verify_source_closure", lambda governance, api: None)
-    monkeypatch.setattr(ag, "execute", lambda *args, **kwargs: handed.append((args, kwargs)))
-    ag.main(["execute"])
+    outcome = {"kind": "accepted-open", "promotion_status": "accepted", "receipt": {"id": 1}}
+    monkeypatch.setattr(ag, "execute", lambda *args, **kwargs: handed.append((args, kwargs)) or outcome)
+    assert ag.main(["execute"]) == outcome
     assert handed == [((admitted,), {})]
 
 
@@ -5840,7 +5841,9 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                "run_mode_operation", "mode_stage", "mode_stage_window",
                "static_capability", "StaticBroker", "_assume_static_session", "run_publish_static", "unit_window",
                "static_input_source", "run_inventory", "inventory_capability", "publish_inventory", "inventory_input_source",
-               "static_plan_source", "static_role_facts", "_observer_publication"}
+               "static_plan_source", "static_role_facts", "_observer_publication", "terminal_capability",
+               "run_terminal_operation", "TerminalSteps", "enter_recovery", "restoration_validator", "publication_guard"}
+    terminal_module = "tools/cnesdata_delivery/terminal_gate.py"
     sites, gate_execute = set(), []
     for path in sorted((root / "tools").rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
@@ -5856,7 +5859,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
                     if relative.endswith("application_gate.py") and isinstance(func, ast.Name) and func.id == "execute":
                         gate_execute.append((scope, child))
                 if isinstance(child, ast.ImportFrom) and (child.module or "").endswith("application_gate"):
-                    assert not {alias.name for alias in child.names} & (guarded | {"execute"}), (relative, ast.dump(child))
+                    names = {alias.name for alias in child.names}
+                    assert not names & {"execute"} and (relative == terminal_module or not names & guarded), (relative, ast.dump(child))
                 if (isinstance(child, ast.Attribute) and child.attr in guarded | {"execute", "TERMINAL_VALIDATORS", "KEEPER_EVENT_SOURCE"}
                         and isinstance(child.value, ast.Name) and child.value.id in {"application_gate", "ag"}):
                     pytest.fail(f"{relative}: application_gate.{child.attr} referenced outside the gate")
@@ -5934,6 +5938,14 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         ("tools/cnesdata_delivery/static_inputs.py", "static_plan_bytes", "static_plan"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "_static_put", "s3_put_body"),
         ("tools/cnesdata_delivery/lifecycle_contract.py", "validate_static_call", "static_plan"),
+        (gate, "execute", "TerminalSteps"),
+        (gate, "host", "enter_recovery"),
+        (gate, "_restoration_validator", "restoration_validator"),
+        (terminal_module, "run_terminal_operation", "KeeperGuard"),
+        (terminal_module, "run_terminal_operation", "terminal_capability"),
+        (terminal_module, "_operation", "run_terminal_operation"),
+        (terminal_module, "_close", "publication_guard"),
+        (terminal_module, "host_recovery", "KeeperGuard"),
     }, sites
     assert [scope for scope, _ in gate_execute] == ["main"]
     call = gate_execute[0][1]

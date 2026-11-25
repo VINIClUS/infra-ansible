@@ -1256,7 +1256,8 @@ def test_host_handler_admite_a_janela_static_com_o_handoff_aceito_do_closed_read
 
 _HOST_REFUSALS = {
     "rolled-back": ({"handoff": {"status": "rolled_back"}}, "host handoff accepted for the keeper closed-ready"),
-    "recovery": ({"handoff": {"status": "recovery_required"}}, "host handoff accepted for the keeper closed-ready"),
+    "recovery": ({"handoff": {"status": "recovery_required"}},
+                 "host recovery_required handoff with the decision of the keeper closed-ready"),
     "other-ready": ({"handoff": {"closed_ready_sha256": "0" * 64}}, "host handoff accepted for the keeper closed-ready"),
     "kind": ({"handoff": {"kind": "closed-ready"}}, "terminal source kind=host-handoff"),
     "extra": ({"handoff": {"extra": 1}}, "closed object fields"),

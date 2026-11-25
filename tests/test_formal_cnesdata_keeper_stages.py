@@ -18,6 +18,8 @@ MUTANTS = {
     "KeeperStagesMutantInternalHostTrigger": ["invariant:DeclaredTrigger"],
     "KeeperStagesMutantLeaveUnsettled": ["invariant:ExitWithOpsSettled"],
     "KeeperStagesMutantFinishUnsettled": ["invariant:ExitWithOpsSettled"],
+    "KeeperStagesMutantLapseOutsideRecovery": ["temporal"],
+    "KeeperStagesMutantLapseBeforeDeadline": ["temporal"],
     WITNESS: ["invariant:NoAccepted"],
 }
 CFG_SWAPS = {
@@ -25,15 +27,42 @@ CFG_SWAPS = {
     "KeeperStagesMutantInternalHostTrigger": ("<- ModelTriggerRows", "<- InternalHostTriggerRows"),
     "KeeperStagesMutantLeaveUnsettled": ("SPECIFICATION Spec", "SPECIFICATION MutantSpec"),
     "KeeperStagesMutantFinishUnsettled": ("SPECIFICATION Spec", "SPECIFICATION MutantSpec"),
+    "KeeperStagesMutantLapseOutsideRecovery": ("SPECIFICATION Spec", "SPECIFICATION MutantSpec"),
+    "KeeperStagesMutantLapseBeforeDeadline": ("SPECIFICATION Spec", "SPECIFICATION MutantSpec"),
 }
 MUTANT_BODIES = {
     "KeeperStagesMutantLeaveUnsettled": ["MutantSpec == Init /\\ [][Next \\/ Leave]_vars /\\ Fairness"],
     "KeeperStagesMutantFinishUnsettled": [
         "MutantSpec == Init /\\ [][Next \\/ \\E kind \\in FailedKinds : Close(kind)]_vars /\\ Fairness"],
+    "KeeperStagesMutantLapseOutsideRecovery": [
+        "OutsideHalt ==",
+        '    /\\ terminal = "none" /\\ stage /= "recovery"',
+        "    /\\ halted' = TRUE",
+        "    /\\ UNCHANGED <<stage, failing, budget, published, journal, trail, terminal, lapsed>>",
+        "MutantSpec == Init /\\ [][Next \\/ OutsideHalt]_vars /\\ Fairness"],
+    "KeeperStagesMutantLapseBeforeDeadline": [
+        "EarlyHalt ==",
+        '    /\\ terminal = "none" /\\ stage = "recovery" /\\ ~lapsed /\\ "host-recovery" \\notin published',
+        "    /\\ halted' = TRUE",
+        "    /\\ UNCHANGED <<stage, failing, budget, published, journal, trail, terminal, lapsed>>",
+        "MutantSpec == Init /\\ [][Next \\/ EarlyHalt]_vars /\\ Fairness"],
     WITNESS: ['NoAccepted == terminal /= "accepted-open"'],
 }
 WITNESS_CFG = ["\\* expect invariant:NoAccepted", "CONSTANT TriggerRows <- ModelTriggerRows",
                "SPECIFICATION Spec", "INVARIANT NoAccepted"]
+RECOVERY_LAPSE = [
+    'Elapse ==',
+    '    /\\ Live /\\ stage = "recovery" /\\ ~lapsed /\\ "host-recovery" \\notin published',
+    "    /\\ lapsed' = TRUE",
+    'LapseHalt ==',
+    '    /\\ Live /\\ stage = "recovery" /\\ lapsed /\\ "host-recovery" \\notin published',
+    "    /\\ halted' = TRUE",
+    'RecoveryLapseHalt == halted /\\ stage = "recovery" /\\ lapsed /\\ "host-recovery" \\notin published',
+    '    /\\ terminal /= "none" \\/ RecoveryLapseHalt',
+    "Fairness == WF_vars(KeeperStep) /\\ WF_vars(Wait) /\\ WF_vars(Elapse)",
+    'Termination == <>(terminal /= "none" \\/ RecoveryLapseHalt)',
+    "ExhaustionEndsFailed == Exhausted ~> (terminal \\in FailedKinds \\/ RecoveryLapseHalt)",
+]
 GUARDED_EXITS = ["Advance == Leave /\\ OpsSettled(Ops(stage))",
                  "Finish(kind) == Close(kind) /\\ OpsSettled(FailureOps)"]
 ROW = re.compile(r'^ {4}<<"([a-z-]+)", "([a-z-]+)", "(external|internal)", "([a-z-]+)">>,?$')
@@ -122,6 +151,12 @@ def test_testemunha_do_aceite_le_a_tabela_do_modelo_e_so_nega_o_aceite():
 def test_avanco_e_fechamento_sao_o_nucleo_mais_a_guarda_de_operacoes_liquidadas():
     lines = _model().splitlines()
     assert [line for line in GUARDED_EXITS if line in lines] == GUARDED_EXITS
+
+
+def test_so_o_prazo_do_recovery_sem_host_recovery_para_o_keeper_e_o_tempo_e_a_justica_nova():
+    lines = _model().splitlines()
+    assert [line for line in RECOVERY_LAPSE if line in lines] == RECOVERY_LAPSE
+    assert "WF_vars(Publish" not in _model() and "    /\\ Live /\\ ~failing /\\ ~lapsed" in lines
 
 
 def test_conjunto_de_mutantes_do_keeper_e_fechado():

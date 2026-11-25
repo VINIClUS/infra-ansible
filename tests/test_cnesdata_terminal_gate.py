@@ -1,6 +1,7 @@
 """P17: terminal sequences of the keeper (final, recovery, failed prepare), restoration, publication and release."""
 import ast
 import copy
+import inspect
 import io
 import re
 import zipfile
@@ -31,6 +32,79 @@ def _reusable_lists():
 def _observer_lists():
     text = (WORKFLOWS / "reusable-cnesdata-observer.yml").read_text()
     return [re.findall(r'"([^"]+)"', block) for block in re.findall(r"const modules = \[(.*?)\];", text, re.S)]
+
+
+PRODUCT_TERMINAL_ORIGIN = {
+    "commit": "1d0054c87501de3bbc5f55cfa618b4f54124c55f",
+    "scripts/promotion/_adapter_abi.py": "c485be2e93de45b2093fa74fbe6a60397b6a14067bfa917343a4a4a272748cee",
+    "scripts/promotion/_api_static_records.py": "f2844355df3c95914a832867c3d4bbebf846cbdf9defbbd8ac477b02d9140f7c",
+    "scripts/promotion/promote_api.py": "6d4bdc5f13b3d66d534d3edc09c0f8cb7eaec02104bd545087ef05f0407331eb",
+    "scripts/promotion/promote_terminal.py": "53269609b9b25cdfaf9709582cb68e2c15e8e5de0407bf307be3b2da297494fb",
+    "tests/production/delivery/reopen_sdk_vector.json": "86e9d493ebbdd1aedcb4c422416dbcf06d28b9e925dc934966cff7718b35b99f"}
+VENDORED_TERMINAL_SHA256 = "9c6b02236f4f3243c8555580c50e0c1dbbab02ad29d4d196a0a246dffb491844"
+
+
+def _product_terminal_abi():
+    """Vendored from CnesData 1d0054c8 (P17c): _adapter_abi INPUTS, STAGES, OBSERVATIONS, ROUTING_FIELDS and
+    TERMINAL_READBACK_FIELDS of the terminal operations, promote_api._require_request (the input set is exact at
+    every stage), promote_terminal ROUTE_MODES, ROLLBACK_FIELDS, REQUIRED_INPUTS and FORBIDDEN_INPUTS of
+    terminal-readback (names whose input is not null), and _api_static_records.ROLLBACK_SCHEMA."""
+    inputs = {"rollback-api-static": {"static-plan", "inventory", "publication", "host-recovery-receipt", "recovery-decision"},
+              "reopen": {"activation", "routing", "canaries", "membership"},
+              "terminal-readback": {"routing", "membership", "host-receipt", "static-receipt", "decision"}}
+    stages = {"rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
+              "terminal-readback": {"application-prepare", "final", "recovery"}}
+    observations = {"rollback-api-static": "rollback", "reopen": "routing", "terminal-readback": "terminal"}
+    optional = {"routing", "host-receipt", "static-receipt", "decision"}
+    required = {"application-prepare": set(), "final": {"routing", "host-receipt", "static-receipt"},
+                "recovery": {"routing", "decision"}}
+    forbidden = {"application-prepare": optional, "final": {"decision"}, "recovery": set()}
+    return {"inputs": inputs, "stages": stages, "observations": observations,
+            "routing_fields": {"version", "kind", "fence", "routes_match"},
+            "readback_fields": {"version", "kind", "members", "quiescent", "state_clean", "pending", "unknown", "observed_at"},
+            "route_modes": ("unit", "recovery", "audit"),
+            "rollback_fields": {"schema", "plan_sha256", "restored", "residual", "invalidation_id"},
+            "rollback_schema": "cnesdata.static-rollback/v1", "optional": optional, "required": required,
+            "forbidden": forbidden}
+
+
+PRODUCT = _product_terminal_abi()
+
+
+def _product_admission(world):
+    for operation, stage, _, inputs in world.terminal.calls:
+        assert set(inputs) == PRODUCT["inputs"][operation] and stage in PRODUCT["stages"][operation], (operation, stage)
+
+
+def _product_stage_rule(readback, stage):
+    present = {name for name in PRODUCT["optional"] if readback[name] != b"null"}
+    assert set(readback) == PRODUCT["inputs"]["terminal-readback"]
+    assert PRODUCT["required"][stage] <= present and not present & PRODUCT["forbidden"][stage]
+
+
+def test_copia_vendorizada_do_abi_terminal_so_muda_junto_com_a_origem_registrada():
+    """infra-ansible CI cannot import CnesData: a refresh of the vendored tables updates its origin and this digest."""
+    assert set(PRODUCT_TERMINAL_ORIGIN) == {"commit", "scripts/promotion/_adapter_abi.py",
+                                            "scripts/promotion/_api_static_records.py", "scripts/promotion/promote_api.py",
+                                            "scripts/promotion/promote_terminal.py",
+                                            "tests/production/delivery/reopen_sdk_vector.json"}
+    assert c.sha(inspect.getsource(_product_terminal_abi).encode()) == VENDORED_TERMINAL_SHA256
+
+
+@pytest.mark.parametrize("operation", sorted(PRODUCT["inputs"]))
+def test_tabelas_terminais_do_keeper_batem_com_o_abi_do_produto_em_cada_estagio(operation):
+    assert lc.ADAPTER_STAGES[operation] == PRODUCT["stages"][operation]
+    assert lc.ADAPTER_OBSERVATIONS[operation] == PRODUCT["observations"][operation]
+    for stage in sorted(PRODUCT["stages"][operation]):
+        assert set(lc.ADAPTER_INPUTS[operation].split()) == PRODUCT["inputs"][operation], stage
+
+
+def test_formatos_terminais_do_keeper_batem_com_o_produto():
+    from tools.cnesdata_delivery import application_gate as ag, terminal_gate as tg
+    assert set(ag.ROUTING_FIELDS.split()) == PRODUCT["routing_fields"]
+    assert set(ag.TERMINAL_READBACK_FIELDS.split()) == PRODUCT["readback_fields"]
+    assert set(tg.ROLLBACK_FIELDS.split()) == PRODUCT["rollback_fields"] and tg.ROLLBACK_SCHEMA == PRODUCT["rollback_schema"]
+    assert tg.MODES == PRODUCT["route_modes"]
 
 
 def test_listas_dos_reusables_cobrem_os_modulos_do_pyboot():
@@ -80,7 +154,8 @@ def test_failed_prepare_dispensa_routing_e_aceita_fence_e_routes_match_nulos():
     assert lc.terminal_result(value, now=110, deadline=200) == "failed"
 
 
-@pytest.mark.parametrize("change", [{"fence": None}, {"routes_match": None}, {"fence": "OPEN", "routes_match": True}])
+@pytest.mark.parametrize("change", [{"fence": "CLOSED"}, {"routes_match": True}, {"fence": "OPEN", "routes_match": True},
+                                    {"fence": "CLOSED", "routes_match": False}])
 def test_failed_prepare_so_aceita_os_dois_nulos_juntos(change):
     with pytest.raises(ValueError):
         lc.terminal_result(_assessment("failed-prepare-quiescent", fence=None, routes_match=None) | change, now=110,
@@ -172,9 +247,9 @@ def _rollback(**changes):
 
 def _decision(choice_at=1100, deadline=1520, fixed=2800):
     return {"version": 1, "operation_id": "5" * 64, "binding_sha256": "6" * 64, "generation": 2, "choice_at": c.utc(choice_at),
-            "choice_monotonic_ms": 5, "clock_boot_id": "synthetic-boot", "fixed_deadline": c.utc(fixed),
-            "recovery_deadline": c.utc(deadline), "allocated_seconds": 420, "convergence_budget_seconds": 300,
-            "finalization_budget_seconds": 120, "uncertainty_budget_seconds": 0, "checkpoint_sha256": "7" * 64}
+            "choice_monotonic_ms": 5, "clock_boot_id": "8" * 64, "fixed_deadline": c.utc(fixed),
+            "recovery_deadline": c.utc(deadline), "allocated_seconds": deadline - choice_at, "convergence_budget_seconds": 300,
+            "finalization_budget_seconds": 60, "uncertainty_budget_seconds": 60, "checkpoint_sha256": "7" * 64}
 
 
 def _handoff(status, decision, **changes):
@@ -486,7 +561,7 @@ def _product_observation(world, journal):
 def _terminal_fakes(monkeypatch, world, state, **changes):
     from test_cnesdata_stage_events import RUN
     from tools.cnesdata_delivery import application_gate as ag, terminal_gate as tg
-    world.terminal = SimpleNamespace(calls=[], capabilities=[], sources=[], changes=changes)
+    world.terminal = SimpleNamespace(calls=[], capabilities=[], sources=[], raws={}, changes=changes)
     previous = ag.invoke_adapter
 
     def invoke_adapter(**kwargs):
@@ -496,6 +571,7 @@ def _terminal_fakes(monkeypatch, world, state, **changes):
             return previous(**kwargs)
         world.terminal.calls.append((operation, journal._request["stage"]["stage"], kwargs["timeout"], dict(journal._inputs)))
         raw = _product_observation(world, journal)
+        world.terminal.raws[operation] = raw
         journal._observations.append({"kind": lc.ADAPTER_OBSERVATIONS[operation], "sha256": c.sha(raw), "size": len(raw)})
         journal._observation_bytes[c.sha(raw)] = raw
         world.clock.value += 2
@@ -511,9 +587,13 @@ def _terminal_fakes(monkeypatch, world, state, **changes):
         world.terminal.sources.append((operation, list(names), window["stage"]))
         return {name: c.canonical({"unit": "u", "recovery": "r", "audit": "a"}) for name in names}
     monkeypatch.setattr(tg, "terminal_input_source", source)
+    world.keeper._terminal_validators = {}
+    ag.register_terminal_validators(world.keeper, ag.TERMINAL_VALIDATORS)
     world.evidence = _Evidence(world.keeper)
     world.keeper.evidence_aws = world.evidence
-    world.steps = tg.TerminalSteps(keeper=world.keeper, api=world.api, governance=world.governance, run=dict(RUN), state=state,
+    release = {field: "r-" + field for field in ag.RELEASE_FIELDS.split()}
+    governance = world.governance | {"state_bucket": "state", "release": release}
+    world.steps = tg.TerminalSteps(keeper=world.keeper, api=world.api, governance=governance, run=dict(RUN), state=state,
                                    product="product", credential_limit=6000, clock=world.clock)
     world.loop_handlers = dict(world.handlers) | {"host-recovery": world.steps.host_recovery}
     return world
@@ -551,7 +631,11 @@ def test_ponta_a_ponta_fecha_accepted_open_e_libera_o_lease(monkeypatch):
     reopen, readback = (call[3] for call in world.terminal.calls)
     assert set(reopen) == {"activation", "routing", "canaries", "membership"} and reopen["activation"] == state["activation"]
     assert [item["kind"] for item in c.loads(reopen["canaries"], canonical=True)] == ["unit", "recovery", "audit"]
-    assert readback["decision"] == b"null" and readback["routing"] != b"null" and readback["static-receipt"] != b"null"
+    assert readback["decision"] == b"null" and readback["routing"] == world.terminal.raws["reopen"]
+    _product_stage_rule(readback, "final")
+    _product_admission(world)
+    assert c.loads(readback["static-receipt"], canonical=True)["schema"] == "cnesdata.static-publication/v1"
+    assert c.loads(readback["host-receipt"], canonical=True)["status"] == "accepted"
     files = {key.rsplit("/", 1)[1]: raw for key, raw in world.evidence.objects.items()}
     assert set(files) == {"terminal.json", "checkpoint.json", "lease.json"}
     result = ag.verify_terminal_bundle(files, record)
@@ -564,7 +648,7 @@ def test_ponta_a_ponta_fecha_accepted_open_e_libera_o_lease(monkeypatch):
 def test_ponta_a_ponta_recusa_accepted_open_com_rotas_divergentes_e_mantem_o_lease(monkeypatch):
     world, _ = _accepted_world(monkeypatch, reopen={"fence": "CLOSED", "routes_match": False})
     world.next_event = lambda window: pytest.fail("no event at final")
-    with pytest.raises(ValueError, match="all routes accepted and OPEN required"):
+    with pytest.raises(ValueError, match="^terminal uncertainty/drift/expiry$"):
         _loop(world)
     assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
 
@@ -584,6 +668,7 @@ def _recovery_world(monkeypatch, *, rolled_back=None, **changes):
     ready = c.sha(world.ready_raw)
     first = _handoff("recovery_required", world.decision, closed_ready_sha256=ready)
     second = _handoff("rolled_back", world.decision, closed_ready_sha256=ready) if rolled_back is None else rolled_back(ready)
+    world.handoff_raws = (first, second)
     world.handoffs = []
 
     def authenticate_host_handoff(api, owner, *, guard, **names):
@@ -595,13 +680,14 @@ def _recovery_world(monkeypatch, *, rolled_back=None, **changes):
 
 
 def test_host_recovery_required_com_decisao_entra_no_estagio_recovery_sem_publicar_o_estatico(monkeypatch):
+    from tools.cnesdata_delivery import terminal_gate as tg
     world, state = _recovery_world(monkeypatch)
     window = world.store.get()[0]["lifecycle"]
     choice, deadline = 1200, int(c.instant(world.decision["recovery_deadline"]))
     assert window["stage"] == "recovery" and window["decision"] == {"choice_at": choice, "deadline": deadline,
                                                                      "checkpoint_sha256": "7" * 64}
     assert window["deadline"] == min(deadline - 120, choice + 300) and window["admitted_at"] == world.clock.value
-    assert world.static_requests == [] and world.store.get()[0]["status"] == "held"
+    assert "publish-static" not in tg._operations(world.keeper) and world.store.get()[0]["status"] == "held"
     assert state["recovery-decision"] == c.canonical(world.decision)
 
 
@@ -638,13 +724,19 @@ def test_ponta_a_ponta_fecha_failed_closed_quiescent_e_libera_o_lease(monkeypatc
     record = world.store.get()[0]
     assert outcome["kind"] == "failed-closed-quiescent" and outcome["promotion_status"] == "failed"
     assert record["status"] == "released" and record["lifecycle"]["stage"] == "recovery"
-    assert world.handoffs[-1] == {"job": tg.HOST_RECOVERY_JOB, "artifact": tg.HOST_RECOVERY_ARTIFACT}
+    assert world.handoffs == [{}, {"job": tg.HOST_RECOVERY_JOB, "artifact": tg.HOST_RECOVERY_ARTIFACT}, {}]
     assert [call[:2] for call in world.terminal.calls] == [("rollback-api-static", "recovery"), ("reopen", "recovery"),
                                                          ("terminal-readback", "recovery")]
     rollback, reopen, readback = (call[3] for call in world.terminal.calls)
     assert rollback["recovery-decision"] == readback["decision"] == state["recovery-decision"]
-    assert rollback["publication"] == b"null" and reopen["canaries"] == b"null"
-    assert readback["static-receipt"] == world.terminal_rollback if hasattr(world, "terminal_rollback") else True
+    assert rollback["publication"] == b"null" and set(reopen) == {"activation", "routing", "canaries", "membership"}
+    assert reopen["canaries"] == b"null" and reopen["membership"] == readback["membership"]
+    assert reopen["activation"] == state["activation"] and world.terminal.sources == []
+    assert reopen["routing"] == c.canonical({mode: state["revisions"][mode] for mode in ("unit", "recovery", "audit")})
+    assert readback["static-receipt"] == world.terminal.raws["rollback-api-static"]
+    _product_stage_rule(readback, "recovery")
+    _product_admission(world)
+    assert readback["routing"] == world.terminal.raws["reopen"] and readback["host-receipt"] == world.handoff_raws[1]
     files = {key.rsplit("/", 1)[1]: raw for key, raw in world.evidence.objects.items()}
     result = ag.verify_terminal_bundle(files, record)
     assert result["terminal"]["promotion_status"] == "failed" and result["terminal"]["assessment"]["fence"] == "CLOSED"
@@ -665,6 +757,89 @@ def test_host_recovery_sem_rolled_back_amarrado_a_decisao_mantem_o_lease(monkeyp
     assert world.store.get()[0]["status"] == "held" and world.terminal.calls == [] and world.evidence.objects == {}
 
 
+@pytest.mark.parametrize("attempt", [
+    {"_observations": [{"kind": "publication", "sha256": "1" * 64, "size": 1}]},
+    {"_inflight": {"kind": "sdk-call"}},
+    {"pending": [{"kind": "sdk-call", "reference_sha256": "f" * 64}]},
+    {"unknown": [{"kind": "sdk-call", "reference_sha256": "e" * 64}]}])
+def test_host_recovery_recusa_publication_nula_com_tentativa_de_publish_static_no_journal(monkeypatch, attempt):
+    world, _ = _recovery_world(monkeypatch)
+    journal = SimpleNamespace(_request={"operation": "publish-static"}, _observations=[], _observation_bytes={},
+                              _failed=False, _inflight=None, pending=[], unknown=[])
+    world.keeper._contexts.append(SimpleNamespace(**vars(journal) | attempt))
+    world.next_event = lambda window: {"kind": "host-recovery", "reference": {"job_id": 95}}
+    with pytest.raises(ValueError, match="^rollback publication null with a publish-static attempt$"):
+        _loop(world)
+    assert world.handoffs == [{}] and world.terminal.calls == [] and world.terminal.capabilities == []
+    assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
+
+
+def test_falha_da_publicacao_depois_do_release_propaga_a_recusa_original(monkeypatch):
+    world, _ = _recovery_world(monkeypatch)
+    world.next_event = lambda window: {"kind": "host-recovery", "reference": {"job_id": 95}}
+
+    def refused(bucket, key, raw):
+        raise ValueError("evidence put refused")
+    world.evidence.put = refused
+    with pytest.raises(ValueError, match="^evidence put refused$"):
+        _loop(world)
+    assert world.store.get()[0]["status"] == "released" and world.evidence.objects == {}
+
+
+def test_recovery_sem_host_recovery_ate_o_prazo_do_estagio_para_com_o_lease_retido(monkeypatch):
+    from tools.cnesdata_delivery import application_gate as ag
+    world, _ = _recovery_world(monkeypatch)
+    deadline = world.store.get()[0]["lifecycle"]["deadline"]
+    polled = []
+    world.next_event = lambda window: polled.append(world.clock.value)
+
+    def sleep(seconds):
+        world.clock.value += seconds
+        if world.clock.value > deadline + 60:
+            pytest.fail("keeper loop kept polling past the recovery stage deadline")
+
+    with pytest.raises(ValueError, match="^recovery stage deadline elapsed without host-recovery$"):
+        ag.keeper_loop(world.keeper, next_event=world.next_event, handlers=world.loop_handlers, terminal=world.steps,
+                       sleep=sleep)
+    assert polled and max(polled) < deadline <= world.clock.value
+    assert world.store.get()[0]["status"] == "held" and world.store.get()[0]["lifecycle"]["stage"] == "recovery"
+    assert world.handoffs == [{}] and world.terminal.calls == [] and world.evidence.objects == {}
+
+
+@pytest.mark.parametrize(("stage", "extra", "accepted"), [
+    ("recovery", {}, False),
+    ("recovery", {"canaries": b"null"}, False),
+    ("recovery", {"canaries": b"null", "membership": b"{}"}, True),
+    ("final", {}, False),
+    ("final", {"canaries": b"[]", "membership": b"{}"}, True)])
+def test_contrato_do_reopen_exige_os_quatro_insumos_do_produto_em_final_e_recovery(monkeypatch, stage, extra, accepted):
+    from tools.cnesdata_delivery import application_gate as ag
+    world, state = _recovery_world(monkeypatch)
+    record = world.store.get()[0]
+    owner, window = lc.owner_binding(record), record["lifecycle"] | {"stage": stage}
+    inputs = {"activation": state["activation"], "routing": c.canonical({"unit": "u", "recovery": "r", "audit": "a"})} | extra
+    raw = ag._operation_request("reopen", owner=owner, window=window, inputs=inputs)
+    if accepted:
+        lc.validate_adapter_request(raw, operation="reopen", owner=owner, window=window, inputs=inputs,
+                                    activation_sha256=c.sha(state["activation"]))
+        return
+    with pytest.raises(ValueError):
+        lc.validate_adapter_request(raw, operation="reopen", owner=owner, window=window, inputs=inputs,
+                                    activation_sha256=c.sha(state["activation"]))
+
+
+@pytest.mark.parametrize("extra", [{}, {"canaries": b"null"}, {"membership": b"{}"}])
+def test_reopen_do_recovery_recusa_insumos_incompletos_antes_do_journal(monkeypatch, extra):
+    from tools.cnesdata_delivery import terminal_gate as tg
+    world, state = _recovery_world(monkeypatch)
+    before = list(world.keeper._contexts)
+    inputs = {"activation": state["activation"], "routing": c.canonical({"unit": "u", "recovery": "r", "audit": "a"})} | extra
+    with pytest.raises(ValueError):
+        tg.run_terminal_operation(world.keeper, "reopen", inputs=inputs, activation=state["activation"],
+                                  invoke=lambda **kwargs: pytest.fail("no child"), credential_limit=6000, clock=world.clock)
+    assert world.keeper._contexts == before and world.terminal.capabilities == []
+
+
 def test_ponta_a_ponta_fecha_failed_prepare_quiescent_e_libera_o_lease(monkeypatch):
     from test_cnesdata_stage_events import PREPARED_REFERENCE, _stage_world
     from tools.cnesdata_delivery import application_gate as ag
@@ -681,6 +856,8 @@ def test_ponta_a_ponta_fecha_failed_prepare_quiescent_e_libera_o_lease(monkeypat
     assert {name: raw for name, raw in readback.items() if name != "membership"} == {
         name: b"null" for name in ("routing", "host-receipt", "static-receipt", "decision")}
     assert c.loads(readback["membership"], canonical=True) == {"frozen_membership_sha256": c.sha(c.canonical([])), "members": []}
+    _product_stage_rule(readback, "application-prepare")
+    _product_admission(world)
     files = {key.rsplit("/", 1)[1]: raw for key, raw in world.evidence.objects.items()}
     result = ag.verify_terminal_bundle(files, record)
     assert result["terminal"]["assessment"]["fence"] is None and result["terminal"]["assessment"]["routes_match"] is None
@@ -690,10 +867,10 @@ def test_ponta_a_ponta_fecha_failed_prepare_quiescent_e_libera_o_lease(monkeypat
 def test_failed_prepare_com_journal_incerto_mantem_o_lease_retido(monkeypatch):
     from test_cnesdata_stage_events import PREPARED_REFERENCE, _stage_world
     state = _shared_state(monkeypatch)
-    world = _stage_world(monkeypatch, capability="close-drain capability refused")
+    world = _stage_world(monkeypatch, pending=True)
     _terminal_fakes(monkeypatch, world, state)
     world.next_event = lambda window: {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)}
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="^close-drain single observation without uncertainty$"):
         _loop(world)
     assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
 
@@ -709,7 +886,8 @@ def _successor(world, *, mutation=None):
     with zipfile.ZipFile(out, "w") as archive:
         archive.writestr("index.json", members["index.json"])
     raw_zip = out.getvalue()
-    governance = world.governance | {"gate_shas": {"application": "a" * 40}, "lifecycle_terminal_job": "application / execute"}
+    governance = world.steps.governance | {"gate_shas": {"application": "a" * 40},
+                                           "lifecycle_terminal_job": "application / execute"}
     run = {"id": owner["run_id"], "run_attempt": owner["run_attempt"], "head_sha": owner["source_sha"], "status": "completed",
            "conclusion": "success", "head_branch": "main", "event": "workflow_dispatch",
            "repository": {"full_name": c.REPOSITORY}, "path": ".github/workflows/promote-production.yml",
@@ -811,7 +989,7 @@ def test_stage_event_source_emite_host_recovery_no_estagio_recovery():
     source = ag.stage_event_source(api=api, governance={}, run=dict(RUN), owner={}, guard=_Guard(), keeper=keeper,
                                    clock=lambda: 1300)
     event = source(_recovery_window() | {"deadline": 1400})
-    assert event == {"kind": "host-recovery", "reference": {"job_id": api.job_id}}
+    assert event == {"kind": "host-recovery", "reference": {"job_id": api.reference["job_id"]}}
 
 
 @pytest.mark.parametrize("window", [_recovery_window() | {"decision": None},
@@ -857,6 +1035,20 @@ def test_operacoes_terminais_rodam_sob_o_journal_do_keeper_com_a_capability_ante
     world.next_event = lambda window: pytest.fail("no event at final")
     _loop(world)
     assert order == ["capability", "child", "capability", "child"]
+
+
+@pytest.mark.parametrize("revisions", [
+    {"unit": "u", "recovery": "r"},
+    {"unit": "u", "recovery": "r", "audit": "a", "extra": "x"},
+    {"unit": "u", "recovery": None, "audit": "a"}])
+def test_routing_do_recovery_recusa_revisoes_fora_da_projecao_fechada(monkeypatch, revisions):
+    world, state = _recovery_world(monkeypatch)
+    state["revisions"] = revisions
+    world.next_event = lambda window: {"kind": "host-recovery", "reference": {"job_id": 95}}
+    with pytest.raises(ValueError, match="^terminal recovery routing revisions$"):
+        _loop(world)
+    assert world.terminal.calls == [] and world.terminal.sources == [] and world.handoffs == [{}]
+    assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
 
 
 def test_capability_e_fonte_de_insumos_de_producao_nao_estao_conectadas():
