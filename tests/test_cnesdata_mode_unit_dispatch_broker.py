@@ -118,11 +118,11 @@ class _Dynamo:
                 "input": "{}", "ResponseMetadata": _metadata()}
 
 
-def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, **dynamo):
+def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, source=None, **dynamo):
     seeded = [_seed_journal(monkeypatch, _units()) for _ in range(seeds)]
-    args, _, _ = _case(monkeypatch, "unit-start")
+    args, _, _ = _case(monkeypatch, "unit-start", source=source)
     raw = record or _record()
-    args["journal"], _ = _journal("unit-start", {"record": raw.encode()})
+    args["journal"], _ = _journal("unit-start", {"record": raw.encode()}, source)
     start, uw = _mb().assume_unit_start_sessions(**args)
     keeper = SimpleNamespace(_contexts=[*seeded, args["journal"]])
     plan = _mb().unit_start_plan(keeper, args["journal"], resources=RESOURCES, now=NOW)
