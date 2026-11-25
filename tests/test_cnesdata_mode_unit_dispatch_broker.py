@@ -341,3 +341,48 @@ def test_validador_do_dispatch_e_so_do_unit_start(monkeypatch, operation):
               "parameters": {"executionArn": plan.execution}}
     with pytest.raises(ValueError, match="^mode unit dispatch call$"):
         _mb().validate_mode_dispatch_call(operation, native, scope)
+
+
+def _product_text(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+
+
+def test_passo_unit_execution_igual_ao_texto_do_produto_da_execucao_devolvida_e_aceito(monkeypatch):
+    broker, journal, _, _ = _world(monkeypatch)
+    reply = _dispatch(broker)
+    body = _product_text(reply["execution"])
+    assert journal.observe("unit-execution", body) == c.sha(body)
+    assert journal._observations[-1] == {"kind": "unit-execution", "sha256": c.sha(body), "size": len(body)}
+
+
+@pytest.mark.parametrize("change", [{"status": "RUNNING"}, {"name": "outro"}, {"extra": 1}],
+                         ids=["status", "nome", "campo-extra"])
+def test_passo_unit_execution_diferente_da_execucao_devolvida_recusa(monkeypatch, change):
+    broker, journal, _, _ = _world(monkeypatch)
+    reply = _dispatch(broker)
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("unit-execution", _product_text(reply["execution"] | change))
+    assert journal._observations == []
+
+
+def test_passo_unit_execution_com_a_resposta_de_um_poll_intermediario_recusa(monkeypatch):
+    broker, journal, table, _ = _world(monkeypatch)
+    _dispatch(broker)
+    index = _names(table).index("describe_execution")
+    first = c.loads(journal.call_bytes[journal.call_receipts[index]["response_sha256"]], canonical=True)
+    assert first["status"] == "RUNNING"
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("unit-execution", _product_text(first))
+
+
+def test_passo_unit_execution_antes_do_dispatch_recusa(monkeypatch):
+    broker, journal, _, plan = _world(monkeypatch)
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("unit-execution", _product_text({"executionArn": plan.execution, "status": "SUCCEEDED"}))
+
+
+def test_passo_unit_execution_sem_mode_broker_recusa():
+    from test_cnesdata_mode_stages import _start_journal
+    journal = _start_journal("unit-start")
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("unit-execution", c.canonical({"step": "unit-execution"}))

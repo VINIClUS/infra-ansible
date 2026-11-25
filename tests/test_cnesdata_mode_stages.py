@@ -764,8 +764,7 @@ def test_passos_intermediarios_do_keeper_sao_os_do_abi_de_modo_do_produto():
     assert lc.MODE_SINGLE_STEPS == frozenset({"unit-execution", "recovery-task", "audit-task"})
 
 
-@pytest.mark.parametrize("operation, kind", [("unit-start", "unit-execution"), ("unit-start", "unit-task"),
-                                             ("unit-start", "unit-output")])
+@pytest.mark.parametrize("operation, kind", [("unit-start", "unit-task"), ("unit-start", "unit-output")])
 def test_journal_aceita_o_passo_intermediario_da_propria_operacao(operation, kind):
     journal = _start_journal(operation)
     raw = c.canonical({"step": kind})
