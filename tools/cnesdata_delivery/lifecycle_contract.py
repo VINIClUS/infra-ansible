@@ -244,8 +244,6 @@ ADAPTER_STEPS = {
     "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),
 }
 MODE_SINGLE_STEPS = frozenset({"unit-execution", "recovery-task", "audit-task"})
-# Vendored from CnesData P16c 1c5bbd82 scripts/promotion/_adapter_abi.py MODE_EFFECT_CALLS and MODE_EFFECT_METHODS
-# (parity test against the vendored product ABI): the closed SDK table and context methods of each mode effect.
 _MODE_SEED_CALLS = frozenset(("mode_seed", service, name) for service, name in (
     ("dynamodb", "put_item"), ("dynamodb", "get_item"), ("s3", "put_object"), ("s3", "get_object")))
 MODE_EFFECT_CALLS = {
@@ -263,7 +261,6 @@ MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedExcept
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
                         ("s3", "get_object"): {"Body"}, ("ecs", "run_task"): {"tasks", "failures"},
                         ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set()}
-# Design 4.2: the keeper ledger frames of recovery-start (child method -> frame) and their native calls under rx.
 MODE_LEDGER_FRAMES = {"ledger-admit": "ledger_admit_effect", "ledger-unknown": "ledger_mark_unknown",
                       "ledger-settle": "ledger_settle"}
 MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", name)
