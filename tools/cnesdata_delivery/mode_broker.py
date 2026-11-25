@@ -2,6 +2,7 @@
 import base64
 import binascii
 import importlib.util
+import json
 import pathlib
 import re
 import sys
@@ -650,10 +651,13 @@ def _mode_call_scope(governance, journal, session):
     names = {f"{prefix}-{owner[:16]}" for prefix in MODE_SEED_RUN_PREFIXES.get(phase, ())}
     binding = {"canary_id": resources["scope"]["tenant_id"].removeprefix("prod-canary-"), "owner_sha256": owner,
                "run_ids": [run for run in resources["scope"]["run_ids"] if run in names], "dispatch_id": None}
+    started = operation in ("recovery-start", "audit-start")
     return {"account": governance["account_id"], "table": resources["table_arn"].rsplit("/", 1)[1],
             "bucket": resources["data_bucket_arn"].removeprefix("arn:aws:s3:::"),
-            "raw_keys": list(resources["scope"]["raw_object_keys"]),
-            "binding": binding if operation.endswith("-seed") else None}
+            "raw_keys": list(resources["scope"]["raw_object_keys"]), "resources": resources,
+            "binding": binding if operation.endswith("-seed") else None,
+            "readbacks": c.loads(journal._inputs["readbacks"], canonical=True) if started else None,
+            "record": json.loads(journal._inputs["record"]) if started else None, "launches": 0, "launched": []}
 
 
 def _mode_dynamodb_call(operation, name, parameters, scope):
@@ -700,7 +704,17 @@ def validate_mode_call(operation, native, scope):
         return _mode_dynamodb_call(operation, name, parameters, scope)
     if service == "s3":
         return _mode_s3_call(name, parameters, scope)
-    raise ValueError("mode call outside table")
+    return _mode_ecs_call(operation, name, parameters, scope)
+
+
+def _mode_ecs_call(operation, name, parameters, scope):
+    if name == "run_task":
+        c.require(scope["launches"] == 0, "mode run_task once")
+        validate_mode_run_task(lc.MODE_SESSION_OPERATIONS[operation][3], parameters, readbacks=scope["readbacks"],
+                               record=scope["record"], resources=scope["resources"])
+    else:
+        validate_mode_describe_tasks(parameters, cluster_arn=scope["resources"]["cluster_arn"], launched=scope["launched"])
+    return parameters
 
 
 class ModeEvidence(ClosedReadyEvidence):
@@ -726,7 +740,38 @@ def _mode_body(stream):
     return base64.b64encode(b"".join(chunks)).decode()
 
 
+_MODE_TASK_FIELDS = ("taskArn", "taskDefinitionArn", "lastStatus", "stopCode")
+_MODE_CONTAINER_FIELDS = ("name", "exitCode", "lastStatus")
+_MODE_FAILURE_FIELDS = ("arn", "reason", "detail")
+
+
+def _mode_ecs_response(response):
+    tasks, failures = response.get("tasks", []), response.get("failures", [])
+    c.require(set(response) <= {"tasks", "failures", "ResponseMetadata"} and type(tasks) is list and len(tasks) <= 1
+              and type(failures) is list and len(failures) <= 8
+              and all(type(item) is dict for item in tasks + failures)
+              and all(type(task.get("containers", [])) is list and len(task.get("containers", [])) <= 10
+                      and all(type(item) is dict for item in task.get("containers", [])) for task in tasks),
+              "finite native ECS response")
+    projected = []
+    for task in tasks:
+        item = {key: task[key] for key in _MODE_TASK_FIELDS if key in task}
+        if "containers" in task:
+            item["containers"] = [{key: entry[key] for key in _MODE_CONTAINER_FIELDS if key in entry}
+                                  for entry in task["containers"]]
+        projected.append(item)
+    return {"tasks": projected, "failures": [{key: item[key] for key in _MODE_FAILURE_FIELDS if key in item}
+                                             for item in failures]}
+
+
+def _mode_task_terminal(reply):
+    tasks = reply["value"]["tasks"]
+    return not (len(tasks) == 1 and tasks[0].get("lastStatus") != "STOPPED")
+
+
 def _mode_response(service, operation, response):
+    if service == "ecs":
+        return _mode_ecs_response(response)
     if (service, operation) == ("dynamodb", "get_item"):
         c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
         return {key: response[key] for key in ("Item",) if key in response}
@@ -740,13 +785,13 @@ class ModeBroker:
 
     A durable reservation precedes native IO; only lc.MODE_DEFINITE_ERRORS are definite, any other outcome poisons.
     """
-    def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None):
+    def __init__(self, aws, governance, journal, session, *, prepared_sha256, credential_limit, clock=None, sleep=None):
         c.require(type(journal) is AdapterJournal and type(session) is _ModeSession
                   and session.request_binding == c.sha(c.canonical(journal._request))
                   and getattr(journal, "_broker", None) is None, "one original admitted mode broker")
         self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
-        self.clock = clock or time.time
+        self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
         self.evidence = []
         journal._broker = self
@@ -761,14 +806,27 @@ class ModeBroker:
         c.require(session.request_binding == c.sha(c.canonical(journal._request)) and self.clock() + 20 < session.deadline,
                   "mode finite SDK request/window")
         native = {"role": role, "service": service, "operation": operation, "parameters": parameters}
-        sdk = validate_mode_call(journal._request["operation"], native, self.scope)
-        return self._native_call(c.canonical(native, limit=128 * 1024), service, operation, sdk)
+        sdk = validate_mode_call(journal._request["operation"], native, self._call_scope())
+        raw = c.canonical(native, limit=128 * 1024)
+        if (service, operation) != ("ecs", "describe_tasks"):
+            return self._native_call(raw, service, operation, sdk)
+        stage = journal._request["stage"]
+        reply, timing = mode_wait(lambda: self._native_call(raw, service, operation, sdk), terminal=_mode_task_terminal,
+                                  child_deadline=min(stage["deadline"] - 38, session.deadline),
+                                  clock=self.clock, sleep=self.sleep)
+        journal.__dict__.setdefault("_timings", []).append(timing)
+        return reply
+
+    def _call_scope(self):
+        launches = [entry["response"] for entry in self.journal._settled_calls() if entry["call"]["operation"] == "run_task"]
+        return self.scope | {"launches": len(launches),
+                             "launched": [task["taskArn"] for response in launches for task in response.get("tasks", [])]}
 
     def _native_call(self, raw, service, operation, sdk):
         from tools.cnesdata_delivery.lifecycle_runtime import _exact_sdk_dates
         journal, session = self.journal, self.session
         ledger = ModeEvidence(self.aws, self.governance, journal, raw, prepared_sha256=self.prepared_sha256,
-                              role_session_sha256=session.commitment, scope=self.scope)
+                              role_session_sha256=session.commitment, scope=self._call_scope())
         self.evidence.append(ledger)
         ticket, created = None, False
         try:
