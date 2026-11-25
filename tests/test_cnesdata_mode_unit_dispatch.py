@@ -76,12 +76,14 @@ def test_b1_recusa_unidade_que_nao_e_um_putitem_liquidado_do_proprio_run(mutatio
 
 
 class _Table:
-    def __init__(self, case, *, fence_version=1, holder=None, active=None):
+    def __init__(self, case, *, holder=None, active=None):
         self.items, self.events, self.case = {}, [], case
         for item in (case["run_item"], *case["unit_items"]):
             self.items[(item["pk"]["S"], item["sk"]["S"])] = item
-        self.items[FENCE] = {"pk": {"S": FENCE[0]}, "sk": {"S": FENCE[1]}, "version": {"N": str(fence_version)},
-                             "state": {"S": "OPEN"}}
+        version = case["result"]["permit"]["fence_version"]
+        if version:
+            self.items[FENCE] = {"pk": {"S": FENCE[0]}, "sk": {"S": FENCE[1]}, "version": {"N": str(version)},
+                                 "state": {"S": "OPEN"}}
         if active is not None:
             pk, sk = _keys().dispatch_key(case["locator"]["tenant_id"], case["locator"]["run_ids"][0])
             self.items[(pk, sk)] = {"pk": {"S": pk}, "sk": {"S": sk}, "payload": {"S": json.dumps(active)}}
@@ -154,6 +156,7 @@ def test_frame_do_dispatch_vem_depois_do_reserve_e_antes_do_acquire_e_o_b3_antes
 def test_versao_do_fence_do_permit_vem_da_releitura_e_fence_ausente_e_zero():
     case = CASES["producao"]
     table = _Table(case)
+    assert table.items[FENCE]["version"] == {"N": "1"}
     del table.items[FENCE]
     permit, _ = _steps(table, _start(case))
     assert (permit.token, permit.fence_version) == (1, 0)
