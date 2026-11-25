@@ -2370,9 +2370,8 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
     from tools.cnesdata_delivery.session_owner import Authority
-    kwargs, _, fragment = _fence_prepare_package_case(monkeypatch)
     activation = b"original-ext2-payload-bytes"
-    kwargs["activation_sha256"] = c.sha(activation)
+    kwargs, _, fragment = _fence_prepare_package_case(monkeypatch, activation_sha256=c.sha(activation))
     files = lr.fence_prepare_package(**kwargs)
     if mutation == "evaluation-scope":
         evaluation = c.loads(files["fence-evaluation.json"], canonical=True)
@@ -2862,10 +2861,10 @@ def test_fence_producer_accepts_only_completed_exact_deploy_before_private_reads
             predecessor_raw=kwargs["predecessor_raw"], predecessor_reference=kwargs["predecessor_reference"])
     if mutation is None:
         assert consume() == files
-        assert len(calls) == 8
+        assert len(calls) == len(lc.FENCE_PREPARE_FILES)
     else:
         with pytest.raises(ValueError): consume()
-        assert len(calls) == (8 if mutation == "private-producer" else 0)
+        assert len(calls) == (len(lc.FENCE_PREPARE_FILES) if mutation == "private-producer" else 0)
 
 
 @pytest.mark.parametrize("corrupt", ["response", "receipt", "forged-live"])
@@ -3403,7 +3402,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
         def check(self, *args): pass
     api, aws, guard, uploads = API(), Store(), Guard(), []
     def upload(directory, name, actual_guard, temp):
-        assert job["status"] == "in_progress" and len(aws.writes) == 8
+        assert job["status"] == "in_progress" and len(aws.writes) == len(lc.FENCE_PREPARE_FILES)
         assert actual_guard is guard
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w") as archive:
@@ -3416,7 +3415,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
     monkeypatch.setattr(runtime, "_upload", upload)
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "outputs"))
     lr.publish(aws, gov, request, run, owner, files, api, guard, tmp_path, "applied")
-    assert uploads == ["lifecycle-application-prepare-operational"] and len(aws.writes) == 8
+    assert uploads == ["lifecycle-application-prepare-operational"] and len(aws.writes) == len(lc.FENCE_PREPARE_FILES)
     assert files["checkpoint.json"] == checkpoint_original
     original_objects = dict(aws.objects)
     reference = {"artifact_id": 42, "artifact_digest": api.metadata["digest"], "job_id": job["id"]}
@@ -3436,7 +3435,7 @@ def test_fence_producer_builds_before_one_upload_and_authenticates_completed_pac
         assert consume() == files
         assert aws.objects == original_objects
         assert c.loads(files["fence-chain.json"], canonical=True)["entries"][-1]["origin"] == origin
-    assert len(aws.writes) == 8
+    assert len(aws.writes) == len(lc.FENCE_PREPARE_FILES)
 
 
 
@@ -4464,7 +4463,7 @@ def test_fence_session_policy_rejects_non_exact_scope(mutation):
         session_policy.fence_session_policy(**kwargs)
 
 
-def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS):
+def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS, activation_sha256="1" * 64):
     """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
     import base64
     import hashlib
@@ -4497,7 +4496,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
                                               "application_product_source_manifest")}
     governance["gate_shas"] |= gate["gate_shas"]
     history = lc.phase_a_originals(carrier)
-    mode = mode_input(owner, release_id=history["envelope"]["plan"]["release"]["release_id"], activation_sha256="1" * 64)
+    mode = mode_input(owner, release_id=history["envelope"]["plan"]["release"]["release_id"], activation_sha256=activation_sha256)
     previous_raw = history["raw"]["checkpoint.json"]
     checkpoint_raw = c.canonical(args["checkpoint"])
     approval = {"version": 1, "owner": owner, "purpose": "application-prepare", "direction": "advance",
@@ -4550,8 +4549,8 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
         authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
         plan_index=args["current_index"], plan_raw=args["plan_raw"], inputs_raw=args["inputs_raw"], terraform_raw=args["inputs_raw"],
         approval_raw=c.canonical(approval), previous_raw=previous_raw, checkpoint_raw=checkpoint_raw, state_raw=args["state_raw"],
-        sources=args["sources"], activation_sha256="1" * 64, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s),
-        mode_input_raw=c.canonical(mode), mode_readbacks=mode_roles(owner, mode, {"admitted_at": 1000, "deadline": 1900}))
+        sources=args["sources"], activation_sha256=activation_sha256, clock=lambda: now[0],
+        sleep=lambda s: now.__setitem__(0, now[0] + s), mode_input_raw=c.canonical(mode), mode_readbacks=mode_roles(owner, mode, {"admitted_at": 1000, "deadline": 1900}))
     return kwargs, calls, fragment
 
 
@@ -4607,7 +4606,7 @@ def test_application_identity_document_checks_protected_policy_offline(mutation)
 
 
 @pytest.mark.parametrize("mutation", [None, "runner", "historical-source", "readback", "evaluation"])
-def test_fence_prepare_package_produces_eight_files_the_consumer_codec_accepts(monkeypatch, mutation):
+def test_fence_prepare_package_produces_the_package_files_the_consumer_codec_accepts(monkeypatch, mutation):
     from tools.cnesdata_delivery import lifecycle_contract as lc, lifecycle_runtime as lr
     kwargs, calls, fragment = _fence_prepare_package_case(monkeypatch, mutation)
     if mutation:
@@ -4687,9 +4686,8 @@ def _closed_ready_capability_case(monkeypatch, mutation=None, windows=MINIMUM_WI
     import zipfile
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc, lifecycle_runtime as lr
-    kwargs, _, _ = _fence_prepare_package_case(monkeypatch, windows=windows)
     activation = b"original-ext2-payload-bytes"
-    kwargs["activation_sha256"] = c.sha(activation)
+    kwargs, _, _ = _fence_prepare_package_case(monkeypatch, windows=windows, activation_sha256=c.sha(activation))
     if mutation == "frozen":
         # Positive variant: the freeze falls between observed_at and observed_at + 180.
         kwargs["authority"].pin["frozen_until"] = c.utc(1100)

@@ -676,12 +676,13 @@ def fence_phase_a_origin(history, projection_source_files):
 
 def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, authority, predecessor, carrier, plan_index,
                           plan_raw, inputs_raw, terraform_raw, approval_raw, previous_raw, checkpoint_raw, state_raw,
-                          sources, activation_sha256, clock=time.time, sleep=time.sleep):
-    """Eight-file prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6).
+                          sources, activation_sha256, mode_input_raw, mode_readbacks, clock=time.time, sleep=time.sleep):
+    """Prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6; P16b Falta 6).
 
     Only protected inputs already authenticated by execute: owner/lease, schema4
     authority, H4 predecessor and carrier, the plan index read by private_payload,
-    the audited approval, the applied checkpoint/state and product sources.
+    the audited approval, the applied checkpoint/state, product sources, the
+    mode_canary projection of the admitted request and the mode role readbacks.
     Returns bytes to publish; it never grants a capability.
     """
     from tools.cnesdata_delivery.iam_boundary import fence_effective_evaluation
@@ -689,13 +690,17 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     c.require(request["step"] == producer_step["step"], "fence producer step")
     fragment = authority.application_fragment
     c.require(type(fragment) is dict, "fence schema4 application authority")
+    history = lc.phase_a_originals(carrier)
+    admitted = mode_input_admission(mode_input_raw, governance=governance, historical=history, owner=owner,
+                                    activation_sha256=activation_sha256, principal_arn=fragment["application_role_arn"])
+    roles = lc.mode_prepared_roles(mode_readbacks, account=governance["account_id"], preparation={
+        "admitted_at": guard.window["admitted_at"], "deadline": guard.window["preparation_deadline"]})
     job = fence_producer_job(api, run, request["source_sha"])
     producer = producer_step | {"repository": c.REPOSITORY, "source_sha": request["source_sha"],
         "workflow_sha": c.digest(governance["gate_shas"]["deploy"], 40), "run_id": run["id"],
         "run_attempt": run["run_attempt"], "job_id": job["id"]}
     chain, baseline = current_checkpoint_chain(api, aws, governance, request, run, owner=owner, predecessor=predecessor,
         current_raw=checkpoint_raw, approval_raw=approval_raw, previous_raw=previous_raw, producer=producer, guard=guard, now=clock())
-    history = lc.phase_a_originals(carrier)
     original_sources = historical_sources(api, carrier, current_source=request["source_sha"], paths=sorted(sources), guard=guard)
     checkpoint = c.loads(checkpoint_raw, canonical=True)
     projection = fence_current_role_projection(plan_raw=plan_raw, inputs_raw=inputs_raw, terraform_raw=terraform_raw,
@@ -730,9 +735,36 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     originals = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw, "fence-role.json": c.canonical(role),
                  "fence-readbacks.json": c.canonical(readbacks), "fence-origins.json": c.canonical(origins),
                  "fence-chain.json": c.canonical(chain), "fence-evaluation.json": c.canonical(evaluation)}
+    originals |= mode_prepared_files(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
+                                     admitted=admitted, roles=roles, mode_readbacks=mode_readbacks,
+                                     evaluator=(producer["workflow_sha"], preparation["observed_at"]))
     guard.check()
     return fence_prepared_files(originals=originals, owner=owner, fragment=fragment, activation_sha256=activation_sha256,
         producer=producer, preparation=preparation, predecessor_raw=baseline, predecessor_reference=predecessor)
+
+
+def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, admitted, roles, evaluator):
+    """The scope, documents and mode-evaluation of the prepared mode files (P16b Falta 6), one derivation for the
+    package producer and the stage recompute.
+
+    Args: authority is the application authority; evaluator is (workflow sha, observed_at).
+    Returns: (scope, documents, evaluation). Raises: ValueError.
+    """
+    from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation, mode_evaluation_documents, mode_prepared_scope
+    scope = mode_prepared_scope(mode_input_raw, admitted, owner=owner, governance=governance)
+    documents = mode_evaluation_documents(governance=governance, fragment=authority.application_fragment,
+        pin_document=authority.pin["document"], owner=owner, scope=scope,
+        policies={alias: roles[alias]["policy"]["PolicyDocument"] for alias in lc.MODE_ALIASES})
+    evaluation = mode_effective_evaluation(documents, scope, evaluator_source_sha=evaluator[0], observed_at=c.utc(evaluator[1]))
+    return scope, documents, evaluation
+
+
+def mode_prepared_files(*, governance, authority, owner, mode_input_raw, admitted, roles, mode_readbacks, evaluator):
+    """Args: as mode_prepared_evaluation plus the mode role readback proof. Returns: the three mode files by name."""
+    evaluation = mode_prepared_evaluation(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
+                                          admitted=admitted, roles=roles, evaluator=evaluator)[2]
+    return {"mode-input.json": mode_input_raw, "mode-roles.json": c.canonical(mode_readbacks),
+            "mode-evaluation.json": c.canonical(evaluation)}
 
 
 class PreparedFence(dict):
@@ -1035,16 +1067,30 @@ def mode_canary_admission(*, plan, step_mode, inputs_raw, owner, governance, his
     Returns: the admitted mode input. Raises: ValueError.
     """
     c.require((step_mode == "mode-canary") == (owner["context_kind"] == "readiness"), "mode step context")
+    admitted = mode_input_admission(inputs_raw, governance=governance, historical=historical, owner=owner,
+                                    activation_sha256=activation_sha256, principal_arn=principal_arn)
+    lc.validate_mode_canary_trust(plan, admitted)
+    return admitted
+
+
+def mode_input_admission(inputs_raw, *, governance, historical, owner, activation_sha256, principal_arn):
+    """validate_mode_canary_input against the gate originals of governance and the Phase A release, the one admission of
+    the mode input at the prepare step, the package producer and the stage (P16b ruling 1 item 1).
+
+    Returns: the admitted mode input. Raises: ValueError.
+    """
     originals = {"product_source_closure_sha256": governance["application_product_source_closure_sha256"],
                  "shared_source_sha": governance["gate_shas"]["application"],
                  "shared_source_closure_sha256": governance["application_source_closure_sha256"],
                  "release_id": historical["envelope"]["plan"]["release"]["release_id"],
                  "fixture_manifest_sha256": lc.mode_fixture_manifest_sha256(governance["application_product_source_manifest"])}
-    admitted = lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
-                                             principal_arn=principal_arn, originals=originals,
-                                             activation_sha256=activation_sha256)
-    lc.validate_mode_canary_trust(plan, admitted)
-    return admitted
+    return lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
+                                         principal_arn=principal_arn, originals=originals, activation_sha256=activation_sha256)
+
+
+def mode_input_projection(terraform_raw):
+    """Args: the admitted generated request bytes. Returns: canonical {mode_canary}, the prepared mode-input.json."""
+    return c.canonical({"mode_canary": c.loads(terraform_raw, limit=131072)["mode_canary"]})
 
 
 def mode_canary_output(aws, *, state, account, guard, clock=time.time, sleep=time.sleep):
@@ -1457,6 +1503,7 @@ def execute(role):
             plan = c.loads(payload["plan.json"], state=True)
             c.require(approval["delta"]["before"] == lc.state_resources(c.loads(before_raw, state=True)), "audit actual full state")
             lc.validate_delta(plan, approval["delta"])
+            mode_readbacks = None
             if mode_rows:
                 mode_canary_admission(plan=plan, **mode_arguments)
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
@@ -1483,7 +1530,7 @@ def execute(role):
             c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state,
                              specs=after_calls, envelope=dc.LIFECYCLE_ENVELOPE)
             if mode_rows:
-                mode_canary_output(aws, state=state, account=governance["account_id"], guard=guard)
+                mode_readbacks = mode_canary_output(aws, state=state, account=governance["account_id"], guard=guard)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier}
@@ -1497,7 +1544,8 @@ def execute(role):
                     plan_index=plan_indexes[0], plan_raw=payload["plan.json"], inputs_raw=payload["inputs.json"],
                     terraform_raw=terraform_raw, approval_raw=payload["approval.json"], previous_raw=payload["checkpoint.json"],
                     checkpoint_raw=result_files["checkpoint.json"], state_raw=after_raw, sources=sources,
-                    activation_sha256=activation_sha256)
+                    activation_sha256=activation_sha256, mode_input_raw=mode_input_projection(terraform_raw),
+                    mode_readbacks=mode_readbacks)
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)

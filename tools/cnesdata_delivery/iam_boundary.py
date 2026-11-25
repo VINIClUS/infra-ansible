@@ -148,6 +148,48 @@ def mode_effective_evaluation(documents, scope, *, evaluator_source_sha, observe
     return evaluation
 
 
+def mode_prepared_scope(mode_raw, admitted, *, owner, governance):
+    """Scope of the prepared mode-evaluation (P16b Falta 6), one derivation at prepare and at stage: the admitted
+    mode-input resources and sessions, the owner, the delegated role ARNs and the enabled_until deadline.
+
+    Args: mode-input bytes, its validate_mode_canary_input result, owner, governance. Returns: scope. Raises: ValueError.
+    """
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    operations, names = _mode_codes(), {}
+    for alias, values in admitted["delegation_sessions"].items():
+        for name in values:
+            code = name.split("-")[1]
+            c.require(code not in names and code not in lc.MODE_SESSION_PARTS
+                      and operations.get(code, (None, None))[1] == alias, "mode prepared scope sessions")
+            names[code] = name
+    scope = {"resources": c.loads(mode_raw, limit=131072)["mode_canary"]["resources"], "owner_sha256": owner["owner_sha256"],
+             "role_arns": {alias: governance["application_delegations"][alias] for alias in lc.MODE_ALIASES},
+             "session_names": names, "deadline": int(c.instant(admitted["enabled_until"]))}
+    _mode_scope(scope, operations)
+    return scope
+
+
+def mode_evaluation_documents(*, governance, fragment, pin_document, owner, scope, policies):
+    """Every document the prepared mode-evaluation hashes (P16b Falta 6), one derivation at prepare and at stage.
+
+    Args: governance, application fragment, pin document, owner, scope, alias -> read-back role policy document.
+    Returns: name -> document. Raises: ValueError.
+    """
+    from tools.cnesdata_delivery import session_policy
+    from tools.cnesdata_delivery.session_owner import application_identity_document
+    documents = {"application_identity": application_identity_document(governance, fragment),
+                 "application_managed": pin_document}
+    for code, (operation, alias) in _mode_codes().items():
+        if code == _mode_session_code(code):
+            request = session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+                                                         operation, application_purpose="promotion", delegations=[alias],
+                                                         sessions={alias: scope["session_names"][code]})
+            documents["application_session." + code] = c.loads(request["Policy"].encode())
+        documents["session." + code] = mode_session_document(code, operation, scope)
+        documents["role." + alias] = policies[alias]
+    return documents
+
+
 def mode_stage_evaluation(evaluation, documents, scope, *, code):
     """Stage recompute (closed-ready pattern): this session's cases from its own documents equal the prepared ones.
 

@@ -522,8 +522,10 @@ FENCE_PREPARE_STEPS = (
     "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
     FENCE_PREPARE_PRODUCER["step_name"],
 )
+FENCE_MODE_FILES = frozenset({"mode-input.json", "mode-roles.json", "mode-evaluation.json"})
 FENCE_PREPARE_FILES = frozenset({"checkpoint.json", "approval.json", "fence-prepared.json", "fence-role.json",
-                               "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json"})
+                               "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json",
+                               *FENCE_MODE_FILES})
 FENCE_ORIGIN_FIELDS = "repository source_sha run_id run_attempt job_id artifact_id artifact_digest producer_name step name sha256 size"
 FENCE_PHASE_A_FILES = frozenset({"envelope.json", "checkpoint.json", "drift.json"})
 FENCE_HISTORY_GAPS = frozenset({"plan.json", "inputs.tfvars.json"})
@@ -592,6 +594,9 @@ FENCE_SCHEMAS = {
     "fence-chain.json": "schema_version owner_sha256 generation anchor_sha256 head_sha256 entries",
     "fence-evaluation.json": "schema_version evaluator_source_sha documents cases",
     "fence-readbacks.json": "proof_kind readbacks",
+    "mode-input.json": "mode_canary",
+    "mode-roles.json": "proof_kind readbacks",
+    "mode-evaluation.json": "schema_version evaluator_source_sha documents cases",
 }
 
 
@@ -962,7 +967,57 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
             else:
                 c.require(type(value) is str and 1 <= len(value) <= 128, "fence finite IAM context value")
         seen.add(case["case_id"])
+    _fence_mode_files(values, files, producer=producer, account=fragment["account_id"], preparation=preparation)
     return manifest
+
+
+def _fence_mode_files(values, files, *, producer, account, preparation):
+    decode_mode_context(files["mode-input.json"])
+    c.closed(values["mode-input.json"]["mode_canary"], MODE_INPUT_FIELDS)
+    roles = mode_prepared_roles(values["mode-roles.json"], account=account, preparation=preparation)
+    evaluation = values["mode-evaluation.json"]
+    validate_mode_evaluation(evaluation)
+    c.require(evaluation["evaluator_source_sha"] == producer["workflow_sha"]
+              and all(evaluation["documents"]["role." + alias] == c.sha(c.canonical(roles[alias]["policy"]["PolicyDocument"]))
+                      for alias in MODE_ALIASES), "fence mode evaluation original")
+
+
+def mode_prepared_roles(proof, *, account, preparation):
+    """Roles of the prepared mode-roles.json (P16b Falta 6): the two equal mode_canary_output readback rounds inside the
+    preparation window, in sorted alias order, each with the exact role and policy identity and a RoleId.
+
+    Returns: alias -> {role, policy}. Raises: ValueError.
+    """
+    c.closed(proof, "proof_kind readbacks")
+    rounds = proof["readbacks"]
+    c.require(proof["proof_kind"] == "iam-readback-and-evaluation" and type(rounds) is list and len(rounds) == 2
+              and all(type(item) is dict and set(item) == {"observed_at", "observations"}
+                      and type(item["observed_at"]) is int for item in rounds)
+              and preparation["admitted_at"] <= rounds[0]["observed_at"]
+              and rounds[0]["observed_at"] + 10 <= rounds[1]["observed_at"] < preparation["deadline"]
+              and c.canonical(rounds[0]["observations"]) == c.canonical(rounds[1]["observations"]),
+              "fence mode roles readback rounds")
+    aliases, observations = sorted(MODE_ALIASES), rounds[1]["observations"]
+    c.require(type(observations) is list and len(observations) == 2 * len(aliases), "fence mode roles readback inventory")
+    return {alias: _mode_prepared_role(observations[2 * index:2 * index + 2], alias, account)
+            for index, alias in enumerate(aliases)}
+
+
+def _mode_prepared_role(pair, alias, account):
+    name = "cnesdata-prod-" + APPLICATION_DELEGATIONS[alias]
+    role, policy = pair
+    c.require(all(type(item) is dict and set(item) == {"service", "operation", "observed"} and item["service"] == "iam"
+                  for item in pair) and role["operation"] == "get_role" and policy["operation"] == "get_role_policy",
+              "fence mode roles readback inventory")
+    body, document = role["observed"], policy["observed"]
+    native = body.get("Role") if type(body) is dict and set(body) == {"Role"} else None
+    c.require(type(native) is dict and type(document) is dict and set(document) == {"RoleName", "PolicyName", "PolicyDocument"}
+              and native.get("RoleName") == document["RoleName"] == name
+              and native.get("Arn") == f"arn:aws:iam::{account}:role/{name}"
+              and type(native.get("RoleId")) is str and bool(native["RoleId"]) and native.get("MaxSessionDuration") == 3600
+              and type(native.get("AssumeRolePolicyDocument")) is dict and document["PolicyName"] == name + "-runtime"
+              and type(document["PolicyDocument"]) is dict, "fence mode roles readback identity")
+    return {"role": body, "policy": document}
 
 
 def validate_mode_evaluation(evaluation):
