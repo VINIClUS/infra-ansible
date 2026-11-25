@@ -20,8 +20,9 @@ CASES = {case["name"]: case for case in VECTOR["cases"]}
 BUILT = sorted(name for name, case in CASES.items() if "refusal" not in case)
 REFUSED = sorted(name for name, case in CASES.items() if "refusal" in case)
 FRAMES_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py"
+DISPATCH_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_dispatch.py"
 PRODUCT_FRAMES_ORIGIN = {
-    "commit": "47b122f5957ccd8ab1e1ca30015ef44f7429e4f0",
+    "commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa",
     "packages/cnes_infra/src/cnes_infra/control_plane/dynamodb_keys.py":
         ("cnes_infra.control_plane.dynamodb_keys", "product_dynamodb_keys.py",
          "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"),
@@ -30,10 +31,13 @@ PRODUCT_FRAMES_ORIGIN = {
          "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2"),
     FRAMES_PATH:
         ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
-         "3b95d77a70c9c121c6dc77cea9b71d0cac5fab359fd4b6d655269f3a61a315a6"),
+         "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33"),
+    DISPATCH_PATH:
+        ("cnes_infra.aws.mode_canary_dispatch", "product_mode_canary_dispatch.py",
+         "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c"),
     "tests/production/delivery/mode_canary_frames_vector.json":
         (None, "tests/fixtures/cnesdata_mode_canary_frames_vector.json",
-         "8a6c21bc0514aacee1063a01a446b0e3c13df903b63c3b13a3f6d7ce5c3db440")}
+         "cdc60395fcd1e6ae52dac4ed354eb5bda03f779095b29a83a2bc8bdf02e9bd45")}
 VENDORED = [value for key, value in PRODUCT_FRAMES_ORIGIN.items() if key != "commit" and value[0] is not None]
 REUSABLE_LISTS = {"application-gate": 1, "infra-audit-gate": 1, "infra-deploy-gate": 1, "infra-plan-gate": 1, "observer": 0}
 Holder = collections.namedtuple("Holder", "dispatch_id run_id tenant_id")
@@ -71,17 +75,23 @@ def _build(case):
         return frames.initial_control(_record(frames, text), datetime.datetime.fromisoformat(case["admitted_at"]))
     binding = _binding(frames, text)
     if builder == "transition":
-        return frames.transition(table, binding, case["ticket"], tuple(case["change"]))
+        return frames.transition(table, binding, (case["effect_id"], case["ticket"]), tuple(case["change"]))
     state = frames.LedgerState(binding, _record(frames, text), case["control"], case["ticket"])
     plan = frames.admission(table, state, _effect(frames, case, binding), datetime.datetime.fromisoformat(case["now"]))
     return {"effect_id": plan.effect_id, "items": plan.items}
 
 
-def test_formatos_vendorizados_sao_os_tres_arquivos_do_produto_no_head_publicado_do_p16c():
+def test_formatos_vendorizados_sao_os_quatro_arquivos_do_produto_no_commit_de_merge_do_p16c():
     assert _mb().PRODUCT_FRAMES == tuple(VENDORED)
     assert [name for name, _, _ in VENDORED] == ["cnes_infra.control_plane.dynamodb_keys",
                                                  "cnes_domain.orchestration.mode_canary",
-                                                 "cnes_infra.aws.mode_canary_frames"]
+                                                 "cnes_infra.aws.mode_canary_frames",
+                                                 "cnes_infra.aws.mode_canary_dispatch"]
+
+
+def test_conjunto_vendorizado_e_a_closure_que_o_vetor_do_produto_declara():
+    assert {path: value[2] for path, value in PRODUCT_FRAMES_ORIGIN.items()
+            if path != "commit" and value[0] is not None} == VECTOR["closure"]
 
 
 @pytest.mark.parametrize("vendored", VENDORED, ids=[item[1] for item in VENDORED])
@@ -96,7 +106,8 @@ def test_vetor_vendorizado_e_o_do_produto_e_aponta_para_a_fonte_fixada_dos_forma
     assert set(BUILT) == {"dispatch-unit", "dispatch-unit-replay", "ledger-admit", "ledger-unknown", "ledger-settle",
                           "ledger-settle-replay", "record-item", "initial-control"}
     assert {CASES[name]["refusal"] for name in REFUSED} == {
-        f"reason={reason} field=tenant_id" for reason in ("ticket_conflict", "budget_exhausted", "ticket_settled")}
+        f"reason={reason} field=tenant_id" for reason in ("ticket_conflict", "budget_exhausted", "ticket_settled",
+                                                          "ticket_mismatch")}
 
 
 def test_teto_de_tentativas_do_ledger_vem_dos_formatos_vendorizados_e_do_vetor_do_produto():
@@ -133,16 +144,26 @@ def test_carregador_recusa_byte_divergente_antes_de_executar_qualquer_arquivo(tm
 def test_carregador_executa_os_bytes_verificados_sem_deixar_modulos_do_produto_em_sys_modules():
     names = [name for name, _, _ in VENDORED]
     assert not set(names) & set(sys.modules)
-    frames = _mb()._load_product_frames(TOOLS)
+    modules = _mb()._load_product_frames(TOOLS)
     assert not set(names) & set(sys.modules)
-    assert frames.__name__ == "cnes_infra.aws.mode_canary_frames"
+    assert list(modules) == names and all(modules[name].__name__ == name for name in names)
+    frames, dispatch = modules["cnes_infra.aws.mode_canary_frames"], modules["cnes_infra.aws.mode_canary_dispatch"]
     assert frames.tenant_partition("prod-canary-x") == "TENANT#" + "prod-canary-x".encode().hex()
     assert frames.ModeCanaryRecord.__module__ == "cnes_domain.orchestration.mode_canary"
+    assert dispatch.refuse is frames.refuse and dispatch.dispatch_key.__module__ == "cnes_infra.control_plane.dynamodb_keys"
+
+
+def test_acessores_devolvem_os_formatos_e_o_dispatch_pelo_nome_do_modulo_e_nao_pela_posicao():
+    mb = _mb()
+    assert mb.product_frames().__name__ == "cnes_infra.aws.mode_canary_frames"
+    assert mb.product_dispatch().__name__ == "cnes_infra.aws.mode_canary_dispatch"
+    assert mb.product_dispatch().refuse is mb.product_frames().refuse
+    assert mb.product_dispatch().PRODUCTION_MAX_CONCURRENCY == 1
 
 
 def test_formatos_do_produto_carregam_uma_vez_por_processo():
     mb = _mb()
-    assert mb.product_frames() is mb.product_frames()
+    assert mb.product_frames() is mb.product_frames() and mb.product_dispatch() is mb.product_dispatch()
 
 
 @pytest.mark.parametrize("vendored", VENDORED, ids=[item[1] for item in VENDORED])
@@ -185,5 +206,5 @@ def test_formatos_do_produto_recusam_python_anterior_a_3_12_sem_cache(monkeypatc
 
 def test_carregador_admite_python_3_12_no_limite(monkeypatch):
     monkeypatch.setattr(sys, "version_info", (3, 12, 0, "final", 0))
-    frames = _mb()._load_product_frames(TOOLS)
-    assert frames.__name__ == "cnes_infra.aws.mode_canary_frames"
+    modules = _mb()._load_product_frames(TOOLS)
+    assert modules["cnes_infra.aws.mode_canary_frames"].__name__ == "cnes_infra.aws.mode_canary_frames"

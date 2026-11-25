@@ -12,7 +12,7 @@ from test_github_workflow import ACTION_PINS
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = ROOT / "tools/cnesdata_delivery/phase-c-child-requirements.txt"
 LOCK = ROOT / "tests/fixtures/cnesdata_phase_c_child_lock.toml"
-LOCK_ORIGIN = {"commit": "47b122f5957ccd8ab1e1ca30015ef44f7429e4f0",
+LOCK_ORIGIN = {"commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa",
                "uv_lock_sha256": "aaca6116865ec03bb47df96e876755cdf76a1c97df5bf9b60dc19e69ad80aac1"}
 CLOSURE = {"annotated-types", "botocore", "jmespath", "pydantic", "pydantic-core", "python-dateutil", "six",
            "typing-extensions", "typing-inspection", "urllib3"}

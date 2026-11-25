@@ -180,6 +180,24 @@ def test_ledger_unknown_troca_o_ticket_pendente_por_unknown(monkeypatch):
     assert json.loads(table.items[ticket])["state"] == "UNKNOWN" and json.loads(table.items[ticket])["receipt_sha256"] is None
 
 
+@pytest.mark.parametrize("kind", ["ledger-unknown", "ledger-settle"])
+def test_transicao_le_a_chave_do_proprio_effect_id_e_recusa_ticket_de_outro_effect_id_sem_escrita(monkeypatch, kind):
+    """P16c rounds 1-2: transition takes the caller effect_id with the text read at its key (ticket_mismatch)."""
+    broker, journal, table = _ledger_broker(monkeypatch)
+    foreign = _pending(journal, table)
+    own = _effect_id(request="3" * 64)
+    table.items[_keys(own)[1]] = table.items[foreign]
+    fields = {}
+    if kind == "ledger-settle":
+        broker.described = {"lastStatus": "STOPPED"}
+        fields = {"receipt_sha256": journal.observe("recovery-task", b'{"lastStatus":"STOPPED"}\n')}
+    before, calls = dict(table.items), len(table.calls)
+    with pytest.raises(ValueError, match="^reason=ticket_mismatch field=tenant_id$"):
+        _send(journal, kind, effect_id=own, **fields)
+    assert [name for name, _ in table.calls[calls:]] == ["get_item"] and table.items == before
+    assert table.calls[-1][1]["Key"]["sk"]["S"] == _keys(own)[1][1]
+
+
 def test_ledger_settle_so_com_recibo_de_uma_observacao_de_tarefa_desta_operacao(monkeypatch):
     broker, journal, table = _ledger_broker(monkeypatch)
     ticket = _pending(journal, table)

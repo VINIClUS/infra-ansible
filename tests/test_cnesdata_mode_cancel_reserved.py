@@ -27,7 +27,7 @@ def _mb():
 
 
 def _cancel_transaction(_texts):
-    """Labelled shape of CnesData P16c 47b122f5 packages/cnes_infra/src/cnes_infra/control_plane/
+    """Labelled shape of CnesData P16c 06849119 packages/cnes_infra/src/cnes_infra/control_plane/
     dynamodb_dispatch_start.py:59-113 cancel_reserved (sha256 c25d18a7...): a ConditionCheck on the unit SEMAPHORE
     plus the Put of the RESERVED dispatch turned TERMINAL CANCELED."""
     check = {"ConditionCheck": {"TableName": TABLE, "Key": {"pk": {"S": SEMAPHORE[0]}, "sk": {"S": SEMAPHORE[1]}},

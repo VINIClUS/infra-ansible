@@ -8,6 +8,7 @@ import pytest
 from test_cnesdata_phase_c_routes import PREFIX, REV, _after, _machine, _schedule, _task
 from test_cnesdata_stage_events import _close_drain
 from tools.cnesdata_delivery import contract as c
+from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery import lifecycle_runtime as lr
 
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "cnesdata_phase_c_product"
@@ -27,6 +28,16 @@ OBSERVED = "2026-11-25T10:20:30Z"
 APPLY = b"Apply complete! Resources: 0 added, 1 changed, 0 destroyed.\n"
 PLAN = "2" * 64
 RENDERED = {"unit": PREFIX + "unit:7", "recovery": PREFIX + "recovery:7", "audit": PREFIX + "audit:7"}
+
+
+PHASE_C_ORIGIN = {"commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa"}
+
+
+def test_pin_do_elemento_e_a_copia_do_produto_no_commit_de_merge_do_p16c():
+    from test_cnesdata_mode_frames import PRODUCT_FRAMES_ORIGIN
+    assert PHASE_C_ORIGIN["commit"] == PRODUCT_FRAMES_ORIGIN["commit"]
+    assert lc.PHASE_C_PRODUCT_FILES == {"scripts/promotion/" + name: c.sha((FIXTURE / name).read_bytes())
+                                        for name in ("phase_c_recovery.py", "_phase_c_core.py")}
 
 
 def _runtime():

@@ -8,20 +8,20 @@ from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 
 PRODUCT_MODE_ORIGIN = {
-    "commit": "1c5bbd8299d8b97824f36e328f24bd3fc6ae7ba5",
+    "commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa",
     "scripts/promotion/_adapter_abi.py": "1b0fd24e1e77776db0ccb4a99a513b37d8403c063730512fed51206454903386",
-    "scripts/promotion/promote_api.py": "7d0320746a7c670983c92feb3c5318fcf063fd843073ee722acf9a53c7f9b8cb",
-    "scripts/promotion/promote_mode.py": "991d30a3f8e3589f64c906a3c2c796d98da76d40d75d2c066d2b0707815b2370",
-    "scripts/promotion/promote_mode_effects.py": "b83d26ad81b10352aa35294228ea04f13d2783c1b046a7d5708e6bdd86688dcc",
-    "scripts/promotion/promote_mode_record.py": "7b38c539f62436ca165c847bd6da3076e1572fe12557c87ae2eda20cf434e6c5"}
-VENDORED_MODE_SHA256 = "328178f9569a92cede500a95e0ad02c52c37eea351fce75f65bdaca338c35f8f"
+    "scripts/promotion/promote_api.py": "b13f4c2d7cf1e3e207bb98c4eca871ed9c5445b4ee38131f6ac2e6ceac49ae5f",
+    "scripts/promotion/promote_mode.py": "34e1db60928ee96480a9164a384ff070df74eed4f886e7f597a3c2af49888515",
+    "scripts/promotion/promote_mode_effects.py": "d08e4b73fa9a317f82e3fb4edebe55ab9fb803cab23cd6443bd2e6ce2bc19b48",
+    "scripts/promotion/promote_mode_record.py": "743814d1ad84669d597a692bd8194ec350496e98a83e8cdfc6410189fb57aa7c"}
+VENDORED_MODE_SHA256 = "f64ff5b13871f32de0f9c443ff73480d6b6f1cdfabbacca499a2aaf5e013eadb"
 MODES = ("unit", "recovery", "audit")
 MODE_STAGE = {"unit": "unit", "recovery": "phase-c-recovery", "audit": "phase-c-audit"}
 MODE_WINDOWS = {"unit": (1720, 1900), "phase-c-recovery": (1900, 2230), "phase-c-audit": (2230, 2560)}
 
 
 def _product_mode_abi():
-    """Vendored from CnesData P16c 1c5bbd82: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
+    """Vendored from CnesData P16c 06849119: _adapter_abi MODE_OPERATIONS, MODE_INPUTS, MODE_OBSERVATIONS,
     MODE_OBSERVATION_FIELDS, MODE_EFFECT_CALLS/STEPS/METHODS, the promote_api handler module of each operation
     (promote_mode, promote_mode_effects, promote_mode_record), promote_mode_effects.SDK_OPERATIONS and
     promote_mode._observation."""

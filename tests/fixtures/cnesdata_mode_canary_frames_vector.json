@@ -182,6 +182,7 @@
     "UNKNOWN",
     null
    ],
+   "effect_id": "46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c",
    "name": "ledger-unknown",
    "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
    "result": {
@@ -215,6 +216,7 @@
     "SETTLED",
     "3333333333333333333333333333333333333333333333333333333333333333"
    ],
+   "effect_id": "46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c",
    "name": "ledger-settle",
    "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
    "result": {
@@ -248,6 +250,7 @@
     "SETTLED",
     "3333333333333333333333333333333333333333333333333333333333333333"
    ],
+   "effect_id": "46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c",
    "name": "ledger-settle-replay",
    "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
    "result": null,
@@ -321,6 +324,7 @@
     "UNKNOWN",
     null
    ],
+   "effect_id": "46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c",
    "name": "ticket-settled",
    "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
    "refusal": "reason=ticket_settled field=tenant_id",
@@ -367,11 +371,2792 @@
     "schema": "cnesdata.mode-canary-control/v1",
     "sealed_at": null
    }
+  },
+  {
+   "builder": "transition",
+   "change": [
+    "UNKNOWN",
+    null
+   ],
+   "effect_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "name": "ticket-key-mismatch",
+   "record": "{\"activation_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"canary_deadline\":\"2026-11-12T12:30:00Z\",\"canary_id\":\"0123456789abcdef0123456789abcdef\",\"candidate_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"context_kind\":\"promotion\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expires_at\":\"2026-11-12T13:00:00Z\",\"fault\":\"none\",\"fixed_deadline\":\"2026-11-12T13:00:00Z\",\"fixture_manifest_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"freeze_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"machine_arn\":\"arn:aws:states:us-east-2:0:stateMachine:m\",\"mode\":\"recovery\",\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase\":\"recovery\",\"phase_receipt_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"promotion_generation\":3,\"promotion_id\":\"promo-1\",\"release_id\":\"r-499\",\"revisions\":{\"audit\":\"a:1\",\"recovery\":\"r:1\",\"unit\":\"u:1\"},\"run_ids\":[\"recovery-a-aaaaaaaaaaaaaaaa\",\"recovery-b-aaaaaaaaaaaaaaaa\"],\"scenario\":\"recovery_resume\",\"schema\":\"cnesdata.mode-canary/v2\",\"seed_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"source_sha\":\"dddddddddddddddddddddddddddddddddddddddd\",\"stage_deadline\":\"2026-11-12T12:30:00Z\"}\n",
+   "refusal": "reason=ticket_mismatch field=tenant_id",
+   "ticket": "{\"admitted_at\":\"2026-11-12T12:10:00+00:00\",\"context_manifest_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"deadline\":\"2026-11-12T12:30:00+00:00\",\"effect_id\":\"46d3763527d841d11bd4a3b093f8623f48012a3146e6a01de1c6e641412e2c9c\",\"effect_kind\":\"run-recovery\",\"generation\":3,\"owner_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"phase_record_sha256\":\"36d89c98f4e359ab9e71ab826f806bdba0a1872f7fb76940821fa400fab8202c\",\"receipt_sha256\":null,\"request_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"schema\":\"cnesdata.mode-canary-effect/v1\",\"state\":\"PENDING\",\"target_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\"}\n"
   }
  ],
+ "closure": {
+  "packages/cnes_domain/src/cnes_domain/orchestration/mode_canary.py": "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2",
+  "packages/cnes_infra/src/cnes_infra/aws/mode_canary_dispatch.py": "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c",
+  "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py": "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33",
+  "packages/cnes_infra/src/cnes_infra/control_plane/dynamodb_keys.py": "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"
+ },
+ "dispatch": {
+  "cases": [
+   {
+    "lease_seconds": 3600,
+    "locator": {
+     "context_kind": "promotion",
+     "owner_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "phase": "unit",
+     "record_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+     "run_ids": [
+      "unit-aaaaaaaaaaaaaaaa"
+     ],
+     "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc"
+    },
+    "name": "producao",
+    "now": "2026-11-13T12:05:00+00:00",
+    "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": {
+     "claim": {
+      "dispatch_id": "09e6289a08ced292",
+      "fence_version": 1,
+      "generation": 1,
+      "permit_token": 1,
+      "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+     },
+     "dispatch_id": "09e6289a08ced292",
+     "execution_ref": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+     "max_concurrency": 1,
+     "permit": {
+      "fence_version": 1,
+      "token": 1
+     },
+     "requests": {
+      "admit": [
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "attribute_not_exists(pk) OR #state = :open OR #promotion = :canary",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":open": {
+              "S": "OPEN"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "attribute_not_exists(#holder_dispatch)",
+            "ExpressionAttributeNames": {
+             "#acquired": "acquired_at",
+             "#canary": "canary_promotion_id",
+             "#entity": "entity",
+             "#generation": "generation",
+             "#holder_dispatch": "holder_dispatch_id",
+             "#holder_run": "holder_run_id",
+             "#holder_tenant": "holder_tenant_id",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#start": "start_state",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":entity": {
+              "S": "UNITSEMAPHORE"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":lease": {
+              "S": "2026-11-13T13:05:00.000000+00:00"
+             },
+             ":now": {
+              "S": "2026-11-13T12:05:00.000000+00:00"
+             },
+             ":one": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #entity = :entity, #holder_tenant = :tenant, #holder_run = :run, #holder_dispatch = :dispatch, #acquired = :now, #lease = :lease, #updated = :now, #canary = :canary, #generation = :generation, #request = :request, #start = :reserved ADD #token :one"
+           }
+          }
+         ]
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "(attribute_not_exists(#count) OR #count < :limit) AND (attribute_not_exists(#ids) OR NOT contains(#ids, :id))",
+         "ExpressionAttributeNames": {
+          "#count": "attempts",
+          "#entity": "entity",
+          "#expires": "expires_at",
+          "#ids": "dispatch_ids"
+         },
+         "ExpressionAttributeValues": {
+          ":entity": {
+           "S": "EXECUTIONATTEMPTS"
+          },
+          ":expires": {
+           "N": "1828051200"
+          },
+          ":id": {
+           "S": "09e6289a08ced292"
+          },
+          ":idset": {
+           "SS": [
+            "09e6289a08ced292"
+           ]
+          },
+          ":limit": {
+           "N": "200"
+          },
+          ":one": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#ATTEMPTS"
+          },
+          "sk": {
+           "S": "MONTH#2026-11"
+          }
+         },
+         "ReturnValues": "ALL_OLD",
+         "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #entity = :entity, #expires = :expires ADD #count :one, #ids :idset"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ]
+      ],
+      "bind": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-11-13T12:01:00Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2026-11-13T13:05:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":1,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTED\",\"lease_until\":\"2026-11-13T13:05:00Z\",\"execution_ref\":\"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\",\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":1,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "claim": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "(attribute_not_exists(pk) AND :version = :zero) OR (#version = :version AND (#state = :open OR (#state = :closed AND #promotion = :promotion)))",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state",
+             "#version": "version"
+            },
+            "ExpressionAttributeValues": {
+             ":closed": {
+              "S": "CLOSED"
+             },
+             ":open": {
+              "S": "OPEN"
+             },
+             ":promotion": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":version": {
+              "N": "1"
+             },
+             ":zero": {
+              "N": "0"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "#token = :token AND #tenant = :tenant AND #run = :run AND #dispatch = :dispatch AND #lease > :updated AND (attribute_not_exists(#start) OR #start = :reserved) AND (attribute_not_exists(#generation) OR #generation = :generation) AND (attribute_not_exists(#request) OR #request = :request) AND (attribute_not_exists(#canary) OR #canary = :canary)",
+            "ExpressionAttributeNames": {
+             "#canary": "canary_promotion_id",
+             "#dispatch": "holder_dispatch_id",
+             "#fence": "fence_version",
+             "#generation": "generation",
+             "#initial": "initial_state",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#run": "holder_run_id",
+             "#start": "start_state",
+             "#tenant": "holder_tenant_id",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":fence": {
+              "N": "1"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":starting": {
+              "S": "STARTING"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             },
+             ":token": {
+              "N": "1"
+             },
+             ":updated": {
+              "S": "2026-11-13T12:05:00+00:00"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #generation = :generation, #request = :request, #fence = :fence, #start = :starting, #initial = :reserved, #updated = :updated"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2026-11-13T13:05:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2026-11-13T13:05:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":1,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "confirm": [
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch) AND (attribute_not_exists(#execution_ref) OR #execution_ref = :ref)",
+         "ExpressionAttributeNames": {
+          "#execution_ref": "execution_ref",
+          "#holder_dispatch": "holder_dispatch_id",
+          "#start": "start_state",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":now": {
+           "S": "2026-11-13T12:05:00.000000+00:00"
+          },
+          ":ref": {
+           "S": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+          },
+          ":started": {
+           "S": "STARTED"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #execution_ref = :ref, #updated = :now, #start = :started"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch)",
+         "ExpressionAttributeNames": {
+          "#holder_dispatch": "holder_dispatch_id",
+          "#lease": "lease_until",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":lease": {
+           "S": "2026-11-13T13:05:00.000000+00:00"
+          },
+          ":now": {
+           "S": "2026-11-13T12:05:00.000000+00:00"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #lease = :lease, #updated = :now"
+        }
+       ]
+      ],
+      "reserve": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-11-13T12:01:00Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "attribute_not_exists(pk)",
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2026-11-13T13:05:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ]
+     },
+     "start_execution": {
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292"
+     },
+     "start_request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7",
+     "unit_ids": [
+      "31d49e0b2a20378b6b2998411e4f305f",
+      "7687b440a8dd5123aa4000858436bdb6"
+     ],
+     "wave_id": "61d919281eb236c7"
+    },
+    "run_item": {
+     "entity": {
+      "S": "RUN"
+     },
+     "gsi4pk": {
+      "S": "RUN_RECOVERABLE"
+     },
+     "gsi4sk": {
+      "S": "2026-11-13T12:01:00.000000+00:00#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+     },
+     "payload": {
+      "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-11-13T12:01:00Z\"}"
+     },
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+     },
+     "sk": {
+      "S": "RUN#756e69742d61616161616161616161616161616161"
+     }
+    },
+    "table": "cnesdata-prod-control-plane",
+    "unit_items": [
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      }
+     },
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      }
+     }
+    ],
+    "units": [
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_LOCAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "31d49e0b2a20378b6b2998411e4f305f"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_NACIONAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "7687b440a8dd5123aa4000858436bdb6"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "f0b1e643355958963f23d02c36e90be5"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "MATERIALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "d962dfc5248fcc4b02aeabe32bf056ec"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "31d49e0b2a20378b6b2998411e4f305f",
+       "7687b440a8dd5123aa4000858436bdb6"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "RECONCILE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "f0b1e643355958963f23d02c36e90be5"
+     }
+    ]
+   },
+   {
+    "lease_seconds": 3600,
+    "locator": {
+     "context_kind": "promotion",
+     "owner_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "phase": "unit",
+     "record_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+     "run_ids": [
+      "unit-aaaaaaaaaaaaaaaa"
+     ],
+     "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc"
+    },
+    "name": "fim-do-mes",
+    "now": "2026-12-31T23:59:30+00:00",
+    "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": {
+     "claim": {
+      "dispatch_id": "09e6289a08ced292",
+      "fence_version": 0,
+      "generation": 1,
+      "permit_token": 1,
+      "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+     },
+     "dispatch_id": "09e6289a08ced292",
+     "execution_ref": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+     "max_concurrency": 1,
+     "permit": {
+      "fence_version": 0,
+      "token": 1
+     },
+     "requests": {
+      "admit": [
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "attribute_not_exists(pk) OR #state = :open OR #promotion = :canary",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":open": {
+              "S": "OPEN"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "attribute_not_exists(#holder_dispatch)",
+            "ExpressionAttributeNames": {
+             "#acquired": "acquired_at",
+             "#canary": "canary_promotion_id",
+             "#entity": "entity",
+             "#generation": "generation",
+             "#holder_dispatch": "holder_dispatch_id",
+             "#holder_run": "holder_run_id",
+             "#holder_tenant": "holder_tenant_id",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#start": "start_state",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":entity": {
+              "S": "UNITSEMAPHORE"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":lease": {
+              "S": "2027-01-01T00:59:30.000000+00:00"
+             },
+             ":now": {
+              "S": "2026-12-31T23:59:30.000000+00:00"
+             },
+             ":one": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #entity = :entity, #holder_tenant = :tenant, #holder_run = :run, #holder_dispatch = :dispatch, #acquired = :now, #lease = :lease, #updated = :now, #canary = :canary, #generation = :generation, #request = :request, #start = :reserved ADD #token :one"
+           }
+          }
+         ]
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "(attribute_not_exists(#count) OR #count < :limit) AND (attribute_not_exists(#ids) OR NOT contains(#ids, :id))",
+         "ExpressionAttributeNames": {
+          "#count": "attempts",
+          "#entity": "entity",
+          "#expires": "expires_at",
+          "#ids": "dispatch_ids"
+         },
+         "ExpressionAttributeValues": {
+          ":entity": {
+           "S": "EXECUTIONATTEMPTS"
+          },
+          ":expires": {
+           "N": "1830643200"
+          },
+          ":id": {
+           "S": "09e6289a08ced292"
+          },
+          ":idset": {
+           "SS": [
+            "09e6289a08ced292"
+           ]
+          },
+          ":limit": {
+           "N": "200"
+          },
+          ":one": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#ATTEMPTS"
+          },
+          "sk": {
+           "S": "MONTH#2026-12"
+          }
+         },
+         "ReturnValues": "ALL_OLD",
+         "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #entity = :entity, #expires = :expires ADD #count :one, #ids :idset"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ]
+      ],
+      "bind": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:55:30Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2027-01-01T00:59:30Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTED\",\"lease_until\":\"2027-01-01T00:59:30Z\",\"execution_ref\":\"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\",\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "claim": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "(attribute_not_exists(pk) AND :version = :zero) OR (#version = :version AND (#state = :open OR (#state = :closed AND #promotion = :promotion)))",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state",
+             "#version": "version"
+            },
+            "ExpressionAttributeValues": {
+             ":closed": {
+              "S": "CLOSED"
+             },
+             ":open": {
+              "S": "OPEN"
+             },
+             ":promotion": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":version": {
+              "N": "0"
+             },
+             ":zero": {
+              "N": "0"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "#token = :token AND #tenant = :tenant AND #run = :run AND #dispatch = :dispatch AND #lease > :updated AND (attribute_not_exists(#start) OR #start = :reserved) AND (attribute_not_exists(#generation) OR #generation = :generation) AND (attribute_not_exists(#request) OR #request = :request) AND (attribute_not_exists(#canary) OR #canary = :canary)",
+            "ExpressionAttributeNames": {
+             "#canary": "canary_promotion_id",
+             "#dispatch": "holder_dispatch_id",
+             "#fence": "fence_version",
+             "#generation": "generation",
+             "#initial": "initial_state",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#run": "holder_run_id",
+             "#start": "start_state",
+             "#tenant": "holder_tenant_id",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":fence": {
+              "N": "0"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":starting": {
+              "S": "STARTING"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             },
+             ":token": {
+              "N": "1"
+             },
+             ":updated": {
+              "S": "2026-12-31T23:59:30+00:00"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #generation = :generation, #request = :request, #fence = :fence, #start = :starting, #initial = :reserved, #updated = :updated"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2027-01-01T00:59:30Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2027-01-01T00:59:30Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "confirm": [
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch) AND (attribute_not_exists(#execution_ref) OR #execution_ref = :ref)",
+         "ExpressionAttributeNames": {
+          "#execution_ref": "execution_ref",
+          "#holder_dispatch": "holder_dispatch_id",
+          "#start": "start_state",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":now": {
+           "S": "2026-12-31T23:59:30.000000+00:00"
+          },
+          ":ref": {
+           "S": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+          },
+          ":started": {
+           "S": "STARTED"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #execution_ref = :ref, #updated = :now, #start = :started"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch)",
+         "ExpressionAttributeNames": {
+          "#holder_dispatch": "holder_dispatch_id",
+          "#lease": "lease_until",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":lease": {
+           "S": "2027-01-01T00:59:30.000000+00:00"
+          },
+          ":now": {
+           "S": "2026-12-31T23:59:30.000000+00:00"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #lease = :lease, #updated = :now"
+        }
+       ]
+      ],
+      "reserve": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:55:30Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "attribute_not_exists(pk)",
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2027-01-01T00:59:30Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ]
+     },
+     "start_execution": {
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292"
+     },
+     "start_request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7",
+     "unit_ids": [
+      "31d49e0b2a20378b6b2998411e4f305f",
+      "7687b440a8dd5123aa4000858436bdb6"
+     ],
+     "wave_id": "61d919281eb236c7"
+    },
+    "run_item": {
+     "entity": {
+      "S": "RUN"
+     },
+     "gsi4pk": {
+      "S": "RUN_RECOVERABLE"
+     },
+     "gsi4sk": {
+      "S": "2026-12-31T23:55:30.000000+00:00#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+     },
+     "payload": {
+      "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:55:30Z\"}"
+     },
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+     },
+     "sk": {
+      "S": "RUN#756e69742d61616161616161616161616161616161"
+     }
+    },
+    "table": "cnesdata-prod-control-plane",
+    "unit_items": [
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      }
+     },
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      }
+     }
+    ],
+    "units": [
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_LOCAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "31d49e0b2a20378b6b2998411e4f305f"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_NACIONAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "7687b440a8dd5123aa4000858436bdb6"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "f0b1e643355958963f23d02c36e90be5"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "MATERIALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "d962dfc5248fcc4b02aeabe32bf056ec"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "31d49e0b2a20378b6b2998411e4f305f",
+       "7687b440a8dd5123aa4000858436bdb6"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "RECONCILE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "f0b1e643355958963f23d02c36e90be5"
+     }
+    ]
+   },
+   {
+    "lease_seconds": 3600,
+    "locator": {
+     "context_kind": "promotion",
+     "owner_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+     "phase": "unit",
+     "record_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+     "run_ids": [
+      "unit-aaaaaaaaaaaaaaaa"
+     ],
+     "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc"
+    },
+    "name": "inicio-do-mes",
+    "now": "2027-01-01T00:00:00+00:00",
+    "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "result": {
+     "claim": {
+      "dispatch_id": "09e6289a08ced292",
+      "fence_version": 0,
+      "generation": 1,
+      "permit_token": 1,
+      "promotion_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+     },
+     "dispatch_id": "09e6289a08ced292",
+     "execution_ref": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+     "max_concurrency": 1,
+     "permit": {
+      "fence_version": 0,
+      "token": 1
+     },
+     "requests": {
+      "admit": [
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "attribute_not_exists(pk) OR #state = :open OR #promotion = :canary",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":open": {
+              "S": "OPEN"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "attribute_not_exists(#holder_dispatch)",
+            "ExpressionAttributeNames": {
+             "#acquired": "acquired_at",
+             "#canary": "canary_promotion_id",
+             "#entity": "entity",
+             "#generation": "generation",
+             "#holder_dispatch": "holder_dispatch_id",
+             "#holder_run": "holder_run_id",
+             "#holder_tenant": "holder_tenant_id",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#start": "start_state",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":entity": {
+              "S": "UNITSEMAPHORE"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":lease": {
+              "S": "2027-01-01T01:00:00.000000+00:00"
+             },
+             ":now": {
+              "S": "2027-01-01T00:00:00.000000+00:00"
+             },
+             ":one": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #entity = :entity, #holder_tenant = :tenant, #holder_run = :run, #holder_dispatch = :dispatch, #acquired = :now, #lease = :lease, #updated = :now, #canary = :canary, #generation = :generation, #request = :request, #start = :reserved ADD #token :one"
+           }
+          }
+         ]
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "(attribute_not_exists(#count) OR #count < :limit) AND (attribute_not_exists(#ids) OR NOT contains(#ids, :id))",
+         "ExpressionAttributeNames": {
+          "#count": "attempts",
+          "#entity": "entity",
+          "#expires": "expires_at",
+          "#ids": "dispatch_ids"
+         },
+         "ExpressionAttributeValues": {
+          ":entity": {
+           "S": "EXECUTIONATTEMPTS"
+          },
+          ":expires": {
+           "N": "1833321600"
+          },
+          ":id": {
+           "S": "09e6289a08ced292"
+          },
+          ":idset": {
+           "SS": [
+            "09e6289a08ced292"
+           ]
+          },
+          ":limit": {
+           "N": "200"
+          },
+          ":one": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#ATTEMPTS"
+          },
+          "sk": {
+           "S": "MONTH#2027-01"
+          }
+         },
+         "ReturnValues": "ALL_OLD",
+         "ReturnValuesOnConditionCheckFailure": "ALL_OLD",
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #entity = :entity, #expires = :expires ADD #count :one, #ids :idset"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#FENCE"
+          },
+          "sk": {
+           "S": "FENCE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ]
+      ],
+      "bind": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:56:00Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2027-01-01T01:00:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTED\",\"lease_until\":\"2027-01-01T01:00:00Z\",\"execution_ref\":\"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\",\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "claim": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "(attribute_not_exists(pk) AND :version = :zero) OR (#version = :version AND (#state = :open OR (#state = :closed AND #promotion = :promotion)))",
+            "ExpressionAttributeNames": {
+             "#promotion": "promotion_id",
+             "#state": "state",
+             "#version": "version"
+            },
+            "ExpressionAttributeValues": {
+             ":closed": {
+              "S": "CLOSED"
+             },
+             ":open": {
+              "S": "OPEN"
+             },
+             ":promotion": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":version": {
+              "N": "0"
+             },
+             ":zero": {
+              "N": "0"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#FENCE"
+             },
+             "sk": {
+              "S": "FENCE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Update": {
+            "ConditionExpression": "#token = :token AND #tenant = :tenant AND #run = :run AND #dispatch = :dispatch AND #lease > :updated AND (attribute_not_exists(#start) OR #start = :reserved) AND (attribute_not_exists(#generation) OR #generation = :generation) AND (attribute_not_exists(#request) OR #request = :request) AND (attribute_not_exists(#canary) OR #canary = :canary)",
+            "ExpressionAttributeNames": {
+             "#canary": "canary_promotion_id",
+             "#dispatch": "holder_dispatch_id",
+             "#fence": "fence_version",
+             "#generation": "generation",
+             "#initial": "initial_state",
+             "#lease": "lease_until",
+             "#request": "request_sha256",
+             "#run": "holder_run_id",
+             "#start": "start_state",
+             "#tenant": "holder_tenant_id",
+             "#token": "token",
+             "#updated": "updated_at"
+            },
+            "ExpressionAttributeValues": {
+             ":canary": {
+              "S": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+             },
+             ":dispatch": {
+              "S": "09e6289a08ced292"
+             },
+             ":fence": {
+              "N": "0"
+             },
+             ":generation": {
+              "N": "1"
+             },
+             ":request": {
+              "S": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7"
+             },
+             ":reserved": {
+              "S": "RESERVED"
+             },
+             ":run": {
+              "S": "unit-aaaaaaaaaaaaaaaa"
+             },
+             ":starting": {
+              "S": "STARTING"
+             },
+             ":tenant": {
+              "S": "prod-canary-cccccccccccccccccccccccccccccccc"
+             },
+             ":token": {
+              "N": "1"
+             },
+             ":updated": {
+              "S": "2027-01-01T00:00:00+00:00"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "ENV#prod#SEMAPHORE"
+             },
+             "sk": {
+              "S": "UNIT"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane",
+            "UpdateExpression": "SET #generation = :generation, #request = :request, #fence = :fence, #start = :starting, #initial = :reserved, #updated = :updated"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2027-01-01T01:00:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             }
+            },
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"STARTING\",\"lease_until\":\"2027-01-01T01:00:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":{\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"permit_token\":1,\"fence_version\":0,\"request_sha256\":\"bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7\",\"promotion_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ],
+      "confirm": [
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch) AND (attribute_not_exists(#execution_ref) OR #execution_ref = :ref)",
+         "ExpressionAttributeNames": {
+          "#execution_ref": "execution_ref",
+          "#holder_dispatch": "holder_dispatch_id",
+          "#start": "start_state",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":now": {
+           "S": "2027-01-01T00:00:00.000000+00:00"
+          },
+          ":ref": {
+           "S": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+          },
+          ":started": {
+           "S": "STARTED"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #execution_ref = :ref, #updated = :now, #start = :started"
+        }
+       ],
+       [
+        "update_item",
+        {
+         "ConditionExpression": "#token = :token AND attribute_exists(#holder_dispatch)",
+         "ExpressionAttributeNames": {
+          "#holder_dispatch": "holder_dispatch_id",
+          "#lease": "lease_until",
+          "#token": "token",
+          "#updated": "updated_at"
+         },
+         "ExpressionAttributeValues": {
+          ":lease": {
+           "S": "2027-01-01T01:00:00.000000+00:00"
+          },
+          ":now": {
+           "S": "2027-01-01T00:00:00.000000+00:00"
+          },
+          ":token": {
+           "N": "1"
+          }
+         },
+         "Key": {
+          "pk": {
+           "S": "ENV#prod#SEMAPHORE"
+          },
+          "sk": {
+           "S": "UNIT"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane",
+         "UpdateExpression": "SET #lease = :lease, #updated = :now"
+        }
+       ]
+      ],
+      "reserve": [
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+          },
+          "sk": {
+           "S": "RUN#756e69742d61616161616161616161616161616161"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "DISPATCH#ACTIVE"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "get_item",
+        {
+         "ConsistentRead": true,
+         "Key": {
+          "pk": {
+           "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+          },
+          "sk": {
+           "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+          }
+         },
+         "TableName": "cnesdata-prod-control-plane"
+        }
+       ],
+       [
+        "transact_write_items",
+        {
+         "TransactItems": [
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:56:00Z\"}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+             },
+             "sk": {
+              "S": "RUN#756e69742d61616161616161616161616161616161"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "ConditionCheck": {
+            "ConditionExpression": "payload = :expected",
+            "ExpressionAttributeValues": {
+             ":expected": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+             }
+            },
+            "Key": {
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          },
+          {
+           "Put": {
+            "ConditionExpression": "attribute_not_exists(pk)",
+            "Item": {
+             "entity": {
+              "S": "RUNDISPATCH"
+             },
+             "gsi5pk": {
+              "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+             },
+             "gsi5sk": {
+              "S": "DISPATCH#ACTIVE"
+             },
+             "payload": {
+              "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"wave_id\":\"61d919281eb236c7\",\"dispatch_id\":\"09e6289a08ced292\",\"generation\":1,\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"state\":\"RESERVED\",\"lease_until\":\"2027-01-01T01:00:00Z\",\"execution_ref\":null,\"terminal_outcome\":null,\"start_claim\":null,\"canceled_before_send\":false}"
+             },
+             "pk": {
+              "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+             },
+             "sk": {
+              "S": "DISPATCH#ACTIVE"
+             }
+            },
+            "TableName": "cnesdata-prod-control-plane"
+           }
+          }
+         ]
+        }
+       ]
+      ]
+     },
+     "start_execution": {
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292"
+     },
+     "start_request_sha256": "bafeec6dd2496764bbe771c1cd80bd185b8aa1c050fb49ebbff7ed24b887bee7",
+     "unit_ids": [
+      "31d49e0b2a20378b6b2998411e4f305f",
+      "7687b440a8dd5123aa4000858436bdb6"
+     ],
+     "wave_id": "61d919281eb236c7"
+    },
+    "run_item": {
+     "entity": {
+      "S": "RUN"
+     },
+     "gsi4pk": {
+      "S": "RUN_RECOVERABLE"
+     },
+     "gsi4sk": {
+      "S": "2026-12-31T23:56:00.000000+00:00#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+     },
+     "payload": {
+      "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"competencia\":\"2026-01\",\"dataset_name\":\"cnes\",\"state\":\"PROCESSING\",\"dependencies\":[{\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":true},{\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"required\":false}],\"missing_sources\":[],\"created_at\":\"2026-12-31T23:56:00Z\"}"
+     },
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363"
+     },
+     "sk": {
+      "S": "RUN#756e69742d61616161616161616161616161616161"
+     }
+    },
+    "table": "cnesdata-prod-control-plane",
+    "unit_items": [
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+      }
+     },
+     {
+      "entity": {
+       "S": "RUNUNIT"
+      },
+      "gsi5pk": {
+       "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+      },
+      "gsi5sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      },
+      "payload": {
+       "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"PENDING\",\"attempt\":0,\"fencing_token\":0,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":null,\"output_manifests\":[],\"error_code\":null}"
+      },
+      "pk": {
+       "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+      },
+      "sk": {
+       "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+      }
+     }
+    ],
+    "units": [
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_LOCAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "31d49e0b2a20378b6b2998411e4f305f"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": "CNES_VINCULO",
+      "input_manifests": [
+       {
+        "manifest_id": "fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa",
+        "manifest_key": "raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json"
+       }
+      ],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "2026-01",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": "CNES_NACIONAL",
+      "stage": "NORMALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "7687b440a8dd5123aa4000858436bdb6"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "f0b1e643355958963f23d02c36e90be5"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "MATERIALIZE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "d962dfc5248fcc4b02aeabe32bf056ec"
+     },
+     {
+      "attempt": 0,
+      "depends_on_unit_ids": [
+       "31d49e0b2a20378b6b2998411e4f305f",
+       "7687b440a8dd5123aa4000858436bdb6"
+      ],
+      "dispatch_id": null,
+      "error_code": null,
+      "fencing_token": 0,
+      "file_subtype": null,
+      "input_manifests": [],
+      "lease_owner": null,
+      "lease_until": null,
+      "output_manifests": [],
+      "partition": "all",
+      "run_id": "unit-aaaaaaaaaaaaaaaa",
+      "source_type": null,
+      "stage": "RECONCILE",
+      "state": "PENDING",
+      "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+      "unit_id": "f0b1e643355958963f23d02c36e90be5"
+     }
+    ]
+   }
+  ],
+  "gate": [
+   [
+    "ConditionCheckItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#FENCE",
+    "FENCE"
+   ],
+   [
+    "ConditionCheckItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363",
+    "RUN#756e69742d61616161616161616161616161616161"
+   ],
+   [
+    "ConditionCheckItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+   ],
+   [
+    "ConditionCheckItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#FENCE",
+    "FENCE"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#SEMAPHORE",
+    "UNIT"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363",
+    "RUN#756e69742d61616161616161616161616161616161"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "DISPATCH#ACTIVE"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+   ],
+   [
+    "GetItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+   ],
+   [
+    "PutItem",
+    "cnesdata-prod-control-plane",
+    "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161",
+    "DISPATCH#ACTIVE"
+   ],
+   [
+    "UpdateItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#ATTEMPTS",
+    "MONTH#2026-11"
+   ],
+   [
+    "UpdateItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#ATTEMPTS",
+    "MONTH#2026-12"
+   ],
+   [
+    "UpdateItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#ATTEMPTS",
+    "MONTH#2027-01"
+   ],
+   [
+    "UpdateItem",
+    "cnesdata-prod-control-plane",
+    "ENV#prod#SEMAPHORE",
+    "UNIT"
+   ]
+  ]
+ },
  "source": {
   "path": "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py",
-  "sha256": "3b95d77a70c9c121c6dc77cea9b71d0cac5fab359fd4b6d655269f3a61a315a6"
+  "sha256": "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33"
  },
  "table": "cnesdata-prod-control-plane"
 }
