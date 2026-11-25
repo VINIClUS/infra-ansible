@@ -151,6 +151,10 @@ def execute_shared_operation(operation, request, context):
     ("get_object", "context.call('mode_seed', 's3', 'get_object', {})", {"kind": "sdk-result", "value": {"Body": {"bytes": "não"}}}),
     ("ledger-admit", "context.ledger_admit_effect('run-recovery', '1' * 64, '2' * 64, '2026-01-01T00:00:00Z')", {"effect_id": "a" * 64, "x": 1}),
     ("ledger-admit", "context.ledger_admit_effect('run-recovery', '1' * 64, '2' * 64, '2026-01-01T00:00:00Z')", {}),
+    ("ledger-admit", "context.ledger_admit_effect('run-recovery', '1' * 64, '2' * 64, '2026-01-01T00:00:00Z')", {"effect_id": "g" * 64}),
+    ("get_item", "context.call('mode_seed', 'dynamodb', 'get_item', {})", {"kind": "sdk-error", "code": "ExecutionDoesNotExist"}),
+    ("get_object", "context.call('mode_seed', 's3', 'get_object', {})", {"kind": "sdk-result", "value": {"Body": {"bytes": "UEFSMQ=="}, "x": 1}}),
+    ("get_object", "context.call('mode_seed', 's3', 'get_object', {})", {"kind": "sdk-result", "value": {"Body": {"bytes": "UEF*SMQ=="}}}),
     ("ledger-unknown", "context.ledger_mark_unknown('a' * 64)", {"effect_id": "a" * 64}),
     ("ledger-settle", "context.ledger_settle('a' * 64, 'b' * 64)", {"settled": True}),
 ])
