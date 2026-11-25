@@ -204,7 +204,7 @@ def _mode_reports(documents, scope, observed_at, codes):
     _mode_scope(scope, operations)
     c.require(type(observed_at) is str and c.instant(observed_at) < scope["deadline"], "mode evaluation before session deadline")
     for code in codes:
-        expected = _mode_expected(code, operations[code][0], scope)
+        expected = mode_session_document(code, operations[code][0], scope)
         c.require(c.canonical(documents["session." + code]) == c.canonical(expected), "mode evaluation session document")
     specs = _mode_case_specs(scope, operations)
     reports = []
@@ -225,7 +225,11 @@ def _mode_reports(documents, scope, observed_at, codes):
     return reports
 
 
-def _mode_expected(code, operation, scope):
+def mode_session_document(code, operation, scope):
+    """The session policy of one mode session code (a part included) on the evaluation scope, as the stage mints it.
+
+    Returns: the policy document. Raises: ValueError before any STS call.
+    """
     from tools.cnesdata_delivery import lifecycle_contract as lc
     from tools.cnesdata_delivery.session_policy import mode_session_policy, mode_unit_wait_policy
     if code in lc.MODE_SESSION_PARTS:
