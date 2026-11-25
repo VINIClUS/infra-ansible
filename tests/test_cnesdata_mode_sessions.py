@@ -118,22 +118,22 @@ def test_sessao_existe_para_as_oito_operacoes_de_promotion_e_nao_para_o_drill():
             _session(operation)
 
 
-def test_ux_tem_so_putitem_porque_o_vetor_dispatch_unit_grava_o_control_por_put_condicional():
+def test_ux_grava_o_frame_dispatch_unit_por_put_e_leva_as_acoes_do_caminho_nativo_do_unit():
+    """Q1: the dispatch-unit control CAS is a conditional Put; UpdateItem is the SEMAPHORE/ATTEMPTS native path only."""
     writes = _vector_writes({"dispatch-unit"})
     assert {action for action, _ in writes} == {"dynamodb:PutItem"}
-    assert set(_dynamodb(_session("unit-start"))) == {"dynamodb:GetItem", "dynamodb:PutItem"}
-    assert "dynamodb:UpdateItem" not in json.dumps(_session("unit-start"))
+    assert set(_dynamodb(_session("unit-start"))) == {"dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem",
+                                                      "dynamodb:UpdateItem"}
+    assert _dynamodb(_session("unit-start"))["dynamodb:UpdateItem"] == {"ENV#prod#ATTEMPTS", "ENV#prod#SEMAPHORE"}
 
 
-@pytest.mark.parametrize("operation, cases", [("unit-start", {"dispatch-unit"}),
-                                              ("recovery-start", {"ledger-admit", "ledger-unknown", "ledger-settle"})])
+@pytest.mark.parametrize("operation, cases", [("recovery-start", {"ledger-admit", "ledger-unknown", "ledger-settle"})])
 def test_chaves_de_escrita_da_sessao_sao_as_particoes_dos_itens_do_vetor(operation, cases):
     writes = _vector_writes(cases)
     assert writes and _dynamodb(_session(operation))["dynamodb:PutItem"] == {pk for _, pk in writes}
 
 
-@pytest.mark.parametrize("operation, cases", [("unit-start", {"dispatch-unit"}),
-                                              ("recovery-start", {"ledger-admit", "ledger-unknown", "ledger-settle"})])
+@pytest.mark.parametrize("operation, cases", [("recovery-start", {"ledger-admit", "ledger-unknown", "ledger-settle"})])
 def test_leitura_forte_do_ledger_fica_na_particao_do_tenant(operation, cases):
     assert _dynamodb(_session(operation))["dynamodb:GetItem"] == {TENANT}
 
@@ -223,8 +223,10 @@ def _probes(policy):
                     yield action, concrete, context | ({"dynamodb:LeadingKeys": [key]} if key else {})
 
 
-@pytest.mark.parametrize("operation", OPERATIONS)
+@pytest.mark.parametrize("operation", [name for name in OPERATIONS if name != "unit-start"])
 def test_cada_permissao_da_sessao_esta_na_concessao_do_papel(operation):
+    """unit-start merges statements where the role makes it neutral (ruling 5); its effect is pinned per action
+    in test_cnesdata_mode_unit_start_session."""
     probes = list(_probes(_session(operation)))
     assert probes
     for action, resource, context in probes:
@@ -236,7 +238,7 @@ def test_cada_permissao_da_sessao_esta_na_concessao_do_papel(operation):
     ("unit-seed", "dynamodb:PutItem", RESOURCES["table_arn"], {"dynamodb:LeadingKeys": [_run("recovery-a-" + OWNER[:16])]}),
     ("recovery-seed", "dynamodb:PutItem", RESOURCES["table_arn"], {"dynamodb:LeadingKeys": [_run("unit-" + OWNER[:16])]}),
     ("unit-start", "dynamodb:UpdateItem", RESOURCES["table_arn"], {"dynamodb:LeadingKeys": [TENANT]}),
-    ("unit-start", "dynamodb:GetItem", RESOURCES["table_arn"], {"dynamodb:LeadingKeys": ["ENV#prod#FENCE"]}),
+    ("unit-start", "dynamodb:Query", RESOURCES["table_arn"], {"dynamodb:LeadingKeys": [_run("unit-" + OWNER[:16])]}),
     ("unit-start", "ecs:RunTask", RESOURCES["revisions"]["recovery"], CLUSTER),
     ("unit-start", "states:StopExecution", EXECUTION, {}),
     ("recovery-start", "states:StartExecution", RESOURCES["machine_arn"], {}),
@@ -249,7 +251,7 @@ def test_cada_permissao_da_sessao_esta_na_concessao_do_papel(operation):
     ("recovery-observe", "s3:GetObject", RESOURCES["data_bucket_arn"] + "/" + RESOURCES["scope"]["output_object_keys"][0], {}),
     ("audit-observe", "cloudwatch:DescribeAlarms", RESOURCES["alarm_arns"]["recovery_repeated_failure"], {}),
     ("audit-observe", "states:DescribeExecution", EXECUTION, {})],
-    ids=["us-run-recovery", "rs-run-unit", "ux-update", "ux-fence", "ux-run-task", "ux-stop-execution", "rx-start-execution",
+    ids=["us-run-recovery", "rs-run-unit", "ux-update", "ux-query-run", "ux-run-task", "ux-stop-execution", "rx-start-execution",
          "rx-run-partition", "rx-stop-task", "ax-expirado", "uo-schedule", "uo-dynamodb", "ro-schedule-audit", "ro-output",
          "ao-alarm-recovery", "ao-execution"])
 def test_sessao_e_subconjunto_estrito_do_papel(operation, action, resource, context):

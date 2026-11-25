@@ -30,7 +30,9 @@ PROPOSAL_CASES = (
     + [f"{code}-{name}" for code in ("us", "rs") for name in ("put-tenant", "put-own-run", "put-raw", "put-foreign-tenant",
                                                                "put-other-mode-run", "get-fence", "put-output")]
     + ["ux-put-ticket", "ux-put-binding", "ux-start-execution", "ux-describe-own-task", "ux-update-control", "ux-run-task",
-       "ux-stop-execution", "ux-put-recovery-run", "ux-describe-foreign-cluster-task"]
+       "ux-stop-execution", "ux-put-recovery-run", "ux-describe-foreign-cluster-task", "ux-check-fence",
+       "ux-update-semaphore", "ux-consume-attempt", "ux-check-unit-run", "ux-check-semaphore", "ux-query-unit-run",
+       "ux-update-unit-run"]
     + ["rx-run-recovery", "rx-pass-recovery-role", "rx-put-ticket", "rx-run-audit-revision", "rx-run-other-cluster",
        "rx-pass-unit-role", "rx-put-run-partition", "rx-start-execution"]
     + ["ax-run-audit", "ax-pass-audit-role", "ax-run-recovery-revision", "ax-pass-other-role", "ax-get-tenant"]
@@ -66,7 +68,7 @@ def _prepare(documents=None, scope=None, observed=OBSERVED):
 
 
 def test_casos_de_modo_sao_os_da_tabela_aceita_no_ruling_4():
-    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 81
+    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 88
     assert set(lc.MODE_EVALUATION_CASES) == set(PROPOSAL_CASES)
     assert all(lc.MODE_EVALUATION_CASES[case][0] in CODES for case in PROPOSAL_CASES)
     assert all(case.startswith(("assume-" + code, code + "-")) for case, (code, _) in lc.MODE_EVALUATION_CASES.items())
@@ -95,7 +97,8 @@ def test_casos_permitidos_e_negados_seguem_a_tabela():
     allowed = {case["case_id"] for case in report["cases"] if case["expected"]}
     assert allowed == {f"assume-{code}" for code in CODES} | {
         "us-put-tenant", "us-put-own-run", "us-put-raw", "rs-put-tenant", "rs-put-own-run", "rs-put-raw", "ux-put-ticket",
-        "ux-put-binding", "ux-start-execution", "ux-describe-own-task", "rx-run-recovery", "rx-pass-recovery-role",
+        "ux-put-binding", "ux-start-execution", "ux-describe-own-task", "ux-check-fence", "ux-update-semaphore",
+        "ux-consume-attempt", "ux-check-unit-run", "rx-run-recovery", "rx-pass-recovery-role",
         "rx-put-ticket", "ax-run-audit", "ax-pass-audit-role", "uo-describe-machine", "uo-describe-task-definition",
         "uo-get-output", "ro-describe-machine", "ro-describe-task-definition", "ro-get-own-schedule", "ro-describe-own-alarm",
         "ao-describe-machine", "ao-describe-task-definition", "ao-get-own-schedule", "ao-describe-own-alarm"}
@@ -253,3 +256,20 @@ def test_validador_recusa_avaliacao_incompleta():
     report["cases"] = report["cases"][:-1]
     with pytest.raises(ValueError, match="^mode evaluation$"):
         lc.validate_mode_evaluation(report)
+
+
+@pytest.mark.parametrize("case_id, action, key, expected", [
+    ("ux-check-fence", "dynamodb:ConditionCheckItem", "ENV#prod#FENCE", True),
+    ("ux-update-semaphore", "dynamodb:UpdateItem", "ENV#prod#SEMAPHORE", True),
+    ("ux-consume-attempt", "dynamodb:UpdateItem", "ENV#prod#ATTEMPTS", True),
+    ("ux-check-unit-run", "dynamodb:ConditionCheckItem", "unit", True),
+    ("ux-check-semaphore", "dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE", False),
+    ("ux-query-unit-run", "dynamodb:Query", "unit", False),
+    ("ux-update-unit-run", "dynamodb:UpdateItem", "unit", False)])
+def test_casos_do_q1_no_ux_fixam_as_chaves_do_caminho_nativo_do_unit(case_id, action, key, expected):
+    report = _prepare()
+    run = "TENANT#" + RESOURCES["scope"]["tenant_id"].encode().hex() + "#RUN#" + ("unit-" + OWNER[:16]).encode().hex()
+    case = _case(report, case_id)
+    assert (case["action"], case["resource"], case["expected"], case["observed"]) == (
+        action, RESOURCES["table_arn"], expected, expected)
+    assert case["context"]["dynamodb:LeadingKeys"] == [run if key == "unit" else key]
