@@ -160,3 +160,12 @@ HOP_ORIGINS = {"checkpoint.json": "bootstrap-deploy"}
 def test_salto_do_bootstrap_so_vale_para_passo_nao_historico_de_application_prepare(step, expected):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     assert lr.bootstrap_hop(HOP_GOVERNANCE, step, HOP_CHECKPOINT, HOP_ORIGINS, HOP_WINDOW) is expected
+
+
+def test_escritor_do_checkpoint_do_deploy_registra_o_checkpoint_consumido_e_nao_o_da_janela():
+    import ast
+    source = (Path(__file__).resolve().parents[1] / "tools/cnesdata_delivery/lifecycle_runtime.py").read_text()
+    links = [value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Dict)
+             for key, value in zip(node.keys, node.values)
+             if isinstance(key, ast.Constant) and key.value == "previous_checkpoint_sha256" and isinstance(value, ast.Call)]
+    assert [ast.unparse(value) for value in links] == ["c.sha(payload['checkpoint.json'])"]

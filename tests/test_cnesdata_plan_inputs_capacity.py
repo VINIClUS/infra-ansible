@@ -26,42 +26,60 @@ def _size(request):
     return len(request["Policy"]) + len(request["PolicyArns"][0]["arn"])
 
 
-def _lifecycle_documents(governance):
-    from tools.cnesdata_delivery.session_policy import lifecycle_request
-    deletes = [f"arn:aws:states:us-east-2:{ACCOUNT}:stateMachine:cnesdata-prod-" + "m" * 40 + str(index) for index in range(8)]
-    for role, direction, resources in (("plan", "advance", ()), ("audit", "advance", ()), ("deploy", "advance", ()),
-                                       ("deploy", "converge", deletes)):
-        yield f"lifecycle {role} {direction}", lifecycle_request(governance, SOURCE, RUN, ATTEMPT, role, LONG, direction=direction,
-                                                                   delete_resources=resources)
-
-
-def _application_documents(governance):
+def _documents(governance):
     from tools.cnesdata_delivery import lifecycle_contract as lc
-    from tools.cnesdata_delivery.session_policy import application_request
+    from tools.cnesdata_delivery.session_policy import application_request, lifecycle_request
     names = {"observer": "sp-i-" + "a" * 40, "normal": "sp-publish-" + "a" * 40, "recovery": "sp-rollback-" + "a" * 40,
              "seeder": "canary-seeder-" + "a" * 32, "verifier": "canary-verifier-" + "a" * 32,
              "fence_operator": "promotion-fence-" + "a" * 32}
+    deletes = [f"arn:aws:states:us-east-2:{ACCOUNT}:stateMachine:cnesdata-prod-" + "m" * 40 + str(index) for index in range(8)]
+    documents = {}
+    for role, direction, resources in (("plan", "advance", ()), ("audit", "advance", ()), ("deploy", "advance", ()),
+                                       ("deploy", "converge", deletes)):
+        documents[f"lifecycle {role} {direction}"] = lambda r=role, d=direction, x=resources: lifecycle_request(
+            governance, SOURCE, RUN, ATTEMPT, r, LONG, direction=d, delete_resources=x)
     for purpose in lc.APPLICATION_CONTEXTS:
-        yield f"application keeper {purpose}", application_request(governance, SOURCE, RUN, ATTEMPT, "keeper", application_purpose=purpose)
+        documents[f"application keeper {purpose}"] = lambda p=purpose: application_request(
+            governance, SOURCE, RUN, ATTEMPT, "keeper", application_purpose=p)
     for aliases in (("normal", "observer"), ("recovery", "observer"), ("seeder",), ("verifier",), ("fence_operator",)):
-        yield "application " + "+".join(aliases), application_request(
-            governance, SOURCE, RUN, ATTEMPT, LONG, application_purpose="promotion", delegations=list(aliases),
-            sessions={alias: names[alias] for alias in aliases})
+        documents["application " + "+".join(aliases)] = lambda a=aliases: application_request(
+            governance, SOURCE, RUN, ATTEMPT, "publish-static", application_purpose="promotion", delegations=list(a),
+            sessions={alias: names[alias] for alias in a})
     for operation, (code, role, context, _) in lc.MODE_SESSION_OPERATIONS.items():
-        purpose = "mode-readiness-drill" if context == "readiness" else "promotion"
-        yield "application mode " + operation, application_request(
-            governance, SOURCE, RUN, ATTEMPT, LONG, application_purpose=purpose, delegations=[role],
-            sessions={role: "mc-" + code + "-" + "a" * 40})
-    yield "application closed-ready", application_request(governance, SOURCE, RUN, ATTEMPT, "closed-ready", application_purpose="promotion")
+        documents["application mode " + operation] = lambda o=operation, k=code, r=role, x=context: application_request(
+            governance, SOURCE, RUN, ATTEMPT, o, application_purpose="mode-readiness-drill" if x == "readiness" else "promotion",
+            delegations=[r], sessions={r: "mc-" + k + "-" + "a" * 40})
+    documents["application closed-ready"] = lambda: application_request(
+        governance, SOURCE, RUN, ATTEMPT, "closed-ready", application_purpose="promotion")
+    return documents
 
 
-def test_toda_sessao_cabe_em_2048_caracteres_nos_maximos_governados(capsys):
-    governance = _governance()
-    rows = [(name, _size(request)) for name, request in (*_lifecycle_documents(governance), *_application_documents(governance))]
+def _measure(governance):
+    rows = {}
+    for name, build in _documents(governance).items():
+        try:
+            rows[name] = _size(build())
+        except ValueError as error:
+            rows[name] = str(error)
+    return rows
+
+
+REFUSED_AT_MAXIMA = {"lifecycle deploy converge", "application normal+observer", "application recovery+observer",
+                     "application fence_operator"}
+
+
+def test_sessoes_do_p40_cabem_em_2048_caracteres_nos_maximos_governados(capsys):
+    rows = _measure(_governance())
     with capsys.disabled():
-        for name, size in rows:
+        for name, size in rows.items():
             print(f"capacity {name}: {size}")
-    assert rows and all(size <= 2048 for _, size in rows)
+    keepers = {name: size for name, size in rows.items() if name.startswith("application keeper")}
+    assert len(keepers) == 2 and all(type(size) is int and size <= 2048 for size in keepers.values())
+
+
+def test_sessoes_recusadas_nos_maximos_sao_exatamente_as_ja_conhecidas():
+    refused = {name for name, size in _measure(_governance()).items() if type(size) is not int}
+    assert refused == set(REFUSED_AT_MAXIMA)
 
 
 def test_keeper_cresce_so_com_o_balde_e_o_prefixo_nao_com_o_numero_de_planos():

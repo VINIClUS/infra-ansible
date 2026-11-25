@@ -203,12 +203,6 @@ def refuse_reserved_step(step):
     c.require(not step.startswith(PLAN_INPUTS_PREFIX), "reserved plan-inputs step")
 
 
-def plan_inputs_keys(run_prefix, governance):
-    """Args: run object-ARN prefix, governance. Returns: the exact keeper object ARNs, none without a catalog."""
-    return [run_prefix + PLAN_INPUTS_PREFIX + name + "/" + PLAN_INPUTS_MEMBER
-            for name in plan_step_names(governance.get("lifecycle_steps", {}))]
-
-
 def lifecycle_request(governance, source, run_id, attempt, role, step, *, direction, delete_resources=(), predecessor=None):
     """Same-run evidence, read-only original lease, exact inverse resources.
 
@@ -301,7 +295,7 @@ def application_request(governance, source, run_id, attempt, step, *, applicatio
     run = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + _prefix(governance) + f"lifecycle/{source}/{run_id}/{attempt}/"
     lease = "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY
     own = [run + name + "/*" for name in (("keeper", "terminal") if keeper else (step,))]
-    own += plan_inputs_keys(run, governance) if keeper else []
+    own += [run + PLAN_INPUTS_PREFIX + "*/" + PLAN_INPUTS_MEMBER] if keeper else []
     statements = [
         {"Effect": "Allow", "Action": "s3:GetObject", "Resource": run + "*"},
         {"Effect": "Allow", "Action": "s3:PutObject", "Resource": own},
@@ -353,6 +347,7 @@ def _prefix(governance):
     prefix = governance["evidence_prefix"]
     c.require(
         type(prefix) is str
+        and len(prefix) <= 32
         and prefix.startswith("cnesdata/prod/")
         and ".." not in prefix
         and re.fullmatch(r"[A-Za-z0-9_./-]+", prefix),

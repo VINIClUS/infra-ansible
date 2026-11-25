@@ -558,6 +558,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert kwargs["previous_raw"] == payload["checkpoint.json"] and kwargs["approval_raw"] == payload["approval.json"]
         assert kwargs["activation_sha256"] == c.sha(b"p" * 40) and kwargs["plan_index"]["step"] == "prepared"
         assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
+        written = c.loads(kwargs["checkpoint_raw"], canonical=True)
+        assert written["previous_checkpoint_sha256"] == c.sha(kwargs["previous_raw"]) == c.sha(payload["checkpoint.json"])
         assert published[0][5] == {"fence-prepared.json": b"{}\n"}
         # Item 6: exactly the objects private_payload, authenticate_predecessor and keeper_transport returned.
         assert len(returned["predecessor"]) == len(returned["transport"]) == 1 and len(returned["index"]) == 2

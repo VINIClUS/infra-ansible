@@ -329,7 +329,7 @@ READERS = {("lifecycle_runtime.py", "admission"), ("lifecycle_runtime.py", "curr
            ("lifecycle_runtime.py", "fence_prepare_package"), ("lifecycle_runtime.py", "execute"),
             ("lifecycle_runtime.py", "admit_approval_origin"), ("application_gate.py", "_deploy_step"),
             ("application_gate.py", "_plan_activation"), ("application_gate.py", "_observer_step"),
-           ("lifecycle_runtime.py", "bootstrap_hop"), ("session_policy.py", "plan_inputs_keys")}
+           ("lifecycle_runtime.py", "bootstrap_hop")}
 
 
 def _readers():
