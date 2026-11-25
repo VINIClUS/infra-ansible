@@ -66,7 +66,11 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 1. Revisao pelo dono, por escrito (data, run, causa, evidencia retida, decisao), antes de mexer no lease.
    Se o estado e `held`/`recovery_required` ou ha duvida sobre o estado da fence ou das rotas, a
    recuperacao do ambiente (host, rotas, restauracao) vem antes e fora deste runbook.
-2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente** (`ReviewedReset` do F1).
+2. Falha do host (decisao do dono de 2026-11-25, recuperacao manual): o lease fica `held`. Com
+   `rolled_back`, a API ja esta na versao anterior. Com `recovery_required`, o dono recupera o VPS a mao
+   ate a versao anterior aceita do host e confere por leitura, antes do reset revisado. O `host-recovery`
+   e o `reopen` do `recovery` ficam inertes em producao ate o item adiado.
+3. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente** (`ReviewedReset` do F1).
    Precondicao: o run attempt dono do lease esta `completed`, lido na API do GitHub (para `held`/
    `recovery_required` isso e o `pc = done` do modelo; sem isso o reset e o mutante `ResetLive`). Nao ha
    caminho de remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do
@@ -75,14 +79,14 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
    recomeca em 1: o acquire seguinte com objeto ausente parte de `previous_generation = 0`. A checagem
    de epoca do produto (`generation >= promotion_generation` no close-drain) so recusa mais com uma
    geracao menor, nunca menos.
-3. Proximo acquire so por um novo run gated de **Phase A**: o application recusa o objeto ausente
+4. Proximo acquire so por um novo run gated de **Phase A**: o application recusa o objeto ausente
    ("original completed delivery required"). Depois, re-fixar `predecessor_read` da governanca nesse run
    de Phase A. Nao dispare em cima do run vermelho e nao use rerun do mesmo run id.
-4. A primeira promocao depois de um reset precisa de um snapshot de membership vazio. Um membro
+5. A primeira promocao depois de um reset precisa de um snapshot de membership vazio. Um membro
    sobrevivente com geracao maior ou igual a geracao recomecada faz o close-drain recusar (fail closed);
    a promocao fica retida ate a membership esvaziar. Uma clarificacao dessa comparacao no produto esta na
    lista adiada (depois do primeiro aceite).
-5. Registrar o reset (data, quem, etag antes, ausencia confirmada) junto da evidencia retida.
+6. Registrar o reset (data, quem, etag antes, ausencia confirmada) junto da evidencia retida.
 
 ### 1.5 Verificacao
 
