@@ -142,10 +142,17 @@ def derive_binding(static, raw, run_id, run_attempt):
     }
     b["original_bytes"]["platform_sha256"] = g.sha(raw)
     b["original_bytes"]["baseline_sha256"] = plan["host_preflight_sha256"]
-    cost = static["cost_handoff"]["cost"]
+    cost, envelope = static["cost_handoff"]["cost"], static["envelope"]
+    artifact, credentials = b["ci_artifact"], static["credentials"]
     derived = {
         "platform": (plan["expires_at"], g.sha(raw)),
         "cost": (cost["expires_at"], digest_of(cost)),
+        "envelope": (envelope["release_manifest"]["expires_at"], digest_of(envelope)),
+        "artifact": (
+            artifact["expires_at"],
+            artifact["artifact_digest"].removeprefix("sha256:"),
+        ),
+        "credential": (credentials["trust_deadline"], digest_of(credentials)),
     }
     expires = {e["name"]: e for e in b["expires"]}
     for name, (expires_at, source) in derived.items():

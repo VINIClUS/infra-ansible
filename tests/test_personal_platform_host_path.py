@@ -469,6 +469,24 @@ def test_governanca_deriva_plataforma_expiries_original_bytes_e_caller(tmp_path,
     }
     cost = static["cost_handoff"]["cost"]
     assert expiries["cost"]["source_sha256"] == g.sha(g.canonical(cost))
+    assert expiries["cost"]["expires_at"] == cost["expires_at"]
+    envelope = static["envelope"]
+    assert expiries["envelope"] == {
+        "name": "envelope",
+        "expires_at": envelope["release_manifest"]["expires_at"],
+        "source_sha256": g.sha(g.canonical(envelope)),
+    }
+    artifact = b["ci_artifact"]
+    assert expiries["artifact"] == {
+        "name": "artifact",
+        "expires_at": artifact["expires_at"],
+        "source_sha256": artifact["artifact_digest"].removeprefix("sha256:"),
+    }
+    assert expiries["credential"] == {
+        "name": "credential",
+        "expires_at": credentials()["trust_deadline"],
+        "source_sha256": g.sha(g.canonical(credentials())),
+    }
     assert (b["caller"]["run_id"], b["caller"]["run_attempt"]) == (4242, 3)
     g.validate_binding(b)
 
