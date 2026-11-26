@@ -348,9 +348,21 @@ held. The changes are:
 - The production `operation_session` of `execute` admits reopen, terminal-readback and
   rollback-api-static.
 
+Mode operation sessions (P16f, #120). The production `operation_session` of `execute` also
+admits the eight promotion mode operations of `MODE_SESSION_OPERATIONS`: `unit-seed`,
+`unit-start`, `unit-observe`, `recovery-seed`, `recovery-start`, `recovery-observe`,
+`audit-start` and `audit-observe`.
+- The delegation is chosen by `role_arn`. When the role is the governed delegation of the
+  operation's mode alias (`mode_seed`, `mode_dispatch`, `mode_audit_launch` or
+  `mode_observe`), the session delegates to that alias with the role's exact
+  `mc-<code>-<digest40>` session name, which is the restriction the mode broker evaluates.
+- Any other role takes the fence path with `fence_operator`, which is accepted only for the
+  three mode observes. A mode effect under another role is refused with
+  `operation session delegation`.
+- The readiness-drill operations (`drill-*`) stay refused with `operation session operation`.
+
 Pending at this draft head, to be described from the merged code before X*: the plan inputs
-and the D2/D2b checkpoint origins (P40); the production `operation_session` of `execute`
-admitting the mode-observe and `mc-*` operations, which it refuses at this head (P16f).
+and the D2/D2b checkpoint origins (P40).
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
@@ -865,9 +877,13 @@ trust or tofu:
   `close_drain_capability` and, through the same explicit keyword, to `closed_ready_capability`, which still has no
   caller. `_assume_fence_session` has no `aws` parameter any more. The keeper client keeps the lease and the
   freeze reread; it is never an STS or evidence client of the fence.
-- The factory accepts only `close-drain` and `closed-ready`. It builds `application_request` with
-  `step` equal to the operation, `application_purpose="promotion"`, `delegations=("fence_operator",)` and
-  the exact session name of the authenticated `fence-role.json`, and makes a second
+- The factory accepts `close-drain`, `closed-ready`, the static operations (`inventory`,
+  `publish-static`, `rollback-api-static`), the terminal fence operations (`reopen`,
+  `terminal-readback`) and the promotion mode operations (P16f, in "Integration state at X*").
+  It builds `application_request` with `step` equal to the operation and
+  `application_purpose="promotion"`. A fence operation has `delegations=("fence_operator",)` and the
+  exact session name of the authenticated `fence-role.json`; a static operation delegates to the
+  aliases of its static session. It then makes a second
   `AssumeRoleWithWebIdentity` of the same job through `oidc_credentials(..., duration=900)`. That function
   keeps its claim checks and accepts only 900 or 3600 s, with 3600 for keeper, plan and deploy. The session
   has the same `Account`, `Arn` (so the same role and the same `cnesdata-<run>-<attempt>` name) and `UserId`
