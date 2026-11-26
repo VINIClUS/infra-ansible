@@ -234,12 +234,182 @@ objects on a failed, CLOSED, quiescent outcome; it does not claim rollback of a
 nonexistent pair or successful promotion. Maintenance occurs in a later manual
 run after authenticated accepted-open, without extending promotion F.
 
-## Remaining integration gates
+## Integration state at X*
 
-The #499 v4 contract now names the real mode execution, readiness and proof
-paths. Its code is not inferred from the shared ten-alias ceiling. The existing
-audit canary cannot prove unit/recovery, and a clone state machine cannot prove
-production admission. Mode preparation now has an isolated eight-address structural gate and an
+This section records the delivery contract as it stands at X*, the merge commit of P20. The
+sha256 of this document is the `contract_sha256` that governance pins; no closure file changes
+after X*. Each item below merged to `main` with RED-first tests and an independent audit.
+
+Implemented on `main`:
+- Readbacks per stage with identity-derived parameters (G4, P05), the drift catalog and the G5
+  envelope (P06), the Phase A G3 handoff, `public_safe` and envelope (P07), and the per-cycle
+  G6 HMAC with the authenticated cost source.
+- The product source manifest from an authenticated artifact (P10), with `source_closure` and
+  `lifecycle_steps` hydrated from it (P37); the independent lifecycle audit and
+  `approval.json` (P11); the lifecycle catalog, the absence proof and the specified callers
+  (P12).
+- Plan and deploy reusables with a single `execute` job each: `validate` is folded into
+  `execute` (P34), and pre-approved jobs wait for their stage without a credential (P35).
+- The keeper: the API stage with closed-ready and the host handoff (P14); the static stage
+  with its broker, STS session and publish-static (P15) and its authenticated inputs (P15b);
+  governed stage windows and the fixed deadline (P36); the mode-canary oracle and the `unit`,
+  `phase-c-recovery` and `phase-c-audit` stages (P16); the mode broker, mode sessions,
+  ModeReadback and the phase-c element (P16b); terminal, restoration, reopen,
+  terminal-readback and release (P17).
+- Producers: proof, observer, cost, `phase_a_graph` and the owner CLI (P18); the application
+  governance producers (P19); the observer, phase-inputs writer and audit roles (P22); the
+  in-job rehearsal plan with bucket-key state decryption (P21b); read-only calibration and
+  the governance size measurement (P21); the recovery runbook, HMAC custody and drills (P32).
+- Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
+  trusts (F3), and stage windows with pre-approved jobs (F4).
+
+Unit-start open (P16b follow-up, #118). unit-start has no gate left in the mode broker or in
+the stage capability; it gets the same refusals as the other effects. Its sequence is:
+- The plan reads the single ECS cluster of the state machine definition in the unit-start
+  readbacks and requires it to equal the prepared `cluster_arn`, before the seed check and
+  before any STS. A service ARN, a missing cluster, two clusters or an invalid definition
+  refuse with `mode unit cluster`.
+- `ux` reserves, admits, claims and starts the execution. `uw` polls DescribeExecution to a
+  terminal status, then calls DescribeTasks only when the execution names task ARNs, then
+  reads each RUNUNIT item of the unit run in order with a strongly consistent GetItem. C1
+  admits on `uw` only the exact DescribeExecution, the expected DescribeTasks whose `cluster`
+  equals the prepared `cluster_arn`, and the next exact RUNUNIT read; on `ux` it admits no
+  describe call. The `uw` session policy grants GetItem only with LeadingKeys equal to the
+  partition key of the owner's unit run.
+- `dispatch_unit` returns `{execution, tasks, failures, outputs}`. The execution keeps
+  `executionArn`, `stateMachineArn`, `name`, `status`, `input` and, when present, `output`;
+  the dates are dropped. Tasks and failures are bounded projections. The outputs come from
+  the product `unit_outputs`. If the product refuses the RUNUNIT items, the operation fails
+  with `mode_unit_outputs=refused`: the lease stays held, the receipts already written stay
+  durable and no mode-result is written.
+- The reply is kept in its own slot, apart from the recovery and audit `described`. The
+  `unit-execution`, `unit-task` and `unit-output` step receipts must equal the slot element
+  at the same position, in child order.
+- unit-observe's `observed` input is derived by the keeper from this lease's single
+  unit-start journal, which must be neither failed nor unknown: the one `unit-execution` and
+  the `unit-task` and `unit-output` receipts in journal order, as the product's three-field
+  `observed`. The origin re-checks the readback cluster against the prepared `cluster_arn`,
+  the third of the three cluster checks.
+
+STS session capacity (P41, #117). Every session policy fits in 1998 characters, inline
+document plus managed ARN. The changes are:
+- Operation sessions of the application role (every non-keeper session) carry the managed
+  `<application role>-ops-session` policy. It allows the IAM role and policy reads, a
+  read-only GetObject of the lease and the state-key KMS calls under the state bucket
+  encryption context, and it denies every IAM policy mutation. Keeper sessions keep the
+  application managed policy.
+- Delegation is an Allow of `sts:AssumeRole` per alias, on the exact governed product role and
+  with `sts:RoleSessionName` equal to that alias's exact session name. The keeper session
+  denies `sts:AssumeRole`.
+- The managed `delivery_session` policy of the plan, deploy and audit roles reads the lease and
+  never writes it. Among those roles' sessions, the only lease Put left is in the legacy plan
+  and deploy build/request sessions, on the exact lease key. The keeper's application managed
+  policy still grants the lease Put.
+- The inverse deletion inventory is bounded by the largest scheduler closure of the recovery
+  and audit modes instead of a fixed count, and each ARN is at most 104 characters.
+- The activation read uses the managed `<plan role>-activation-session` policy, and each
+  activation object key is at most 273 bytes (N=273).
+- The managed plan and audit session policies carry a static Deny of the lifecycle deletions;
+  the forward request adds that Deny only for deploy, and the inverse keeps its exact
+  `NotResource` inventory.
+- The ops and activation pins are paired with the role pin (same `observed_at`, `expires_at`,
+  `frozen_until` and owner producer) and committed in the proof measurement. They are applied
+  together with the managed documents in apply #1, and until then authentication fails closed.
+  Application authentication refuses with `original owner session pin absent` when the ops pin
+  is missing, and with `original owner application_ops session policy commitment` when the pin
+  does not match its measured fact or its pairing. Plan authentication applies the same two
+  refusals to the `plan_activation` pin when governance has `activation_read`. Without
+  `activation_read` the plan authority has no activation pin, and an activation read refuses
+  with `activation session pin absent`.
+
+Real terminal brokers (P17b, #119). `terminal_capability` connects reopen, terminal-readback
+and rollback-api-static to production brokers. A refusal fails the journal and the lease stays
+held. The changes are:
+- reopen and terminal-readback run on the fence session of the authenticated PreparedFence.
+  Before STS the capability recomputes the scope from the prepared policy, binds the prepared
+  activation, the `fence_operator` delegation and the current owner, and evaluates the
+  operation session's effective IAM locally.
+- terminal-readback (FenceReadBroker) reads FENCE and SEMAPHORE strongly and probes, with
+  `METADATA_ONLY`, only the `execution_ref` of a TERMINAL member of the frozen close-drain
+  membership. Its `membership` input must be that frozen set, or the empty set before the close.
+- reopen (ClosedReadyBroker) is pinned to the P17c call vector. At `final` it makes one CAS
+  UpdateItem of the owner's fence, CLOSED to OPEN at version + 1, after a strong FENCE read,
+  under a session policy that grants the strong reads and UpdateItem on FENCE only. At
+  `recovery` it only reads and the CAS is refused. Its four inputs are `activation`, `routing`,
+  `canaries` and `membership`; at `recovery`, `routing` is the recovery routes and `canaries`
+  is null.
+- rollback-api-static runs in StaticBroker under the existing static `recovery` alias, session
+  `sp-rollback-<digest40>`, in the `recovery` stage. Before STS it checks that the static plan
+  is the one the keeper holds, binds the run against the operational carrier and reads the
+  recovery role facts of the operational deploy. Its calls are a CopyObject of each planned
+  rollback key and version (SHA256 checksum, metadata copied) and the plan invalidation. The
+  session policy grants GetObjectVersion and PutObject on the rollback keys only, plus the
+  invalidation, and its effective IAM is checked under the copy-source and creation
+  conditions of the #498 policy (the IAM evaluator gains `Bool`).
+- At `final`, the terminal input source serves reopen's `routing` as the closed projection of
+  the three mode routes of the authenticated phase-c-audit element, which the C deploy job read
+  back after apply (ruling 1g). Every other request still refuses with
+  `terminal_inputs=source_unconnected`.
+- When a prepare fails before the PreparedFence exists, the fence capability refuses with
+  `terminal_broker=prepared_absent` before STS; the journal fails and the lease stays held.
+- The production `operation_session` of `execute` admits reopen, terminal-readback and
+  rollback-api-static.
+
+Mode operation sessions (P16f, #120). The production `operation_session` of `execute` also
+admits the eight promotion mode operations of `MODE_SESSION_OPERATIONS`: `unit-seed`,
+`unit-start`, `unit-observe`, `recovery-seed`, `recovery-start`, `recovery-observe`,
+`audit-start` and `audit-observe`.
+- The delegation is chosen by `role_arn`. When the role is the governed delegation of the
+  operation's mode alias (`mode_seed`, `mode_dispatch`, `mode_audit_launch` or
+  `mode_observe`), the session delegates to that alias with the role's exact
+  `mc-<code>-<digest40>` session name, which is the restriction the mode broker evaluates.
+- Any other role takes the fence path with `fence_operator`, which is accepted only for the
+  three mode observes. A mode effect under another role is refused with
+  `operation session delegation`.
+- The readiness-drill operations (`drill-*`) stay refused with `operation session operation`.
+
+Plan inputs (P40, #115). The keeper publishes each plan's `inputs.json` as a private payload
+with a public index. The changes are:
+- Composition. The base is the governed `product_inputs` plus the six original Phase A inputs,
+  and the reserved keys `static_promotion` and `mode_canary` are always explicit; the bytes are
+  at most 131072. The observer-bootstrap plan carries the `observer-bootstrap` static_promotion
+  (no plan, no inventory, empty lists, `static_plan_sha256` null) and a null `mode_canary`.
+  The operational plan carries the `operational` static_promotion built from the static plan
+  and the inventory, and the `mode_canary` object relayed from the static-inventory job
+  artifact. Both bind the authenticated candidate, the owner and the application gate pin, with
+  the window of the original application fragment. Every other plan carries only the base.
+  `static_plan_sha256` is null only in observer-bootstrap mode, and the carrier binding refuses
+  any other pairing.
+- Storage. The keeper session writes `<run>/plan-inputs-<plan step>/inputs.json`, reads it back
+  and then uploads the public index artifact `cnesdata-plan-inputs-<plan step>-<run>-<attempt>`.
+  The keeper session policy adds one bounded PutObject resource, `<run>/plan-inputs-*/inputs.json`,
+  whatever the number of plans. Plan step names must not start with `plan-inputs-` and must fit
+  in 64 characters with that prefix, lifecycle and application sessions refuse a reserved step,
+  and the evidence prefix is at most 32 characters. Every session document fits in 2048
+  characters at the governed maxima, so none is refused there.
+- Publication. Before any write the publisher checks the six Phase A inputs against custody and
+  requires the consuming plan job to be `in_progress`. The plan that opens a stage publishes
+  before the stage-open marker. The operational inputs publish after the inventory upload, only
+  once the static-inventory probe completed with success and the operational plan job is
+  `in_progress`. That wait is guarded, polls one jobs listing every 5 s and refuses at the
+  preparation deadline minus `P40_PUBLISH_RESERVE_SECONDS` (100 s), with
+  `operational_inputs=static_inventory_failed`, `static_inventory_timeout` or
+  `consumer_not_started`.
+- Reading. The plan gate adds the keeper `inputs.json` to its private payload and refuses any
+  other source of that name. The reader requires its own job `in_progress`, the unique artifact
+  created after that job started, matching metadata and digest, the private index of step
+  `plan-inputs-<plan step>` with the lease owner and generation, and `inputs.json` as the only
+  member. The P35 wait checks the artifact's presence in its same conditional listing.
+- REST budget. The model adds 55 point reads and the wait's polling. The governed worst rolling
+  hour is about 2530 of 3000 requests at the measured hit rates and 3727 of 4500 without the
+  jobs credit (60 and 90 percent of the assumed 5000 per hour).
+- Checkpoint origins. The deploy checkpoint gains `previous_checkpoint_sha256`, equal to the
+  approval's `checkpoint_sha256`. `bootstrap_hop` admits a one-hop chain: the checkpoint of this
+  run's observer-bootstrap deploy, or of the same-chain operational plan that republishes it,
+  linked to the window checkpoint. A step that reads the checkpoint of a same-chain
+  historical-entry plan uses the historical Phase A checks.
+
+Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
 policies on no-op plans. Its native closed-Deny fixture proves source grammar
 and address binding only. A finite internal IAM reader compares two identical
@@ -257,21 +427,26 @@ the exact eight promotion or six readiness sessions. The fourteen session
 algorithms retain their separate ASCII canonical codec. This pure validator
 does not authenticate its producer arguments or authorize STS/apply.
 
-The complete mode-canary input/trust/policy/output oracle, its native product
-fixtures, the readiness D14400 protocol and operational-pending terminal union
-still require integration. Until those producers exist, these
-paths remain closed; no offline vector is an operational acceptance receipt.
-F2/F3 still require fresh post-B CLOSED-ready admission under the original API180
-window and full current/prior static baseline bytes, including non-latest current.
+Commitments that are not authenticated:
+- `scenario_plan_sha256` in the mode-canary record (`MODE_PRODUCT_COMMITTED`) is a
+  product-bound commitment. No producer emits it under authentication and no consumer checks
+  it against other bytes; it proves nothing beyond the product's own record.
+- `rehearsal_plan_sha256` in the `drift-baseline` measurement is the identity of the plan the
+  observer generates inside its own job (P21b). That plan is never stored or uploaded, carries
+  timestamps and cannot be reproduced; the gate checks only that the value is a sha256 digest
+  (`drift_handoff`).
 
-The keeper polling loop, protected terminal assessment producer, application
-reusable/dispatcher, concrete F2/F3 adapter flows
-and complete initial/live/inverse native product plan fixtures remain
-implementation work. Terminal publication and successor verification now have
-offline integration tests, but are not yet connected to that polling/reusable
-flow. The fragment consumer/readback and adapter source preflight are implemented
-and tested but also require that integration. Current local tests do not make
-this extension ready for deployment.
+Window duties at a new X*:
+- `CATALOG_SHA256` is computed from the drift catalog document, and P38 changed it (prefix
+  `8d5b62af`). `drift_handoff` refuses a handoff with another `catalog_sha256`, so the
+  rehearsal drift handoff must be regenerated at X*. The closure is recomputed too, because
+  `drift_catalog` is part of `APPLICATION_PYBOOT`.
+- P39 changed the `policy_sha256` outputs of the application role and of the delivery roles.
+  Any governance record that holds the old digests must be regenerated from the outputs of
+  apply #1 in the window.
+
+No offline vector or local test is an operational acceptance receipt: acceptance comes only
+from the authenticated runs of the window.
 
 
 ## Adapter boundary implementation checkpoint
@@ -747,9 +922,13 @@ trust or tofu:
   `close_drain_capability` and, through the same explicit keyword, to `closed_ready_capability`, which still has no
   caller. `_assume_fence_session` has no `aws` parameter any more. The keeper client keeps the lease and the
   freeze reread; it is never an STS or evidence client of the fence.
-- The factory accepts only `close-drain` and `closed-ready`. It builds `application_request` with
-  `step` equal to the operation, `application_purpose="promotion"`, `delegations=("fence_operator",)` and
-  the exact session name of the authenticated `fence-role.json`, and makes a second
+- The factory accepts `close-drain`, `closed-ready`, the static operations (`inventory`,
+  `publish-static`, `rollback-api-static`), the terminal fence operations (`reopen`,
+  `terminal-readback`) and the promotion mode operations (P16f, in "Integration state at X*").
+  It builds `application_request` with `step` equal to the operation and
+  `application_purpose="promotion"`. A fence operation has `delegations=("fence_operator",)` and the
+  exact session name of the authenticated `fence-role.json`; a static operation delegates to the
+  aliases of its static session. It then makes a second
   `AssumeRoleWithWebIdentity` of the same job through `oidc_credentials(..., duration=900)`. That function
   keeps its claim checks and accepts only 900 or 3600 s, with 3600 for keeper, plan and deploy. The session
   has the same `Account`, `Arn` (so the same role and the same `cnesdata-<run>-<attempt>` name) and `UserId`
