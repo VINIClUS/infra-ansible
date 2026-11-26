@@ -3015,11 +3015,11 @@ def _operational_pending(api, run, governance, guard):
 
 
 def _await_operational_inputs(keeper, api, run, governance, timing):
-    """P40: bounded keeper wait (conditional jobs listing, stage deadline minus the ceiling margin) before publishing."""
+    """P40: bounded keeper wait (conditional jobs listing, stage deadline minus the publication reserve) before publishing."""
     from tools.cnesdata_delivery import stage_wait
     clock, sleep = timing
     guard = KeeperGuard(keeper)
-    deadline = lc.terminal_deadline(keeper.lease.check()["lifecycle"]) - stage_wait.CEILING_MARGIN_SECONDS
+    deadline = lc.terminal_deadline(keeper.lease.check()["lifecycle"]) - stage_wait.P40_PUBLISH_RESERVE_SECONDS
     while True:
         pending = _operational_pending(api, run, governance, guard)
         if pending is None:

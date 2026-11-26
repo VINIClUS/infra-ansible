@@ -15,11 +15,11 @@ CONDITION_2 = {"jobs": 0.0, "artifacts": 0.8}
 
 GOVERNED_WORST = {"phase-b": 720, "api": 180, "static": 180, "unit": 180, "phase-c-recovery": 240, "phase-c-audit": 240, "final": 60}
 EXACT = {
-    "measured": 2504.778, "condition_2": 3627.0, "vectors": 2827,
-    "measured_components": {"keeper": 869.1, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
+    "measured": 2487.598, "condition_2": 3607.0, "vectors": 2827,
+    "measured_components": {"keeper": 851.92, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
                             "probes": 71.862, "own_job": 15.0, "non_consumers": 25.0, "plan_inputs_keeper": 35.0,
                             "plan_inputs_reader": 20.0, "residual": 20},
-    "governed_measured": (2547.378, GOVERNED_WORST, 1500), "governed_condition_2": (3747.0, GOVERNED_WORST, 1500),
+    "governed_measured": (2530.198, GOVERNED_WORST, 1500), "governed_condition_2": (3727.0, GOVERNED_WORST, 1500),
 }
 
 

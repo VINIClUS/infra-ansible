@@ -8,7 +8,10 @@ from tools.cnesdata_delivery import lifecycle_contract as lc, stage_wait
 RUN = {"id": 4242, "run_attempt": 1}
 STEP = {"role": "plan", "job_name": "operational plan"}
 GOVERNANCE = {"lifecycle_steps": {"application-prepare-operational-plan": STEP}}
-START = 1000.0
+ACQUIRE = 1000.0
+START = ACQUIRE + 120
+PREPARATION_SECONDS = 900
+RESERVE = stage_wait.P40_PUBLISH_RESERVE_SECONDS
 
 
 def _job(name, status, conclusion=None):
@@ -40,7 +43,12 @@ class Clock:
         self.now += seconds
 
 
-def _gate(monkeypatch, deadline=START + 3600):
+def gate_module():
+    from tools.cnesdata_delivery import application_gate
+    return application_gate
+
+
+def _gate(monkeypatch, deadline=ACQUIRE + PREPARATION_SECONDS):
     from tools.cnesdata_delivery import application_gate as gate
     ticks = []
     keeper = SimpleNamespace(lease=SimpleNamespace(check=lambda: {"lifecycle": {"close": None, "preparation_deadline": deadline}}))
@@ -68,11 +76,11 @@ def test_publica_depois_que_a_sonda_de_inventario_termina(monkeypatch):
 
 
 def test_recusa_com_motivo_quando_a_sonda_nunca_termina(monkeypatch):
-    gate, keeper, _ = _gate(monkeypatch, deadline=START + 900 + 30)
+    gate, keeper, _ = _gate(monkeypatch)
     clock = Clock()
     with pytest.raises(ValueError, match="^operational_inputs=static_inventory_timeout$"):
         _wait(gate, keeper, Jobs([[PROBE_RUNNING, CONSUMER_RUNNING]]), clock)
-    assert clock.now >= START + 30
+    assert ACQUIRE + PREPARATION_SECONDS - RESERVE <= clock.now < ACQUIRE + PREPARATION_SECONDS - RESERVE + stage_wait.POLL_SECONDS
 
 
 def test_aguarda_o_consumidor_iniciar(monkeypatch):
@@ -84,9 +92,11 @@ def test_aguarda_o_consumidor_iniciar(monkeypatch):
 
 
 def test_recusa_com_motivo_quando_o_consumidor_nao_inicia(monkeypatch):
-    gate, keeper, _ = _gate(monkeypatch, deadline=START + 900 + 30)
+    gate, keeper, _ = _gate(monkeypatch)
+    clock = Clock()
     with pytest.raises(ValueError, match="^operational_inputs=consumer_not_started$"):
-        _wait(gate, keeper, Jobs([[PROBE_DONE, CONSUMER_QUEUED]]), Clock())
+        _wait(gate, keeper, Jobs([[PROBE_DONE, CONSUMER_QUEUED]]), clock)
+    assert ACQUIRE + PREPARATION_SECONDS - RESERVE <= clock.now < ACQUIRE + PREPARATION_SECONDS - RESERVE + stage_wait.POLL_SECONDS
 
 
 def test_sonda_concluida_sem_sucesso_recusa_sem_esperar(monkeypatch):
@@ -105,7 +115,8 @@ def test_sem_espera_quando_ja_pronto_a_leitura_e_unica_por_listagem(monkeypatch)
 
 
 def test_orcamento_da_espera_cabe_nos_dois_limiares():
-    assert stage_wait.P40_WAIT_SECONDS == stage_wait.PREPARATION_ALLOWANCE_SECONDS - stage_wait.CEILING_MARGIN_SECONDS
+    assert stage_wait.P40_WAIT_SECONDS == PREPARATION_SECONDS - RESERVE
+    assert stage_wait.P40_GUARDED_READ_SECONDS == gate_module().SAME_RUN_READ_SECONDS
     assert stage_wait.governed_worst(stage_wait.MEASURED_HIT_RATES)["worst_rolling_hour"] <= stage_wait.REST_BUDGET
     assert stage_wait.governed_worst({"jobs": 0.0, "artifacts": 0.8})["worst_rolling_hour"] <= stage_wait.REST_BUDGET_NO_JOBS_CREDIT
     windows = {"phase-b": 720, "api": 240, "static": 180, "unit": 120, "phase-c-recovery": 240, "phase-c-audit": 240, "final": 60}
