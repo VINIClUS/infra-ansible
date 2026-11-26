@@ -291,9 +291,32 @@ the stage capability; it gets the same refusals as the other effects. Its sequen
   `observed`. The origin re-checks the readback cluster against the prepared `cluster_arn`,
   the third of the three cluster checks.
 
-Pending at this draft head, to be described from the merged code before X*: the ops session,
-the activation managed policy and N=273 (P41); the plan inputs and the D2/D2b checkpoint
-origins (P40); the real brokers (P17b).
+STS session capacity (P41, #117). Every session policy fits in 1998 characters, inline
+document plus managed ARN. The changes are:
+- Operation sessions of the application role (every non-keeper session) carry the managed
+  `<application role>-ops-session` policy. It allows the IAM role and policy reads, a
+  read-only GetObject of the lease and the state-key KMS calls under the state bucket
+  encryption context, and it denies every IAM policy mutation. Keeper sessions keep the
+  application managed policy.
+- Delegation is an Allow of `sts:AssumeRole` per alias, on the exact governed product role and
+  with `sts:RoleSessionName` equal to that alias's exact session name. The keeper session
+  denies `sts:AssumeRole`.
+- The managed `delivery_session` policy reads the lease and never writes it. The only lease
+  Put left is in the legacy plan and deploy build/request sessions, on the exact lease key.
+- The inverse deletion inventory is bounded by the largest scheduler closure of the recovery
+  and audit modes instead of a fixed count, and each ARN is at most 104 characters.
+- The activation read uses the managed `<plan role>-activation-session` policy, and each
+  activation object key is at most 273 bytes (N=273).
+- The managed plan and audit session policies carry a static Deny of the lifecycle deletions;
+  the forward request adds that Deny only for deploy, and the inverse keeps its exact
+  `NotResource` inventory.
+- The ops and activation pins are paired with the role pin (same `observed_at`, `expires_at`,
+  `frozen_until` and owner producer) and committed in the proof measurement. They are applied
+  together with the managed documents in apply #1; until then authentication fails closed
+  (`ops session pin absent`, `activation session pin absent`).
+
+Pending at this draft head, to be described from the merged code before X*: the plan inputs
+and the D2/D2b checkpoint origins (P40); the real brokers (P17b).
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
