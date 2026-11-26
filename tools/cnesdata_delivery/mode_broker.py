@@ -964,14 +964,14 @@ def _mode_role(governance, authority, code, alias):
 def _mode_application(governance, application, documents, target, role, clock):
     from tools.cnesdata_delivery import session_policy
     from tools.cnesdata_delivery.iam_boundary import effective_iam
-    from tools.cnesdata_delivery.session_owner import application_identity_document
+    from tools.cnesdata_delivery.session_owner import application_identity_document, operation_authority
     owner, (code, alias) = target.owner, lc.MODE_SESSION_OPERATIONS[target.operation][:2]
     inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
         target.operation, application_purpose="promotion", delegations=[alias],
         sessions={alias: role["session_name"]})["Policy"].encode())
     identity = application_identity_document(governance, application.application_fragment)
     c.require(all(c.canonical(value) == c.canonical(documents[name]) for name, value in (
-        ("application_identity", identity), ("application_managed", application.pin["document"]),
+        ("application_identity", identity), ("application_managed", operation_authority(application).pin["document"]),
         ("application_session." + code, inline))), "mode session application documents")
     now = {"aws:CurrentTime": c.utc(clock())}
     managed = [documents["application_managed"], documents["application_session." + code]]

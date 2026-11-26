@@ -27,13 +27,14 @@ def test_activation_restrictions_exact_capacity_and_original_deadline():
     from tools.cnesdata_delivery import session_policy as sp
     gov = activation_governance()
     versions = dict(zip(("payload", "signature", "receipt"), ("P" * 32, "S" * 32, "R" * 32)))
-    for selected, expected in (({"receipt": versions["receipt"]}, 1571), (versions, 2041)):
+    for selected, expected in (({"receipt": versions["receipt"]}, 1119), (versions, 1068)):
         request = sp.activation_request(gov, selected, deadline="2030-01-01T00:15:00Z")
         assert len(request["Policy"]) + len(request["PolicyArns"][0]["arn"]) == expected
         statements = json.loads(request["Policy"])["Statement"]
-        assert statements[1]["Condition"] == {"DateGreaterThanEquals": {"aws:CurrentTime": "2030-01-01T00:15:00Z"}}
-        assert not any(action.startswith("iam:") for action in statements[0]["NotAction"])
-    versions["receipt"] += "R" * 8
+        assert statements[0]["Condition"] == {"DateGreaterThanEquals": {"aws:CurrentTime": "2030-01-01T00:15:00Z"}}
+        assert not any("NotAction" in statement or "NotResource" in statement for statement in statements)
+        assert request["PolicyArns"] == [{"arn": sp.managed_arn(gov, "plan_activation")}]
+    versions["receipt"] = "R" * 1024
     with pytest.raises(ValueError, match="2048"):
         sp.activation_request(gov, versions, deadline="2030-01-01T00:15:00Z")
     for selected in ({}, {"payload": "P"}, {"receipt": None}, {"receipt": "null"}, {"receipt": True}):
@@ -298,6 +299,7 @@ def test_native_application_sessions_separate_keeper_history_and_operation(nativ
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
     identity["Statement"] += json.loads(resources["aws_iam_role_policy.application_history[0]"]["policy"])["Statement"]
     managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    ops = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     governance = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -312,31 +314,32 @@ def test_native_application_sessions_separate_keeper_history_and_operation(nativ
     keeper, operation = (json.loads(x["Policy"]) for x in requests)
     lease = "arn:aws:s3:::synthetic-state/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
     assert effective(identity, managed, keeper, "s3:PutObject", lease)
-    assert not effective(identity, managed, operation, "s3:PutObject", lease)
-    assert effective(identity, managed, operation, "s3:GetObject", lease)
+    assert not effective(identity, ops, operation, "s3:PutObject", lease)
+    assert effective(identity, ops, operation, "s3:GetObject", lease)
     history = outputs["application_promotion"]["value"]["predecessor_reads"]["object_arns"]
     for arn in history:
         assert effective(identity, managed, keeper, "s3:GetObject", arn)
-        assert not effective(identity, managed, operation, "s3:GetObject", arn)
+        assert not effective(identity, ops, operation, "s3:GetObject", arn)
         assert not effective(identity, managed, keeper, "s3:PutObject", arn)
         context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": arn}
         assert effective(identity, managed, keeper, "kms:Decrypt", settings["evidence_kms_arn"], context)
         assert not effective(identity, managed, keeper, "kms:Encrypt", settings["evidence_kms_arn"], context)
     own = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/" + "b" * 40 + "/44/1/"
-    for policy, step in ((keeper, "terminal"), (operation, "publish-static")):
-        assert effective(identity, managed, policy, "s3:PutObject", own + step + "/receipt.json")
-        assert not effective(identity, managed, policy, "s3:PutObject", own + "other-step/receipt.json")
-        assert not effective(identity, managed, policy, "s3:GetObject", own.replace("/44/1/", "/45/1/") + "receipt.json")
-        assert not effective(identity, managed, policy, "s3:GetObject", "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate")
+    for policy, document, step in ((keeper, managed, "terminal"), (operation, ops, "publish-static")):
+        assert effective(identity, document, policy, "s3:PutObject", own + step + "/receipt.json")
+        assert not effective(identity, document, policy, "s3:PutObject", own + "other-step/receipt.json")
+        assert not effective(identity, document, policy, "s3:GetObject", own.replace("/44/1/", "/45/1/") + "receipt.json")
+        assert not effective(identity, document, policy, "s3:GetObject", "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate")
     for role, pattern in (("normal", "sp-publish-" + "a" * 40), ("observer", "sp-i-" + "a" * 40)):
-        assert effective(identity, managed, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
+        assert effective(identity, ops, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
         assert not effective(identity, managed, keeper, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
-        assert not effective(identity, managed, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern[:-1] + "b"})
-    assert not effective(identity, managed, operation, "sts:AssumeRole", roles["recovery"], {"sts:RoleSessionName": "sp-rollback-" + "a" * 40})
+        assert not effective(identity, ops, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern[:-1] + "b"})
+    assert not effective(identity, ops, operation, "sts:AssumeRole", roles["recovery"], {"sts:RoleSessionName": "sp-rollback-" + "a" * 40})
 
 
+@pytest.mark.parametrize("step", ["closed-ready", "keeper"])
 @pytest.mark.parametrize("with_history", [False, True])
-def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, monkeypatch, tmp_path):
+def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, step, monkeypatch, tmp_path):
     import copy
     from urllib.parse import quote
     from tools.cnesdata_delivery import contract as c, session_owner
@@ -376,7 +379,13 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
                document=json.loads(resources["aws_iam_policy.application_session[0]"]["policy"]))
     pin["document_sha256"] = c.sha(c.canonical(pin["document"]))
     gov["session_policy_pins"]["application"] = pin
-    measured = {"managed_session_policy": session_owner._facts(pin, c.report_key(gov)), "application_fragment_sha256": c.sha(c.canonical(fragment))}
+    ops = copy.deepcopy(pin)
+    ops.update(policy_arn=managed_arn(gov, "application_ops"),
+               document=json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"]))
+    ops["document_sha256"] = c.sha(c.canonical(ops["document"]))
+    gov["session_policy_pins"]["application_ops"] = ops
+    measured = {"managed_session_policy": session_owner._facts(pin, c.report_key(gov)), "application_fragment_sha256": c.sha(c.canonical(fragment)),
+                "ops_session_policy": session_owner._facts(ops, c.report_key(gov))}
     name = "policy-evaluation.json"
     files[name] = c.canonical({"check_id": "policy-evaluation", "source_sha": descriptor["source_sha"], "measurement": measured})
     next(x for x in proof["reports"] if x["check_id"] == "policy-evaluation").update(size=len(files[name]), sha256=c.sha(files[name]))
@@ -386,6 +395,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     gov["session_owner_references"] = {"application": api.owner_reference}
     authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
     assert authority.application_fragment == fragment
+    assert authority.ops_pin == ops
     assert authority.application_fragment is not fragment
     assert authority.proof_sha256 == c.sha(api.owner_files["proof.json"])
     # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.
@@ -478,12 +488,13 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
             self.mutation, self.roles_read, self.policies_read = mutation, 0, 0
         def call(self, service, operation, **parameters):
             assert service == "iam"
+            served = ops if parameters.get("PolicyArn") == ops["policy_arn"] else pin
             if operation == "get_policy":
-                return {"Policy": {"Arn": pin["policy_arn"], "PolicyName": pin["policy_arn"].rsplit("/", 1)[1],
-                    "DefaultVersionId": "v9" if self.mutation == "managed-default" else pin["default_version_id"],
+                return {"Policy": {"Arn": served["policy_arn"], "PolicyName": served["policy_arn"].rsplit("/", 1)[1],
+                    "DefaultVersionId": "v9" if self.mutation == "managed-default" else served["default_version_id"],
                     "AttachmentCount": 0, "PermissionsBoundaryUsageCount": 0}}
             if operation == "get_policy_version":
-                return {"PolicyVersion": {"VersionId": pin["default_version_id"], "IsDefaultVersion": True, "Document": pin["document"]}}
+                return {"PolicyVersion": {"VersionId": served["default_version_id"], "IsDefaultVersion": True, "Document": served["document"]}}
             if operation == "get_role":
                 self.roles_read += 1
                 value = {"RoleName": fragment["application_role_name"], "Arn": fragment["application_role_arn"],
@@ -554,7 +565,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     manifest = {"version": 1, "source_sha": source, "files": {"scripts/promotion/promote_api.py": c.sha(script.read_bytes())}}
     gov.update(role="application", application_product_source_manifest=manifest,
                application_product_source_closure_sha256=c.sha(c.canonical(manifest)))
-    request = {"source_sha": source, "step": "closed-ready", "application_purpose": "promotion"}
+    request = {"source_sha": source, "step": step, "application_purpose": "promotion"}
     run = {"id": 44, "run_attempt": 1}
     exported = tmp_path / "github-env"
     monkeypatch.setenv("GITHUB_ENV", str(exported))
@@ -564,7 +575,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     def oidc(governance, role, restriction, current_run):
         assert role == "application" and current_run == run
         statements = json.loads(restriction["Policy"])["Statement"]
-        assert {"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"} in statements
+        assert ({"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"} in statements) is (step == "keeper")
+        assert not any(item["Effect"] == "Allow" and item["Action"] == "sts:AssumeRole" for item in statements)
         bootstrap_exchanges.append(restriction)
         return native_credentials
     identity_change = {}
@@ -689,7 +701,7 @@ def test_native_mode_sessions_intersect_exact_role_session_and_purpose(native):
     data = application_values()
     resources, _ = render(native, data, "mode-session-exact")
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -725,7 +737,7 @@ def test_native_closed_ready_composition_is_readonly_and_frozen(native):
     data = application_values()
     resources, _ = render(native, data, "application-closed-ready")
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -813,16 +825,17 @@ def test_finite_iam_date_less_than_has_no_other_deny_condition(now, expected):
 
 DEFAULT_DOCUMENT_SHA256 = {
     "plain": {
-        'aws_iam_policy.delivery_session["deploy"]': "1debe5e7852c11ecc6b1a6a102e31c4744958183c92c1846e9a0c33e2d6f5080",
-        'aws_iam_policy.delivery_session["plan"]': "f49af95a26535f0d184fe4fec371f3e8ff349b90601bdc48da91d0bd74a63584",
+        'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
+        'aws_iam_policy.delivery_session["plan"]': "5a5c63fe229d87e9f56e3e9f35c7d76843628515fa5c719c3adf9ab48da66860",
         'aws_iam_role_policy.delivery["deploy"]': "286093d626a9c3051f03c62a98e446e15bab6075c67a2a5a7a86d9d8b8c87653",
         'aws_iam_role_policy.delivery["plan"]': "175b7b6eacffbc7a2ed4e75191432cf5a3e5e7a77dc07f2f0ae27241257738eb",
     },
     "app": {
+        "aws_iam_policy.application_ops_session[0]": "a0aa515ffebe8a51ef07b73456cd28a21fb39ecbb7d4507ec5cb19e68b2835e4",
         "aws_iam_policy.application_session[0]": "ba15d380c9aad4fa7894797da53089d206f761f719a7140000bfb1bd3b99ea78",
-        'aws_iam_policy.delivery_session["deploy"]': "1debe5e7852c11ecc6b1a6a102e31c4744958183c92c1846e9a0c33e2d6f5080",
-        'aws_iam_policy.delivery_session["plan"]': "f49af95a26535f0d184fe4fec371f3e8ff349b90601bdc48da91d0bd74a63584",
-        "aws_iam_role_policy.application[0]": "cdd962ba7ca45fbd678534edc316c77faf3038627c4c05ff76d5dd5886558651",
+        'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
+        'aws_iam_policy.delivery_session["plan"]': "5a5c63fe229d87e9f56e3e9f35c7d76843628515fa5c719c3adf9ab48da66860",
+        "aws_iam_role_policy.application[0]": "eb1f31a50053293805c86d1b30e04fb7ccd33dac03fba308ef17884d2a97e563",
         'aws_iam_role_policy.delivery["deploy"]': "3262f5d742ca349bbe578b4d70361679567e646b7b020b9e309b459be9e7b403",
         'aws_iam_role_policy.delivery["plan"]': "005f685acf956337d8dd9d7c7ba12209fbbbe4ccca101d93e227d990cddc0c6b",
     },
@@ -885,19 +898,32 @@ def test_native_activation_read_changes_only_plan_and_only_for_exact_reads(nativ
     enabled, _ = render(native, activation_input(application_values()), "activation-compare-enabled")
     changed = {key for key in default if default[key] != enabled[key]}
     assert changed == {'aws_iam_role_policy.delivery["plan"]', 'aws_iam_policy.delivery_session["plan"]'}
+    assert set(enabled) - set(default) == {"aws_iam_policy.plan_activation_session[0]"}
     identity, managed = rendered_policies(enabled, "plan")
-    for document in (identity, managed):
+    activation = json.loads(enabled["aws_iam_policy.plan_activation_session[0]"]["policy"])
+    for document in (identity, activation):
         for slot, resource in EXT2_OBJECTS.items():
             for action in ("s3:GetObjectVersion", "s3:GetObjectRetention"):
                 assert decision(document, action, resource) == "Allow"
             for action in ("s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectVersionAcl"):
                 assert decision(document, action, resource) != "Allow", (slot, action)
-            for action in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:PutObjectLegalHold"):
-                assert (decision(document, action, resource) == "Deny") is (document is managed), (slot, action)
+    for slot, resource in EXT2_OBJECTS.items():
+        for action in ("s3:GetObjectVersion", "s3:GetObjectRetention", "s3:DeleteObjectVersion", "s3:PutObjectRetention"):
+            assert decision(managed, action, resource) != "Allow", (slot, action)
+        for action in ("s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:PutObjectLegalHold"):
+            assert decision(managed, action, resource) == "Deny", (slot, action)
+            assert decision(activation, action, resource) != "Allow", (slot, action)
+    for document in (identity, managed, activation):
         for action in VERSION_RETENTION_ACTIONS:
             for resource in (EVIDENCE_BUCKET + "/" + EXT2_PREFIX + "other.json", EVIDENCE_BUCKET + "/other",
                              "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate"):
                 assert decision(document, action, resource) != "Allow", (action, resource)
+    assert [statement["Action"] for statement in activation["Statement"]] == [
+        ["s3:GetObjectVersion", "s3:GetObjectRetention"], ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration",
+        "s3:GetBucketObjectLockConfiguration"], ["kms:Decrypt", "kms:GenerateDataKey"]]
+    assert activation["Statement"][2]["Condition"]["StringEquals"]["kms:EncryptionContext:aws:s3:arn"] == list(EXT2_OBJECTS.values())
+    policy_reads = [statement for statement in managed["Statement"] if statement.get("Action") == ["iam:GetPolicy", "iam:GetPolicyVersion"]]
+    assert any("activation-session" in str(statement["Resource"]) for statement in policy_reads)
 
 
 def test_native_activation_read_intersects_with_exact_receipt_then_three_version_sessions(native):
@@ -906,6 +932,7 @@ def test_native_activation_read_intersects_with_exact_receipt_then_three_version
     data = activation_input(application_values())
     resources, _ = render(native, data, "activation-intersection")
     identity, managed = rendered_policies(resources, "plan")
+    activation_managed = json.loads(resources["aws_iam_policy.plan_activation_session[0]"]["policy"])
     settings = data["github_delivery"]
     gov = activation_governance()
     gov["evidence_bucket"], gov["state_bucket"] = "synthetic-evidence", "synthetic-state"
@@ -915,17 +942,30 @@ def test_native_activation_read_intersects_with_exact_receipt_then_three_version
     versions = {"payload": "P" * 32, "signature": "S" * 32, "receipt": "R" * 32}
     early, late = "2030-01-01T00:14:59Z", "2030-01-01T00:15:00Z"
     kms = settings["evidence_kms_arn"]
+    state_key = "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate"
+    fourth = EVIDENCE_BUCKET + "/" + EXT2_PREFIX + "fourth.json"
 
-    def permitted(inline, action, resource, context=None):
-        return effective_iam(identity, [managed, inline], action, resource, {"aws:CurrentTime": early} | (context or {}))
+    attached = {sp.managed_arn(gov, "plan"): managed, sp.managed_arn(gov, "plan_activation"): activation_managed}
 
-    receipt_only = json.loads(sp.activation_request(gov, {"receipt": versions["receipt"]}, deadline=late)["Policy"])
-    full = json.loads(sp.activation_request(gov, versions, deadline=late)["Policy"])
+    def Session(request):
+        return json.loads(request["Policy"]), [attached[item["arn"]] for item in request["PolicyArns"]]
+
+    def permitted(session, action, resource, context=None):
+        inline, documents = session
+        return effective_iam(identity, [*documents, inline], action, resource, {"aws:CurrentTime": early} | (context or {}))
+
+    ordinary_permitted = permitted
+    receipt_only = Session(sp.activation_request(gov, {"receipt": versions["receipt"]}, deadline=late))
+    full = Session(sp.activation_request(gov, versions, deadline=late))
     receipt = EXT2_OBJECTS["receipt"]
+    receipt_context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": receipt}
     assert permitted(receipt_only, "s3:GetObjectVersion", receipt, {"s3:VersionId": versions["receipt"]})
+    assert permitted(receipt_only, "kms:Decrypt", kms, receipt_context)
     assert not permitted(receipt_only, "s3:GetObjectVersion", receipt, {"s3:VersionId": "wrong"})
     assert not permitted(receipt_only, "s3:GetObjectVersion", EXT2_OBJECTS["payload"], {"s3:VersionId": versions["payload"]})
-    assert not permitted(receipt_only, "s3:GetObjectRetention", EXT2_OBJECTS["payload"])
+    for slot in ("payload", "signature"):
+        assert not permitted(receipt_only, "s3:GetObjectRetention", EXT2_OBJECTS[slot])
+        assert not permitted(receipt_only, "kms:Decrypt", kms, receipt_context | {"kms:EncryptionContext:aws:s3:arn": EXT2_OBJECTS[slot]})
     for slot, resource in EXT2_OBJECTS.items():
         version = {"s3:VersionId": versions[slot]}
         context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": resource}
@@ -939,19 +979,31 @@ def test_native_activation_read_intersects_with_exact_receipt_then_three_version
         assert permitted(full, "kms:GenerateDataKey", kms, context)
         assert not permitted(full, "kms:Encrypt", kms, context)
         assert not permitted(full, "kms:Decrypt", kms, context | {"kms:ViaService": "ec2.us-east-2.amazonaws.com"})
-        assert not permitted(full, "kms:Decrypt", kms, context | {"kms:EncryptionContext:aws:s3:arn":
-            "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate"})
+        assert not permitted(full, "kms:Decrypt", kms, context | {"kms:EncryptionContext:aws:s3:arn": state_key})
+        assert not permitted(full, "kms:Decrypt", kms, context | {"kms:EncryptionContext:aws:s3:arn": fourth})
+    assert not permitted(full, "s3:GetObjectVersion", fourth, {"s3:VersionId": versions["receipt"]})
+    for action, resource in (("s3:PutObject", state_key), ("s3:GetObject", state_key), ("dynamodb:GetItem", "*"),
+                             ("s3:ListBucket", EVIDENCE_BUCKET), ("sts:AssumeRole", "*")):
+        assert not permitted(full, action, resource, {"s3:prefix": EXT2_PREFIX}), action
     for action in ("s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"):
         assert permitted(full, action, EVIDENCE_BUCKET)
         assert not permitted(full, action, "arn:aws:s3:::synthetic-state")
-    assert not permitted(full, "s3:ListBucket", EVIDENCE_BUCKET, {"s3:prefix": EXT2_PREFIX})
-    assert not effective_iam(identity, [managed, full], "s3:GetObjectVersion", receipt,
+    assert not effective_iam(identity, [*full[1], full[0]], "s3:GetObjectVersion", receipt,
                              {"aws:CurrentTime": late, "s3:VersionId": versions["receipt"]})
-    ordinary = json.loads(sp.request(gov, "d" * 40, 10, 1, "plan", [])["Policy"])
-    for resource in EXT2_OBJECTS.values():
-        assert not permitted(ordinary, "s3:GetObjectVersion", resource, {"s3:VersionId": versions["receipt"]})
-        assert not permitted(ordinary, "s3:GetObjectRetention", resource)
-    assert not permitted(ordinary, "s3:GetBucketVersioning", EVIDENCE_BUCKET)
+    historical = {"source_sha": "d" * 40, "run_id": 9, "run_attempt": 1, "protocol": "legacy-infra", "status": "applied", "purpose": "phase-a"}
+    terminal = historical | {"protocol": "lifecycle", "status": "terminal", "purpose": "application"}
+    ordinary_sessions = [Session(sp.request(gov, "d" * 40, 10, 1, "plan", [])),
+        Session(sp.lifecycle_request(gov, "d" * 40, 10, 1, "plan", "plan-step", direction="advance")),
+        Session(sp.lifecycle_request(gov, "d" * 40, 10, 1, "plan", "plan-step", direction="advance", predecessor=historical)),
+        Session(sp.lifecycle_request(gov, "d" * 40, 10, 1, "plan", "plan-step", direction="advance", predecessor=terminal))]
+    for ordinary in ordinary_sessions:
+        for resource in (*EXT2_OBJECTS.values(), fourth):
+            for action in ("s3:GetObjectVersion", "s3:GetObjectRetention"):
+                assert not ordinary_permitted(ordinary, action, resource, {"s3:VersionId": versions["receipt"]}), (action, resource)
+        for resource in EXT2_OBJECTS.values():
+            assert not ordinary_permitted(ordinary, "s3:GetObject", resource), resource
+        for action in gov["activation_read"]["ordinary_bucket_denies"]:
+            assert not ordinary_permitted(ordinary, action, EVIDENCE_BUCKET), action
 
 
 def test_native_activation_read_documents_stay_inside_iam_quotas(native):
@@ -965,7 +1017,7 @@ def test_native_activation_read_documents_stay_inside_iam_quotas(native):
             assert len("".join(managed.split())) <= 6144
 
 
-@pytest.mark.parametrize("mutation", ["wildcard", "duplicate", "lifecycle", "state", "foreign-key-arn", "bad-bucket"])
+@pytest.mark.parametrize("mutation", ["wildcard", "duplicate", "lifecycle", "state", "foreign-key-arn", "bad-bucket", "key-over-limit"])
 def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, mutation):
     data = activation_input(variables())
     ceiling = data["github_delivery"]["activation_read"]
@@ -977,12 +1029,27 @@ def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, 
         ceiling["keys"]["payload"] = "cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/1/1/x.json"
     elif mutation == "state":
         ceiling["keys"]["payload"] = "cnesdata/prod/opentofu.tfstate"
+    elif mutation == "key-over-limit":
+        from tools.cnesdata_delivery.session_policy import ACTIVATION_KEY_LIMIT
+        ceiling["keys"]["payload"] = EXT2_PREFIX + "p" * (ACTIVATION_KEY_LIMIT + 1 - len(EXT2_PREFIX))
     elif mutation == "foreign-key-arn":
         ceiling["cipher_kms_key_arn"] = "arn:aws:kms:us-east-2:999988887777:key/00000000-0000-4000-8000-000000000009"
     else:
         ceiling["bucket_arn"] = "arn:aws:s3:::synthetic-evidence/prefix"
     code, _, diagnostics = native.plan(data, "activation-invalid-" + mutation)
     assert code != 0 and diagnostics
+
+
+def test_native_activation_read_accepts_a_key_exactly_at_the_python_limit_and_tofu_mirrors_the_literal(native):
+    from tools.cnesdata_delivery import session_policy as sp
+    import re
+    from fixtures.cnesdata_delivery_oidc_native import ROOT
+    text = (ROOT / "variables.tf").read_text()
+    assert re.search(rf"length\(key\) <= {sp.ACTIVATION_KEY_LIMIT}\b", text)
+    data = activation_input(variables())
+    data["github_delivery"]["activation_read"]["keys"]["payload"] = EXT2_PREFIX + "p" * (sp.ACTIVATION_KEY_LIMIT - len(EXT2_PREFIX))
+    code, _, diagnostics = native.plan(data, "activation-key-at-limit")
+    assert code == 0, diagnostics
 
 
 OWN_ROLE_READS = ("iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies")
@@ -1014,7 +1081,7 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
     data = application_values()
     resources, outputs = render(native, data, "application-prepared-scope")
     coordination = resources["aws_iam_role_policy.application[0]"]["policy"]
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings, roles = data["github_delivery"], data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
            "evidence_prefix": settings["evidence_prefix"], "evidence_kms_key_arn": settings["evidence_kms_arn"],

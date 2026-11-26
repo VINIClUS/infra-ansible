@@ -79,7 +79,7 @@ resource "aws_iam_role_policy" "application" {
       { Effect = "Deny", Action = ["sts:AssumeRole"], NotResource = values(local.application_delegations) },
       { Effect = "Deny", Action = ["sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML", "sts:TagSession", "sts:SetSourceIdentity"], Resource = "*" },
       { Effect = "Allow", Action = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies"], Resource = concat([aws_iam_role.application[0].arn], values(local.application_delegations)) },
-      { Effect = "Allow", Action = ["iam:GetPolicy", "iam:GetPolicyVersion"], Resource = "arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-session" },
+      { Effect = "Allow", Action = ["iam:GetPolicy", "iam:GetPolicyVersion"], Resource = ["arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-session", "arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-ops-session"] },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}lifecycle/*" },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn,
