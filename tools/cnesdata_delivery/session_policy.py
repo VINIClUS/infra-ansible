@@ -117,6 +117,7 @@ STATIC_SESSION_ACTIONS = {
     "observer": (("s3:ListBucketVersions", "s3:ListBucketMultipartUploads"), ("s3:GetObjectVersion", "s3:ListMultipartUploadParts"),
                  ()),
     "normal": ((), ("s3:PutObject", "s3:GetObject"), ("cloudfront:CreateInvalidation",)),
+    "recovery": ((), ("s3:GetObjectVersion", "s3:PutObject"), ("cloudfront:CreateInvalidation",)),
 }
 
 
@@ -126,6 +127,7 @@ def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline, keys
     Bucket, object and distribution actions in that order. The normal object statement names exactly the
     authenticated candidate keys; the observer keeps bucket/* (its role narrows keys and versions).
     The observer has no distribution action, so inventory (no plan yet) passes distribution_arn None.
+    The recovery object statement names the plan rollback keys and is absent when the plan has none (P17b).
     """
     c.require(alias in STATIC_SESSION_ACTIONS, "static session alias")
     c.require(type(bucket_arn) is str and re.fullmatch(r"arn:aws:s3:::cnesdata-prod-[a-z0-9-]+", bucket_arn), "static session bucket")
@@ -133,7 +135,8 @@ def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline, keys
               or (type(distribution_arn) is str and re.fullmatch(r"arn:aws:cloudfront::[0-9]{12}:distribution/[A-Z0-9]+",
                                                                  distribution_arn) is not None), "static session distribution")
     c.require((alias == "observer" and keys is None)
-              or (alias == "normal" and type(keys) is list and 0 < len(keys) == len(set(keys))
+              or (alias in {"normal", "recovery"} and type(keys) is list and (alias == "recovery" or keys)
+                  and len(keys) == len(set(keys))
                   and all(type(key) is str and re.fullmatch(r"[A-Za-z0-9._/-]+", key) for key in keys)), "static session keys")
     c.integer(deadline)
     condition = {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)}}
@@ -141,7 +144,21 @@ def static_session_policy(alias, *, bucket_arn, distribution_arn, deadline, keys
     resources = (bucket_arn, objects, distribution_arn)
     return {"Version": "2012-10-17", "Statement": [
         {"Effect": "Allow", "Action": list(actions), "Resource": resource, "Condition": condition}
-        for actions, resource in zip(STATIC_SESSION_ACTIONS[alias], resources) if actions]}
+        for actions, resource in zip(STATIC_SESSION_ACTIONS[alias], resources) if actions and resource != []]}
+
+
+def fence_reopen_session_policy(*, control_table_arn, deadline):
+    """Reopen fence session at final (P17b): the strong FENCE/SEMAPHORE GetItem and UpdateItem on FENCE only."""
+    _fence_session_table(control_table_arn)
+    c.integer(deadline)
+
+    def keys(*values):
+        return {"DateLessThan": {"aws:CurrentTime": c.utc(deadline)},
+                "ForAllValues:StringEquals": {"dynamodb:LeadingKeys": list(values)}, "Null": {"dynamodb:LeadingKeys": "false"}}
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": control_table_arn,
+         "Condition": keys("ENV#prod#FENCE", "ENV#prod#SEMAPHORE")},
+        {"Effect": "Allow", "Action": "dynamodb:UpdateItem", "Resource": control_table_arn, "Condition": keys("ENV#prod#FENCE")}]}
 
 
 def fence_observe_session_policy(*, control_table_arn, deadline):

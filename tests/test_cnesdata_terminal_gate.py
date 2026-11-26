@@ -578,8 +578,8 @@ def _terminal_fakes(monkeypatch, world, state, **changes):
         world.clock.value += 2
     monkeypatch.setattr(ag, "invoke_adapter", invoke_adapter)
 
-    def capability(*, journal, keeper, guard):
-        assert guard is journal._guard
+    def capability(*, journal, keeper, guard, context):
+        assert guard is journal._guard and type(context) is tg.TerminalContext and context.state is state
         world.terminal.capabilities.append(journal._request["operation"])
         return SimpleNamespace(aws="operation-client", evidence=[], session=SimpleNamespace(client="c", evidence="e"))
     monkeypatch.setattr(tg, "terminal_capability", capability)
@@ -595,7 +595,8 @@ def _terminal_fakes(monkeypatch, world, state, **changes):
     release = {field: "r-" + field for field in ag.RELEASE_FIELDS.split()}
     governance = world.governance | {"state_bucket": "state", "release": release}
     world.steps = tg.TerminalSteps(keeper=world.keeper, api=world.api, governance=governance, run=dict(RUN), state=state,
-                                   product="product", credential_limit=6000, clock=world.clock)
+                                   product="product", credential_limit=6000, clock=world.clock, authority="authority",
+                                   operation_session="operation-session")
     world.loop_handlers = dict(world.handlers) | {"host-recovery": world.steps.host_recovery}
     return world
 
@@ -1076,6 +1077,10 @@ def test_execute_devolve_o_resultado_do_loop_com_o_host_recovery_e_o_terminal(mo
     assert type(kwargs["terminal"]) is tg.TerminalSteps and kwargs["handlers"]["host-recovery"] == kwargs["terminal"].host_recovery
     handler_kwargs = next(kw for name, _, kw in calls if name == "handlers")
     assert handler_kwargs["state"] is kwargs["terminal"].state
+    context = kwargs["terminal"].context
+    assert type(context) is tg.TerminalContext and context.state is handler_kwargs["state"]
+    assert context.authority is handler_kwargs["authority"] and context.operation_session is handler_kwargs["operation_session"]
+    assert (context.governance, context.credential_limit) == (handler_kwargs["governance"], handler_kwargs["credential_limit"])
 
 
 def test_operacoes_terminais_rodam_sob_o_journal_do_keeper_com_a_capability_antes_do_child(monkeypatch):
@@ -1102,16 +1107,6 @@ def test_routing_do_recovery_recusa_revisoes_fora_da_projecao_fechada(monkeypatc
         _loop(world)
     assert world.terminal.calls == [] and world.terminal.sources == [] and world.handoffs == [{}]
     assert world.store.get()[0]["status"] == "held" and world.evidence.objects == {}
-
-
-def test_capability_e_fonte_de_insumos_de_producao_nao_estao_conectadas():
-    from tools.cnesdata_delivery import terminal_gate as tg
-    journal = SimpleNamespace(_failed=False)
-    with pytest.raises(ValueError, match="^terminal_broker=unconnected$"):
-        tg.terminal_capability(journal=journal, keeper=None, guard=None)
-    assert journal._failed is True
-    with pytest.raises(ValueError, match="^terminal_inputs=source_unconnected$"):
-        tg.terminal_input_source(keeper=None, owner={}, window={}, operation="reopen", names=["routing"])
 
 
 def test_operacao_terminal_exige_uma_observacao_e_nenhuma_incerteza(monkeypatch):
