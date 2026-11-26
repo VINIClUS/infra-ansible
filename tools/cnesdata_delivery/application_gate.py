@@ -3483,13 +3483,18 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), keeper=keeper,
                               clock=keeper.clock)
     def operation_session(operation, role, stage):
-        c.require(operation in ("close-drain", "closed-ready", *STATIC_OPERATIONS, *TERMINAL_FENCE_OPERATIONS),
+        mode = lc.MODE_SESSION_OPERATIONS.get(operation)
+        mode = mode if mode is not None and mode[2] == lc.APPLICATION_CONTEXTS["promotion"] else None
+        c.require(operation in ("close-drain", "closed-ready", *STATIC_OPERATIONS, *TERMINAL_FENCE_OPERATIONS) or mode is not None,
                   "operation session operation")
         if operation in STATIC_OPERATIONS:
             delegations = tuple(alias for alias in ("observer", "normal", "recovery")
                                 if alias in lc.STATIC_SESSION_OPERATIONS[operation])
             sessions = dict(c.closed(role, " ".join(delegations)))
+        elif mode is not None and role.get("role_arn") == governance["application_delegations"].get(mode[1]):
+            delegations, sessions = (mode[1],), {mode[1]: role["session_name"]}
         else:
+            c.require(mode is None or operation in lc.MODE_OBSERVES, "operation session delegation")
             delegations, sessions = ("fence_operator",), {"fence_operator": role["session_name"]}
         restriction = session_policy.application_request(governance, request["source_sha"], run["id"], run["run_attempt"], operation,
             application_purpose="promotion", delegations=delegations, sessions=sessions)
