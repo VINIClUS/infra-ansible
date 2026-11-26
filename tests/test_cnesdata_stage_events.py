@@ -340,6 +340,10 @@ class _GitHub:
         self.reads.append(path)
         return self.responses[path]
 
+    def read_conditional(self, path, **_):
+        self.conditional = [*getattr(self, "conditional", []), path]
+        return self.read(path)
+
 
 class _Guard:
     def __init__(self):
@@ -1410,3 +1414,17 @@ def test_anuncio_real_publica_o_marcador_da_janela_aberta_com_o_primeiro_job_gov
     stage_open_published.original(world.keeper, world.api, RUN, world.governance, 6000, world.clock)
     assert seen["window"]["stage"] == "phase-b" and seen["first_job"] == "phase-b-plan / execute"
     assert seen["owner"]["generation"] == world.owner["generation"] and seen["credential_limit"] == 6000
+
+
+def test_stage_event_source_le_a_lista_de_jobs_com_get_condicional():
+    _, job_name, step = _TRIGGERS["phase-b"]
+    api = _GitHub(job_name, step)
+    _source(api)(_window("phase-b"))
+    assert api.conditional == [JOBS, ARTIFACTS][:len(api.conditional)] and api.conditional[0] == JOBS
+
+
+def test_estagio_aberto_nao_usa_get_condicional_fora_do_poll_do_keeper():
+    from tools.cnesdata_delivery import application_gate as ag
+    api = _GitHub("phase-b / execute", "phase-b-advance")
+    ag._same_run_job(api, dict(RUN), kind="x", job_name="phase-b / execute", guard=_Guard())
+    assert not hasattr(api, "conditional")

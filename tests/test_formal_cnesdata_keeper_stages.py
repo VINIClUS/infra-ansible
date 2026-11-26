@@ -78,8 +78,8 @@ def _model():
     return MODEL.read_text(encoding="utf-8")
 
 
-def _block(name, pattern):
-    lines = _model().splitlines()
+def _block(name, pattern, text=None):
+    lines = (_model() if text is None else text).splitlines()
     start = lines.index(f"{name} == <<")
     end = lines.index(">>", start)
     body = lines[start + 1:end]
@@ -188,7 +188,8 @@ def test_operacoes_do_codigo_disparadas_por_observacao_externa_estao_no_modelo()
     code = {(stage, operation, event) for operation, (stage, event) in lc.OPERATION_TRIGGERS.items()}
     assert code == {("application-prepare", "inventory", "observer-bootstrap"),
                     ("recovery", "rollback-api-static", "host-recovery")} and code <= operations
-    assert all((event, stage, "none") in observations and event in ag.KEEPER_EVENTS for stage, _, event in code)
+    after = {"observer-bootstrap": "stage-open", "host-recovery": "none"}
+    assert all((event, stage, after[event]) in observations and event in ag.KEEPER_EVENTS for stage, _, event in code)
     assert ("prepared", "application-prepare", "inventory") in observations
     assert all(event not in {trigger for trigger, _ in lc.STAGE_TRIGGERS.values()} for _, _, event in code)
 
@@ -256,3 +257,25 @@ def test_terminal_do_modelo_sai_do_estagio_que_o_codigo_exige():
         for other in stages - {stage}:
             with pytest.raises(ValueError):
                 ag._terminal_required(kind, _window(other))
+
+
+def _stage_open_rows(text):
+    rows = {stage for stage, operation, need in _block("OpRows", TRIPLE_ROW, text) if (operation, need) == ("stage-open", "none")}
+    observed = {(event, stage) for event, stage, need in _block("CallerRows", TRIPLE_ROW, text) if need == "stage-open"}
+    return rows, observed
+
+
+def test_stage_open_do_modelo_cobre_exatamente_os_estagios_com_primeiro_job_externo():
+    """P35: o marcador e publicacao do keeper; a observacao do primeiro job externo depende da operacao."""
+    from tools.cnesdata_delivery import stage_wait
+    rows, observed = _stage_open_rows(MODEL.read_text(encoding="utf-8"))
+    assert rows == set(stage_wait.STAGES_WITH_EXTERNAL_FIRST_JOB)
+    assert {stage for _, stage in observed} == rows
+    assert {event for event, _ in observed} == {"observer-bootstrap", "phase-b", "phase-c-recovery", "phase-c-audit"}
+
+
+def test_stage_open_sem_a_operacao_de_um_estagio_diverge_do_codigo():
+    from tools.cnesdata_delivery import stage_wait
+    mutated = MODEL.read_text(encoding="utf-8").replace('    <<"phase-b", "stage-open", "none">>,\n', "")
+    rows, _ = _stage_open_rows(mutated)
+    assert rows != set(stage_wait.STAGES_WITH_EXTERNAL_FIRST_JOB)

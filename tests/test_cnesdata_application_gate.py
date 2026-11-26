@@ -5487,7 +5487,7 @@ class _Stop(Exception):
     pass
 
 
-def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None):
+def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None, limit=5000):
     """The composition of execute over boundary fakes: every effect is a recorded call, the order is the contract."""
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
@@ -5498,7 +5498,8 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
     governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64,
                   "authenticated_application_caller": caller, "account_id": "111122223333"}
     if release: governance["release"] = dict(GOVERNANCE_RELEASE)
-    request, run, api = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}, SimpleNamespace(marker="api")
+    request, run = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}
+    api = SimpleNamespace(marker="api", rate={"limit": limit, "used": 10, "remaining": limit - 10})
     role = "arn:aws:iam::111122223333:role/cnesdata-prod-application"
     fragment = {"application_role_arn": role, "enabled_until": c.utc(now + enabled_ttl)}
     authority = Authority({"role_arn": role, "frozen_until": c.utc(now + 9500)}, float(now + authority_ttl), None, fragment, "3" * 64)
@@ -5581,6 +5582,14 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
         "prepared": "h1", "phase-b": "h2", "host": "h3", "host-recovery": loop_kwargs["terminal"].host_recovery}
     assert handler_kwargs["state"] is loop_kwargs["terminal"].state == {}
     assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
+
+
+def test_execute_recusa_limite_de_rest_abaixo_do_assumido_antes_do_lease(monkeypatch):
+    ag, admitted, calls, _ = _execute_case(monkeypatch, limit=1000)
+    with pytest.raises(ValueError, match="github=rate_limit value=1000"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    assert [name for name, _, _ in calls] == ["closure", "runtime", "authority"]
 
 
 def test_execute_refuses_the_phase_c_child_runtime_before_owner_authority_credentials_and_the_lease(monkeypatch):

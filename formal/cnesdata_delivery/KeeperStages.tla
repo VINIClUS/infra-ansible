@@ -32,16 +32,20 @@ TerminalRows == <<
 >>
 
 CallerRows == <<
-    <<"observer-bootstrap", "application-prepare", "none">>,
+    <<"observer-bootstrap", "application-prepare", "stage-open">>,
     <<"prepared", "application-prepare", "inventory">>,
-    <<"phase-b", "phase-b", "none">>,
+    <<"phase-b", "phase-b", "stage-open">>,
     <<"host", "api", "closed-ready">>,
-    <<"phase-c-recovery", "phase-c-recovery", "none">>,
-    <<"phase-c-audit", "phase-c-audit", "none">>,
+    <<"phase-c-recovery", "phase-c-recovery", "stage-open">>,
+    <<"phase-c-audit", "phase-c-audit", "stage-open">>,
     <<"host-recovery", "recovery", "none">>
 >>
 
 OpRows == <<
+    <<"application-prepare", "stage-open", "none">>,
+    <<"phase-b", "stage-open", "none">>,
+    <<"phase-c-recovery", "stage-open", "none">>,
+    <<"phase-c-audit", "stage-open", "none">>,
     <<"application-prepare", "inventory", "observer-bootstrap">>,
     <<"application-prepare", "close-drain", "prepared">>,
     <<"api", "closed-ready", "none">>,
@@ -59,13 +63,13 @@ OpRows == <<
 PrepareFailureOps == {"terminal-readback"}
 
 BudgetRows == <<
-    <<"application-prepare", 4>>,
-    <<"phase-b", 2>>,
+    <<"application-prepare", 5>>,
+    <<"phase-b", 3>>,
     <<"api", 3>>,
     <<"static", 3>>,
     <<"unit", 3>>,
-    <<"phase-c-recovery", 3>>,
-    <<"phase-c-audit", 3>>,
+    <<"phase-c-recovery", 4>>,
+    <<"phase-c-audit", 4>>,
     <<"final", 4>>,
     <<"recovery", 8>>
 >>

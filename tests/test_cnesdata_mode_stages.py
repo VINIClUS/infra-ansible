@@ -1238,3 +1238,38 @@ def test_handlers_do_keeper_sao_exatamente_os_eventos_externos(monkeypatch):
     world = _stage_world(monkeypatch)
     assert set(world.handlers) == set(ag.KEEPER_EVENTS) - {"host-recovery"}
     assert all(callable(item) for item in world.handlers.values())
+
+
+def _stage_open_stages(monkeypatch, world):
+    from tools.cnesdata_delivery import application_gate as ag
+    seen = []
+    monkeypatch.setattr(ag, "_publish_stage_open",
+                        lambda keeper, *rest: seen.append(keeper.lease.check()["lifecycle"]["stage"]))
+    return seen
+
+
+def test_c_recovery_publica_o_stage_open_do_audit_uma_vez_depois_do_checkpoint(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    seen = _stage_open_stages(monkeypatch, world)
+    _c_files(world, "phase-c-recovery")
+    world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    assert seen == ["phase-c-audit"]
+
+
+def test_c_audit_nao_publica_stage_open_quando_o_proximo_estagio_e_final(monkeypatch):
+    from test_cnesdata_stage_events import B_REFERENCE
+    world = _through_unit(monkeypatch)
+    _c_files(world, "phase-c-recovery")
+    world.handlers["phase-c-recovery"](world.keeper, dict(B_REFERENCE))
+    seen = _stage_open_stages(monkeypatch, world)
+    _c_files(world, "phase-c-audit")
+    world.handlers["phase-c-audit"](world.keeper, dict(B_REFERENCE))
+    assert seen == []
+
+
+def test_host_publica_o_stage_open_do_c_recovery_depois_do_checkpoint_do_unit(monkeypatch):
+    world, run_host = _host_unit(monkeypatch)
+    seen = _stage_open_stages(monkeypatch, world)
+    run_host()
+    assert seen == ["phase-c-recovery"]
