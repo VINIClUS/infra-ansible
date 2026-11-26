@@ -1968,7 +1968,9 @@ def test_close_drain_templates_are_the_pinned_product_vector():
     assert lc.FENCE_SDK_OPERATIONS == {
         "closed-ready": {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")},
         "close-drain": {(call["service"], call["operation"]) for call in vector["calls"]},
-        **dict.fromkeys(("unit-observe", "recovery-observe", "audit-observe"), {("dynamodb", "get_item")})}
+        **dict.fromkeys(("unit-observe", "recovery-observe", "audit-observe"), {("dynamodb", "get_item")}),
+        "reopen": {("dynamodb", "get_item"), ("dynamodb", "update_item")},
+        "terminal-readback": {("dynamodb", "get_item"), ("stepfunctions", "describe_execution")}}
     assert vector["role"] == "fence_operator" and vector["execution_arn"].endswith(":execution:cnesdata-prod:<dispatch_id>")
 
 
@@ -6027,6 +6029,13 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         (gate, "_restoration_validator", "restoration_validator"),
         (terminal_module, "run_terminal_operation", "KeeperGuard"),
         (terminal_module, "run_terminal_operation", "terminal_capability"),
+        (terminal_module, "terminal_fence_capability", "_assume_fence_session"),  # P17b reopen / terminal-readback
+        (terminal_module, "terminal_fence_capability", "ClosedReadyBroker"),
+        (terminal_module, "terminal_fence_capability", "FenceReadBroker"),
+        (terminal_module, "rollback_capability", "static_plan"),                  # P17b rollback-api-static
+        (terminal_module, "rollback_capability", "static_role_facts"),
+        (terminal_module, "rollback_capability", "_assume_static_session"),
+        (terminal_module, "rollback_capability", "StaticBroker"),
         (terminal_module, "_operation", "run_terminal_operation"),
         (terminal_module, "_close", "publication_guard"),
         (terminal_module, "host_recovery", "KeeperGuard"),
@@ -6999,9 +7008,10 @@ def test_static_sessions_admit_the_observer_in_static_and_retire_only_as_normal(
     from fixtures.cnesdata_delivery_lifecycle import STATIC_SESSION_VECTOR as vector
     observer, (publish, retire) = vector["sessions"]["observer"][0], vector["sessions"]["normal"]
     sessions = {operation: lc.static_sessions(_static_binding(), operation)
-                for operation in ("inventory", "publish-static", "retire-static")}
+                for operation in ("inventory", "publish-static", "retire-static", "rollback-api-static")}
+    rollback = "sp-rollback-" + c.sha(c.canonical(_static_binding() | {"operation": "rollback"}))[:40]
     assert sessions == {"inventory": {"observer": observer}, "publish-static": {"normal": publish, "observer": observer},
-                        "retire-static": {"normal": retire}}
+                        "retire-static": {"normal": retire}, "rollback-api-static": {"recovery": rollback}}
     roles = {alias: "arn:aws:iam::111122223333:role/cnesdata-prod-" + suffix for alias, suffix in lc.APPLICATION_DELEGATIONS.items()}
     governance = {"account_id": "111122223333", "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
                   "evidence_prefix": "cnesdata/prod/evidence/", "application_delegations": roles,
@@ -7013,7 +7023,7 @@ def test_static_sessions_admit_the_observer_in_static_and_retire_only_as_normal(
         statements = json.loads(request["Policy"])["Statement"]
         assert {(statement["Resource"], statement["Condition"]["StringEquals"]["sts:RoleSessionName"]) for statement in statements
                 if statement["Action"] == "sts:AssumeRole"} == {(roles[alias], name) for alias, name in chosen.items()}
-    for operation in ("rollback-api-static", "closed-ready", "close-drain", "reopen", "terminal-readback", "publish"):
+    for operation in ("closed-ready", "close-drain", "reopen", "terminal-readback", "publish", "rollback"):
         with pytest.raises(ValueError, match="closed static session operation"):
             lc.static_sessions(_static_binding(), operation)
 
@@ -7038,7 +7048,7 @@ def test_static_session_refuses_bindings_outside_the_498_contract(operation, mut
     elif mutation == "missing-field":
         binding.pop("generation")
     elif mutation == "operation":
-        operation = {"inventory": "i", "publish": "publish-static", "retire": "rollback"}[operation]
+        operation = {"inventory": "i", "publish": "publish-static", "retire": "readback"}[operation]
     else:
         binding |= changes[mutation]
     if mutation in {"plan-short", "plan-null"} and operation == "inventory":
@@ -7479,7 +7489,28 @@ def _static_product_calls(bucket=_STATIC_BUCKET):
                   "Paths": {"Quantity": 2, "Items": ["/index.html", "/theme-init.js"]}, "CallerReference": "0f" * 16}})]
     retire = [("normal", "s3", "DeleteObject", {"Bucket": bucket, "Key": ref["key"], "VersionId": ref["version_id"]})
               for ref in _static_plan_value()["retire_versions"]]
-    return {"inventory": observer, "publish-static": observer + normal, "retire-static": retire}
+    rollback = [("recovery", "s3", "CopyObject", {"Bucket": bucket, "Key": ref["key"], "CopySource": {
+                    "Bucket": bucket, "Key": ref["key"], "VersionId": ref["version_id"]}, "ChecksumAlgorithm": "SHA256",
+                    "MetadataDirective": "COPY"}) for ref in _static_plan_value()["rollback_versions"]]
+    rollback.append(("recovery", *normal[-1][1:]))
+    return {"inventory": observer, "publish-static": observer + normal, "retire-static": retire,
+            "rollback-api-static": rollback}
+
+
+def _static_recovery_policy(bucket, plan):
+    """#498 locals.static_policies recovery (P17b) over the plan rollback pair, without multipart keys."""
+    from urllib.parse import quote
+    expiry = {"DateLessThan": {"aws:CurrentTime": plan["enabled_until"]}}
+    statements = [{"Effect": "Allow", "Action": ["cloudfront:CreateInvalidation", "cloudfront:GetInvalidation"],
+                   "Resource": plan["distribution_arn"], "Condition": expiry}]
+    for ref in plan["rollback_versions"]:
+        target, source = bucket + "/" + ref["key"], bucket.removeprefix("arn:aws:s3:::") + "/" + ref["key"]
+        statements += [{"Effect": "Allow", "Action": "s3:GetObjectVersion", "Resource": target,
+                        "Condition": expiry | {"StringEquals": {"s3:VersionId": ref["version_id"]}}},
+                       {"Effect": "Allow", "Action": "s3:PutObject", "Resource": target, "Condition": expiry | {
+                           "StringEquals": {"s3:x-amz-copy-source": source + "?versionId=" + quote(ref["version_id"], safe="")},
+                           "Bool": {"s3:ObjectCreationOperation": "true"}}}]
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
 def _static_call(operation, call, plan="vector", bucket=_STATIC_BUCKET):
@@ -7497,18 +7528,20 @@ def test_static_sdk_catalogue_is_the_closed_product_wire_form_r17():
         ("s3", "ListObjectVersions"): "list_object_versions", ("s3", "HeadObject"): "head_object",
         ("s3", "ListMultipartUploads"): "list_multipart_uploads", ("s3", "ListParts"): "list_parts",
         ("s3", "PutObject"): "put_object", ("s3", "GetObject"): "get_object",
-        ("cloudfront", "CreateInvalidation"): "create_invalidation", ("s3", "DeleteObject"): "delete_object"}
+        ("cloudfront", "CreateInvalidation"): "create_invalidation", ("s3", "DeleteObject"): "delete_object",
+        ("s3", "CopyObject"): "copy_object"}
     observer = {("observer", "s3", name) for name in ("ListObjectVersions", "HeadObject", "ListMultipartUploads", "ListParts")}
     assert lc.STATIC_SDK_OPERATIONS == {
         "inventory": observer,
         "publish-static": observer | {("normal", "s3", "PutObject"), ("normal", "s3", "GetObject"),
                                       ("normal", "cloudfront", "CreateInvalidation")},
-        "retire-static": {("normal", "s3", "DeleteObject")}}
+        "retire-static": {("normal", "s3", "DeleteObject")},
+        "rollback-api-static": {("recovery", "s3", "CopyObject"), ("recovery", "cloudfront", "CreateInvalidation")}}
     assert all(role in lc.STATIC_SESSION_OPERATIONS[operation] for operation, calls in lc.STATIC_SDK_OPERATIONS.items()
                for role, _, _ in calls)
 
 
-@pytest.mark.parametrize("operation", ["inventory", "publish-static", "retire-static"])
+@pytest.mark.parametrize("operation", ["inventory", "publish-static", "retire-static", "rollback-api-static"])
 def test_static_call_admits_every_product_call_and_returns_the_boto3_method(operation):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     for call in _static_product_calls()[operation]:
@@ -7524,7 +7557,8 @@ def test_static_call_admits_every_product_call_and_returns_the_boto3_method(oper
     ("inventory", ("observer", "s3", "GetObject")), ("inventory", ("normal", "s3", "PutObject")),
     ("retire-static", ("normal", "s3", "DeleteObjects")), ("retire-static", ("normal", "s3", "delete_object")),
     ("retire-static", ("observer", "s3", "HeadObject")), ("retire-static", ("normal", "s3", "PutObject")),
-    ("rollback-api-static", ("recovery", "s3", "CopyObject")), ("closed-ready", ("observer", "s3", "HeadObject"))])
+    ("rollback-api-static", ("recovery", "s3", "PutObject")), ("rollback-api-static", ("normal", "s3", "CopyObject")),
+    ("closed-ready", ("observer", "s3", "HeadObject"))])
 def test_static_call_refuses_names_outside_the_closed_map_r17(operation, call):
     parameters = {"Bucket": _STATIC_BUCKET, "Key": "index.html"}
     with pytest.raises(ValueError, match="closed static SDK operation"):
@@ -7647,6 +7681,7 @@ _STATIC_IAM_ACTIONS = {
     "ListMultipartUploads": ("s3:ListBucketMultipartUploads", "bucket"), "ListParts": ("s3:ListMultipartUploadParts", "object"),
     "PutObject": ("s3:PutObject", "object"), "GetObject": ("s3:GetObject", "object"),
     "CreateInvalidation": ("cloudfront:CreateInvalidation", "distribution"), "DeleteObject": ("s3:DeleteObjectVersion", "object"),
+    "CopyObject": ("s3:PutObject", "object"),
 }
 
 
@@ -7661,10 +7696,16 @@ def test_every_validated_static_call_is_allowed_by_its_498_role_on_source_r17():
     _, bucket_arn = _static_promotion_source()
     bucket = bucket_arn.removeprefix("arn:aws:s3:::")
     policies = {alias: json.loads(text) for alias, text in _static_policies(bucket_arn, vector).items()}
+    policies["recovery"] = _static_recovery_policy(bucket_arn, vector)
     plan = lc.static_plan(c.canonical(_static_plan_value(bucket)), bucket=bucket)
 
-    def allowed(role, action, resource, version=None, now="2027-02-11T23:59:59Z"):
+    def allowed(role, action, resource, version=None, now="2027-02-11T23:59:59Z", copy=None):
         context = {"aws:CurrentTime": now} | ({"s3:VersionId": version} if version is not None else {})
+        if copy is not None:
+            from urllib.parse import quote
+            version = quote(copy["VersionId"], safe="")
+            context |= {"s3:x-amz-copy-source": copy["Bucket"] + "/" + copy["Key"] + "?versionId=" + version,
+                        "s3:ObjectCreationOperation": "true"}
         return effective_iam(policies[role], [policies[role]], action, resource, context)
     checked = set()
     for operation, calls in _static_product_calls(bucket).items():
@@ -7674,7 +7715,10 @@ def test_every_validated_static_call_is_allowed_by_its_498_role_on_source_r17():
             action, kind = _STATIC_IAM_ACTIONS[name]
             resource = {"bucket": bucket_arn, "distribution": vector["distribution_arn"],
                         "object": bucket_arn + "/" + parameters.get("Key", "")}[kind]
-            assert allowed(role, action, resource, parameters.get("VersionId")), (operation, name, parameters)
+            assert allowed(role, action, resource, parameters.get("VersionId"), copy=parameters.get("CopySource")), (
+                operation, name, parameters)
+            if name == "CopyObject":
+                assert allowed(role, "s3:GetObjectVersion", resource, parameters["CopySource"]["VersionId"])
             checked.add((role, service, name))
     assert checked == set().union(*lc.STATIC_SDK_OPERATIONS.values())
     old = bucket_arn + "/assets/old.js"

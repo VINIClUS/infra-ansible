@@ -119,7 +119,9 @@ MODE_OBSERVATION_FIELDS = "version kind accepted checks commitments"
 PUBLICATION_SCHEMA = "cnesdata.static-publication/v1"
 PUBLICATION_FIELDS = "schema plan_sha256 closed_ready_sha256 uploaded already_published invalidation_id"
 STATIC_BUCKET = lc.STATIC_BUCKET
-STATIC_OPERATIONS = ("inventory", "publish-static")
+STATIC_OPERATIONS = ("inventory", "publish-static", "rollback-api-static")
+FENCE_MEMBER_OPERATIONS = ("closed-ready", "terminal-readback")
+TERMINAL_FENCE_OPERATIONS = ("reopen", "terminal-readback")
 STATIC_RESPONSE_FIELDS = {
     "ListObjectVersions": ("IsTruncated NextKeyMarker NextVersionIdMarker",
                            {"Versions": "Key VersionId IsLatest LastModified Size",
@@ -127,6 +129,7 @@ STATIC_RESPONSE_FIELDS = {
     "HeadObject": ("VersionId ChecksumSHA256", {}), "ListMultipartUploads": ("IsTruncated", {"Uploads": "Key UploadId"}),
     "ListParts": ("IsTruncated", {"Parts": "Size"}), "PutObject": ("VersionId ChecksumSHA256", {}),
     "GetObject": ("Body VersionId ContentType CacheControl", {}), "CreateInvalidation": ("Invalidation", {}),
+    "CopyObject": ("VersionId CopyObjectResult", {}),
 }
 STATIC_REQUEST_LIMIT = 128 * 1024 - 2048
 STATIC_ROOT_BLOCK_SECONDS = lc.STATIC_ROOT_BLOCK_SECONDS
@@ -792,11 +795,18 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_policy import validate_response
-    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain", *lc.MODE_OBSERVES}
+    c.require(type(journal) is AdapterJournal
+              and journal._request["operation"] in {"closed-ready", "close-drain", *lc.MODE_OBSERVES, *TERMINAL_FENCE_OPERATIONS}
               and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
     request, stage = journal._request, journal._request["stage"]
     close, observe = request["operation"] == "close-drain", request["operation"] in lc.MODE_OBSERVES
-    if observe:
+    terminal = request["operation"] in TERMINAL_FENCE_OPERATIONS
+    cas = request["operation"] == "reopen" and stage["stage"] == "final"
+    if terminal:
+        deadline = stage["preparation_deadline"] if stage["close"] is None else stage["deadline"]
+        c.require(stage["stage"] in lc.ADAPTER_STAGES[request["operation"]] and stage["admitted_at"] <= clock()
+                  and clock() + 40 < deadline and clock() + 900 <= credential_limit, "fence original terminal stage/credential window")
+    elif observe:
         deadline = stage["deadline"]
         seconds = lc.governed_windows(stage["windows"])["stages"].get(stage["stage"])
         c.require({stage["stage"]} == lc.ADAPTER_STAGES[request["operation"]] and stage["close"] is not None
@@ -816,7 +826,7 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
                   and stage["fixed_deadline"] - stage["admitted_at"] >= api + lc.later_seconds(windows, "api") + lc.FINAL_RESERVE
                   and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
                   and clock() + 900 <= credential_limit, "fence original API/credential window")
-    c.closed(scope, "account control_table_arn machine_arn" + ("" if close or observe else " members"))
+    c.closed(scope, "account control_table_arn machine_arn" + (" members" if request["operation"] in FENCE_MEMBER_OPERATIONS else ""))
     c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
               and role["role_arn"] == governance["application_delegations"]["fence_operator"]
               and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
@@ -824,17 +834,20 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
               and role["session_name"] == "promotion-fence-" + role["release_id"]
               and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
     probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
-    validate = lc.validate_close_drain_call if close else lc.validate_mode_observe_call if observe else lc.validate_closed_ready_call
+    validate = lc.validate_fence_call
     for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
         validate(request=request, role="fence_operator", service="dynamodb", operation="get_item",
             parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
                         "ConsistentRead": True}, **scope)
-    for member in [] if close or observe else scope["members"]:
+    for member in scope["members"] if request["operation"] == "closed-ready" else []:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_observe_session_policy, fence_session_policy
+    from tools.cnesdata_delivery.session_policy import (fence_close_session_policy, fence_observe_session_policy,
+                                                        fence_reopen_session_policy, fence_session_policy)
     build = fence_close_session_policy if close else fence_session_policy
-    policy = (fence_observe_session_policy(control_table_arn=scope["control_table_arn"], deadline=deadline) if observe else
+    readonly = observe or request["operation"] == "reopen"
+    table_only = fence_reopen_session_policy if cas else fence_observe_session_policy
+    policy = (table_only(control_table_arn=scope["control_table_arn"], deadline=deadline) if readonly else
               build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline))
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
@@ -842,11 +855,12 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     for key in ("ENV#prod#FENCE", "ENV#prod#SEMAPHORE"):
         c.require(effective_iam(role["policy"], [policy], "dynamodb:GetItem", scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective strong-read grant")
-    for action, key in (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")) if close else ():
+    writes = (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE"))
+    for action, key in writes if close else writes[:1] if cas else ():
         c.require(effective_iam(role["policy"], [policy], action, scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective close-write grant")
     probe = effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context)
-    c.require(probe is not observe, "fence observe effective read-only grant" if observe else "fence original effective metadata-probe grant")
+    c.require(probe is not readonly, "fence observe effective read-only grant" if readonly else "fence original effective metadata-probe grant")
     journal._guard.check(40)
     journal.guard()
     operation = operation_session(request["operation"], role, stage)
@@ -1135,7 +1149,7 @@ class ClosedReadyEvidence:
     @staticmethod
     def _native(journal, native_raw, scope, governance):
         operation = journal._request["operation"]
-        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation == "closed-ready" else ""))
+        c.closed(scope, "account control_table_arn machine_arn" + (" members" if operation in FENCE_MEMBER_OPERATIONS else ""))
         c.require(scope["account"] == governance["account_id"], "original journal account")
         native = c.loads(native_raw, canonical=True, limit=128 * 1024)
         c.closed(native, "role service operation parameters")
@@ -1368,6 +1382,9 @@ def _static_response(operation, response):
         elif name == "Invalidation":
             c.require(type(item) is dict and type(item.get("Id")) is str, "static invalidation response")
             item = {"Id": item["Id"]}
+        elif name == "CopyObjectResult":
+            c.require(type(item) is dict and type(item.get("ChecksumSHA256")) is str, "static copy response")
+            item = {"ChecksumSHA256": item["ChecksumSHA256"]}
         else:
             c.require(type(item) is (bool if name == "IsTruncated" else str), "static response field")
         value[name] = item
@@ -1409,7 +1426,7 @@ class StaticBroker:
                   and session.request_binding == c.sha(c.canonical(journal._request))
                   and getattr(journal, "_broker", None) is None, "one original admitted static broker")
         self.aws, self.governance, self.journal, self.session = aws, governance, journal, session
-        prepared = journal._inputs["static-plan"] if operation == "publish-static" else journal._inputs["candidate"]
+        prepared = journal._inputs["candidate"] if operation == "inventory" else journal._inputs["static-plan"]
         self.prepared_sha256, self.clock = c.sha(prepared), clock or time.time
         self.evidence, self.child_deadline, self._roots = [], None, False
         journal._broker = self
@@ -1501,7 +1518,8 @@ def _static_deadline(request):
     if request["operation"] == "inventory":
         c.require(stage["stage"] == "application-prepare" and stage["close"] is None, "static original stage")
         return stage["preparation_deadline"]
-    c.require(stage["stage"] == "static", "static original stage")
+    c.require(stage["stage"] == ("recovery" if request["operation"] == "rollback-api-static" else "static"),
+              "static original stage")
     return stage["deadline"]
 
 
@@ -1521,13 +1539,14 @@ def _assume_static_session(*, governance, journal, binding, roles, credential_li
     deadline = _static_deadline(request)
     c.require(stage["admitted_at"] <= clock() and clock() + 40 < deadline and clock() + 900 <= credential_limit,
               "static original stage/credential window")
-    publish = request["operation"] == "publish-static"
+    publish = request["operation"] != "inventory"
     plan = lc.static_plan(journal._inputs["static-plan"], bucket=STATIC_BUCKET) if publish else None
     sessions, account = lc.static_sessions(binding, request["operation"]), governance["account_id"]
     facts = _static_roles(governance, roles, sessions)
+    keys = {"normal": plan and plan["candidate_keys"], "recovery": plan and [ref["key"] for ref in plan["rollback_versions"]]}
     policies = {alias: static_session_policy(alias, bucket_arn="arn:aws:s3:::" + STATIC_BUCKET,
                                              distribution_arn=plan["distribution_arn"] if publish else None, deadline=deadline,
-                                             keys=plan["candidate_keys"] if alias == "normal" else None)
+                                             keys=keys.get(alias))
                 for alias in sessions}
     encoded = {alias: c.canonical(policy).decode().strip() for alias, policy in policies.items()}
     c.require(all(len(text) <= 2048 for text in encoded.values()), "static STS policy limit")
@@ -1538,7 +1557,7 @@ def _assume_static_session(*, governance, journal, binding, roles, credential_li
     operation = operation_session(request["operation"], dict(sessions), stage)
     c.require(clock() + 40 < deadline and clock() + 900 <= credential_limit, "static original window after operation session")
     clients, record = {}, {}
-    for alias in [alias for alias in ("observer", "normal") if alias in sessions]:
+    for alias in [alias for alias in ("observer", "normal", "recovery") if alias in sessions]:
         response = operation.call("sts", "assume_role", RoleArn=roles[alias], RoleSessionName=sessions[alias],
                                   DurationSeconds=900, Policy=encoded[alias])
         credentials = validate_response(response)
@@ -1598,16 +1617,34 @@ def _static_effective_iam(facts, policies, plan, now):
                 c.require(all(effective_iam(facts[alias]["policy"], [policies[alias]], action, target,
                                             {"aws:CurrentTime": now}) for target in targets),
                           f"static_role=effective_iam alias={alias} action={action}")
+    if "recovery" in policies:
+        _recovery_effective_iam(facts["recovery"]["policy"], policies["recovery"], plan, now)
 
 
-def _static_binding(governance, journal):
+def _recovery_effective_iam(role, policy, plan, now):
+    """P17b: the recovery role ∩ session grants the product rollback: the version read and the copy of each planned
+    entrypoint under the copy-source and creation conditions of the #498 policy, and the plan invalidation."""
+    from urllib.parse import quote
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    checks = []
+    for ref in plan["rollback_versions"]:
+        target = f"arn:aws:s3:::{STATIC_BUCKET}/{ref['key']}"
+        source = f"{STATIC_BUCKET}/{ref['key']}?versionId={quote(ref['version_id'], safe='')}"
+        checks += [("s3:GetObjectVersion", target, {"s3:VersionId": ref["version_id"]}),
+                   ("s3:PutObject", target, {"s3:x-amz-copy-source": source, "s3:ObjectCreationOperation": "true"})]
+    for action, target, context in checks + [("cloudfront:CreateInvalidation", plan["distribution_arn"], {})]:
+        c.require(effective_iam(role, [policy], action, target, {"aws:CurrentTime": now} | context),
+                  f"static_role=effective_iam alias=recovery action={action}")
+
+
+def _static_binding(governance, journal, candidate=None):
     """#498 static_promotion.binding of this run from the owner, the candidate and the static plan bytes.
 
     release_id is CnesData publish_dashboard.binding_release_id of the candidate id; shared_source_sha is the gate pin.
     inventory runs before the plan exists, so its binding commits to no plan (static_plan_sha256 null).
     """
     owner = journal._request["owner"]
-    candidate = c.loads(journal._inputs["candidate"], limit=1024**2)
+    candidate = c.loads(journal._inputs["candidate"] if candidate is None else candidate, limit=1024**2)
     release = candidate.get("release_id") if type(candidate) is dict else None
     c.require(type(candidate) is dict and candidate.get("source_sha") == owner["source_sha"] and type(release) is str
               and release.startswith("candidate-" + owner["source_sha"] + "-"), "static binding candidate")
@@ -3534,9 +3571,11 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), keeper=keeper,
                               clock=keeper.clock)
     def operation_session(operation, role, stage):
-        c.require(operation in ("close-drain", "closed-ready", *STATIC_OPERATIONS), "operation session operation")
+        c.require(operation in ("close-drain", "closed-ready", *STATIC_OPERATIONS, *TERMINAL_FENCE_OPERATIONS),
+                  "operation session operation")
         if operation in STATIC_OPERATIONS:
-            delegations = tuple(alias for alias in ("observer", "normal") if alias in lc.STATIC_SESSION_OPERATIONS[operation])
+            delegations = tuple(alias for alias in ("observer", "normal", "recovery")
+                                if alias in lc.STATIC_SESSION_OPERATIONS[operation])
             sessions = dict(c.closed(role, " ".join(delegations)))
         else:
             delegations, sessions = ("fence_operator",), {"fence_operator": role["session_name"]}
@@ -3555,7 +3594,8 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
                               operation_session=operation_session, phase_c_runtime=phase_c_runtime, clock=keeper.clock,
                               state=state)
     terminal = TerminalSteps(keeper=keeper, api=api, governance=governance, run=run, state=state, product=product,
-                             credential_limit=credential_limit, clock=keeper.clock)
+                             credential_limit=credential_limit, clock=keeper.clock, authority=authority,
+                             operation_session=operation_session)
     return keeper_loop(keeper, next_event=next_event, handlers=dict(handlers) | {"host-recovery": terminal.host_recovery},
                        terminal=terminal)
 
