@@ -16,7 +16,7 @@ def _policies(args):
     from tools.cnesdata_delivery.session_policy import mode_session_policy, mode_unit_wait_policy
     minted = min(args["journal"]._request["stage"]["deadline"], args["credential_limit"], DEADLINE)
     start = mode_session_policy("unit-start", resources=RESOURCES, owner_sha256=OWNER, deadline=minted)
-    wait = mode_unit_wait_policy(resources=RESOURCES, deadline=minted)
+    wait = mode_unit_wait_policy(resources=RESOURCES, owner_sha256=OWNER, deadline=minted)
     return [c.canonical(policy).decode().strip() for policy in (start, wait)]
 
 

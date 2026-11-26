@@ -118,7 +118,9 @@ def mode_documents(owner, mode, gov):
         documents["session." + code] = session_policy.mode_session_policy(
             operation, resources=scope["resources"], owner_sha256=owner["owner_sha256"], deadline=scope["deadline"])
         documents["role." + alias] = roles[alias]["policy"]["PolicyDocument"]
-    documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=scope["resources"], deadline=scope["deadline"])
+    documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=scope["resources"],
+                                                                   owner_sha256=owner["owner_sha256"],
+                                                                   deadline=scope["deadline"])
     return documents
 
 
@@ -226,7 +228,7 @@ def test_produtor_grava_os_tres_arquivos_de_modo_que_o_contrato_aceita(monkeypat
     assert files["mode-input.json"] == kwargs["mode_input_raw"]
     assert files["mode-roles.json"] == c.canonical(kwargs["mode_readbacks"])
     assert evaluation["evaluator_source_sha"] == manifest["producer"]["workflow_sha"]
-    assert len(evaluation["cases"]) == len(lc.MODE_EVALUATION_CASES) == 95
+    assert len(evaluation["cases"]) == len(lc.MODE_EVALUATION_CASES) == 99
     assume = next(case for case in evaluation["cases"] if case["case_id"] == "assume-us")
     assert assume["context"]["aws:CurrentTime"] == c.utc(manifest["preparation"]["observed_at"]) and assume["observed"] is True
     lc.validate_fence_prepared_package(files, owner=kwargs["owner"], fragment=fragment, activation_sha256="1" * 64,

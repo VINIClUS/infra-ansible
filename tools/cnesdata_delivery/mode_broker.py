@@ -162,6 +162,20 @@ def unit_start_grants(resources, owner_sha256):
     return {action: frozenset(keys) for action, keys in grants.items()}
 
 
+def unit_wait_grants(resources, owner_sha256):
+    """P16d uw LeadingKeys: the pk of the vendored output reads on the scope's unit run, independent of the unit ids.
+
+    Returns: frozenset with the unit run partition. Raises: ValueError.
+    """
+    scope, run = resources["scope"], "unit-" + owner_sha256[:16]
+    c.require(run in scope["run_ids"], "mode session runs")
+    reads = product_unit_observe().unit_output_reads(resources["table_arn"].rsplit("/", 1)[1], scope["tenant_id"], run,
+                                                     ("0" * 32,))
+    keys = frozenset(read["Key"]["pk"]["S"] for read in reads)
+    c.require(keys == {_product_module(_PRODUCT_KEYS).dispatch_key(scope["tenant_id"], run)[0]}, "mode session runs")
+    return keys
+
+
 def unit_seed_units(calls, locator):
     """B1 (c-1125-p16b-repin item 2): the unit mappings of the RUNUNIT items this keeper put at the unit-seed of the same
     lease, in put order; settled PutItem only, no read.
