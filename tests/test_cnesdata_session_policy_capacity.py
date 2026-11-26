@@ -35,6 +35,11 @@ def activated(gov, bucket, key_length):
         "identity_sha256": "b" * 64, "session_sha256": "c" * 64})
 
 
+HISTORICAL = {
+    "legacy-infra": {"protocol": "legacy-infra", "source_sha": "e" * 40, "run_id": 1, "run_attempt": 1,
+                     "status": "applied", "purpose": "phase-a"},
+    "lifecycle-terminal": {"protocol": "lifecycle", "source_sha": "e" * 40, "run_id": 1, "run_attempt": 1,
+                           "status": "terminal", "purpose": "application"}}
 VERSIONS = {"payload": "P" * 32, "signature": "S" * 32, "receipt": "R" * 32}
 DEADLINE = "2030-01-01T00:15:00Z"
 
@@ -70,6 +75,10 @@ def documents(point):
     found["closed-ready"] = lambda: sp.application_request(gov, SOURCE, run, attempt, "closed-ready", application_purpose="promotion")
     found["plan operational with activation"] = lambda: sp.lifecycle_request(
         activated(gov, bucket, sp.ACTIVATION_KEY_LIMIT), SOURCE, run, attempt, "plan", STEP, direction="advance")
+    for protocol, selector in HISTORICAL.items():
+        found["plan historical " + protocol] = lambda x=selector: sp.lifecycle_request(
+            activated(gov, bucket, sp.ACTIVATION_KEY_LIMIT), SOURCE, run, attempt, "plan", STEP, direction="advance",
+            predecessor=dict(x, run_id=run - 1, run_attempt=attempt))
     for scope, selected in (("receipt-only", {"receipt": VERSIONS["receipt"]}), ("three-versions", VERSIONS)):
         found["activation " + scope] = lambda s=selected: sp.activation_request(
             activated(gov, bucket, sp.ACTIVATION_KEY_LIMIT), s, deadline=DEADLINE)

@@ -396,7 +396,8 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
         ]
     if direction == "advance" or role in {"plan", "audit"}:
         c.require(not delete_resources, "advance/read session cannot delete")
-        statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"})
+        if role == "deploy":
+            statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"})
     else:
         c.require(type(delete_resources) in (list, tuple) and 0 < len(delete_resources) <= _delete_bound()
                   and len(set(delete_resources)) == len(delete_resources), "inverse exact resource inventory")
