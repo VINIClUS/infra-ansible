@@ -315,10 +315,42 @@ document plus managed ARN. The changes are:
   together with the managed documents in apply #1; until then authentication fails closed
   (`ops session pin absent`, `activation session pin absent`).
 
+Real terminal brokers (P17b, #119). `terminal_capability` connects reopen, terminal-readback
+and rollback-api-static to production brokers. A refusal fails the journal and the lease stays
+held. The changes are:
+- reopen and terminal-readback run on the fence session of the authenticated PreparedFence.
+  Before STS the capability recomputes the scope from the prepared policy, binds the prepared
+  activation, the `fence_operator` delegation and the current owner, and evaluates the
+  operation session's effective IAM locally.
+- terminal-readback (FenceReadBroker) reads FENCE and SEMAPHORE strongly and probes, with
+  `METADATA_ONLY`, only the `execution_ref` of a TERMINAL member of the frozen close-drain
+  membership. Its `membership` input must be that frozen set, or the empty set before the close.
+- reopen (ClosedReadyBroker) is pinned to the P17c call vector. At `final` it makes one CAS
+  UpdateItem of the owner's fence, CLOSED to OPEN at version + 1, after a strong FENCE read,
+  under a session policy that grants the strong reads and UpdateItem on FENCE only. At
+  `recovery` it only reads and the CAS is refused. Its four inputs are `activation`, `routing`,
+  `canaries` and `membership`; at `recovery`, `routing` is the recovery routes and `canaries`
+  is null.
+- rollback-api-static runs in StaticBroker under the existing static `recovery` alias, session
+  `sp-rollback-<digest40>`, in the `recovery` stage. Before STS it checks that the static plan
+  is the one the keeper holds, binds the run against the operational carrier and reads the
+  recovery role facts of the operational deploy. Its calls are a CopyObject of each planned
+  rollback key and version (SHA256 checksum, metadata copied) and the plan invalidation. The
+  session policy grants GetObjectVersion and PutObject on the rollback keys only, plus the
+  invalidation, and its effective IAM is checked under the copy-source and creation
+  conditions of the #498 policy (the IAM evaluator gains `Bool`).
+- At `final`, the terminal input source serves reopen's `routing` as the closed projection of
+  the three mode routes of the authenticated phase-c-audit element, which the C deploy job read
+  back after apply (ruling 1g). Every other request still refuses with
+  `terminal_inputs=source_unconnected`.
+- When a prepare fails before the PreparedFence exists, the fence capability refuses with
+  `terminal_broker=prepared_absent` before STS; the journal fails and the lease stays held.
+- The production `operation_session` of `execute` admits reopen, terminal-readback and
+  rollback-api-static.
+
 Pending at this draft head, to be described from the merged code before X*: the plan inputs
-and the D2/D2b checkpoint origins (P40); the real brokers (P17b); the production
-`operation_session` of `execute` admitting the mode-observe and `mc-*` operations, which it
-refuses at this head (P16f).
+and the D2/D2b checkpoint origins (P40); the production `operation_session` of `execute`
+admitting the mode-observe and `mc-*` operations, which it refuses at this head (P16f).
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
