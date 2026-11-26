@@ -1017,7 +1017,7 @@ def test_native_activation_read_documents_stay_inside_iam_quotas(native):
             assert len("".join(managed.split())) <= 6144
 
 
-@pytest.mark.parametrize("mutation", ["wildcard", "duplicate", "lifecycle", "state", "foreign-key-arn", "bad-bucket"])
+@pytest.mark.parametrize("mutation", ["wildcard", "duplicate", "lifecycle", "state", "foreign-key-arn", "bad-bucket", "key-over-limit"])
 def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, mutation):
     data = activation_input(variables())
     ceiling = data["github_delivery"]["activation_read"]
@@ -1029,12 +1029,27 @@ def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, 
         ceiling["keys"]["payload"] = "cnesdata/prod/evidence/lifecycle/" + "a" * 40 + "/1/1/x.json"
     elif mutation == "state":
         ceiling["keys"]["payload"] = "cnesdata/prod/opentofu.tfstate"
+    elif mutation == "key-over-limit":
+        from tools.cnesdata_delivery.session_policy import ACTIVATION_KEY_LIMIT
+        ceiling["keys"]["payload"] = EXT2_PREFIX + "p" * (ACTIVATION_KEY_LIMIT + 1 - len(EXT2_PREFIX))
     elif mutation == "foreign-key-arn":
         ceiling["cipher_kms_key_arn"] = "arn:aws:kms:us-east-2:999988887777:key/00000000-0000-4000-8000-000000000009"
     else:
         ceiling["bucket_arn"] = "arn:aws:s3:::synthetic-evidence/prefix"
     code, _, diagnostics = native.plan(data, "activation-invalid-" + mutation)
     assert code != 0 and diagnostics
+
+
+def test_native_activation_read_accepts_a_key_exactly_at_the_python_limit_and_tofu_mirrors_the_literal(native):
+    from tools.cnesdata_delivery import session_policy as sp
+    import re
+    from fixtures.cnesdata_delivery_oidc_native import ROOT
+    text = (ROOT / "variables.tf").read_text()
+    assert re.search(rf"length\(key\) <= {sp.ACTIVATION_KEY_LIMIT}\b", text)
+    data = activation_input(variables())
+    data["github_delivery"]["activation_read"]["keys"]["payload"] = EXT2_PREFIX + "p" * (sp.ACTIVATION_KEY_LIMIT - len(EXT2_PREFIX))
+    code, _, diagnostics = native.plan(data, "activation-key-at-limit")
+    assert code == 0, diagnostics
 
 
 OWN_ROLE_READS = ("iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies")
