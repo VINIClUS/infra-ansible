@@ -316,7 +316,9 @@ document plus managed ARN. The changes are:
   (`ops session pin absent`, `activation session pin absent`).
 
 Pending at this draft head, to be described from the merged code before X*: the plan inputs
-and the D2/D2b checkpoint origins (P40); the real brokers (P17b).
+and the D2/D2b checkpoint origins (P40); the real brokers (P17b); the production
+`operation_session` of `execute` admitting the mode-observe and `mc-*` operations, which it
+refuses at this head (P16f).
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
