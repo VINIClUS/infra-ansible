@@ -5,6 +5,7 @@ import json
 import pytest
 
 from tools.cnesdata_delivery import session_policy
+from tools.cnesdata_delivery.coordination_lease import KEY
 
 
 def governance():
@@ -32,7 +33,7 @@ def test_inline_dinamico_nao_preserva_poderes_estaticos_por_catch_all(role):
     assert not any(statement.get("Action") == "*" for statement in policy["Statement"])
     assert not any("NotResource" in statement for statement in policy["Statement"])
     assert all(
-        "cnesdata-state-4f6e21" not in json.dumps(statement)
+        "cnesdata-state-4f6e21" not in json.dumps(statement).replace("cnesdata-state-4f6e21/" + KEY, "")
         for statement in policy["Statement"]
     )
 

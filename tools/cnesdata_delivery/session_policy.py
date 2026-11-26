@@ -585,9 +585,10 @@ def build(governance, source, run_id, attempt, role, read_keys):
         "session evidence CMK",
     )
     read = [own, *historical]
+    lease = ["arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY] if role in {"plan", "deploy"} else []
     statements = [
         {"Effect": "Allow", "Action": "s3:GetObject", "Resource": read},
-        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": own},
+        {"Effect": "Allow", "Action": "s3:PutObject", "Resource": [own, *lease]},
         {
             "Effect": "Allow",
             "Action": "kms:Decrypt",

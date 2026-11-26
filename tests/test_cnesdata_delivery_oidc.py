@@ -835,7 +835,7 @@ DEFAULT_DOCUMENT_SHA256 = {
         "aws_iam_policy.application_session[0]": "ba15d380c9aad4fa7894797da53089d206f761f719a7140000bfb1bd3b99ea78",
         'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
         'aws_iam_policy.delivery_session["plan"]': "5a5c63fe229d87e9f56e3e9f35c7d76843628515fa5c719c3adf9ab48da66860",
-        "aws_iam_role_policy.application[0]": "cdd962ba7ca45fbd678534edc316c77faf3038627c4c05ff76d5dd5886558651",
+        "aws_iam_role_policy.application[0]": "eb1f31a50053293805c86d1b30e04fb7ccd33dac03fba308ef17884d2a97e563",
         'aws_iam_role_policy.delivery["deploy"]': "3262f5d742ca349bbe578b4d70361679567e646b7b020b9e309b459be9e7b403",
         'aws_iam_role_policy.delivery["plan"]': "005f685acf956337d8dd9d7c7ba12209fbbbe4ccca101d93e227d990cddc0c6b",
     },
