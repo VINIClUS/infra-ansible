@@ -85,15 +85,17 @@ def test_campos_do_host_derivam_da_leitura_legada_e_da_porta_do_archive():
 
 
 @pytest.mark.parametrize(
-    ("upstream", "port", "slot", "previous"),
+    ("upstream", "port", "listening", "slot", "previous"),
     [
-        ("cnesdata-blue-api-1:8000", 18082, "green", "blue"),
-        ("cnesdata-green-api-1:8000", 18081, "blue", "green"),
-        ("central-api:8000", 18081, "blue", "green"),
+        ("cnesdata-blue-api-1:8000", 18082, (18081,), "green", "blue"),
+        ("cnesdata-green-api-1:8000", 18081, (18082,), "blue", "green"),
+        ("central-api:8000", 18081, (), "blue", "green"),
     ],
 )
-def test_slot_anterior_e_o_slot_vivo_ou_o_oposto_no_legado(upstream, port, slot, previous):
-    host = host_of(upstream, port)
+def test_slot_anterior_e_o_slot_vivo_ou_o_oposto_no_legado(
+    upstream, port, listening, slot, previous
+):
+    host = host_of(upstream, port, listening)
     assert (host["slot"], host["previous_slot"]) == (slot, previous)
     assert host["previous_caddy_upstream"] == upstream
     runtime().HostDriver(None, None, host, Path("/staged"))
@@ -109,7 +111,8 @@ TWO_TOKENS = caddyfile().replace(
 @pytest.mark.parametrize(
     "case",
     [
-        {"upstream": "cnesdata-green-api-1:8000", "port": 18082},
+        {"upstream": "cnesdata-green-api-1:8000", "port": 18082, "listening": (18082,)},
+        {"upstream": "cnesdata-blue-api-1:8000", "port": 18082},
         {"listening": (18082,)},
         {"port": 18083},
         {"text": TWO_BLOCKS},
@@ -394,7 +397,8 @@ def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
     g, hp = runtime(), builder()
     seen = hp.read_readback(readback(expiration="2030-01-01T00:10:00Z"))
     sessions = {"unit": session("unit"), "recovery": session("recovery")}
-    value = hp.derive_probes(probes(), sessions, seen, (4242, 3), g.instant(NOW))
+    api = probes()["API"]["role_arn"]
+    value = hp.derive_probes(probes(), sessions, seen, (4242, 3, api), g.instant(NOW))
     expected = derived_probes(4242, 3)
     expected["API"]["expires_at"] = "2030-01-01T00:10:00Z"
     assert value == expected
@@ -412,6 +416,7 @@ def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
         {"expiration": "2029-12-31T23:08:00Z"},
         {"static": {**probes()["unit"], "key": "cnesdata/x"}},
         {"drop": "recovery"},
+        {"api_role": "arn:aws:iam::111122223333:role/cnesdata-prod-other"},
     ],
 )
 def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
@@ -420,8 +425,9 @@ def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
     sessions = {"unit": case.get("session", session("unit")), "recovery": session("recovery")}
     sessions.pop(case.get("drop", "none"), None)
     static = {**probes(), "unit": case.get("static", probes()["unit"])}
+    api = case.get("api_role", probes()["API"]["role_arn"])
     with pytest.raises((ValueError, KeyError)):
-        hp.derive_probes(static, sessions, seen, (11, 1), g.instant(NOW))
+        hp.derive_probes(static, sessions, seen, (11, 1, api), g.instant(NOW))
 
 
 def host_root(tmp_path, doc=None, link=False):

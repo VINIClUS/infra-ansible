@@ -766,6 +766,9 @@ def test_execucoes_diferentes_mudam_so_o_caller_e_a_chave_da_sonda(tmp_path, mon
         lambda s: s["runner"]["ssm_parameters"].pop("cloudflare-client-id"),
         lambda s: s["runner"]["objects"][0].update(extra=True),
         lambda s: s["runner"].update(extra=True),
+        lambda s: s["runtime_probes"]["API"].update(
+            role_arn="arn:aws:iam::111122223333:role/cnesdata-prod-other"
+        ),
     ],
 )
 def test_governanca_recusa_static_incoerente(tmp_path, monkeypatch, mutate):
@@ -811,7 +814,9 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
     doc = out.read_bytes()
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
     binding = g.sha(g.canonical(g.host_json(doc)["binding"]))
-    assert result.stdout == f"sha256={g.sha(doc)}\nbinding_sha256={binding}\n"
+    assert result.stdout == (
+        f"sha256={g.sha(doc)}\nbinding_sha256={binding}\nprobes_valid_until={EXPIRES}\n"
+    )
     assert "arn:aws" not in result.stdout + result.stderr
     assert "synthetic-secret" not in result.stdout + result.stderr
     values = json.loads((handoff / "handoffs.json").read_text())
