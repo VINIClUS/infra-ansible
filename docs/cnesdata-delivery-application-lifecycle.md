@@ -368,8 +368,46 @@ admits the eight promotion mode operations of `MODE_SESSION_OPERATIONS`: `unit-s
   `operation session delegation`.
 - The readiness-drill operations (`drill-*`) stay refused with `operation session operation`.
 
-Pending at this draft head, to be described from the merged code before X*: the plan inputs
-and the D2/D2b checkpoint origins (P40).
+Plan inputs (P40, #115). The keeper publishes each plan's `inputs.json` as a private payload
+with a public index. The changes are:
+- Composition. The base is the governed `product_inputs` plus the six original Phase A inputs,
+  and the reserved keys `static_promotion` and `mode_canary` are always explicit; the bytes are
+  at most 131072. The observer-bootstrap plan carries the `observer-bootstrap` static_promotion
+  (no plan, no inventory, empty lists, `static_plan_sha256` null) and a null `mode_canary`.
+  The operational plan carries the `operational` static_promotion built from the static plan
+  and the inventory, and the `mode_canary` object relayed from the static-inventory job
+  artifact. Both bind the authenticated candidate, the owner and the application gate pin, with
+  the window of the original application fragment. Every other plan carries only the base.
+  `static_plan_sha256` is null only in observer-bootstrap mode, and the carrier binding refuses
+  any other pairing.
+- Storage. The keeper session writes `<run>/plan-inputs-<plan step>/inputs.json`, reads it back
+  and then uploads the public index artifact `cnesdata-plan-inputs-<plan step>-<run>-<attempt>`.
+  The keeper session policy adds one bounded PutObject resource, `<run>/plan-inputs-*/inputs.json`,
+  whatever the number of plans. Plan step names must not start with `plan-inputs-` and must fit
+  in 64 characters with that prefix, lifecycle and application sessions refuse a reserved step,
+  and the evidence prefix is at most 32 characters. Every session document fits in 2048
+  characters at the governed maxima, so none is refused there.
+- Publication. Before any write the publisher checks the six Phase A inputs against custody and
+  requires the consuming plan job to be `in_progress`. The plan that opens a stage publishes
+  before the stage-open marker. The operational inputs publish after the inventory upload, only
+  once the static-inventory probe completed with success and the operational plan job is
+  `in_progress`. That wait is guarded, polls one jobs listing every 5 s and refuses at the
+  preparation deadline minus `P40_PUBLISH_RESERVE_SECONDS` (100 s), with
+  `operational_inputs=static_inventory_failed`, `static_inventory_timeout` or
+  `consumer_not_started`.
+- Reading. The plan gate adds the keeper `inputs.json` to its private payload and refuses any
+  other source of that name. The reader requires its own job `in_progress`, the unique artifact
+  created after that job started, matching metadata and digest, the private index of step
+  `plan-inputs-<plan step>` with the lease owner and generation, and `inputs.json` as the only
+  member. The P35 wait checks the artifact's presence in its same conditional listing.
+- REST budget. The model adds 55 point reads and the wait's polling. The governed worst rolling
+  hour is about 2530 of 3000 requests at the measured hit rates and 3727 of 4500 without the
+  jobs credit (60 and 90 percent of the assumed 5000 per hour).
+- Checkpoint origins. The deploy checkpoint gains `previous_checkpoint_sha256`, equal to the
+  approval's `checkpoint_sha256`. `bootstrap_hop` admits a one-hop chain: the checkpoint of this
+  run's observer-bootstrap deploy, or of the same-chain operational plan that republishes it,
+  linked to the window checkpoint. A step that reads the checkpoint of a same-chain
+  historical-entry plan uses the historical Phase A checks.
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
