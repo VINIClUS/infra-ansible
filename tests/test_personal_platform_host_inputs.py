@@ -5,6 +5,7 @@ Fixtures sintéticas; nenhuma é evidência operacional do host.
 
 import base64
 import dataclasses
+import datetime as dt
 import io
 import json
 import os
@@ -133,6 +134,9 @@ def test_campos_do_host_recusam_slot_vivo_porta_ocupada_e_caddyfile_ambiguo(case
         lambda h: h.update(slot="green"),
         lambda h: h.pop("readiness_sha256"),
         lambda h: h.update(readiness_sha256="x"),
+        lambda h: h.update(readiness_sha256="e" * 64),
+        lambda h: h.update(tunnel_health_url=f"https://{API}/api/v1/system/health"),
+        lambda h: h.update(tunnel_health_url="https://other.example.test/health/ready"),
         lambda h: h.update(proxy="nginx"),
     ],
 )
@@ -435,6 +439,23 @@ def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
 
 
 @pytest.mark.parametrize(
+    ("expires", "accepted"),
+    [("2029-12-31T23:42:59Z", False), ("2029-12-31T23:43:00Z", True)],
+)
+def test_sonda_da_api_exige_2400_s_de_vida_na_escrita(expires, accepted):
+    g, hp = runtime(), builder()
+    minted = hp.read_api_probe(api_probe(expires=expires))
+    sessions = {"unit": session("unit"), "recovery": session("recovery")}
+    api = probes()["API"]["role_arn"]
+    if accepted:
+        value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+        assert value["API"]["expires_at"] == expires
+    else:
+        with pytest.raises(ValueError):
+            hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+
+
+@pytest.mark.parametrize(
     "raw",
     [
         api_probe().replace(b'":', b'": '),
@@ -573,6 +594,41 @@ def test_sonda_da_api_recusa_sessao_ou_identidade_fora_do_contrato(tmp_path, cas
     assert result.returncode != 0
     assert not (root / PROBE_OUT.lstrip("/")).exists() and not out.exists()
     assert b"synthetic" not in result.stdout + result.stderr
+
+
+def in_seconds(seconds):
+    instant = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=seconds)
+    return instant.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@pytest.mark.parametrize(("seconds", "accepted"), [(2390, False), (2470, True)])
+def test_sonda_da_api_recusa_sessao_cunhada_com_menos_de_2400_s(tmp_path, seconds, accepted):
+    expiration = in_seconds(seconds)
+    root = mint_root(tmp_path, response=helper_response(expiration=expiration))
+    out = tmp_path / "api-probe.json"
+    result = run_mint(root, out)
+    carrier = root / PROBE_OUT.lstrip("/")
+    if accepted:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(out.read_bytes())["expires_at"] == expiration
+    else:
+        assert result.returncode == 1 and b"api_probe=short_session" in result.stderr
+        assert not carrier.exists() and not out.exists()
+
+
+def test_expiracao_da_governanca_e_a_da_sessao_gravada_no_carrier_da_api(tmp_path):
+    g, hp = runtime(), builder()
+    expiration, access = "2030-01-01T00:20:00Z", "ASIAMINTEDSESSION000"
+    response = helper_response(access=access, expiration=expiration)
+    root, out = mint_root(tmp_path, response=response), tmp_path / "api-probe.json"
+    assert run_mint(root, out).returncode == 0
+    carrier = (root / PROBE_OUT.lstrip("/")).read_text()
+    assert f"aws_access_key_id={access}\n" in carrier
+    sessions = {"unit": session("unit"), "recovery": session("recovery")}
+    minted = hp.read_api_probe(out.read_bytes())
+    api = probes()["API"]["role_arn"]
+    value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+    assert value["API"]["expires_at"] == expiration
 
 
 def test_playbook_da_sonda_da_api_cunha_le_de_volta_busca_e_remove():

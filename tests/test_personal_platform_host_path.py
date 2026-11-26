@@ -5,6 +5,7 @@ Fixtures sintéticas; nenhuma é evidência operacional do host.
 
 import base64
 import copy
+import hashlib
 import importlib
 import io
 import json
@@ -52,6 +53,7 @@ PATHS = {
 }
 ACCESS = "ASIASYNTHETICEXAMPLE"
 EXPIRES = "2030-01-01T00:00:00Z"
+READINESS = hashlib.sha256(b'{"status":"ready"}').hexdigest()
 
 
 def runtime():
@@ -167,7 +169,7 @@ def host_fragment():
     return {
         "public_hostname": values["public_hostname"],
         "tunnel_health_url": values["tunnel_health_url"],
-        "readiness_sha256": "e" * 64,
+        "readiness_sha256": READINESS,
         "proxy": "caddy",
         "caddyfile_path": values["caddyfile_path"],
         "caddy_container": values["caddy_container"],
@@ -614,6 +616,14 @@ def test_objeto_de_plataforma_aplica_as_quatro_regras_de_digest():
     "mutate",
     [
         lambda s, p, k: (s["inventory"].update(services={}), p, k),
+        lambda s, p, k: (
+            s["inventory"].update(tunnel_health_url=f"https://{API}/api/v1/system/health"), p, k
+        ),
+        lambda s, p, k: (
+            s["inventory"].update(tunnel_health_url="https://other.example.test/health/ready"),
+            p,
+            k,
+        ),
         lambda s, p, k: (s["dependencies"].pop("cloudflared"), p, k),
         lambda s, p, k: (None, p.replace(b'":', b'": '), k),
         lambda s, p, k: (None, p, k.replace(SSH, "other.example.test")),
