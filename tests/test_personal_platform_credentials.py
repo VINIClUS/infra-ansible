@@ -1,18 +1,69 @@
 """Credential isolation and actual process-group supervision, no AWS access."""
 
+import io
+import json
 import os
 import sys
 import time
+import urllib.error
 
 import pytest
 from test_personal_platform_dispatcher import runtime
 
 
-def test_three_runtime_probes_are_exact_and_do_not_authorize_a_fourth():
+PROBE_PATH = "/run/personal-platform/probes/API.credentials"
+PROBE_URL = "https://cnesdata-prod-probe.s3.us-east-2.amazonaws.com/cnesdata/probe/missing.json"
+
+
+def test_runtime_probe_set_is_exactly_the_api_identity():
     g = runtime()
-    assert g.RUNTIME_IDENTITIES == ("unit", "recovery", "API")
-    with pytest.raises(ValueError):
-        g.runtime_probe_set({"unit": {}, "recovery": {}, "API": {}, "audit": {}})
+    assert g.RUNTIME_IDENTITIES == ("API",)
+    assert g.runtime_probe_set({"API": {}}) == {"API": {}}
+    for probes in ({"API": {}, "unit": {}}, {"API": {}, "recovery": {}}, {},
+                   {"unit": {}, "recovery": {}, "API": {}}):
+        with pytest.raises(ValueError, match="exactly the API runtime identity"):
+            g.runtime_probe_set(probes)
+
+
+def api_probe_case(monkeypatch, tmp_path, status, code):
+    g = runtime()
+    carrier = tmp_path / "API.credentials"
+    carrier.write_text("[default]\naws_access_key_id = ASIAFIXTURE\n"
+                       "aws_secret_access_key = secret\naws_session_token = token\n")
+    carrier.chmod(0o600)
+    read, calls = g.read_private, []
+    monkeypatch.setattr(g, "read_private", lambda path, maximum=g.LIMIT: read(
+        carrier if str(path) == PROBE_PATH else path, maximum))
+
+    def supervise(argv, guard, *, timeout=20, env=None, stdin=None):
+        calls.append((argv, env["AWS_SHARED_CREDENTIALS_FILE"]))
+        return json.dumps({"Arn": "arn:aws:sts::111122223333:assumed-role/cnesdata-prod-api/api-session"})
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request.full_url)
+            raise urllib.error.HTTPError(request.full_url, status, code, {},
+                                         io.BytesIO(f"<Error><Code>{code}</Code></Error>".encode()))
+
+    monkeypatch.setattr(g, "supervise", supervise)
+    monkeypatch.setattr(g.urllib.request, "build_opener", lambda *_: Opener())
+    probe = {"role_arn": "arn:aws:iam::111122223333:role/cnesdata-prod-api", "credential_path": PROBE_PATH,
+             "expires_at": g.utc(time.time() + 3600), "bucket": "cnesdata-prod-probe",
+             "key": "cnesdata/probe/missing.json"}
+    return g, {"region": "us-east-2", "runtime_probes": {"API": probe}}, calls
+
+
+def test_real_api_probe_uses_the_original_session_and_accepts_only_no_such_key(monkeypatch, tmp_path):
+    g, governance, calls = api_probe_case(monkeypatch, tmp_path, 404, "NoSuchKey")
+    g.verify_runtime_probes(governance, lambda: None)
+    assert calls == [(["/usr/bin/aws", "sts", "get-caller-identity", "--output", "json"], PROBE_PATH), PROBE_URL]
+
+
+def test_real_api_probe_refuses_access_denied_as_absence(monkeypatch, tmp_path):
+    g, governance, calls = api_probe_case(monkeypatch, tmp_path, 403, "AccessDenied")
+    with pytest.raises(ValueError, match="typed missing-object result"):
+        g.verify_runtime_probes(governance, lambda: None)
+    assert calls[-1] == PROBE_URL
 
 
 def test_credentials_only_own_run_directory_and_erased_on_failure(tmp_path):
