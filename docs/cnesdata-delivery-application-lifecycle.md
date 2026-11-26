@@ -301,8 +301,10 @@ document plus managed ARN. The changes are:
 - Delegation is an Allow of `sts:AssumeRole` per alias, on the exact governed product role and
   with `sts:RoleSessionName` equal to that alias's exact session name. The keeper session
   denies `sts:AssumeRole`.
-- The managed `delivery_session` policy reads the lease and never writes it. The only lease
-  Put left is in the legacy plan and deploy build/request sessions, on the exact lease key.
+- The managed `delivery_session` policy of the plan, deploy and audit roles reads the lease and
+  never writes it. Among those roles' sessions, the only lease Put left is in the legacy plan
+  and deploy build/request sessions, on the exact lease key. The keeper's application managed
+  policy still grants the lease Put.
 - The inverse deletion inventory is bounded by the largest scheduler closure of the recovery
   and audit modes instead of a fixed count, and each ARN is at most 104 characters.
 - The activation read uses the managed `<plan role>-activation-session` policy, and each
@@ -312,8 +314,13 @@ document plus managed ARN. The changes are:
   `NotResource` inventory.
 - The ops and activation pins are paired with the role pin (same `observed_at`, `expires_at`,
   `frozen_until` and owner producer) and committed in the proof measurement. They are applied
-  together with the managed documents in apply #1; until then authentication fails closed
-  (`ops session pin absent`, `activation session pin absent`).
+  together with the managed documents in apply #1, and until then authentication fails closed.
+  Application authentication refuses with `original owner session pin absent` when the ops pin
+  is missing, and with `original owner application_ops session policy commitment` when the pin
+  does not match its measured fact or its pairing. Plan authentication applies the same two
+  refusals to the `plan_activation` pin when governance has `activation_read`. Without
+  `activation_read` the plan authority has no activation pin, and an activation read refuses
+  with `activation session pin absent`.
 
 Real terminal brokers (P17b, #119). `terminal_capability` connects reopen, terminal-readback
 and rollback-api-static to production brokers. A refusal fails the journal and the lease stays
