@@ -732,7 +732,6 @@ def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
               "mode describe_tasks own task")
 
 
-MODE_UNIT_START_OPEN = False
 _MODE_RECORDS = ("unit-record", "recovery-record", "audit-record")
 MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe",
                        "observed": ("unit-observe",),
@@ -874,12 +873,11 @@ def mode_input_source(*, keeper, owner, window, operation, names, context=None):
     and recovery-readbacks from this lease's recovery journals; phase-c, the list of this keeper's accepted phase-c
     elements in mode order (P17 ruling 6); readbacks, the handoff of this keeper's single ModeReadback of the mode,
     built, attached and read at the start (ruling 5, Falta 7); (a) mode-input and network from the PreparedFence
-    revalidated by mode_prepared_authority, and the fixtures from the authenticated product checkout. unit-start
-    refuses first while MODE_UNIT_START_OPEN is closed (ruling 8 item 2); any other origin is not connected.
+    revalidated by mode_prepared_authority, and the fixtures from the authenticated product checkout. Any other
+    origin is not connected.
 
     Args: context is the ModeContext of the stage handler. Returns: {name: bytes}. Raises: ValueError.
     """
-    c.require(operation != "unit-start" or MODE_UNIT_START_OPEN is True, "mode_unit_start=p16d_pending")
     mode = operation.partition("-")[0]
     c.require(all(_origin_open(name, mode, operation) for name in names), "mode_inputs=source_unconnected")
     fixtures = [name for name in names if name.startswith("fixture-")]

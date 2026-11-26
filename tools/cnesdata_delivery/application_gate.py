@@ -2980,18 +2980,14 @@ ModeContext = namedtuple("ModeContext", "governance authority prepared credentia
 
 
 def mode_capability(*, journal, keeper, guard, context):
-    """Production mode capability per operation class, with the keeper context the stage handler binds: unit-start
-    refuses first while mode_broker.MODE_UNIT_START_OPEN is closed (ruling 8 amendment 1 layer 2); the pure record
-    operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; seed and start get the
-    ModeBroker of mode_effect_capability. A refusal fails the journal and keeps the lease held.
+    """Production mode capability per operation class, with the keeper context the stage handler binds: the pure
+    record operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; seed and
+    start get the ModeBroker of mode_effect_capability. A refusal fails the journal and keeps the lease held.
 
     Returns: the admitted broker or None. Raises: ValueError.
     """
     from tools.cnesdata_delivery import mode_broker
     operation = journal._request["operation"]
-    if operation == "unit-start" and mode_broker.MODE_UNIT_START_OPEN is not True:
-        journal._failed = True
-        raise ValueError("mode_unit_start=p16d_pending")
     if operation.endswith("-record"):
         return None
     if operation in lc.MODE_OBSERVES:

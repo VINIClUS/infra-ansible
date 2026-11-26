@@ -403,7 +403,7 @@ def test_eventos_do_keeper_sao_os_externos_da_tabela_de_gatilhos():
 
 
 def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pending=False, fail=False, late=False,
-                brokers=None, steps=None, host=True):
+                brokers=None, steps=None, host=True, stage=None):
     """The stage-events world through the host handler and its publish-static (P15 fakes) into the unit window, plus mode
     fakes: source, capability, child. With host, the unit mode run the host starts is recorded and the world stays in the
     unit window; without it, the caller runs the host with the real unit mode run over these fakes."""
@@ -414,7 +414,7 @@ def _mode_world(monkeypatch, *, checks=None, capability=None, observations=1, pe
     from tools.cnesdata_delivery import application_gate as ag
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     real_stage = ag.mode_stage
-    world = _static_world(monkeypatch, static={"unit": "stub" if host else "real"})
+    world = _static_world(monkeypatch, static={"unit": "stub" if host else "real"}, **(stage or {}))
     if host:
         world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
         monkeypatch.setattr(ag, "mode_stage", real_stage)
@@ -862,12 +862,10 @@ def test_operacao_de_modo_recusa_sem_capacidade_na_janela_antes_do_child(monkeyp
 def test_producao_recusa_o_modo_sem_fonte_dos_originais_e_o_efeito_sem_contexto_do_estagio(operation):
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag
-    message = "^mode_unit_start=p16d_pending$" if operation == "unit-start" else "^mode_inputs=source_unconnected$"
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         ag.mode_input_source(keeper=None, owner={}, window={}, operation=operation, names=["record"])
     journal = SimpleNamespace(_failed=False, _request={"operation": operation})
-    message = "^mode_unit_start=p16d_pending$" if operation == "unit-start" else "^mode effect original context$"
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match="^mode effect original context$"):
         ag.mode_capability(journal=journal, keeper=None, guard=None, context=None)
     assert journal._failed is True
 
@@ -1014,19 +1012,14 @@ def _source(operation, names, *journals):
 
 
 @pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
-def test_mode_start_e_do_keeper_com_o_instante_de_abertura_da_janela_e_o_frozen_que_o_produto_aceita(monkeypatch,
-                                                                                                    operation):
-    from tools.cnesdata_delivery import mode_broker
-    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
+def test_mode_start_e_do_keeper_com_o_instante_de_abertura_da_janela_e_o_frozen_que_o_produto_aceita(operation):
     inputs, window = _source(operation, ["mode-start"])
     assert inputs == {"mode-start": c.canonical({"version": 1, "kind": "mode-start", "frozen": operation == "audit-start",
                                                  "started_at": c.utc(window["admitted_at"])})}
 
 
 @pytest.mark.parametrize("operation", ["unit-start", "recovery-start", "audit-start"])
-def test_previous_e_sempre_nulo_e_um_segundo_start_no_lease_recusa_reentrada(monkeypatch, operation):
-    from tools.cnesdata_delivery import mode_broker
-    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
+def test_previous_e_sempre_nulo_e_um_segundo_start_no_lease_recusa_reentrada(operation):
     assert _source(operation, ["previous"], _lease_journal(operation.replace("-start", "-observe")))[0] == {
         "previous": b"null\n"}
     with pytest.raises(ValueError, match="^mode reentry unavailable$"):
