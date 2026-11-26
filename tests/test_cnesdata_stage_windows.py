@@ -83,7 +83,9 @@ def _job_head():
 
 def _rx2_c_stage():
     """R-X2 seção 3, caso típico: plan -> audit -> deploy -> mode run, timeouts declarados do código."""
-    return (_job_head() + [("job1 tofu plan", 25, PLAN), ("job1 tofu show", 3, SHOW), ("job1 publish", 5, GUARD),
+    from tools.cnesdata_delivery import stage_wait
+    return ([("stage-open marker upload", stage_wait.MARKER_UPLOAD_SECONDS, None),
+             ("waiter poll latency", stage_wait.POLL_SECONDS, None)] + _job_head() + [("job1 tofu plan", 25, PLAN), ("job1 tofu show", 3, SHOW), ("job1 publish", 5, GUARD),
                            ("handoff to audit", 8, None)]
             + _job_head() + [("job2 tofu show", 3, SHOW), ("job2 readbacks", 10, GUARD), ("job2 publish", 5, GUARD),
                              ("handoff to deploy", 8, None)]
@@ -92,6 +94,14 @@ def _rx2_c_stage():
                              ("job3 tofu apply", 25, APPLY), ("job3 readbacks-after", 10, GUARD),
                              ("job3 publish", 5, GUARD), ("keeper observe", 7, None)]
             + [("mode seed", 5, None), ("mode run", 60, None), ("mode accept", 5, None), ("keeper observe", 7, None)])
+
+
+def test_linhas_do_estagio_c_contam_o_upload_do_marcador_e_a_latencia_do_poll_dos_esperadores():
+    from tools.cnesdata_delivery import stage_wait
+    rows = _rx2_c_stage()
+    assert rows[:2] == [("stage-open marker upload", stage_wait.MARKER_UPLOAD_SECONDS, None),
+                        ("waiter poll latency", stage_wait.POLL_SECONDS, None)]
+    assert stage_wait.STAGE_OPEN_LATENCY_SECONDS == stage_wait.MARKER_UPLOAD_SECONDS + stage_wait.POLL_SECONDS
 
 
 def _c_window(c_seconds):

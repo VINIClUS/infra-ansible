@@ -4,6 +4,8 @@ import copy
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_mode_effect_broker import _Evidence
 from test_cnesdata_mode_readback_session import _case, _mb
 from tools.cnesdata_delivery import application_gate as ag

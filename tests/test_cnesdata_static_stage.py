@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c
 
 ACCOUNT = "111122223333"

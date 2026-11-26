@@ -85,7 +85,26 @@ class ArtifactDigests:
         return getattr(self._inner, name)
 
 
-def admission(role):
+def payload_references(api, run, payloads, input_jobs):
+    """Resolve producer step names to this run's completed-success job and its unique in-interval artifact.
+
+    Args: GitHub reader, run, request payload names, governed input jobs.
+    Returns: reference per payload. Raises: ValueError on the id shape or any ambiguity.
+    """
+    from tools.cnesdata_delivery.application_gate import _same_run_job
+    from tools.cnesdata_delivery.stage_wait import NoReservation, payload_names, payload_publication
+    references = {}
+    for name, producer in payload_names(payloads, input_jobs).items():
+        job = _same_run_job(api, run, kind="payload", job_name=producer["name"], guard=NoReservation())
+        c.require(job is not None and job["status"] == "completed", "completed payload producer")
+        listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100&page=1")
+        c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
+        found = payload_publication(job, listing["artifacts"], producer["step"])
+        references[name] = {"job_id": job["id"], "artifact_id": found["id"], "artifact_digest": found["digest"]}
+    return references
+
+
+def admission(role, *, resolve_payloads=True):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
@@ -109,7 +128,6 @@ def admission(role):
     step = governance["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
     c.require(step["purpose"] in lc.PURPOSES or role == "application", "closed purpose")
-    c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
     c.require(request["application_purpose"] == caller["application_purpose"]
               and request["caller_binding_sha256"] == c.sha(c.canonical(caller)), "original requested application caller")
@@ -134,7 +152,12 @@ def admission(role):
     document = api.read(f"repos/{contract['repository']}/contents/{contract['path']}?ref={contract['source_sha']}")
     c.require(c.sha(base64.b64decode(document["content"])) == c.digest(contract["sha256"]), "authority original bytes")
     payloads = {}
-    for name, reference in request["payloads"].items():
+    if not resolve_payloads:
+        from tools.cnesdata_delivery.stage_wait import payload_names
+        payload_names(request["payloads"], step["input_jobs"])
+        return governance | {"role": role}, request, step, api, run, payloads
+    references = payload_references(api, run, request["payloads"], step["input_jobs"])
+    for name, reference in references.items():
         producer = step["input_jobs"][name]
         c.closed(producer, "name step")
         c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", producer["step"]), "original producer step")
@@ -1364,6 +1387,15 @@ def plan_activation_carrier(*, governance, step, owner, window, terraform_raw, g
     return raw
 
 
+def bind_stage_open_owner(owner, environ):
+    """Refuse a lease owner or generation other than the one the stage-open marker named."""
+    from tools.cnesdata_delivery.stage_wait import STAGES_WITH_EXTERNAL_FIRST_JOB
+    if environ.get("PURPOSE") not in STAGES_WITH_EXTERNAL_FIRST_JOB:
+        return
+    c.require(environ.get("STAGE_OPEN_OWNER_SHA256") == owner["owner_sha256"]
+              and environ.get("STAGE_OPEN_GENERATION") == str(owner["generation"]), "stage-open owner")
+
+
 def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
@@ -1377,6 +1409,7 @@ def execute(role):
     session_owner.verify_managed(aws, authority, c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"]))
     record, _ = S3LeaseStore(aws).get()
     owner = lc.owner_binding(record)
+    bind_stage_open_owner(owner, os.environ)
     c.require(owner["source_sha"] == request["source_sha"] and owner["run_id"] == run["id"]
               and owner["run_attempt"] == run["run_attempt"]
               and lc.application_identity(owner, required=True) == {"application_purpose": request["application_purpose"],
@@ -1828,7 +1861,7 @@ def export_credentials(value):
 def main(role, operation):
     c.require(role in {"plan", "deploy", "audit"} and operation in {"preflight", "credentials", "execute"}, "closed lifecycle command")
     if operation == "preflight":
-        admission(role)
+        admission(role, resolve_payloads=False)
     elif operation == "credentials":
         credentials(role)
     else:

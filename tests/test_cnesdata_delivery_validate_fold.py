@@ -64,7 +64,7 @@ def test_prova_de_admissao_vem_antes_do_primeiro_passo_de_credencial(role):
 def test_execute_preserva_pins_checksums_timeout_e_interface(role):
     workflow = load(role)
     job = workflow["jobs"]["execute"]
-    assert job["timeout-minutes"] == 55
+    assert job["timeout-minutes"] == 90
     for step in job["steps"]:
         if "uses" in step:
             assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", step["uses"]), step["uses"]

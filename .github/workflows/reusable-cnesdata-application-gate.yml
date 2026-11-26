@@ -117,6 +117,7 @@ jobs:
           assert (re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
                   and pin == gov["gate_shas"]["application"])
           files = ["contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py",
+                   "stage_wait.py",
                    "aws_boundary.py",
                    "runtime.py", "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                    "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",

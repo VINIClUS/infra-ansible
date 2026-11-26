@@ -5,6 +5,8 @@ from email.utils import formatdate
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_mode_readback import RESOURCES, _responses
 from test_cnesdata_mode_stages import _lease_journal, _mode_world
 from tools.cnesdata_delivery import application_gate as ag

@@ -7,6 +7,8 @@ import types
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c, runtime
 from tools.cnesdata_delivery.application_gate import Keeper
 from tools.cnesdata_delivery.lifecycle_runtime import first_checkpoint
@@ -5485,7 +5487,7 @@ class _Stop(Exception):
     pass
 
 
-def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None):
+def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl=5000, enabled_ttl=9000, identity=None, limit=5000):
     """The composition of execute over boundary fakes: every effect is a recorded call, the order is the contract."""
     from types import SimpleNamespace
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr, session_owner
@@ -5496,7 +5498,8 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
     governance = {"application_product_source_manifest": {"fixture": "manifest"}, "application_product_source_closure_sha256": "0" * 64,
                   "authenticated_application_caller": caller, "account_id": "111122223333"}
     if release: governance["release"] = dict(GOVERNANCE_RELEASE)
-    request, run, api = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}, SimpleNamespace(marker="api")
+    request, run = {"source_sha": "b" * 40, "step": "execute"}, {"id": 4242, "run_attempt": 1}
+    api = SimpleNamespace(marker="api", rate={"limit": limit, "used": 10, "remaining": limit - 10})
     role = "arn:aws:iam::111122223333:role/cnesdata-prod-application"
     fragment = {"application_role_arn": role, "enabled_until": c.utc(now + enabled_ttl)}
     authority = Authority({"role_arn": role, "frozen_until": c.utc(now + 9500)}, float(now + authority_ttl), None, fragment, "3" * 64)
@@ -5532,7 +5535,7 @@ def _execute_case(monkeypatch, *, release=True, expiration="auto", authority_ttl
                                                                               run=run, request=request)
 
 
-def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch):
+def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_loop(monkeypatch, stage_open_published):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     ag, admitted, calls, world = _execute_case(monkeypatch)
     governance = admitted[0]
@@ -5546,6 +5549,8 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
     assert [name for name, _, _ in calls] == ["closure", "runtime", "authority", "aws", "readback", "store", "keeper", "register",
                                               "acquire", "events", "handlers", "loop"]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
+    (announced,) = stage_open_published
+    assert announced[0] is by_name["register"][0][0] and announced[1] is world.api and announced[3] is governance
     assert by_name["closure"][0] == ("product", "b" * 40, {"fixture": "manifest"}, "0" * 64)
     assert by_name["runtime"][0] == (os.environ,)
     assert by_name["authority"][0][:5] == (governance, world.api, "b" * 40, "application", "application-prepare")
@@ -5577,6 +5582,33 @@ def test_execute_composes_the_keeper_in_the_ratified_order_and_runs_the_stage_lo
         "prepared": "h1", "phase-b": "h2", "host": "h3", "host-recovery": loop_kwargs["terminal"].host_recovery}
     assert handler_kwargs["state"] is loop_kwargs["terminal"].state == {}
     assert by_name["readback"][1] == {"clock": time.time, "include_documents": True}
+
+
+def test_execute_recusa_limite_de_rest_abaixo_do_assumido_antes_do_lease(monkeypatch):
+    ag, admitted, calls, _ = _execute_case(monkeypatch, limit=1000)
+    with pytest.raises(ValueError, match="github=rate_limit value=1000"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    assert [name for name, _, _ in calls] == ["closure", "runtime", "authority"]
+
+
+def test_execute_registra_a_linha_de_saida_do_keeper_com_os_numeros_da_ultima_resposta_mesmo_na_recusa(monkeypatch, capsys):
+    ag, admitted, calls, _ = _execute_case(monkeypatch, limit=1000)
+    with pytest.raises(ValueError, match="github=rate_limit value=1000"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    (line,) = capsys.readouterr().out.strip().splitlines()
+    assert line.startswith("stage_wait stage=keeper setup_seconds=0 wait_seconds=")
+    assert line.endswith("x_ratelimit_limit=1000 x_ratelimit_used=10 x_ratelimit_remaining=990")
+
+
+def test_execute_registra_a_linha_de_saida_do_keeper_quando_o_laco_termina_com_erro(monkeypatch, capsys, stage_open_published):
+    ag, admitted, calls, world = _execute_case(monkeypatch)
+    with pytest.raises(_Stop, match="loop reached"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    (line,) = capsys.readouterr().out.strip().splitlines()
+    assert line.startswith("stage_wait stage=keeper ") and "x_ratelimit_limit=5000" in line
 
 
 def test_execute_refuses_the_phase_c_child_runtime_before_owner_authority_credentials_and_the_lease(monkeypatch):
@@ -5900,6 +5932,7 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
     gate = "tools/cnesdata_delivery/application_gate.py"
     assert sites == {
         (gate, "run_closed_ready", "KeeperGuard"),
+        (gate, "_publish_stage_open", "KeeperGuard"),
         (gate, "closed_ready_capability", "_assume_fence_session"),
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller

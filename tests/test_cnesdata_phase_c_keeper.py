@@ -1,6 +1,8 @@
 """P16b ruling 6 item 2: the C handler builds the phase-c element after the C deploy publication and before mode()."""
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_mode_stages import _c_files, _record, _through_unit
 from test_cnesdata_stage_events import B_REFERENCE, _ready_journal
 from tools.cnesdata_delivery import contract as c

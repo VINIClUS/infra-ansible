@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
 

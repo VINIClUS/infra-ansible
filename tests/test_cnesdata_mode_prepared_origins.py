@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_mode_prepared_authority import _world
 from test_cnesdata_mode_stages import _mode_case, _mode_world
 from tools.cnesdata_delivery import contract as c

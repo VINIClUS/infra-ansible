@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 import test_cnesdata_mode_session_sts as sts
 from test_cnesdata_mode_readback import _responses
 from test_cnesdata_mode_readback_context import GOVERNANCE, _Client, _Store, _world

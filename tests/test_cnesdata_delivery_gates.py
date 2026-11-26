@@ -185,6 +185,7 @@ def test_audit_gate_e_um_reusable_de_job_unico_com_papel_e_entrada_proprios():
     steps = [step.get("run", "") for step in workflow["jobs"]["execute"]["steps"]]
     assert [run for run in steps if run.startswith("python3 -m tools.cnesdata_delivery.")] == [
         "python3 -m tools.cnesdata_delivery.audit_gate preflight",
+        "python3 -m tools.cnesdata_delivery.stage_wait",
         "python3 -m tools.cnesdata_delivery.audit_gate credentials",
         "python3 -m tools.cnesdata_delivery.audit_gate execute"]
 

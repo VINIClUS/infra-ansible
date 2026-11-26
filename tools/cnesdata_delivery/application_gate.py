@@ -1691,10 +1691,11 @@ def _phase_b_step(governance):
 SAME_RUN_READ_SECONDS = 20
 
 
-def _same_run_job(api, run, *, kind, job_name, guard):
+def _same_run_job(api, run, *, kind, job_name, guard, poll=False):
     """The unique same-run job with the catalogue name; None while it does not exist."""
     guard.check(SAME_RUN_READ_SECONDS)
-    jobs = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
+    read = api.read_conditional if poll else api.read
+    jobs = read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100&page=1")
     guard.check()
     c.require(jobs["total_count"] == len(jobs["jobs"]) <= 100, f"complete {kind} publication inventory")
     found = [job for job in jobs["jobs"] if job["name"] == job_name]
@@ -1813,7 +1814,7 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
         c.require(now < lc.terminal_deadline(window), f"stage deadline elapsed stage={stage}")
         kind = _stage_kind(stage, keeper)
         job_name, step = _trigger_producer(governance, kind)
-        job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard)
+        job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard, poll=True)
         if job is None or job["status"] != "completed" or job["conclusion"] != "success":
             return None
         if kind in ("host", "host-recovery"):
@@ -2909,6 +2910,16 @@ def _upload_keeper_artifact(keeper, api, run, *, name, files, guard, credential_
     return receipt
 
 
+def _publish_stage_open(keeper, api, run, governance, credential_limit, clock):
+    """E1: announce the window the lease just opened to the pre-approved external first job (stage_wait)."""
+    from tools.cnesdata_delivery import stage_wait
+    record = keeper.lease.check()
+    window = record["lifecycle"]
+    return stage_wait.publish_stage_open(
+        keeper=keeper, guard=KeeperGuard(keeper), api=api, run=run, owner=lc.owner_binding(record), window=window,
+        first_job=stage_wait.first_job_name(governance, window["stage"]), credential_limit=credential_limit, clock=clock)
+
+
 def publish_closed_ready(*, keeper, api, run, owner, files, credential_limit, clock=time.time):
     """DD-2 (2b): upload cnesdata-closed-ready-<run>-<attempt> from the keeper job while the caller probe job runs.
 
@@ -3128,6 +3139,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  checkpoint_sha256=c.sha(files["checkpoint.json"]),
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
+        _publish_stage_open(current, api, run, governance, credential_limit, clock)
         state.update({"prepared": files, "checkpoint": files["checkpoint.json"], "activation": activation,
                       "terraform": terraform, "static-plan": static_plan,
                       "close-drain": journal._observation_bytes[observed[0]["sha256"]],
@@ -3260,6 +3272,9 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                               context=context)
         if name == "recovery":
             state["recovery-result"] = produced["mode-result"]
+        from tools.cnesdata_delivery import stage_wait
+        if current.lease.check()["lifecycle"]["stage"] in stage_wait.STAGES_WITH_EXTERNAL_FIRST_JOB:
+            _publish_stage_open(current, api, run, governance, credential_limit, clock)
 
     def phase_c(purpose):
         def handler(current, reference):
@@ -3363,6 +3378,22 @@ def _verify_session(client, governance, authority, run, expires):
     return Guard()
 
 
+def _exit_logged(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(admitted, **kwargs):
+        from tools.cnesdata_delivery import stage_wait
+        began = time.time()
+        try:
+            return function(admitted, **kwargs)
+        finally:
+            print(stage_wait.timing_line("keeper", setup_seconds=0, wait_seconds=int(time.time() - began),
+                                         rate=getattr(admitted[3], "rate", None)))
+    return wrapper
+
+
+@_exit_logged
 def execute(admitted, *, validators=None, event_source=None, product=None):
     """Operational keeper entry: compose the original keeper and run the stage loop to its terminal outcome.
 
@@ -3372,7 +3403,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     """
     import os
     from pathlib import Path
-    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy, stage_wait
     validators = TERMINAL_VALIDATORS if validators is None else validators
     event_source = KEEPER_EVENT_SOURCE if event_source is None else event_source
     c.require(type(validators) is dict and {"quiescence", "routing"} <= set(validators) <= set(TERMINAL_VALIDATOR_FACTS),
@@ -3389,6 +3420,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     c.require(type(os.environ.get("AWS_CREDENTIAL_EXPIRATION")) is str, "application credential expiration")
     expires = c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"])
     c.require(time.time() < expires, "application credential expiration")
+    stage_wait.require_rate_limit(api)
     credential_limit = min(expires, authority.expires_at, c.instant(authority.application_fragment["enabled_until"]))
     aws = lr.AWS(governance)
     _verify_session(aws, governance, authority, run, expires)
@@ -3403,6 +3435,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
                     api=api, governance=governance, evidence_aws=aws)
     register_terminal_validators(keeper, validators)
     owner = keeper.acquire(preparation_deadline=int(keeper.clock()) + 900)
+    _publish_stage_open(keeper, api, run, governance, credential_limit, keeper.clock)
     next_event = event_source(api=api, governance=governance, run=run, owner=owner, guard=KeeperGuard(keeper), keeper=keeper,
                               clock=keeper.clock)
     def operation_session(operation, role, stage):
