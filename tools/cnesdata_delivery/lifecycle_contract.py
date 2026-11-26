@@ -261,7 +261,7 @@ MODE_EFFECT_METHODS = {
 }
 MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", 400),
                         ("s3", "put_object"): ("PreconditionFailed", 412)}
-MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate")
+MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "input", "output")
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
                         ("dynamodb", "update_item"): set(), ("stepfunctions", "start_execution"): {"executionArn", "startDate"},
                         ("stepfunctions", "describe_execution"): set(MODE_UNIT_EXECUTION_FIELDS),
@@ -284,7 +284,7 @@ MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", na
                     "unit-start": frozenset(("mode_dispatch", "dynamodb", name) for name in ("get_item", "transact_write_items"))}
 MODE_UNIT_CALLS = {"unit-start": frozenset(("mode_dispatch", *call) for call in (
     ("dynamodb", "get_item"), ("dynamodb", "transact_write_items"), ("dynamodb", "update_item"),
-    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution")))}
+    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution"), ("ecs", "describe_tasks")))}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.

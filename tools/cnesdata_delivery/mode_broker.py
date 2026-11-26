@@ -1196,9 +1196,11 @@ def validate_mode_dispatch_call(operation, native, scope):
     unit, role, service, name, parameters = scope.get("unit"), *(native[key] for key in ("role", "service", "operation",
                                                                                          "parameters"))
     c.require(type(unit) is dict and (role, service, name) in lc.MODE_UNIT_CALLS.get(operation, ()), "mode unit dispatch call")
+    if unit.get("part") == "uw":
+        return _validate_unit_wait_call(name, parameters, unit)
+    c.require(unit.get("part") == "ux" and name not in ("describe_execution", "describe_tasks"), "mode unit dispatch call")
     if service == "stepfunctions":
-        c.require(parameters == (unit["start"] if name == "start_execution" else {"executionArn": unit["execution"]}),
-                  "mode unit dispatch call")
+        c.require(parameters == unit["start"], "mode unit dispatch call")
         return parameters
     try:
         found = product_dispatch().request_targets([(name, parameters)])
@@ -1207,6 +1209,14 @@ def validate_mode_dispatch_call(operation, native, scope):
     c.require(bool(found) and {tuple(target) for target in found} <= unit["targets"]
               and (name != "get_item" or (set(parameters) == {"TableName", "Key", "ConsistentRead"}
                                           and parameters["ConsistentRead"] is True)), "mode unit dispatch call")
+    return parameters
+
+
+def _validate_unit_wait_call(name, parameters, unit):
+    expected = {"describe_execution": {"executionArn": unit["execution"]}, "describe_tasks": unit.get("describe"),
+                "get_item": unit.get("read")}.get(name)
+    c.require(expected is not None and parameters == expected
+              and (name != "describe_tasks" or parameters.get("cluster") == unit["cluster"]), "mode unit dispatch call")
     return parameters
 
 
@@ -1302,6 +1312,44 @@ def _mode_ecs_response(response):
                                              for item in failures]}
 
 
+_MODE_UNIT_TASK_FIELDS = ("taskArn", "clusterArn", "lastStatus", "taskDefinitionArn")
+
+
+def _mode_unit_list(value, limit):
+    c.require(type(value) is list and len(value) <= limit and all(type(item) is dict for item in value),
+              "finite native unit ECS response")
+    return value
+
+
+def _mode_unit_override(entry):
+    item = {key: entry[key] for key in ("name",) if key in entry}
+    if "environment" in entry:
+        item["environment"] = [{key: pair[key] for key in ("name", "value") if key in pair}
+                               for pair in _mode_unit_list(entry["environment"], 32)]
+    return item
+
+
+def _mode_unit_task(task):
+    item = {key: task[key] for key in _MODE_UNIT_TASK_FIELDS if key in task}
+    if "containers" in task:
+        item["containers"] = [{key: entry[key] for key in ("name", "exitCode") if key in entry}
+                              for entry in _mode_unit_list(task["containers"], 10)]
+    overrides = task.get("overrides", {})
+    c.require(type(overrides) is dict, "finite native unit ECS response")
+    if "containerOverrides" in overrides:
+        item["overrides"] = {"containerOverrides": [_mode_unit_override(entry)
+                                                    for entry in _mode_unit_list(overrides["containerOverrides"], 10)]}
+    return item
+
+
+def _mode_unit_ecs_response(response):
+    c.require(set(response) <= {"tasks", "failures", "ResponseMetadata"}, "finite native unit ECS response")
+    tasks = _mode_unit_list(response.get("tasks", []), 100)
+    failures = _mode_unit_list(response.get("failures", []), 100)
+    return {"tasks": [_mode_unit_task(task) for task in tasks],
+            "failures": [{key: item[key] for key in ("arn", "reason") if key in item} for item in failures]}
+
+
 def _mode_task_terminal(reply):
     tasks = reply["value"]["tasks"]
     return not (len(tasks) == 1 and tasks[0].get("lastStatus") != "STOPPED")
@@ -1311,12 +1359,12 @@ _MODE_READ_FAMILIES = {"describe_state_machine": "state_machine", "get_schedule"
                        "describe_task_definition": "task_definitions", "describe_alarms": "alarms"}
 
 
-def _mode_response(service, operation, response, sdk):
+def _mode_response(service, operation, response, sdk, *, unit=False):
     if operation in _MODE_READ_FAMILIES:
         native = {key: value for key, value in response.items() if key != "ResponseMetadata"}
         return _readback_piece({"key": _MODE_READ_FAMILIES[operation], "parameters": sdk}, native)
     if service == "ecs":
-        return _mode_ecs_response(response)
+        return _mode_unit_ecs_response(response) if unit else _mode_ecs_response(response)
     if (service, operation) == ("dynamodb", "get_item"):
         c.require(set(response) <= {"Item", "ResponseMetadata"}, "finite native DynamoDB response")
         return {key: response[key] for key in ("Item",) if key in response}
@@ -1351,6 +1399,7 @@ class ModeBroker:
                   "mode unit original context")
         self.aws, self.governance, self.journal, self.session, self.reads = aws, governance, journal, session, reads
         self.wait, self.unit, self._dispatching, self._dispatched = wait, unit, False, False
+        self.unit_observed, self._unit_describe, self._unit_reads = None, None, 0
         self.prepared_sha256, self.credential_limit = c.digest(prepared_sha256), credential_limit
         self.clock, self.sleep = clock or time.time, sleep or time.sleep
         self.scope = _mode_call_scope(governance, journal, session)
@@ -1388,15 +1437,21 @@ class ModeBroker:
                              "launched": [task["taskArn"] for response in launches for task in response.get("tasks", [])]}
 
     def _unit_scope(self):
-        plan = self.unit
-        start = {"stateMachineArn": self.scope["resources"]["machine_arn"], **product_dispatch().start_execution(plan.start.dispatch)}
-        return {"targets": plan.targets, "start": start, "execution": plan.execution}
+        plan, dispatch = self.unit, self.unit.start.dispatch
+        start = {"stateMachineArn": self.scope["resources"]["machine_arn"], **product_dispatch().start_execution(dispatch)}
+        reads = product_unit_observe().unit_output_reads(self.scope["table"], dispatch.tenant_id, dispatch.run_id,
+                                                         dispatch.unit_ids)
+        return {"targets": plan.targets, "start": start, "execution": plan.execution, "part": self._dispatching,
+                "cluster": self.scope["resources"]["cluster_arn"], "describe": self._unit_describe,
+                "read": reads[self._unit_reads] if self._unit_reads < len(reads) else None}
 
     def dispatch_unit(self, value):
         """Q1b: the unit-start sequence of the plan on ux (C1 per request, dispatch-unit frame, B3 on a fresh clock, exact
         StartExecution), then the bounded DescribeExecution wait of the exact execution ARN on uw.
 
-        Returns: {"execution", "tasks", "outputs"}; tasks and outputs stay empty until P16d. Raises: ValueError.
+        P16d: on uw, the DescribeTasks of the scan of the terminal execution on the plan cluster and the GetItem of each
+        unit's RUNUNIT, kept in unit_observed for the step receipts; a product refusal of the outputs fails the operation.
+        Returns: {"execution", "tasks", "failures", "outputs"}. Raises: ValueError.
         """
         journal, plan = self.journal, self.unit
         c.require("dispatch_unit" in lc.MODE_EFFECT_METHODS[journal._request["operation"]] and plan is not None
@@ -1409,11 +1464,31 @@ class ModeBroker:
         c.require(self.clock() + 20 < min(self.session.deadline, self.wait.deadline), "mode finite SDK request/window")
         unit_dispatch_steps(plan.start, read=self._unit_read, write=self._unit_write, admit=self._unit_admit,
                             live=self._unit_live, launch=self._unit_launch)
-        return {"execution": self._unit_wait(), "tasks": [], "outputs": []}
+        observed = self._unit_observe(self._unit_wait())
+        self.unit_observed = observed
+        return c.loads(c.canonical(observed), canonical=True)
+
+    def _unit_observe(self, execution):
+        observe, plan = product_unit_observe(), self.unit
+        dispatch = plan.start.dispatch
+        arns = observe.unit_task_arns(execution, plan.cluster)
+        described = {"tasks": [], "failures": []}
+        if arns:
+            self._unit_describe = observe.describe_tasks_request(plan.cluster, arns)
+            described = self._unit_call("ecs", "describe_tasks", self._unit_describe, session=self.wait)
+        items = []
+        for request in observe.unit_output_reads(self.scope["table"], dispatch.tenant_id, dispatch.run_id, dispatch.unit_ids):
+            items.append(self._unit_call("dynamodb", "get_item", request, session=self.wait).get("Item"))
+            self._unit_reads += 1
+        try:
+            outputs = observe.unit_outputs(dispatch.tenant_id, dispatch.run_id, dispatch.unit_ids, items)
+        except ValueError as error:
+            raise ValueError("mode_unit_outputs=refused") from error
+        return {"execution": execution, "tasks": described["tasks"], "failures": described["failures"], "outputs": outputs}
 
     def _unit_call(self, service, operation, parameters, session=None):
         native = {"role": (session or self.session).alias, "service": service, "operation": operation, "parameters": parameters}
-        self._dispatching = True
+        self._dispatching = (session or self.session).code
         try:
             validate_mode_dispatch_call(self.journal._request["operation"], native, self._call_scope())
             return self._native_call(c.canonical(native, limit=128 * 1024), service, operation, parameters, session=session)
@@ -1487,7 +1562,6 @@ class ModeBroker:
                                   child_deadline=min(stage["deadline"] - 38, self.wait.deadline), clock=self.clock,
                                   sleep=self.sleep)
         self.journal.__dict__.setdefault("_timings", []).append(timing)
-        self.described = reply
         return reply
 
     def readbacks(self):
@@ -1613,7 +1687,8 @@ class ModeBroker:
             metadata = response.get("ResponseMetadata", {})
             c.require(type(metadata.get("HTTPStatusCode")) is int and metadata["HTTPStatusCode"] == status,
                       "mode native SDK authenticated status")
-            value = failure if failure is not None else _mode_response(service, operation, response, sdk)
+            value = failure if failure is not None else _mode_response(service, operation, response, sdk,
+                                                                       unit=self._dispatching is not False)
             response_raw = c.canonical(_exact_sdk_dates(value), limit=1024**2)
             c.require(self.clock() < session.deadline, "native response exceeded original mode window")
             receipt = journal.complete_sdk_call(ticket, response_raw, request_id=metadata["RequestId"],

@@ -766,12 +766,13 @@ def test_passos_intermediarios_do_keeper_sao_os_do_abi_de_modo_do_produto():
     assert lc.MODE_SINGLE_STEPS == frozenset({"unit-execution", "recovery-task", "audit-task"})
 
 
-@pytest.mark.parametrize("operation, kind", [("unit-start", "unit-task"), ("unit-start", "unit-output")])
-def test_journal_aceita_o_passo_intermediario_da_propria_operacao(operation, kind):
+@pytest.mark.parametrize("operation, kind", [("unit-start", "unit-task"), ("unit-start", "unit-output"),
+                                             ("unit-start", "unit-execution")])
+def test_journal_recusa_passo_do_unit_start_sem_o_slot_do_dispatch(operation, kind):
     journal = _start_journal(operation)
-    raw = c.canonical({"step": kind})
-    assert journal.observe(kind, raw) == c.sha(raw)
-    assert journal.observations == [{"kind": kind, "sha256": c.sha(raw), "size": len(raw)}]
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe(kind, c.canonical({"step": kind}))
+    assert journal.observations == []
 
 
 @pytest.mark.parametrize("operation, kind", [("unit-start", "recovery-task"), ("recovery-start", "unit-task"),
@@ -804,7 +805,8 @@ def _result(journal):
 
 def test_resultado_do_adapter_aceita_os_passos_registrados_e_recusa_passo_de_outra_operacao():
     journal = _start_journal("unit-start")
-    journal.observe("unit-task", c.canonical({"step": 1}))
+    step = c.canonical({"step": 1})
+    journal._observations.append({"kind": "unit-task", "sha256": c.sha(step), "size": len(step)})
     journal.observe("mode-result", c.canonical({"result": 1}))
     raw = _result(journal)
     assert lc.validate_adapter_result(raw, request=journal._request, observations=journal.observations, call_receipts=[],

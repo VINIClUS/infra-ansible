@@ -593,7 +593,7 @@ class Context:
         fields = ("tenant_id", "run_ids", "owner_sha256", "record_sha256", "phase", "context_kind")
         value = {name: getattr(binding, name) for name in fields}
         reply = self.exchange({"kind": "dispatch-unit", "binding": value | {"run_ids": list(value["run_ids"])}})
-        c.closed(reply, "execution tasks outputs")
+        c.closed(reply, "execution failures outputs tasks")
         return reply
 start = receive()
 c.closed(start, "kind request")
@@ -1057,10 +1057,12 @@ class AdapterJournal:
         value = c.loads(raw, canonical=True, limit=1024**2)
         c.require(type(value) is dict and value, "adapter observation requires original domain object")
         c._secrets(value)
-        if kind in lc.MODE_TASK_STEPS | {"unit-execution"}:
+        if kind in lc.MODE_TASK_STEPS:
             from tools.cnesdata_delivery.mode_broker import ModeBroker
             broker = getattr(self, "_broker", None)
             c.require(type(broker) is ModeBroker and c.canonical(broker.described) == raw, "mode step receipt")
+        elif kind in lc.ADAPTER_STEPS["unit-start"]:
+            self._unit_step(kind, raw)
         self.guard()
         digest = c.sha(raw)
         self.guard()
@@ -1068,6 +1070,15 @@ class AdapterJournal:
         self._observations.append({"kind": kind, "sha256": digest, "size": len(raw)})
         self._observation_links.append({"observation_sha256": digest, "call_receipts_sha256": c.sha(c.canonical(self._call_receipts))})
         return digest
+
+    def _unit_step(self, kind, raw):
+        from tools.cnesdata_delivery.mode_broker import ModeBroker
+        broker = getattr(self, "_broker", None)
+        observed = broker.unit_observed if type(broker) is ModeBroker else None
+        items = None if observed is None else {"unit-execution": [observed["execution"]], "unit-task": observed["tasks"],
+                                               "unit-output": observed["outputs"]}[kind]
+        index = sum(1 for entry in self._observations if entry["kind"] == kind)
+        c.require(items is not None and index < len(items) and c.canonical(items[index]) == raw, "mode step receipt")
 
     def validate_result(self, raw):
         c.require(self._durable_active is None, "durable SDK receipt unresolved")
