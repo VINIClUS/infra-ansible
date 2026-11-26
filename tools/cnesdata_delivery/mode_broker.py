@@ -735,6 +735,7 @@ def validate_mode_describe_tasks(parameters, *, cluster_arn, launched):
 MODE_UNIT_START_OPEN = False
 _MODE_RECORDS = ("unit-record", "recovery-record", "audit-record")
 MODE_KEEPER_ORIGINS = {"mode-start": None, "previous": None, "mode-seed": "audit", "recovery-readbacks": "audit-observe",
+                       "observed": ("unit-observe",),
                        "phase-c": ("recovery-observe", "audit-observe"),
                        "readbacks": ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start",
                                      "audit-observe"),
@@ -755,6 +756,19 @@ def _lease_original(keeper, operation, kind, label):
     found = [entry for entry in journals[0]._observations if entry["kind"] == kind]
     c.require(len(found) == 1, label)
     return journals[0]._observation_bytes[found[0]["sha256"]]
+
+
+def _observed_original(keeper, *, owner, window, context):
+    journals = _operation_journals(keeper, "unit-start")
+    c.require(len(journals) == 1 and not journals[0]._failed and not journals[0]._unknown, "observed original")
+    journal = journals[0]
+    steps = {kind: [c.loads(journal._observation_bytes[entry["sha256"]], canonical=True)
+                    for entry in journal._observations if entry["kind"] == kind]
+             for kind in ("unit-execution", "unit-task", "unit-output")}
+    c.require(len(steps["unit-execution"]) == 1, "observed original")
+    unit_readback_cluster(journal._inputs.get("readbacks"), _prepared_authority(context, owner, window).scope["resources"])
+    return c.canonical({"execution": steps["unit-execution"][0], "tasks": steps["unit-task"],
+                        "outputs": steps["unit-output"]})
 
 
 def _origin_open(name, mode, operation):
@@ -839,6 +853,8 @@ def _source_original(name, *, keeper, owner, window, operation, context):
         return c.canonical(None)
     if name == "mode-seed":
         return _lease_original(keeper, "recovery-seed", "mode-seed", "mode-seed original")
+    if name == "observed":
+        return _observed_original(keeper, owner=owner, window=window, context=context)
     if name == "phase-c":
         return _phase_c_original(keeper, mode)
     if name == "readbacks":
@@ -853,7 +869,8 @@ def _source_original(name, *, keeper, owner, window, operation, context):
 
 
 def mode_input_source(*, keeper, owner, window, operation, names, context=None):
-    """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null; (s) the audit mode-seed
+    """Mode originals the keeper derives itself (design 2): (k) mode-start and previous null, and unit-observe's observed
+    from the step receipts of this lease's single unit-start journal, its cluster re-checked; (s) the audit mode-seed
     and recovery-readbacks from this lease's recovery journals; phase-c, the list of this keeper's accepted phase-c
     elements in mode order (P17 ruling 6); readbacks, the handoff of this keeper's single ModeReadback of the mode,
     built, attached and read at the start (ruling 5, Falta 7); (a) mode-input and network from the PreparedFence
