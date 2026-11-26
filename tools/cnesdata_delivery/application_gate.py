@@ -2910,9 +2910,67 @@ def _upload_keeper_artifact(keeper, api, run, *, name, files, guard, credential_
     return receipt
 
 
+def _static_candidate(api, run, governance, owner, guard, now):
+    from tools.cnesdata_delivery import static_inputs as si
+    members = _caller_artifact(api, run, owner, job_name=STATIC_INPUTS_JOB, members=STATIC_INPUTS_MEMBERS, guard=guard, now=now,
+                               name=f"cnesdata-static-inputs-{owner['run_id']}-{owner['run_attempt']}")
+    return si.authenticated_candidate(members["candidate.json"], governance)
+
+
+def _static_promotion_args(governance, owner, candidate, now):
+    """P40 static_promotion arguments: binding from the candidate and the owner, application window from the original fragment."""
+    from tools.cnesdata_delivery import session_owner, static_inputs as si
+    fragment = session_owner.application_fragment(governance, now)
+    binding = {"release_id": si.binding_release_id(candidate["release_id"]), "run_id": owner["run_id"],
+               "run_attempt": owner["run_attempt"], "generation": owner["generation"], "product_source_sha": owner["source_sha"],
+               "shared_source_sha": c.digest(governance["gate_shas"]["application"], 40)}
+    return {"binding": binding, "application_promotion": {key: fragment[key] for key in ("enabled_until", "evidence")},
+            "enabled_until": fragment["enabled_until"]}
+
+
+def _publish_composed_inputs(keeper, api, run, governance, publication):
+    """P40: compose the plan's inputs.json from the keeper's own sources and publish it (the plan job must be in progress)."""
+    from tools.cnesdata_delivery import plan_inputs
+    name, step, static_args, extras, limits = publication
+    record = keeper.lease.check()
+    historical = lc.phase_a_originals(keeper.phase_a_originals)
+    raw = plan_inputs.compose(name, plan_inputs.base_inputs(governance, historical), static_args, extras)
+    return plan_inputs.publish_plan_inputs(keeper=keeper, api=api, run=run, owner=lc.owner_binding(record), plan_step=name, step=step,
+                                           raw=raw, phase_a_inputs=historical["envelope"]["plan"]["phase_a_inputs"],
+                                           credential_limit=limits[0], clock=limits[1])
+
+
+def _publish_plan_inputs(keeper, api, run, governance, credential_limit, clock):
+    """P40, before the stage-open marker: the inputs of the plan that opens the stage (bootstrap carries its static_promotion)."""
+    from tools.cnesdata_delivery import plan_inputs, stage_wait
+    record = keeper.lease.check()
+    name, step = stage_wait.first_plan(governance, record["lifecycle"]["stage"])
+    owner, static_args = lc.owner_binding(record), None
+    if name == plan_inputs.BOOTSTRAP_PLAN:
+        candidate = _static_candidate(api, run, governance, owner, KeeperGuard(keeper), clock())
+        static_args = _static_promotion_args(governance, owner, candidate, clock())
+    return _publish_composed_inputs(keeper, api, run, governance, (name, step, static_args, {}, (credential_limit, clock)))
+
+
+def _publish_operational_plan_inputs(keeper, api, run, governance, settled, clock):
+    """P40, once the inventory settled: the operational plan's inputs from the static plan and the relayed mode_canary."""
+    from tools.cnesdata_delivery import plan_inputs
+    inventory, credential_limit = settled
+    owner, guard = lc.owner_binding(keeper.lease.check()), KeeperGuard(keeper)
+    candidate = _static_candidate(api, run, governance, owner, guard, clock())
+    plan = _caller_artifact(api, run, owner, job_name=INVENTORY_PROBE, members={"static-plan.json"}, guard=guard, now=clock(),
+                            name=f"cnesdata-static-plan-{owner['run_id']}-{owner['run_attempt']}")["static-plan.json"]
+    extras = {"plan": plan, "inventory": inventory,
+              "mode_canary": plan_inputs.mode_canary_source(api=api, run=run, owner=owner, guard=guard, now=clock())}
+    name = plan_inputs.OPERATIONAL_PLAN
+    return _publish_composed_inputs(keeper, api, run, governance, (name, governance["lifecycle_steps"][name],
+                                    _static_promotion_args(governance, owner, candidate, clock()), extras, (credential_limit, clock)))
+
+
 def _publish_stage_open(keeper, api, run, governance, credential_limit, clock):
     """E1: announce the window the lease just opened to the pre-approved external first job (stage_wait)."""
     from tools.cnesdata_delivery import stage_wait
+    _publish_plan_inputs(keeper, api, run, governance, credential_limit, clock)
     record = keeper.lease.check()
     window = record["lifecycle"]
     return stage_wait.publish_stage_open(
@@ -3107,6 +3165,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         (journal,) = _operation_journals(current, "inventory")
         raw = _inventory_observation(current, journal)
         publish_inventory(keeper=current, api=api, run=run, owner=owner, raw=raw, credential_limit=credential_limit, clock=clock)
+        _publish_operational_plan_inputs(current, api, run, governance, (raw, credential_limit), clock)
         current.static_inputs = {name: inputs[name] for name in ("candidate", "dashboard-artifact")}
         current.static_inventory = raw
 
@@ -3389,7 +3448,7 @@ def _exit_logged(function):
             return function(admitted, **kwargs)
         finally:
             print(stage_wait.timing_line("keeper", setup_seconds=0, wait_seconds=int(time.time() - began),
-                                         rate=getattr(admitted[3], "rate", None)))
+                                         rate=getattr(admitted[3] if len(admitted) > 3 else None, "rate", None)))
     return wrapper
 
 

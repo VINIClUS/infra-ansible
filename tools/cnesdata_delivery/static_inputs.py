@@ -130,6 +130,8 @@ def carrier_binding(terraform):
     promotion = value.get("static_promotion") if type(value) is dict else None
     binding = promotion.get("binding") if type(promotion) is dict else None
     c.require(type(binding) is dict and set(binding) == set(lc.STATIC_BINDING_FIELDS.split()), "static_binding=carrier_absent")
+    c.require(promotion.get("mode") in ("operational", "observer-bootstrap"), "static_binding=carrier_mode")
+    c.require((binding["static_plan_sha256"] is None) == (promotion["mode"] == "observer-bootstrap"), "static_binding=carrier_plan_sha256")
     return binding
 
 

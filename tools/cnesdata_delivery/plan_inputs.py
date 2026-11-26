@@ -125,6 +125,28 @@ def inputs_bytes(base, static_promotion, mode_canary):
     return raw
 
 
+BOOTSTRAP_PLAN = "observer-bootstrap-plan"
+OPERATIONAL_PLAN = "application-prepare-operational-plan"
+
+
+def compose(plan_step, base, static_args, extras):
+    """The per-plan inputs.json: bootstrap and operational carry a static_promotion, the other plans only the base.
+
+    Args: plan step, base inputs, static_promotion arguments (binding, application_promotion, enabled_until) or None,
+    extras (plan, inventory and mode_canary, operational only). Returns: the canonical bytes. Raises: ValueError plan_inputs=compose.
+    """
+    if plan_step == BOOTSTRAP_PLAN:
+        c.require(set(extras) == set() and static_args is not None, "plan_inputs=compose")
+        return inputs_bytes(base, static_bootstrap_input(**static_args), None)
+    if plan_step == OPERATIONAL_PLAN:
+        c.require(set(extras) == {"plan", "inventory", "mode_canary"} and static_args is not None
+                  and type(extras["mode_canary"]) is dict, "plan_inputs=compose")
+        return inputs_bytes(base, static_promotion_input(**static_args, plan=extras["plan"], inventory=extras["inventory"]),
+                            extras["mode_canary"])
+    c.require(not extras, "plan_inputs=compose")
+    return inputs_bytes(base, None, None)
+
+
 def require_custody(raw, phase_a_inputs):
     """Every one of the six original Phase A inputs is present in the tfvars and equals the custody value."""
     value = c.loads(raw, canonical=True, limit=LIMIT)

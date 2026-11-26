@@ -1463,15 +1463,16 @@ def execute(role):
                                                           raw=payload.get("checkpoint.json"))
         guard.check()
     checkpoint = c.loads(payload["checkpoint.json"], canonical=True)
-    if step.get("historical_entry") is True and predecessor["protocol"] == "legacy-infra":
+    historical_view = historical_origin(governance, step, origins)
+    if historical_view and predecessor["protocol"] == "legacy-infra":
         c.require(payload["checkpoint.json"] == historical["raw"]["checkpoint.json"], "first checkpoint is original Phase A bytes")
     else:
         c.require(c.canonical(checkpoint["phase_a_originals"]) == c.canonical(carrier), "checkpoint preserves original Phase A custody")
-    if step.get("historical_entry") is True and governance["predecessor_read"]["protocol"] == "legacy-infra":
+    if historical_view and governance["predecessor_read"]["protocol"] == "legacy-infra":
         checkpoint_state = checkpoint["state_after"]
     else:
         checkpoint_state = checkpoint["state"]
-        if step.get("historical_entry") is not True:
+        if not historical_view:
             c.require(c.canonical(checkpoint["owner"]) == c.canonical(owner), "same-owner checkpoint")
     c.require(checkpoint_state == before and checkpoint["state_object"] == before_object
               and (c.sha(payload["checkpoint.json"]) == guard.window["checkpoint_sha256"]
@@ -1589,14 +1590,22 @@ def execute(role):
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)
 
 
+HOP_ORIGINS = frozenset({("deploy", "application-prepare", "observer-bootstrap"), ("plan", "application-prepare", "operational")})
+
+
 def bootstrap_hop(governance, step, checkpoint, origins, window):
-    """One-hop chain: the observer-bootstrap deploy checkpoint of this run, linked to the window checkpoint."""
+    """One-hop chain: the checkpoint of the observer-bootstrap deploy (or the operational plan that republishes it) of this run, linked to the window checkpoint."""
     producer = governance["lifecycle_steps"].get(origins.get("checkpoint.json"), {})
     return (step.get("historical_entry") is not True and step["purpose"] == "application-prepare"
-            and (producer.get("role"), producer.get("purpose"), producer.get("mode"))
-            == ("deploy", "application-prepare", "observer-bootstrap")
+            and (producer.get("role"), producer.get("purpose"), producer.get("mode")) in HOP_ORIGINS
             and checkpoint.get("purpose") == "application-prepare"
             and checkpoint.get("previous_checkpoint_sha256") == window["checkpoint_sha256"])
+
+
+def historical_origin(governance, step, origins):
+    """The step is, or reads the checkpoint of, a same-chain historical-entry plan: the checkpoint is the Phase A one."""
+    producer = governance["lifecycle_steps"].get(origins.get("checkpoint.json"), {})
+    return step.get("historical_entry") is True or (producer.get("role") == "plan" and producer.get("historical_entry") is True)
 
 
 def deploy_result_files(purpose, checkpoint_raw, approval_raw, apply_output):

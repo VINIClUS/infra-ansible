@@ -5940,6 +5940,8 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         ("tools/cnesdata_delivery/plan_inputs.py", "static_promotion_input", "static_plan"),
         (gate, "run_closed_ready", "KeeperGuard"),
         (gate, "_publish_stage_open", "KeeperGuard"),
+        (gate, "_publish_plan_inputs", "KeeperGuard"),
+        (gate, "_publish_operational_plan_inputs", "KeeperGuard"),
         (gate, "closed_ready_capability", "_assume_fence_session"),
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller

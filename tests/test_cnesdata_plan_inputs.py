@@ -204,12 +204,11 @@ def test_static_promotion_e_inputs_reproduzem_o_vetor_gerado_pelo_produto():
     assert plan_inputs.inputs_bytes(vector["base"], promotion, None) == bytes.fromhex(vector["inputs_hex"])
 
 
-def test_vetor_fixa_a_fonte_do_gerador_do_produto_na_cabeca_do_p35c():
+def test_vetor_fixa_a_fonte_do_gerador_do_produto_no_merge_do_p35c():
     assert _vector()["generator"] == {
-        "repository": "VINIClUS/CnesData", "commit": "2a4708e224de4207a112792c8afc3be6e009d7b1",
-        "branch": "feat/p35c-nomes-payload-e-relogio-probe", "repin": "pending: P35c merge commit",
+        "repository": "VINIClUS/CnesData", "commit": "182dc74c",
         "path": "scripts/promotion/lifecycle_inputs.py",
-        "sha256": "230aa4fe1a03850c9141939f44b18935a41d6d8355fec71f31e28d1940669b88"}
+        "sha256": "d40a5ec96d14d3ddac2fbf8afea715c352ec4e3cb0ef51234b348dbe92ff28a9"}
 
 
 def test_bootstrap_reproduz_o_vetor_do_produto_sem_plano_nem_inventory():
