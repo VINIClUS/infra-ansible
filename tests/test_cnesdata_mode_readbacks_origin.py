@@ -1,6 +1,8 @@
 """P16b c-1125-p16b-repin: the readbacks origin is the keeper's ModeReadback of the mode, handed off by original()."""
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_mode_readback_context import SOURCE, _keys, _readback
 
 OPERATIONS = ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start", "audit-observe")

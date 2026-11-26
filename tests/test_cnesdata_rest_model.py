@@ -9,7 +9,7 @@ SOURCE = (pathlib.Path(__file__).resolve().parents[1] / "tools/cnesdata_delivery
 
 
 def test_poll_do_keeper_no_modelo_e_o_default_de_keeper_loop():
-    assert re.search(r"def keeper_loop\(keeper, \*, next_event, handlers, poll=(\d+), sleep=time.sleep\)", SOURCE).group(1) \
+    assert re.search(r"def keeper_loop\(keeper, \*, next_event, handlers, terminal, poll=(\d+), sleep=time.sleep\)", SOURCE).group(1) \
         == str(stage_wait.KEEPER_POLL_SECONDS)
     assert stage_wait.KEEPER_POLL_SECONDS == stage_wait.POLL_SECONDS == 5
 

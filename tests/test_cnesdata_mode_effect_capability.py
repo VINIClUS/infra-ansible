@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 import test_cnesdata_mode_session_sts as sts
 from test_cnesdata_mode_readback_context import _Store
 from test_cnesdata_mode_readback_session import _case as _read_case

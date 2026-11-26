@@ -1,6 +1,8 @@
 """P16b c-1125-p16b-pc: the readback receipt and the closed-ready receipt, both schema 2, refuse each other's objects."""
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from test_cnesdata_application_gate import _durable_closed_ready_case
 from test_cnesdata_mode_readback_context import _keys, _readback
 from tools.cnesdata_delivery import contract as c
