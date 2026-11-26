@@ -3378,6 +3378,22 @@ def _verify_session(client, governance, authority, run, expires):
     return Guard()
 
 
+def _exit_logged(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(admitted, **kwargs):
+        from tools.cnesdata_delivery import stage_wait
+        began = time.time()
+        try:
+            return function(admitted, **kwargs)
+        finally:
+            print(stage_wait.timing_line("keeper", setup_seconds=0, wait_seconds=int(time.time() - began),
+                                         rate=getattr(admitted[3], "rate", None)))
+    return wrapper
+
+
+@_exit_logged
 def execute(admitted, *, validators=None, event_source=None, product=None):
     """Operational keeper entry: compose the original keeper and run the stage loop to its terminal outcome.
 

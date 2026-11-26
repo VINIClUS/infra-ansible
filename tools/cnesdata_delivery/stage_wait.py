@@ -1,4 +1,5 @@
 """Credential-free wait for the stage-open marker, and the keeper-side publication of it (E1, DD-2)."""
+import functools
 import os
 import time
 
@@ -182,7 +183,7 @@ LIFECYCLE_ARTIFACT_READS = 4
 PAYLOAD_READS_PER_ADMISSION = 2 + LIFECYCLE_ARTIFACT_READS
 PRODUCERS_READS = 3
 MARKER_HIT_READS = 3
-UPLOAD_READBACK_SECONDS = 30
+UPLOAD_READBACK_SECONDS = 40
 POST_STEP_ALLOWANCE_SECONDS = 60
 COMPLETION_LAG_SECONDS = 60
 PRODUCER_TAIL_SECONDS = UPLOAD_READBACK_SECONDS + POST_STEP_ALLOWANCE_SECONDS + COMPLETION_LAG_SECONDS
@@ -194,33 +195,40 @@ REST_BUDGET_NO_JOBS_CREDIT = 90 * ASSUMED_RATE_LIMIT // 100
 MEASURED_HIT_RATES = {"jobs": 0.141, "artifacts": 0.929}
 G_JOBS = {"application-prepare": 6, "phase-b": 3, "phase-c-recovery": 3, "phase-c-audit": 3}
 PAYLOAD_CONSUMERS = {"application-prepare": 4, "phase-b": 2, "phase-c-recovery": 2, "phase-c-audit": 2}
-CODE_BOUND_WINDOW_SECONDS = 360
+LATE_PREPARE_OPEN_SECONDS = PREPARATION_ALLOWANCE_SECONDS - 300
+GOVERNED_GRID_SECONDS = 60
+OWN_JOB_READS_PER_G_JOB = 1
+NON_CONSUMER_PAYLOAD_READS = 2 + PRODUCERS_READS
+UNMODELED_RESIDUAL_READS = 20
+P40_POINT_READS = 41
 PROBE_END_STAGES = {"closed-ready": "api"}
 HOUR_SECONDS = 3600
 
 
-def _stage_opens():
-    opens, now = {"application-prepare": 0}, PREPARATION_ALLOWANCE_SECONDS
+def _stage_opens(windows, prepare_open):
+    opens, now = {"application-prepare": prepare_open}, PREPARATION_ALLOWANCE_SECONDS
     for stage in WINDOW_ORDER:
         opens[stage] = now
-        now += CODE_BOUND_WINDOW_SECONDS
+        now += windows[stage]
     return opens, now
 
 
-def rest_model(hit_rates=None, *, include_keeper=True):
-    """Pure per-run GITHUB_TOKEN REST read count (one bucket per repository) at the code-bound windows.
+def rest_model(hit_rates=None, *, windows, prepare_open=0, include_keeper=True):
+    """Pure per-run GITHUB_TOKEN REST read count (one bucket per repository) over the given stage windows.
 
     A 304 is free only at the passed hit rate of its listing; every other read counts one. Counted constants come
-    from fixtures and the code; HANDLER_READS_PER_STAGE and SESSION_OWNER_READS_PER_JOB stay estimates.
+    from fixtures and the code. Estimates: HANDLER_READS_PER_STAGE, SESSION_OWNER_READS_PER_JOB, POST_STEP_ALLOWANCE_SECONDS,
+    COMPLETION_LAG_SECONDS, LATE_PREPARE_OPEN_SECONDS and UNMODELED_RESIDUAL_READS (counted as one block in the worst hour).
 
-    Args: 304 hit rate per listing (jobs, artifacts; 0 unless measured), whether the keeper term is counted.
+    Args: 304 hit rate per listing (jobs, artifacts; 0 unless measured), stage windows, application-prepare open, keeper term.
     Returns: dict with the worst rolling-hour count and the per-component totals.
     """
     rates = {"jobs": 0.0, "artifacts": 0.0} | (hit_rates or {})
     jobs, artifacts = 1 - rates["jobs"], 1 - rates["artifacts"]
-    opens, end = _stage_opens()
+    opens, end = _stage_opens(windows, prepare_open)
     seconds = [0.0] * (end + 1)
-    totals = {"keeper": 0.0, "marker_waiters": 0.0, "payload_waiters": 0.0, "admission": 0.0, "probes": 0.0}
+    names = ("keeper", "marker_waiters", "payload_waiters", "admission", "probes", "own_job", "non_consumers")
+    totals = dict.fromkeys(names, 0.0) | {"residual": UNMODELED_RESIDUAL_READS}
 
     def add(component, start, stop, cost, every=POLL_SECONDS):
         for second in range(int(start), min(int(stop), end), every):
@@ -239,13 +247,16 @@ def rest_model(hit_rates=None, *, include_keeper=True):
         for _ in range(count):
             add("marker_waiters", 0, opens[stage], artifacts)
             point("marker_waiters", opens[stage], MARKER_HIT_READS)
+            point("own_job", opens[stage], OWN_JOB_READS_PER_G_JOB)
             point("admission", opens[stage], ADMISSION_PREFLIGHT_READS + 2 * ADMISSION_FULL_READS + SESSION_OWNER_READS_PER_JOB)
-        window = PREPARATION_ALLOWANCE_SECONDS if stage == "application-prepare" else CODE_BOUND_WINDOW_SECONDS
+        window = PREPARATION_ALLOWANCE_SECONDS - prepare_open if stage == "application-prepare" else windows[stage]
         for _ in range(PAYLOAD_CONSUMERS[stage]):
             add("payload_waiters", opens[stage], opens[stage] + window, artifacts)
             add("payload_waiters", opens[stage] + window - PRODUCER_TAIL_SECONDS, opens[stage] + window, jobs)
             point("payload_waiters", opens[stage], PRODUCERS_READS)
             point("admission", opens[stage], 2 * PAYLOAD_READS_PER_ADMISSION)
+        for _ in range(count - PAYLOAD_CONSUMERS[stage]):
+            point("non_consumers", opens[stage], NON_CONSUMER_PAYLOAD_READS)
     for stage in PROBE_END_STAGES.values():
         add("probes", 0, opens[stage], PROBE_ARTIFACT_READS_PER_POLL * artifacts, PROBE_POLL_SECONDS)
         add("probes", 0, opens[stage], PROBE_JOBS_READS_PER_MINUTE * jobs, 60)
@@ -253,7 +264,43 @@ def rest_model(hit_rates=None, *, include_keeper=True):
     for value in seconds:
         prefix.append(prefix[-1] + value)
     worst = max(prefix[min(start + HOUR_SECONDS, len(seconds))] - prefix[start] for start in range(len(seconds)))
-    return {"worst_rolling_hour": worst, "components": totals, "run_seconds": end}
+    return {"worst_rolling_hour": worst + UNMODELED_RESIDUAL_READS, "components": totals, "run_seconds": end}
+
+
+def _governed_vectors():
+    import itertools
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    ranges = [sorted(set(range(low, high + 1, GOVERNED_GRID_SECONDS)) | {high}) for low, high in lc.STAGES.values()]
+    for combo in itertools.product(*ranges):
+        if sum(combo) > lc.STAGE_SUM_CEILING:
+            continue
+        windows = dict(zip(lc.STAGES, combo))
+        try:
+            lc.governed_windows({"stages": windows, "fixed_deadline_seconds": sum(combo) + lc.FINAL_RESERVE})
+        except ValueError:
+            continue
+        yield windows
+
+
+@functools.cache
+def _governed_worst(rates):
+    best = {"worst_rolling_hour": -1.0}
+    vectors = 0
+    for windows in _governed_vectors():
+        vectors += 1
+        for prepare_open in (0, LATE_PREPARE_OPEN_SECONDS):
+            value = rest_model(dict(rates), windows=windows, prepare_open=prepare_open)["worst_rolling_hour"]
+            if value > best["worst_rolling_hour"]:
+                best = {"worst_rolling_hour": value, "windows": windows, "prepare_open": prepare_open}
+    return best | {"vectors": vectors}
+
+
+def governed_worst(hit_rates=None):
+    """Worst rolling hour over every window vector the contract admits (grid GOVERNED_GRID_SECONDS, maxima included).
+
+    Args: 304 hit rate per listing. Returns: worst_rolling_hour, windows, prepare_open (early or late marker), vectors.
+    """
+    return _governed_worst(tuple(sorted((hit_rates or {}).items())))
 
 
 def first_job_name(governance, stage):

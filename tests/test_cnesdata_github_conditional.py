@@ -139,3 +139,52 @@ def test_resposta_sem_cabecalhos_de_limite_deixa_o_registro_vazio(monkeypatch):
     api, _ = _api(monkeypatch, Response(b"{}"))
     api.read(PATH)
     assert api.rate is None
+
+
+def test_leitura_seguinte_substitui_os_numeros_de_limite_sem_zerar_o_registro(monkeypatch):
+    api, _ = _api(monkeypatch, Response(b"{}", x_ratelimit_limit="5000", x_ratelimit_used="7", x_ratelimit_remaining="4993"),
+                  Response(b"{}", x_ratelimit_limit="5000", x_ratelimit_used="9", x_ratelimit_remaining="4991"))
+    api.read(PATH)
+    api.read(PATH)
+    assert api.rate == {"limit": 5000, "used": 9, "remaining": 4991}
+
+
+@pytest.mark.parametrize("error,message", [
+    (_error(403, x_ratelimit_remaining="0", x_ratelimit_limit="5000", x_ratelimit_used="5000", x_ratelimit_resource="core"),
+     "github=rate_limited"),
+    (_error(500), "GitHub HTTP failure"),
+    (_error(401), "GitHub HTTP failure"),
+    (_error(404), "GitHub HTTP failure"),
+])
+def test_erro_que_nao_e_304_com_corpo_em_cache_falha_fechado(monkeypatch, error, message):
+    api, opener = _api(monkeypatch, Response(b'{"a": 1}', ETag='"v1"'), error, Response(b'{"a": 1}'))
+    assert api.read_conditional(PATH) == {"a": 1}
+    with pytest.raises(ValueError, match=message):
+        api.read_conditional(PATH)
+    assert len(opener.requests) == 2
+
+
+def test_304_com_data_fora_da_tolerancia_e_recusado(monkeypatch):
+    stale = _error(304, ETag='"v1"')
+    stale.headers.replace_header("Date", formatdate(1_000_000_000, usegmt=True))
+    api, _ = _api(monkeypatch, Response(b"{}", ETag='"v1"'), stale)
+    api.read_conditional(PATH)
+    with pytest.raises(ValueError, match="GitHub time uncertainty"):
+        api.read_conditional(PATH)
+
+
+def test_304_sem_data_e_recusado(monkeypatch):
+    undated = _error(304, ETag='"v1"')
+    del undated.headers["Date"]
+    api, _ = _api(monkeypatch, Response(b"{}", ETag='"v1"'), undated)
+    api.read_conditional(PATH)
+    with pytest.raises(ValueError, match="authenticated Date missing"):
+        api.read_conditional(PATH)
+
+
+def test_304_dentro_da_tolerancia_continua_devolvendo_o_corpo_em_cache(monkeypatch):
+    api, _ = _api(monkeypatch, Response(b'{"a": 1}', ETag='"v1"'), _error(304, ETag='"v1"'))
+    api.read_conditional(PATH)
+    sample = api.sample
+    assert api.read_conditional(PATH) == {"a": 1}
+    assert api.sample != sample

@@ -301,6 +301,14 @@ class GitHub:
         if all(value is not None and value.isdigit() for value in values):
             self.rate = dict(zip(names, map(int, values)))
 
+    def _check_time(self, headers, start):
+        date = headers.get("Date")
+        require(bool(date), "authenticated Date missing")
+        server = parsedate_to_datetime(date).timestamp()
+        end = time.monotonic()
+        require(end - start <= 20 and abs(time.time() - server) <= 31, "GitHub time uncertainty")
+        self.sample = (start, end, server)
+
     def _read(self, path, *, raw, maximum, conditional=False):
         require(path.startswith("repos/") and not any(x in path for x in ("..", "\n", "\r", "://")), "GitHub API path")
         headers = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
@@ -318,6 +326,7 @@ class GitHub:
         except urllib.error.HTTPError as error:
             self._record_rate(error.headers)
             if error.code == 304 and cached is not None:
+                self._check_time(error.headers, start)
                 return cached[1]
             _refuse_rate_limited(error)
             require(raw and error.code in {301, 302, 303, 307}, "GitHub HTTP failure")
@@ -329,12 +338,7 @@ class GitHub:
             response = urllib.request.urlopen(target, timeout=20)  # no Authorization
         with response:
             self._record_rate(response.headers)
-            date = response.headers.get("Date")
-            require(bool(date), "authenticated Date missing")
-            server = parsedate_to_datetime(date).timestamp()
-            end = time.monotonic()
-            require(end - start <= 20 and abs(time.time() - server) <= 31, "GitHub time uncertainty")
-            self.sample = (start, end, server)
+            self._check_time(response.headers, start)
             data = response.read(maximum + 1)
             require(len(data) <= maximum, "GitHub response limit")
             etag = response.headers.get("ETag")

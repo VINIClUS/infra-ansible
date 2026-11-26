@@ -5592,6 +5592,25 @@ def test_execute_recusa_limite_de_rest_abaixo_do_assumido_antes_do_lease(monkeyp
     assert [name for name, _, _ in calls] == ["closure", "runtime", "authority"]
 
 
+def test_execute_registra_a_linha_de_saida_do_keeper_com_os_numeros_da_ultima_resposta_mesmo_na_recusa(monkeypatch, capsys):
+    ag, admitted, calls, _ = _execute_case(monkeypatch, limit=1000)
+    with pytest.raises(ValueError, match="github=rate_limit value=1000"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    (line,) = capsys.readouterr().out.strip().splitlines()
+    assert line.startswith("stage_wait stage=keeper setup_seconds=0 wait_seconds=")
+    assert line.endswith("x_ratelimit_limit=1000 x_ratelimit_used=10 x_ratelimit_remaining=990")
+
+
+def test_execute_registra_a_linha_de_saida_do_keeper_quando_o_laco_termina_com_erro(monkeypatch, capsys, stage_open_published):
+    ag, admitted, calls, world = _execute_case(monkeypatch)
+    with pytest.raises(_Stop, match="loop reached"):
+        ag.execute(admitted, validators={"quiescence": ("q", object()), "routing": ("r", object())},
+                   event_source=lambda **kw: "next-event", product="product")
+    (line,) = capsys.readouterr().out.strip().splitlines()
+    assert line.startswith("stage_wait stage=keeper ") and "x_ratelimit_limit=5000" in line
+
+
 def test_execute_refuses_the_phase_c_child_runtime_before_owner_authority_credentials_and_the_lease(monkeypatch):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     ag, admitted, calls, _ = _execute_case(monkeypatch)
