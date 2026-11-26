@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -43,7 +44,14 @@ PATHS = {
     "host-gate": "/etc/personal-platform/host-gate.json",
     "original-platform": "/var/lib/personal-platform/deployments/original-platform.json",
     "original-baseline": "/var/lib/personal-platform/deployments/original-baseline.json",
+    "activation": "/var/lib/personal-platform/deployments/activation.json",
+    "activation-signature": "/var/lib/personal-platform/deployments/activation-signature.der",
+    "activation-public-key": "/var/lib/personal-platform/deployments/activation-public-key.pem",
+    "probe-unit": "/run/personal-platform/probes/unit.credentials",
+    "probe-recovery": "/run/personal-platform/probes/recovery.credentials",
 }
+ACCESS = "ASIASYNTHETICEXAMPLE"
+EXPIRES = "2030-01-01T00:00:00Z"
 
 
 def runtime():
@@ -153,19 +161,135 @@ def runner(raw):
 def host_fragment():
     values = inventory()
     return {
-        "slot": "green",
-        "port": 18082,
-        "previous_slot": "blue",
         "public_hostname": values["public_hostname"],
         "tunnel_health_url": values["tunnel_health_url"],
+        "readiness_sha256": "e" * 64,
         "proxy": "caddy",
         "caddyfile_path": values["caddyfile_path"],
         "caddy_container": values["caddy_container"],
         "proxy_network": values["proxy_network"],
         "caddy_ip": values["caddy_ip"],
-        "previous_caddyfile_sha256": H,
-        "previous_caddy_upstream": "central-api:8000",
     }
+
+
+def caddyfile(upstream="central-api:8000"):
+    return (
+        "{\n\tadmin off\n}\n\n"
+        f"{API} {{\n\treverse_proxy {upstream}\n}}\n\n"
+        "other.example.test {\n\treverse_proxy other-api:8000\n}\n"
+    ).encode()
+
+
+def readback(upstream="central-api:8000", listening=(), expiration=EXPIRES, text=None):
+    return runtime().canonical(
+        {
+            "version": 1,
+            "observed_at": "2029-12-31T23:00:00Z",
+            "caddyfile_b64": base64.b64encode(text or caddyfile(upstream)).decode(),
+            "listening": list(listening),
+            "api_session_expiration": expiration,
+        }
+    )
+
+
+def session(name, expiration="2030-01-01T00:00:00+00:00", access=ACCESS, role=None):
+    return {
+        "Credentials": {
+            "AccessKeyId": access,
+            "SecretAccessKey": "synthetic-secret",
+            "SessionToken": "synthetic-token",
+            "Expiration": expiration,
+        },
+        "AssumedRoleUser": {
+            "AssumedRoleId": "AROASYNTHETIC:probe",
+            "Arn": f"arn:aws:sts::111122223333:assumed-role/{role or 'cnesdata-prod-' + name}/probe",
+        },
+    }
+
+
+def compose_bytes(port=18082):
+    service = {
+        "image": "ghcr.io/viniclus/cnesdata@sha256:" + H,
+        "user": "10001:10001",
+        "init": True,
+        "restart": "unless-stopped",
+        "read_only": True,
+        "cap_drop": ["ALL"],
+        "security_opt": ["no-new-privileges:true"],
+        "cpus": 1.0,
+        "mem_limit": "1g",
+        "pids_limit": 256,
+        "ports": [
+            {"host_ip": "127.0.0.1", "published": port, "target": 8000, "protocol": "tcp"}
+        ],
+        "networks": ["cnesdata"],
+        "volumes": [
+            {"type": "bind", "source": s, "target": t, "read_only": True}
+            for s, t in (
+                ("/run/personal-platform/credentials/cnesdata/current", "/run/credentials"),
+                ("./config.json", "/run/config/config.json"),
+            )
+        ],
+        "healthcheck": {"test": ["CMD", "python", "-c", "pass"], "interval": "15s"},
+        "logging": {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}},
+    }
+    value = {
+        "name": "cnesdata",
+        "services": {"api": service},
+        "networks": {"cnesdata": {"name": "cnesdata"}},
+    }
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
+def signing_key():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    der = key.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    handoff = {
+        "key_arn": "arn:aws:kms:us-east-2:111122223333:key/"
+        + "00000000-0000-0000-0000-000000000000",
+        "spki_sha256": runtime().sha(der),
+        "key_policy_sha256": H,
+        "spki_der_b64": base64.b64encode(der).decode(),
+    }
+    return key, handoff
+
+
+def activation_value():
+    arn = "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-"
+    return {
+        "project": "cnesdata",
+        "environment": "prod",
+        "schema_version": 1,
+        "repository": "VINIClUS/CnesData",
+        "release_id": f"candidate-{SHA}-1-1",
+        "source_sha": SHA,
+        "candidate_sha256": "c" * 64,
+        "binding_sha256": "d" * 64,
+        "canary_id": "d" * 32,
+        "derivation": "cnesdata:prod:canary:v1",
+        "revisions": {n: f"{arn}{n}:7" for n in ("unit", "recovery", "audit")},
+        "ecr_uri": "111122223333.dkr.ecr.us-east-2.amazonaws.com/cnesdata/central_api"
+        "@sha256:" + "f" * 64,
+        "phase_a_evidence_digest": "9" * 64,
+        "inputs": {
+            "candidate_reference": {},
+            "phase_a_reference": {},
+            "retained_unit_task_definition_arns": [],
+        },
+    }
+
+
+def signed(key, value=None):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    raw = runtime().canonical(value or activation_value())
+    return raw, key.sign(raw, ec.ECDSA(hashes.SHA256()))
 
 
 def credentials():
@@ -185,13 +309,33 @@ def probes():
     return {
         name: {
             "role_arn": f"arn:aws:iam::111122223333:role/cnesdata-prod-{name.lower()}",
-            "credential_path": f"/run/personal-platform/probes/{name}.credentials",
-            "expires_at": "2030-01-01T00:00:00Z",
             "bucket": "cnesdata-probe-synthetic",
-            "key": f"probe/{name}",
         }
         for name in ("unit", "recovery", "API")
     }
+
+
+def derived_probes(run_id=11, attempt=1):
+    return {
+        name: {
+            **value,
+            "credential_path": f"/run/personal-platform/probes/{name}.credentials",
+            "expires_at": EXPIRES,
+            "key": f"cnesdata/host-probe/{name.lower()}/absent-{run_id}-{attempt}",
+        }
+        for name, value in probes().items()
+    }
+
+
+def inputs(hp, raw, archive, *, signing, activation=None, **seen):
+    return hp.Inputs(
+        plan=raw,
+        archive=archive,
+        readback=readback(**seen),
+        sessions={"unit": session("unit"), "recovery": session("recovery")},
+        signing=signing,
+        activation=activation,
+    )
 
 
 def governed(tmp_path, monkeypatch):
@@ -206,7 +350,19 @@ def governed(tmp_path, monkeypatch):
         value["platform_plan"] = dict(fields)
         return value
 
+    def good_archive():
+        value = manifest()
+        compose, config = compose_bytes(), b"{}\n"
+        value["compose_sha256"], value["config_sha256"] = g.sha(compose), g.sha(config)
+        files = [
+            ("release-manifest.json", g.canonical(value)),
+            ("compose.yml", compose),
+            ("config.json", config),
+        ]
+        return value, dispatcher.archive([(n, b, tarfile.REGTYPE) for n, b in files])
+
     monkeypatch.setattr(dispatcher, "manifest", manifest)
+    monkeypatch.setattr(dispatcher, "good_archive", good_archive)
     request, gov, api, responses = dispatcher.authenticated_fixture(tmp_path, monkeypatch)
     promote = ".github/workflows/promote-production.yml"
     gov["binding"]["caller"]["workflow_path"] = promote
@@ -222,14 +378,15 @@ def governed(tmp_path, monkeypatch):
         "host": host_fragment(),
         "credentials": credentials(),
         "runtime_probes": probes(),
-        "signing_spki_pem_sha256": H,
     }
-    return g, hp, raw, static, request, api
+    _, handoff = signing_key()
+    seen = inputs(hp, raw, request.archive, signing=handoff)
+    return g, hp, seen, static, request, api
 
 
-def build(hp, static, raw, run_id=11, attempt=1):
+def build(hp, static, seen, run_id=11, attempt=1):
     g = runtime()
-    return hp.build_governance(static, raw, run_id, attempt, g.instant(NOW))
+    return hp.build_governance(static, seen, run_id, attempt, g.instant(NOW))
 
 
 def test_chave_de_deploy_exclusiva_vem_do_inventario_e_recusa_placeholder():
@@ -449,9 +606,10 @@ def test_objeto_de_plataforma_recusa_entrada_fora_do_contrato(mutate):
 
 
 def test_governanca_deriva_plataforma_expiries_original_bytes_e_caller(tmp_path, monkeypatch):
-    g, hp, raw, static, _, _ = governed(tmp_path, monkeypatch)
+    g, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
+    raw = seen.plan
     static["binding"]["platform"] = {k: "stale" for k in static["binding"]["platform"]}
-    value = g.host_json(build(hp, static, raw, run_id=4242, attempt=3))
+    value = g.host_json(build(hp, static, seen, run_id=4242, attempt=3))
     b = value["binding"]
     obj = g.host_json(raw)
     assert b["platform"] == {
@@ -506,8 +664,8 @@ def root_reads(g, monkeypatch):
 
 
 def test_documento_unico_passa_pelo_host_e_pelo_runner_reais(tmp_path, monkeypatch):
-    g, hp, raw, static, request, api = governed(tmp_path, monkeypatch)
-    doc = build(hp, static, raw)
+    g, hp, seen, static, request, api = governed(tmp_path, monkeypatch)
+    doc = build(hp, static, seen)
     value = g.host_json(doc)
     assert g.canonical(value) == doc and len(doc) <= 48000
     path = tmp_path / "host-gate.json"
@@ -517,7 +675,7 @@ def test_documento_unico_passa_pelo_host_e_pelo_runner_reais(tmp_path, monkeypat
     host = g.load_governance(path)
     assert g.container_governance(host) == credentials()
     g.HostDriver(None, None, host["host"], Path("/staged"))
-    assert g.runtime_probe_set(host["runtime_probes"]) == probes()
+    assert g.runtime_probe_set(host["runtime_probes"]) == derived_probes()
     now = g.instant(NOW)
     monkeypatch.setattr(g.time, "time", lambda: now)
     b_host, _ = g.authenticate_request(request, host, api, now)
@@ -548,8 +706,9 @@ def test_documento_unico_passa_pelo_host_e_pelo_runner_reais(tmp_path, monkeypat
 
 
 def test_carrier_e_fingerprint_passam_pelo_handoff_e_ssh_reais(tmp_path, monkeypatch):
-    g, hp, raw, static, request, _ = governed(tmp_path, monkeypatch)
-    value = g.host_json(build(hp, static, raw))
+    g, hp, seen, static, request, _ = governed(tmp_path, monkeypatch)
+    raw = seen.plan
+    value = g.host_json(build(hp, static, seen))
 
     class Body(io.BytesIO):
         pass
@@ -577,13 +736,16 @@ def test_carrier_e_fingerprint_passam_pelo_handoff_e_ssh_reais(tmp_path, monkeyp
         g.ssh_exchange(request, value, secrets)
 
 
-def test_execucoes_diferentes_mudam_so_o_caller(tmp_path, monkeypatch):
-    g, hp, raw, static, _, _ = governed(tmp_path, monkeypatch)
-    first = g.host_json(build(hp, static, raw, run_id=11, attempt=1))
-    second = g.host_json(build(hp, static, raw, run_id=12, attempt=2))
+def test_execucoes_diferentes_mudam_so_o_caller_e_a_chave_da_sonda(tmp_path, monkeypatch):
+    g, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
+    first = g.host_json(build(hp, static, seen, run_id=11, attempt=1))
+    second = g.host_json(build(hp, static, seen, run_id=12, attempt=2))
+    assert second["runtime_probes"] == derived_probes(12, 2)
     for value in (first, second):
         value["binding"]["caller"].pop("run_id")
         value["binding"]["caller"].pop("run_attempt")
+        for probe in value["runtime_probes"].values():
+            probe.pop("key")
     assert first == second
 
 
@@ -607,21 +769,40 @@ def test_execucoes_diferentes_mudam_so_o_caller(tmp_path, monkeypatch):
     ],
 )
 def test_governanca_recusa_static_incoerente(tmp_path, monkeypatch, mutate):
-    _, hp, raw, static, _, _ = governed(tmp_path, monkeypatch)
+    _, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
     mutate(static)
     with pytest.raises((ValueError, KeyError)):
-        build(hp, static, raw)
+        build(hp, static, seen)
 
 
-def test_cli_escreve_documento_privado_e_imprime_so_digests(tmp_path, monkeypatch):
-    g, hp, raw, static, _, _ = governed(tmp_path, monkeypatch)
-    (tmp_path / "static.json").write_text(json.dumps(static))
-    (tmp_path / "plan.json").write_bytes(raw)
-    out = tmp_path / "governance.json"
+def write_inputs(tmp_path, seen, static, activation=None):
+    files = {
+        "static": json.dumps(static).encode(),
+        "plan": seen.plan,
+        "archive": seen.archive,
+        "readback": seen.readback,
+        "signing": json.dumps(seen.signing).encode(),
+        "session-unit": json.dumps(seen.sessions["unit"]).encode(),
+        "session-recovery": json.dumps(seen.sessions["recovery"]).encode(),
+    }
+    if activation:
+        files["activation"], files["signature"] = activation
+    argv = []
+    for name, data in files.items():
+        (tmp_path / name).write_bytes(data)
+        argv += ["--" + name, str(tmp_path / name)]
+    return argv
+
+
+def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
+    tmp_path, monkeypatch
+):
+    g, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
+    out, handoff = tmp_path / "governance.json", tmp_path / "handoff"
     result = subprocess.run(
-        [sys.executable, "-I", str(BUILDER), "governance", "--static",
-         str(tmp_path / "static.json"), "--plan", str(tmp_path / "plan.json"),
-         "--run-id", "11", "--run-attempt", "1", "--out", str(out)],
+        [sys.executable, "-I", str(BUILDER), "governance",
+         *write_inputs(tmp_path, seen, static), "--run-id", "11", "--run-attempt", "1",
+         "--out", str(out), "--handoff-dir", str(handoff)],
         capture_output=True,
         text=True,
         check=True,
@@ -632,6 +813,23 @@ def test_cli_escreve_documento_privado_e_imprime_so_digests(tmp_path, monkeypatc
     binding = g.sha(g.canonical(g.host_json(doc)["binding"]))
     assert result.stdout == f"sha256={g.sha(doc)}\nbinding_sha256={binding}\n"
     assert "arn:aws" not in result.stdout + result.stderr
+    assert "synthetic-secret" not in result.stdout + result.stderr
+    values = json.loads((handoff / "handoffs.json").read_text())
+    assert values["personal_platform_dispatcher_api_probe"] is True
+    entries = values["personal_platform_dispatcher_handoffs"]
+    assert set(entries) == {"host-gate", "activation-public-key", "probe-unit", "probe-recovery"}
+    assert entries["host-gate"]["src"] == str(out)
+    for name, entry in entries.items():
+        path = Path(entry["src"])
+        assert path.is_absolute() and entry["sha256"] == g.sha(path.read_bytes()), name
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600, name
+    pem = Path(entries["activation-public-key"]["src"]).read_bytes()
+    assert g.host_json(doc)["signing_spki_pem_sha256"] == g.sha(pem)
+    unit = Path(entries["probe-unit"]["src"]).read_text()
+    assert unit == (
+        f"[default]\naws_access_key_id={ACCESS}\naws_secret_access_key=synthetic-secret"
+        "\naws_session_token=synthetic-token\n"
+    )
 
 
 def test_cli_monta_objeto_de_plataforma_e_os_seis_campos(tmp_path):
