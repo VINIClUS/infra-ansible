@@ -188,7 +188,7 @@ MAIN_SESSION_DIGESTS = {
     "session.rx": "22bfdd6d78b9323cdeb190dc05ec9627faf24cfdc560dad868a4788ba81e8c58",
     "session.uo": "fc6b975f77b08d12c5ea97dd0b71543749ca26d489853ad460e237d9ffcb6e35",
     "session.us": "18ff53943fb8e9b0294145106e056fa9a2d31ff4cfc76d21b4083890f47bfcc6",
-    "session.uw": "8b5d510e6b2eba6bd23abe192f7865ee8e70e6a4811c6892d6d36caaea90ef2b",
+    "session.uw": "4cb25cd86aa56beb054f8126000162f0e7680950e1337251eab46ca542c38469",
     "session.ux": "d34d00a8b3edb259fde43b2bc74d7a4e2c08ac8ea5042af93a05a91178026998"}
 
 
