@@ -6,6 +6,7 @@ Defaults grant no access.
 """
 import re
 import time
+from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import lifecycle_contract as lc
@@ -87,7 +88,7 @@ def _terminal_required(kind, window):
         c.require(kind == "failed-prepare-quiescent" and window["close"] is None
                   and window["stage"] == "application-prepare" and window["decision"] is None,
                   "closed terminal kind/phase")
-        required = {"restoration", "routing", "quiescence"}
+        required = {"restoration", "quiescence"}
     return required
 
 
@@ -99,9 +100,9 @@ TERMINAL_SOURCE_ROLES = {"routing": "routing", "static": "publication closed-rea
                          "quiescence": "terminal", "host": "host-handoff closed-ready", "decision": "recovery-decision",
                          "unit": "mode", "recovery": "mode", "audit": "mode"}
 TERMINAL_ARTIFACT_ROLES = frozenset({"host-handoff", "recovery-decision"})
-# SYNTHETIC shapes: the product has no reopen/terminal-readback handler yet (R3).
 ROUTING_FIELDS = "version kind fence routes_match"
 TERMINAL_READBACK_FIELDS = "version kind members quiescent state_clean pending unknown observed_at"
+TERMINAL_PENDING_KINDS = frozenset({"member-unresolved", "permit-held"})
 # host_gate.validate_closed_ready: member identity (exact types of _closed_members), frozen member
 # shape, resolved set, closed-ready.
 MEMBER_IDENTITY_TYPES = {"dispatch_id": (str,), "request_sha256": (str,), "generation": (int,), "initial_state": (str,),
@@ -168,6 +169,7 @@ def _member(member, fields):
 
 def routing_terminal_validator(source, *, owner, window, observations):
     """Routing facts from the `routing` journal observation (reopen)."""
+    c.require(window["stage"] in {"final", "recovery"}, "terminal routing stage")
     value = _versioned(_terminal_sources("routing", source, observations)["routing"], "routing", ROUTING_FIELDS)
     c.require(value["fence"] in {"OPEN", "CLOSED"} and type(value["routes_match"]) is bool, "terminal routing facts")
     return {"sha256": c.sha(c.canonical(source)), "facts": {"fence": value["fence"], "routes_match": value["routes_match"]}}
@@ -217,8 +219,14 @@ def quiescence_terminal_validator(uncertainty):
     def validator(source, *, owner, window, observations):
         found = _terminal_sources("quiescence", source, observations)
         value = _versioned(found["terminal"], "terminal", TERMINAL_READBACK_FIELDS)
+        pending = value["pending"]
         c.require(type(value["quiescent"]) is bool and type(value["state_clean"]) is bool
-                  and type(value["pending"]) is list and type(value["unknown"]) is list, "terminal quiescence facts")
+                  and type(pending) is list and type(value["unknown"]) is list
+                  and value["quiescent"] is (pending == []), "terminal quiescence facts")
+        for entry in pending:
+            c.closed(entry, "kind reference_sha256")
+            c.require(entry["kind"] in TERMINAL_PENDING_KINDS, "terminal quiescence pending")
+            c.digest(entry["reference_sha256"])
         held = uncertainty()
         c.require(type(held) is list, "keeper uncertainty")
         return {"sha256": c.sha(c.canonical(source)), "facts": {
@@ -502,10 +510,8 @@ class _TerminalStore:
         return result
 
 
-_ADAPTER_CHILD = r'''
-import base64, importlib.machinery, importlib.util, os, sys
-sys.path.insert(0, sys.argv[2])
-from tools.cnesdata_delivery import contract as c
+PRODUCT_IMPORTS = r'''
+import importlib.machinery, importlib.util, os, sys
 product = sys.argv[1]
 sys.path.insert(0, product)
 class AuthorizedPackages:
@@ -524,7 +530,12 @@ class AuthorizedPackages:
             return importlib.util.spec_from_file_location(name, base + ".py")
         raise ModuleNotFoundError("adapter authorized path " + name, name=name)
 sys.meta_path.insert(0, AuthorizedPackages())
-def receive():
+'''
+_ADAPTER_CHILD = r'''
+import base64, sys
+sys.path.insert(0, sys.argv[2])
+from tools.cnesdata_delivery import contract as c
+''' + PRODUCT_IMPORTS + r'''def receive():
     raw = sys.stdin.buffer.readline(192 * 1024**2 + 1)
     return c.loads(raw, canonical=True, limit=192 * 1024**2)
 def send(value):
@@ -543,16 +554,47 @@ class Context:
     def observe(self, kind, raw):
         c.require(type(raw) is bytes, "original observation bytes")
         return self.exchange({"kind": "observe", "observation_kind": kind, "bytes": base64.b64encode(raw).decode()})["sha256"]
+    ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", "PutItem"),
+              ("s3", "put_object"): ("PreconditionFailed", "PutObject")}
     def call(self, role, service, operation, parameters):
-        reply = self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": parameters})
+        wire = parameters
+        if (service, operation) == ("s3", "put_object") and type(parameters) is dict and type(parameters.get("Body")) is bytes:
+            wire = dict(parameters, Body={"bytes": base64.b64encode(parameters["Body"]).decode()})
+        reply = self.exchange({"kind": "call", "role": role, "service": service, "operation": operation, "parameters": wire})
         if reply.get("kind") == "sdk-error":
             c.closed(reply, "kind code")
-            c.require(reply["code"] == "ExecutionDoesNotExist", "closed shared SDK error")
+            absent = ("ExecutionDoesNotExist", "DescribeExecution") if service == "stepfunctions" else (None, None)
+            code, name = self.ERRORS.get((service, operation), absent)
+            c.require(reply["code"] == code, "closed shared SDK error")
             from botocore.exceptions import ClientError
-            raise ClientError({"Error": {"Code": reply["code"]}}, "DescribeExecution")
+            raise ClientError({"Error": {"Code": code}}, name)
         c.closed(reply, "kind value")
         c.require(reply["kind"] == "sdk-result", "original shared SDK result")
-        return reply["value"]
+        if (service, operation) != ("s3", "get_object"):
+            return reply["value"]
+        c.closed(reply["value"], "Body")
+        c.closed(reply["value"]["Body"], "bytes")
+        return {"Body": base64.b64decode(reply["value"]["Body"]["bytes"], validate=True)}
+    def ledger_admit_effect(self, kind, request_sha256, target_sha256, admitted_at):
+        reply = self.exchange({"kind": "ledger-admit", "effect_kind": kind, "request_sha256": request_sha256,
+                               "target_sha256": target_sha256, "admitted_at": admitted_at})
+        c.closed(reply, "effect_id")
+        return c.digest(reply["effect_id"])
+    def ledger_mark_unknown(self, effect_id):
+        c.require(self.exchange({"kind": "ledger-unknown", "effect_id": effect_id}) == {}, "mode ledger reply")
+    def ledger_settle(self, effect_id, receipt_sha256):
+        reply = self.exchange({"kind": "ledger-settle", "effect_id": effect_id, "receipt_sha256": receipt_sha256})
+        c.require(reply == {}, "mode ledger reply")
+    def mode_readbacks(self):
+        reply = self.exchange({"kind": "mode-readbacks"})
+        c.require(type(reply) is dict and reply, "mode readbacks reply")
+        return reply
+    def dispatch_unit(self, binding):
+        fields = ("tenant_id", "run_ids", "owner_sha256", "record_sha256", "phase", "context_kind")
+        value = {name: getattr(binding, name) for name in fields}
+        reply = self.exchange({"kind": "dispatch-unit", "binding": value | {"run_ids": list(value["run_ids"])}})
+        c.closed(reply, "execution tasks outputs")
+        return reply
 start = receive()
 c.closed(start, "kind request")
 c.require(start["kind"] == "start", "fixed adapter start")
@@ -564,6 +606,15 @@ result = module.execute_shared_operation(request["operation"], request, Context(
 raw = result if type(result) is bytes else c.canonical(result, limit=128 * 1024)
 send({"kind": "result", "bytes": base64.b64encode(raw).decode()})
 '''
+
+
+def _mode_ledger_cancel(native, response):
+    from tools.cnesdata_delivery.mode_broker import LEDGER_CANCELS, ledger_cancel_codes
+    try:
+        codes = ledger_cancel_codes(response)
+    except ValueError:
+        return False
+    return codes is not None and response["Error"] == {"Code": LEDGER_CANCELS.get(native[1])}
 
 
 def _adapter_message(frame, journal):
@@ -582,8 +633,17 @@ def _adapter_message(frame, journal):
         return journal.evidence_snapshot(), None
     if kind == "call":
         c.closed(value, "kind role service operation parameters")
-        c.require(type(getattr(journal, "_broker", None)) in BROKERS, "adapter protected SDK admission absent")
+        c.require(type(getattr(journal, "_broker", None)) in _brokers(), "adapter protected SDK admission absent")
         return journal._broker.call(**{key: value[key] for key in ("role", "service", "operation", "parameters")}), None
+    if kind in lc.MODE_LEDGER_FRAMES or kind in ("mode-readbacks", "dispatch-unit"):
+        from tools.cnesdata_delivery.mode_broker import ModeBroker
+        c.require(type(getattr(journal, "_broker", None)) is ModeBroker, "mode method outside table")
+        if kind == "mode-readbacks":
+            c.closed(value, "kind")
+            return journal._broker.readbacks(), None
+        if kind == "dispatch-unit":
+            return journal._broker.dispatch_unit(value), None
+        return journal._broker.frame(value), None
     if kind in {"observe", "result"}:
         c.closed(value, "kind bytes" + (" observation_kind" if kind == "observe" else ""))
         raw = base64.b64decode(value["bytes"], validate=True)
@@ -732,11 +792,18 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     from tools.cnesdata_delivery.aws_boundary import AWS
     from tools.cnesdata_delivery.iam_boundary import effective_iam
     from tools.cnesdata_delivery.session_policy import validate_response
-    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain"}
+    c.require(type(journal) is AdapterJournal and journal._request["operation"] in {"closed-ready", "close-drain", *lc.MODE_OBSERVES}
               and journal._identity["application_purpose"] == "promotion", "fence original promotion journal")
     request, stage = journal._request, journal._request["stage"]
-    close = request["operation"] == "close-drain"
-    if close:
+    close, observe = request["operation"] == "close-drain", request["operation"] in lc.MODE_OBSERVES
+    if observe:
+        deadline = stage["deadline"]
+        seconds = lc.governed_windows(stage["windows"])["stages"].get(stage["stage"])
+        c.require({stage["stage"]} == lc.ADAPTER_STAGES[request["operation"]] and stage["close"] is not None
+                  and stage["decision"] is None and deadline == min(stage["fixed_deadline"], stage["admitted_at"] + seconds)
+                  and stage["admitted_at"] <= clock() and clock() + 40 < deadline
+                  and clock() + 900 <= credential_limit, "fence original mode stage/credential window")
+    elif close:
         deadline = stage["preparation_deadline"]
         c.require(stage["stage"] == "application-prepare" and stage["close"] is None and stage["decision"] is None
                   and stage["deadline"] == deadline and stage["admitted_at"] <= clock() and clock() + 40 < deadline
@@ -749,7 +816,7 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
                   and stage["fixed_deadline"] - stage["admitted_at"] >= api + lc.later_seconds(windows, "api") + lc.FINAL_RESERVE
                   and stage["admitted_at"] <= clock() and clock() + 40 < stage["deadline"]
                   and clock() + 900 <= credential_limit, "fence original API/credential window")
-    c.closed(scope, "account control_table_arn machine_arn" + ("" if close else " members"))
+    c.closed(scope, "account control_table_arn machine_arn" + ("" if close or observe else " members"))
     c.require(scope["account"] == governance["account_id"] and governance["role"] == "application"
               and role["role_arn"] == governance["application_delegations"]["fence_operator"]
               and role["role_name"] == "cnesdata-prod-promotion-fence-operator"
@@ -757,17 +824,18 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
               and role["session_name"] == "promotion-fence-" + role["release_id"]
               and type(role["role_id"]) is str and bool(role["role_id"]), "fence exact protected role/session")
     probe_prefix = scope["machine_arn"].replace(":stateMachine:", ":execution:") + ":"
-    validate = lc.validate_close_drain_call if close else lc.validate_closed_ready_call
+    validate = lc.validate_close_drain_call if close else lc.validate_mode_observe_call if observe else lc.validate_closed_ready_call
     for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT")):
         validate(request=request, role="fence_operator", service="dynamodb", operation="get_item",
             parameters={"TableName": scope["control_table_arn"].rsplit("/", 1)[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}},
                         "ConsistentRead": True}, **scope)
-    for member in [] if close else scope["members"]:
+    for member in [] if close or observe else scope["members"]:
         lc.validate_closed_ready_call(request=request, role="fence_operator", service="stepfunctions", operation="describe_execution",
             parameters={"executionArn": probe_prefix + member["dispatch_id"], "includedData": "METADATA_ONLY"}, **scope)
-    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_session_policy
+    from tools.cnesdata_delivery.session_policy import fence_close_session_policy, fence_observe_session_policy, fence_session_policy
     build = fence_close_session_policy if close else fence_session_policy
-    policy = build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline)
+    policy = (fence_observe_session_policy(control_table_arn=scope["control_table_arn"], deadline=deadline) if observe else
+              build(control_table_arn=scope["control_table_arn"], execution_prefix=probe_prefix, deadline=deadline))
     encoded = c.canonical(policy).decode().strip()
     c.require(len(encoded) <= 2048, "fence STS policy limit")
     context = {"aws:CurrentTime": c.utc(clock())}
@@ -777,8 +845,8 @@ def _assume_fence_session(*, governance, role, scope, journal, prepared_sha256, 
     for action, key in (("dynamodb:UpdateItem", "ENV#prod#FENCE"), ("dynamodb:ConditionCheckItem", "ENV#prod#SEMAPHORE")) if close else ():
         c.require(effective_iam(role["policy"], [policy], action, scope["control_table_arn"],
                                 context | {"dynamodb:LeadingKeys": [key]}), "fence original effective close-write grant")
-    c.require(effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context),
-              "fence original effective metadata-probe grant")
+    probe = effective_iam(role["policy"], [policy], "states:DescribeExecution", probe_prefix + "0" * 16, context)
+    c.require(probe is not observe, "fence observe effective read-only grant" if observe else "fence original effective metadata-probe grant")
     journal._guard.check(40)
     journal.guard()
     operation = operation_session(request["operation"], role, stage)
@@ -870,7 +938,11 @@ class AdapterJournal:
         c.require((request["role"] == "fence_operator"
                    and (request["service"], request["operation"]) in lc.FENCE_SDK_OPERATIONS.get(operation, ()))
                   or (operation in STATIC_OPERATIONS
-                      and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation]),
+                      and (request["role"], request["service"], request["operation"]) in lc.STATIC_SDK_OPERATIONS[operation])
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_EFFECT_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_FRAME_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_UNIT_CALLS.get(operation, ())
+                  or (request["role"], request["service"], request["operation"]) in lc.MODE_READBACK_FRAME_CALLS.get(operation, ()),
                   "closed SDK journal operation")
         c.require(type(request["parameters"]) is dict and self._inflight is None, "single original SDK request")
         if self._durable_active is not None:
@@ -907,10 +979,17 @@ class AdapterJournal:
             _sdk_private_fields(response)
             request = c.loads(self._call_bytes[intent["request_sha256"]], canonical=True)
             static = STATIC_RESPONSE_FIELDS.get(request["operation"]) if self._request["operation"] in STATIC_OPERATIONS else None
+            mode = self._request["operation"] in lc.MODE_EFFECT_CALLS
+            native = (request["service"], request["operation"])
             allowed = (set(static[0].split()) | set(static[1]) if static is not None else
+                       lc.MODE_RESPONSE_FIELDS[native] if mode else
                        {"Item"} if request["operation"] == "get_item" else set() if request["service"] == "dynamodb" else
                        {"executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate"})
-            absence = request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}}
+            call = (request["role"], request["service"], request["operation"])
+            absence = ((not mode and request["service"] == "stepfunctions" and response == {"Error": {"Code": "ExecutionDoesNotExist"}})
+                       or (call in lc.MODE_EFFECT_CALLS.get(self._request["operation"], ()) and native in lc.MODE_DEFINITE_ERRORS
+                           and response == {"Error": {"Code": lc.MODE_DEFINITE_ERRORS[native][0]}})
+                       or (call in lc.MODE_FRAME_CALLS.get(self._request["operation"], ()) and _mode_ledger_cancel(native, response)))
             c.require(absence or set(response) <= allowed, "SDK response already sanitized before journal")
             server = parsedate_to_datetime(server_date)
             c.require(server.tzinfo is not None and 0 <= ended - intent["started_monotonic_ns"] <= 20 * 10**9
@@ -972,10 +1051,16 @@ class AdapterJournal:
         c.require(self._durable_active is None, "durable SDK receipt unresolved")
         if getattr(self, "_broker", None) is not None:
             c.require(self._durable_count == len(self._call_receipts), "all observations require durable SDK receipts")
-        c.require(kind == lc.ADAPTER_OBSERVATIONS[self._request["operation"]], "adapter operation observation")
+        operation = self._request["operation"]
+        c.require(kind == lc.ADAPTER_OBSERVATIONS[operation] or kind in lc.ADAPTER_STEPS.get(operation, ()),
+                  "adapter operation observation")
         value = c.loads(raw, canonical=True, limit=1024**2)
         c.require(type(value) is dict and value, "adapter observation requires original domain object")
         c._secrets(value)
+        if kind in lc.MODE_TASK_STEPS | {"unit-execution"}:
+            from tools.cnesdata_delivery.mode_broker import ModeBroker
+            broker = getattr(self, "_broker", None)
+            c.require(type(broker) is ModeBroker and c.canonical(broker.described) == raw, "mode step receipt")
         self.guard()
         digest = c.sha(raw)
         self.guard()
@@ -1389,8 +1474,14 @@ def _static_member(journal, reference):
 BROKERS = (ClosedReadyBroker, StaticBroker)
 
 
+def _brokers():
+    """P15's brokers plus the two mode brokers; mode_broker imports this module, so it is imported at call time."""
+    from tools.cnesdata_delivery.mode_broker import FenceReadBroker, ModeBroker
+    return BROKERS + (ModeBroker, FenceReadBroker)
+
+
 def _journal_of(context):
-    return context.journal if type(context) in BROKERS else context
+    return context.journal if type(context) in _brokers() else context
 
 
 def _static_deadline(request):
@@ -1639,12 +1730,13 @@ def _same_run_publication(api, run, owner, job, *, kind, step, guard, now):
 
 
 def _deploy_publication(api, aws, governance, request, run, owner, guard, now, purpose):
-    """Completed same-run advance deploy publication of the purpose (checkpoint + approval) and its authenticated moments."""
+    """Completed same-run deploy publication of the purpose (plus apply-output.bin for C) and its authenticated moments."""
     from tools.cnesdata_delivery.lifecycle_runtime import private_payload
     name, step = _deploy_step(governance, purpose)
     job = _same_run_job(api, run, kind=purpose, job_name=step["job_name"], guard=guard)
     _, public, artifact = _same_run_publication(api, run, owner, job, kind=purpose, step=name, guard=guard, now=now)
-    files = private_payload(aws, governance, request, run, public, guard=guard, names={"checkpoint.json", "approval.json"})[1]
+    names = {"checkpoint.json", "approval.json"} | ({"apply-output.bin"} if purpose in lc.PHASE_C_PURPOSES else set())
+    files = private_payload(aws, governance, request, run, public, guard=guard, names=names)[1]
     return files, {"artifact_created_at": artifact["created_at"], "job_completed_at": job["completed_at"]}
 
 
@@ -1683,12 +1775,17 @@ def _trigger_producer(governance, kind):
         return lc.FENCE_PREPARE_PRODUCER["job_name"], lc.FENCE_PREPARE_PRODUCER["step"]
     if kind == "host":
         return HOST_JOB, None
+    if kind == "host-recovery":
+        from tools.cnesdata_delivery.terminal_gate import HOST_RECOVERY_JOB
+        return HOST_RECOVERY_JOB, None
     name, step = _observer_step(governance) if kind == "observer-bootstrap" else _deploy_step(governance, kind)
     return step["job_name"], name
 
 
 def _stage_kind(stage, keeper):
     """The stage trigger, or the operation trigger (OPERATION_TRIGGERS) while that operation result is unsettled."""
+    if stage == "recovery":
+        return lc.OPERATION_TRIGGERS["rollback-api-static"][1]
     operation_stage, event = lc.OPERATION_TRIGGERS["inventory"]
     if stage == operation_stage and keeper.static_inventory is None:
         return event
@@ -1703,12 +1800,14 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
     event carries only the job: its handler authenticates the public host handoff (DD-3).
     Internal triggers (static, unit) are no event: the previous handler advances on its own observation.
     In application-prepare the observer-bootstrap deploy publication is the event until the keeper
-    holds its settled inventory (P15b); then the prepared publication is.
+    holds its settled inventory (P15b); then the prepared publication is. In recovery, with the lease
+    decision, the host rollback-previous job is the host-recovery event (DD-3 amendment, P17).
     """
     def next_event(window):
         stage = window["stage"]
-        c.require(window["decision"] is None and stage in lc.STAGE_TRIGGERS and lc.STAGE_TRIGGERS[stage][0] in KEEPER_EVENTS,
-                  f"stage trigger not connected stage={stage}")
+        recovery = stage == "recovery" and window["decision"] is not None
+        c.require(recovery or (window["decision"] is None and stage in lc.STAGE_TRIGGERS
+                               and lc.STAGE_TRIGGERS[stage][0] in KEEPER_EVENTS), f"stage trigger not connected stage={stage}")
         c.require((window["close"] is None) == (stage == "application-prepare"), "stage/close consistency")
         now = clock()
         c.require(now < lc.terminal_deadline(window), f"stage deadline elapsed stage={stage}")
@@ -1717,7 +1816,7 @@ def stage_event_source(*, api, governance, run, owner, guard, keeper, clock=time
         job = _same_run_job(api, run, kind=kind, job_name=job_name, guard=guard)
         if job is None or job["status"] != "completed" or job["conclusion"] != "success":
             return None
-        if kind == "host":
+        if kind in ("host", "host-recovery"):
             return {"kind": kind, "reference": {"job_id": job["id"]}}
         reference, _, _ = _same_run_publication(api, run, owner, job, kind=kind, step=step, guard=guard, now=now)
         return {"kind": kind, "reference": reference}
@@ -1855,6 +1954,32 @@ def closed_ready_capability(*, aws, api, governance, request, run, journal, keep
         raise
 
 
+def _fence_operation_iam(governance, authority, journal, role, clock):
+    """Change 4: the package evaluation only attests the closed-ready session, so this effective_iam is local, over
+    documents recomputed here: the application identity, the pinned managed policy and the inline the factory sends.
+    Shared by close-drain and the mode observes; the operation names the inline step and the evidence namespace."""
+    from tools.cnesdata_delivery import lifecycle_runtime as lr, session_owner, session_policy
+    from tools.cnesdata_delivery.coordination_lease import KEY
+    from tools.cnesdata_delivery.iam_boundary import effective_iam
+    owner, operation = journal._request["owner"], journal._request["operation"]
+    inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
+        operation, application_purpose="promotion", delegations=("fence_operator",),
+        sessions={"fence_operator": role["session_name"]})["Policy"].encode())
+    evidence = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + lr.closed_ready_evidence_keys(governance,
+        owner=owner, caller=journal._identity, checkpoint_sha256=journal._request["checkpoint_sha256"],
+        sequence=0, operation=operation)["intent"]
+    named = {"sts:RoleSessionName": role["session_name"]}
+    decisions = ((role["role_arn"], "sts:AssumeRole", named, True),
+                 (role["role_arn"], "sts:AssumeRole", {"sts:RoleSessionName": role["session_name"] + "-foreign"}, False),
+                 (governance["application_delegations"]["normal"], "sts:AssumeRole", named, False),
+                 ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
+                 (evidence.replace(f"/{operation}/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
+    identity = session_owner.application_identity_document(governance, authority.application_fragment)
+    c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
+                                {"aws:CurrentTime": c.utc(clock())} | context) is expected
+                  for resource, action, context, expected in decisions), f"{operation} operation session effective IAM")
+
+
 def close_drain_capability(*, aws, api, governance, authority, journal, keeper, prepared, credential_limit,
                            operation_session, clock=time.time):
     """Close-drain capability factory, sibling of closed_ready_capability (decision 4, queue item 3a).
@@ -1890,27 +2015,7 @@ def close_drain_capability(*, aws, api, governance, authority, journal, keeper, 
         c.require(cases["get-fence"]["resource"] == table and cases["probe-own"]["resource"] == prefix + "0" * 16,
                   "capability scope recomputed from prepared policy")
         scope = {"account": governance["account_id"], "control_table_arn": table, "machine_arn": machine}
-        # Change 4: the package evaluation only attests the closed-ready session, so this effective_iam is local, over
-        # documents recomputed here: the application identity, the pinned managed policy and the inline the factory sends.
-        from tools.cnesdata_delivery import session_owner, session_policy
-        from tools.cnesdata_delivery.coordination_lease import KEY
-        from tools.cnesdata_delivery.iam_boundary import effective_iam
-        inline = c.loads(session_policy.application_request(governance, owner["source_sha"], owner["run_id"], owner["run_attempt"],
-            "close-drain", application_purpose="promotion", delegations=("fence_operator",),
-            sessions={"fence_operator": role["session_name"]})["Policy"].encode())
-        evidence = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + lr.closed_ready_evidence_keys(governance,
-            owner=journal._request["owner"], caller=journal._identity, checkpoint_sha256=journal._request["checkpoint_sha256"],
-            sequence=0, operation="close-drain")["intent"]
-        named = {"sts:RoleSessionName": role["session_name"]}
-        decisions = ((role["role_arn"], "sts:AssumeRole", named, True),
-                     (role["role_arn"], "sts:AssumeRole", {"sts:RoleSessionName": role["session_name"] + "-foreign"}, False),
-                     (governance["application_delegations"]["normal"], "sts:AssumeRole", named, False),
-                     ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
-                     (evidence.replace("/close-drain/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
-        identity = session_owner.application_identity_document(governance, authority.application_fragment)
-        c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
-                                    {"aws:CurrentTime": c.utc(clock())} | context) is expected
-                      for resource, action, context, expected in decisions), "close-drain operation session effective IAM")
+        _fence_operation_iam(governance, authority, journal, role, clock)
         journal.guard()
         attached = aws.call("iam", "list_attached_role_policies", RoleName=authority.application_fragment["application_role_name"],
                             MaxItems=100)
@@ -1951,10 +2056,13 @@ class Keeper:
         self._contexts = []
         self.static_inventory = None
         self.static_inputs = None
+        self.phase_c_elements = {}
+        self.host_recovery = None
 
     def attach(self, context):
-        """Register an original journal/broker; its uncertainty keeps the lease held."""
-        c.require(type(context) in (AdapterJournal, *BROKERS), "original adapter context")
+        """Register an original journal/broker/readback; its uncertainty keeps the lease held."""
+        from tools.cnesdata_delivery.mode_broker import ModeReadback
+        c.require(type(context) in (AdapterJournal, ModeReadback, *_brokers()), "original adapter context")
         if not any(item is context for item in self._contexts):
             self._contexts.append(context)
 
@@ -1964,7 +2072,7 @@ class Keeper:
         found = [{"kind": "context-failed"} for journal in journals if journal._failed]
         found += [{"kind": "sdk-inflight"} for journal in journals if journal._inflight is not None]
         found += [entry for journal in journals for entry in journal.pending + journal.unknown]
-        found += [entry for item in self._contexts if type(item) in BROKERS for entry in item.uncertainty]
+        found += [entry for item in self._contexts if type(item) in _brokers() for entry in item.uncertainty]
         return found
 
     def _previous(self, previous):
@@ -2090,7 +2198,7 @@ class Keeper:
             c.closed(result, "sha256 facts")
             c.closed(result["facts"], TERMINAL_VALIDATOR_FACTS[kind])
             inputs[kind], facts[kind] = c.digest(result["sha256"]), result["facts"]
-        quiet, routing = facts["quiescence"], facts["routing"]
+        quiet, routing = facts["quiescence"], facts.get("routing", {"fence": None, "routes_match": None})
         assessment = {"kind": reference["kind"], "fence": routing["fence"], "routes_match": routing["routes_match"],
                       "state_clean": quiet["state_clean"], "quiescent": quiet["quiescent"], "pending": quiet["pending"],
                       "unknown": quiet["unknown"], "observed_at": quiet["observed_at"]}
@@ -2217,12 +2325,12 @@ HOST_REUSABLE = "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-host
 HOST_MEMBER, HOST_MEMBER_LIMIT, HOST_ZIP_LIMIT = "host-handoff.json", 32768, 65536
 
 
-def _host_job(api, owner, guard):
+def _host_job(api, owner, guard, name=HOST_JOB):
     run_id, attempt = owner["run_id"], owner["run_attempt"]
     guard.check(20)
     listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100&page=1")
     guard.check()
-    found = [job for job in listing["jobs"] if job["name"] == HOST_JOB]
+    found = [job for job in listing["jobs"] if job["name"] == name]
     c.require(listing["total_count"] == len(listing["jobs"]) <= 100 and len(found) == 1, "host handoff job inventory")
     job = found[0]
     c.require((job["run_id"], job["run_attempt"], job["head_sha"]) == (run_id, attempt, owner["source_sha"])
@@ -2236,13 +2344,13 @@ def _host_job(api, owner, guard):
     return job
 
 
-def _host_handoff_archive(api, owner, job, guard):
+def _host_handoff_archive(api, owner, job, guard, artifact="cnesdata-host-handoff"):
     run_id = owner["run_id"]
     guard.check(20)
     listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100&page=1")
     guard.check()
     c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "host handoff artifact inventory")
-    found = [item for item in listing["artifacts"] if item["name"] == f"cnesdata-host-handoff-{run_id}-{owner['run_attempt']}"]
+    found = [item for item in listing["artifacts"] if item["name"] == f"{artifact}-{run_id}-{owner['run_attempt']}"]
     c.require(len(found) == 1, "host handoff artifact unique")
     meta = found[0]
     c.require(meta["expired"] is False and meta["workflow_run"]["id"] == run_id
@@ -2276,10 +2384,11 @@ def _host_handoff_member(archive):
     return raw
 
 
-def authenticate_host_handoff(api, owner, *, guard):
+def authenticate_host_handoff(api, owner, *, guard, job=HOST_JOB, artifact="cnesdata-host-handoff"):
     """Authenticated host-handoff bytes of the owner run: job and steps, artifact, digest, member, canonical JSON.
 
-    Args: api GitHub reader, owner binding, keeper guard. Returns: the exact artifact member bytes.
+    Args: api GitHub reader, owner binding, keeper guard, the host job and artifact prefix (host-gate or the
+    rollback-previous host-recovery job). Returns: the exact artifact member bytes.
     Raises: ValueError on any missing or divergent proof.
     """
     run_id, attempt = owner["run_id"], owner["run_attempt"]
@@ -2289,8 +2398,8 @@ def authenticate_host_handoff(api, owner, *, guard):
     c.require((run["id"], run["run_attempt"], run["head_sha"]) == (run_id, attempt, owner["source_sha"]), "host handoff run")
     refs = [item for item in run.get("referenced_workflows", []) if item["path"].startswith(HOST_REUSABLE)]
     c.require(len(refs) == 1 and refs[0]["path"] == HOST_REUSABLE + c.digest(refs[0]["sha"], 40), "host handoff reusable")
-    job = _host_job(api, owner, guard)
-    raw = _host_handoff_member(_host_handoff_archive(api, owner, job, guard))
+    found = _host_job(api, owner, guard, job)
+    raw = _host_handoff_member(_host_handoff_archive(api, owner, found, guard, artifact))
     value = c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT)
     caller = value.get("caller") if type(value) is dict else None
     c.require(type(caller) is dict and value.get("producer_sha") == refs[0]["sha"]
@@ -2311,6 +2420,7 @@ def _handoff_validator(role):
     """Lazy artifact validator: the handoff is authenticated when the keeper invokes it, before the factory is built."""
     def provider(keeper):
         def validator(source, *, owner, window, observations):
+            c.closed(source, TERMINAL_SOURCE_ROLES["host" if role == "host-handoff" else "decision"])
             raw = authenticate_host_handoff(keeper.api, owner, guard=KeeperGuard(keeper))
             if role == "host-handoff":
                 return host_terminal_validator(raw)(source, owner=owner, window=window, observations=observations)
@@ -2323,8 +2433,8 @@ def _handoff_validator(role):
 
 
 def _mode_journal(keeper, mode):
-    journals = [_journal_of(item) for item in keeper._contexts]
-    found = [journal for journal in journals if journal._request["operation"] == mode + "-observe"]
+    journals = {id(journal): journal for journal in (_journal_of(item) for item in keeper._contexts)}
+    found = [journal for journal in journals.values() if journal._request["operation"] == mode + "-observe"]
     c.require(len(found) == 1, f"terminal mode journal mode={mode}")
     return found[0]
 
@@ -2359,18 +2469,22 @@ def _mode_validator(mode):
     return provider
 
 
+def _restoration_validator(keeper):
+    from tools.cnesdata_delivery.terminal_gate import restoration_validator
+    return restoration_validator(keeper)
+
+
 # Closed production registries. They are code constants, never read from governance, environment or
-# request. Each kind maps to a label and a provider that builds the validator for one keeper: SYNTHETIC
-# where the product has no handler (R3: routing, terminal-readback), product-mode where the DD-4
-# observation comes from the product observe handler. restoration stays without a validator, so
-# finish() refuses the failed-* terminals.
+# request. Each kind maps to a label naming the origin of its bytes and a provider that builds the
+# validator for one keeper.
 TERMINAL_VALIDATORS = {
-    "routing": ("synthetic-routing", _journal_validator(routing_terminal_validator)),
-    "static": ("synthetic-static", _journal_validator(static_terminal_validator)),
-    "membership": ("synthetic-membership", _journal_validator(membership_terminal_validator)),
-    "quiescence": ("synthetic-quiescence", _quiescence_validator),
-    "host": ("synthetic-host", _handoff_validator("host-handoff")),
-    "decision": ("synthetic-decision", _handoff_validator("recovery-decision")),
+    "routing": ("product-reopen", _journal_validator(routing_terminal_validator)),
+    "static": ("product-publication", _journal_validator(static_terminal_validator)),
+    "membership": ("product-membership", _journal_validator(membership_terminal_validator)),
+    "quiescence": ("product-terminal-readback", _quiescence_validator),
+    "host": ("infra-host-handoff", _handoff_validator("host-handoff")),
+    "decision": ("infra-recovery-decision", _handoff_validator("recovery-decision")),
+    "restoration": ("keeper-restoration", _restoration_validator),
     **{mode: ("product-mode-" + mode, _mode_validator(mode)) for mode in ("unit", "recovery", "audit")},
 }
 KEEPER_EVENT_SOURCE = stage_event_source
@@ -2569,11 +2683,6 @@ ROUTE_REVISIONS = ("unit", "recovery", "audit")
 TASK_REVISION = re.compile(r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}")
 
 
-def _state_point(checkpoint):
-    return dict(c.closed(dict(checkpoint["state"]), "lineage serial state_sha256"),
-                object_version=checkpoint["state_object"]["version_id"])
-
-
 STATE_MACHINE_REVISION = re.compile(r"arn:aws:states:[a-z0-9-]+:\d{12}:stateMachine:[A-Za-z0-9_-]+")
 B_MOMENTS = ("artifact_created_at", "job_completed_at")
 
@@ -2611,7 +2720,7 @@ def api_phase_b_evidence(*, close_raw, prepared, published, moments, admitted_at
     after = c.loads(published["checkpoint.json"], canonical=True)
     c.require(approval["checkpoint_sha256"] == c.sha(prepared["checkpoint.json"]) and approval["plan_sha256"] == after["plan_sha256"]
               and after["purpose"] == "phase-b", "phase_b=ancestry")
-    first, last = _state_point(before), _state_point(after)
+    first, last = lc.state_point(before), lc.state_point(after)
     c.require(first["lineage"] == last["lineage"] and first["serial"] < last["serial"]
               and first["object_version"] != last["object_version"], "phase_b=checkpoint_not_advanced")
     machines = [row["observed"].get("stateMachineArn") for row in after["readbacks"]
@@ -2639,6 +2748,10 @@ def _drop_operation_clients(broker):
         broker.session.clients = None
     else:
         broker.session.client = None
+    for name in ("read_session", "reads", "wait"):
+        session = getattr(broker, name, None)
+        if session is not None:
+            session.client = session.evidence = None
 
 
 def _frozen_membership(close_raw):
@@ -2837,22 +2950,53 @@ def publish_inventory(*, keeper, api, run, owner, raw, credential_limit, clock=t
                                    files={"inventory.json": raw}, guard=guard, credential_limit=credential_limit, clock=clock)
 
 
-MODE_RUNS = {mode: tuple(name for name, (_, _, context, phase) in lc.MODE_SESSION_OPERATIONS.items()
-                         if context == "promotion" and phase == mode) for mode in ("unit", "recovery", "audit")}
+MODE_RUNS = {"unit": ("unit-record", "unit-seed", "unit-start", "unit-observe"),
+             "recovery": ("recovery-record", "recovery-seed", "recovery-start", "recovery-observe"),
+             "audit": ("audit-record", "audit-start", "audit-observe")}
 MODE_NEXT_STAGE = {"unit": "phase-c-recovery", "recovery": "phase-c-audit", "audit": "final"}
 
 
-def mode_input_source(*, keeper, owner, window, operation, names):
-    """Mode originals the keeper journal does not hold: the mode-canary record and fixtures, readbacks, network, the
-    Phase C evidence and the audit event ids. Their producers are unwired (DD-1 1C), so production refuses here."""
-    raise ValueError("mode_inputs=source_unconnected")
+def mode_input_source(*, keeper, owner, window, operation, names, context=None):
+    """Mode originals the stage does not hold yet, from mode_broker.mode_input_source. Raises: ValueError."""
+    from tools.cnesdata_delivery import mode_broker
+    return mode_broker.mode_input_source(keeper=keeper, owner=owner, window=window, operation=operation, names=names,
+                                         context=context)
 
 
-def mode_capability(*, journal, keeper, guard):
-    """Production mode broker (mode_seed, mode_dispatch, mode_audit_launch and mode_observe sessions): not connected
-    in this slice, so the attached journal fails and the lease stays held. Raises: ValueError."""
-    journal._failed = True
-    raise ValueError("mode_broker=unconnected")
+ModeContext = namedtuple("ModeContext", "governance authority prepared credential_limit operation_session clock aws "
+                                        "activation_sha256 product")
+
+
+def mode_capability(*, journal, keeper, guard, context):
+    """Production mode capability per operation class, with the keeper context the stage handler binds: unit-start
+    refuses first while mode_broker.MODE_UNIT_START_OPEN is closed (ruling 8 amendment 1 layer 2); the pure record
+    operations get no broker and no STS; the observes get the prepared-fence FenceReadBroker; seed and start get the
+    ModeBroker of mode_effect_capability. A refusal fails the journal and keeps the lease held.
+
+    Returns: the admitted broker or None. Raises: ValueError.
+    """
+    from tools.cnesdata_delivery import mode_broker
+    operation = journal._request["operation"]
+    if operation == "unit-start" and mode_broker.MODE_UNIT_START_OPEN is not True:
+        journal._failed = True
+        raise ValueError("mode_unit_start=p16d_pending")
+    if operation.endswith("-record"):
+        return None
+    if operation in lc.MODE_OBSERVES:
+        return mode_broker.fence_observe_capability(
+            governance=context.governance, authority=context.authority, journal=journal, keeper=keeper,
+            prepared=context.prepared, credential_limit=context.credential_limit,
+            operation_session=context.operation_session, clock=context.clock)
+    return mode_broker.mode_effect_capability(journal=journal, keeper=keeper, context=context)
+
+
+def _mode_broker_class(operation):
+    """Admitted broker type per class: none for the pure record operations, ModeBroker for seed and start, and
+    FenceReadBroker for the observes."""
+    from tools.cnesdata_delivery.mode_broker import FenceReadBroker, ModeBroker
+    if operation.endswith("-record"):
+        return type(None)
+    return FenceReadBroker if operation.endswith("-observe") else ModeBroker
 
 
 def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capability, credential_limit, clock):
@@ -2866,22 +3010,30 @@ def run_mode_operation(keeper, operation, *, inputs, activation, invoke, capabil
                              operation=operation, owner=owner, window=window, inputs=inputs,
                              activation_sha256=c.sha(activation), guard=guard)
     keeper.attach(journal)
-    broker = capability(journal=journal, keeper=keeper, guard=guard)
+    journal._timings, started, broker = [], clock(), None
     try:
+        broker = capability(journal=journal, keeper=keeper, guard=guard)
+        c.require(getattr(journal, "_broker", None) is broker and type(broker) is _mode_broker_class(operation),
+                  "mode broker admitted before adapter")
         invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
                                                             operation=operation))
     finally:
+        journal._timings.append({"kind": "operation", "operation": operation, "started_at": started, "ended_at": clock()})
         _drop_operation_clients(broker)
-    kind = lc.ADAPTER_OBSERVATIONS[operation]
+    kind, steps = lc.ADAPTER_OBSERVATIONS[operation], lc.ADAPTER_STEPS.get(operation, frozenset())
+    kinds = [entry["kind"] for entry in journal._observations]
+    c.require(set(kinds) <= {kind} | steps and all(kinds.count(name) <= 1 for name in steps & lc.MODE_SINGLE_STEPS),
+              f"{operation} step observations")
     observed = [entry for entry in journal._observations if entry["kind"] == kind]
-    c.require(len(journal._observations) == len(observed) == 1 and not keeper.uncertainty(),
-              f"{operation} single observation without uncertainty")
+    c.require(len(observed) == 1 and not keeper.uncertainty(), f"{operation} single observation without uncertainty")
     return journal._observation_bytes[observed[0]["sha256"]]
 
 
-def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None):
+def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clock, checkpoint_sha256=None, context=None):
     """DD-3/DD-4: the mode operations in order, each fed by the previous observations, the accepted observe,
-    then the next stage window. Returns the observation bytes by kind (mode-seed, mode-result, mode)."""
+    then the next stage window. The journaled mode-record yields the record and audit-event-ids inputs.
+    Returns the observation bytes by kind (mode-record, mode-seed, mode-result, mode) and the record inputs."""
+    from tools.cnesdata_delivery.mode_broker import mode_record_inputs
     produced = {}
     for operation in MODE_RUNS[mode]:
         record = keeper.lease.check()
@@ -2890,10 +3042,13 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
         missing = sorted(names - set(inputs))
         if missing:
             inputs |= dict(mode_input_source(keeper=keeper, owner=lc.owner_binding(record), window=record["lifecycle"],
-                                             operation=operation, names=missing))
-        produced[lc.ADAPTER_OBSERVATIONS[operation]] = run_mode_operation(
-            keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke, capability=capability,
-            credential_limit=credential_limit, clock=clock)
+                                             operation=operation, names=missing, context=context))
+        raw = run_mode_operation(keeper, operation, inputs=inputs, activation=known["activation"], invoke=invoke,
+                                 capability=capability, credential_limit=credential_limit, clock=clock)
+        produced[lc.ADAPTER_OBSERVATIONS[operation]] = raw
+        if operation.endswith("-record"):
+            produced |= mode_record_inputs(raw, mode=mode, owner_sha256=lc.owner_binding(record)["owner_sha256"],
+                                           activation_sha256=c.sha(known["activation"]))
     _, accepted = mode_observation(keeper, mode, lc.owner_binding(keeper.lease.check()))
     c.require(accepted is True, f"{mode} mode accepted")
     admitted = clock()
@@ -2905,7 +3060,7 @@ def mode_stage(keeper, mode, *, known, invoke, capability, credential_limit, clo
 
 
 def stage_handlers(*, keeper, aws, api, governance, request, run, authority, product, credential_limit, operation_session,
-                   clock=time.time):
+                   phase_c_runtime, clock=time.time, state=None):
     """Handlers of the keeper triggers (amendment 6886977054 decision 3, ratification 6974253889, P02 DD-3, P15b).
 
     observer-bootstrap: authenticated inventory inputs, the inventory operation under the observer sp-i session and
@@ -2915,13 +3070,16 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
     carrier, close-drain, close window.
     phase-b: B checkpoint ancestry from the prepared checkpoint, API window, then the API operation: closed-ready
     and its DD-2 publication. host: the accepted host handoff of that closed-ready, static window, then the static
-    operation publish-static and, on its settled publication, the unit window (internal, DD-3). phase-c-recovery
-    and phase-c-audit (DD-3, external): the C deploy publication, child of the keeper checkpoint, then the mode run
-    and its acceptance (DD-4), the next window with the C deploy checkpoint. unit -> phase-c-recovery is internal:
-    `mode(current, "unit", None)` runs in the unit window; nothing runs it in this slice, so the unit stage ends it.
+    operation publish-static and, on its settled publication, the unit window (internal, DD-3) and in it the unit
+    mode run (record, seed, start, observe); its acceptance opens the phase-c-recovery window (internal, DD-3); a
+    refusal or a lapse ends held. phase-c-recovery and phase-c-audit (DD-3, external): the C deploy publication,
+    child of the keeper checkpoint, the keeper-side phase-c element (P17 ruling 6) over the B checkpoint re-read and
+    bound by the window the CAS chain holds, then the mode run and its acceptance (DD-4), the next window with the C
+    deploy checkpoint. state is shared with the terminal producer (P17): the bytes of the current window checkpoint,
+    the accepted host receipt and, after a recovery_required host handoff with its decision, the recovery decision.
     """
     from tools.cnesdata_delivery import lifecycle_runtime as lr
-    state = {}
+    state = {} if state is None else state
 
     def observer_bootstrap(current, reference):
         guard = KeeperGuard(current)
@@ -2981,7 +3139,8 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                  infra_bound=infra_expiration_bound(authority, api), now=int(clock()))
         current.lease.checkpoint(closed)
         _publish_stage_open(current, api, run, governance, credential_limit, clock)
-        state.update({"prepared": files, "activation": activation, "terraform": terraform, "static-plan": static_plan,
+        state.update({"prepared": files, "checkpoint": files["checkpoint.json"], "activation": activation,
+                      "terraform": terraform, "static-plan": static_plan,
                       "close-drain": journal._observation_bytes[observed[0]["sha256"]],
                       "revisions": {"unit": targets["processor_active_unit_task_definition_arn"],
                                     "recovery": targets["scheduler_recovery_task_definition_arn"],
@@ -3002,6 +3161,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         c.require(admitted < lc.terminal_deadline(window), "phase-b stage deadline elapsed")
         current.lease.checkpoint(lc.api_window(window, checkpoint_sha256=c.sha(published["checkpoint.json"]),
                                                now=admitted))
+        state["checkpoint"] = published["checkpoint.json"]
         closed_ready(current, published, moments)
 
     def closed_ready(current, published, moments):
@@ -3043,6 +3203,10 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         guard = KeeperGuard(current)
         raw = authenticate_host_handoff(api, owner, guard=guard)
         handoff = _versioned(c.loads(raw, canonical=True, limit=HOST_MEMBER_LIMIT), "host-handoff", HOST_HANDOFF_FIELDS)
+        if handoff["status"] == "recovery_required":
+            from tools.cnesdata_delivery.terminal_gate import enter_recovery
+            enter_recovery(current, raw, ready=ready, state=state, clock=clock)
+            return
         c.require(handoff["status"] == "accepted" and handoff["closed_ready_sha256"] == ready,
                   "host handoff accepted for the keeper closed-ready")
         c.require(not current.uncertainty(), "host handoff with unresolved keeper uncertainty")
@@ -3050,7 +3214,9 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         window = current.lease.check()["lifecycle"]
         c.require(admitted < lc.terminal_deadline(window), "api stage deadline elapsed")
         current.lease.checkpoint(lc.static_window(window, now=admitted))
+        state["host-receipt"] = raw
         publish_static(current, raw)
+        mode(current, "unit", None)
 
     def publish_static(current, receipt):
         from tools.cnesdata_delivery.static_inputs import carrier_binding
@@ -3094,10 +3260,15 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
                                   manifest_sha256=governance["application_product_source_closure_sha256"], journal=journal,
                                   timeout=timeout)
 
+        context = ModeContext(governance=governance, authority=authority, prepared=state["prepared"],
+                              credential_limit=credential_limit, operation_session=operation_session, clock=clock, aws=aws,
+                              activation_sha256=c.sha(state["activation"]), product=product)
+
         def capability(*, journal, keeper, guard):
-            return mode_capability(journal=journal, keeper=keeper, guard=guard)
+            return mode_capability(journal=journal, keeper=keeper, guard=guard, context=context)
         produced = mode_stage(current, name, known=known, invoke=invoke, capability=capability,
-                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256)
+                              credential_limit=credential_limit, clock=clock, checkpoint_sha256=checkpoint_sha256,
+                              context=context)
         if name == "recovery":
             state["recovery-result"] = produced["mode-result"]
 
@@ -3106,43 +3277,85 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
             c.require(state.get("closed-ready") is not None, f"{purpose} follows the closed-ready run of this keeper")
             record = current.lease.check()
             window, owner = record["lifecycle"], lc.owner_binding(record)
-            published, _ = _deploy_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock(), purpose)
+            published, moments = _deploy_publication(api, aws, governance, request, run, owner, KeeperGuard(current), clock(),
+                                                     purpose)
             checkpoint = c.loads(published["checkpoint.json"], canonical=True)
             approval = c.loads(published["approval.json"], canonical=True)
             c.require(approval["checkpoint_sha256"] == window["checkpoint_sha256"] and approval["plan_sha256"] == checkpoint["plan_sha256"]
                       and checkpoint["purpose"] == purpose and c.canonical(checkpoint["owner"]) == c.canonical(owner),
                       f"{purpose} checkpoint ancestry")
+            sources = phase_c_sources(current, purpose, (published, moments), window, owner)
+            current.phase_c_elements[purpose] = lr.phase_c_element(sources, product=product, runtime=phase_c_runtime)
+            if purpose == "phase-c-recovery":
+                state["phase-c-recovery-window"] = window
             mode(current, purpose.removeprefix("phase-c-"), c.sha(published["checkpoint.json"]))
+            state["checkpoint"] = published["checkpoint.json"]
         return handler
+
+    def phase_c_sources(current, purpose, publication, window, owner):
+        guard = KeeperGuard(current)
+        b_checkpoint = _phase_b_publication(api, aws, governance, request, run, owner, guard, clock())[0]["checkpoint.json"]
+        if purpose == "phase-c-recovery":
+            held, before = window, b_checkpoint
+        else:
+            held = state.get("phase-c-recovery-window")
+            c.require(held is not None, "phase_c=recovery_element")
+            c.require(c.sha(c.canonical(held)) in {event["lifecycle_sha256"] for event in current.lease.checkpoints},
+                      "phase_c=phase_b_chain")
+            before = _deploy_publication(api, aws, governance, request, run, owner, guard, clock(),
+                                         "phase-c-recovery")[0]["checkpoint.json"]
+        c.require(c.sha(b_checkpoint) == held["checkpoint_sha256"], "phase_c=phase_b_binding")
+        c.require(c.sha(before) == window["checkpoint_sha256"], "phase_c=before_binding")
+        published, moments = publication
+        return lr.PhaseCSources(purpose, published, before, b_checkpoint, state["close-drain"], moments["job_completed_at"])
 
     return {"observer-bootstrap": observer_bootstrap, "prepared": prepared, "phase-b": phase_b, "host": host,
             "phase-c-recovery": phase_c("phase-c-recovery"), "phase-c-audit": phase_c("phase-c-audit")}
 
 
-KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+KEEPER_EVENTS = ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit", "host-recovery")
 
 
-def keeper_loop(keeper, *, next_event, handlers, poll=5, sleep=time.sleep):
-    """The single keeper polling loop over the six external keeper triggers; it never returns.
+def _keeper_event(keeper, window, next_event, handlers):
+    event = next_event(window)
+    if event is None:
+        return False, None
+    c.closed(event, "kind reference")
+    c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
+    return True, handlers[event["kind"]](keeper, event["reference"])
 
-    next_event is the authenticated event producer and handlers holds exactly the KEEPER_EVENTS
-    handlers: the ratified stage triggers (prepared, phase-b, host and the two C rows) and the
-    observer-bootstrap operation trigger (P15b); static -> unit is internal to the host handler and
-    unit -> phase-c-recovery is internal (DD-3). At the unit stage the producer refuses and the lease
-    stays held (R18): there is no finish, terminal publication or dispatch here. Any exception leaves
-    the lease held.
+
+def keeper_loop(keeper, *, next_event, handlers, terminal, poll=5, sleep=time.sleep):
+    """The single keeper polling loop over the external keeper triggers; it returns the terminal outcome.
+
+    next_event is the authenticated event producer and handlers holds exactly the KEEPER_EVENTS handlers:
+    the ratified stage triggers (prepared, phase-b, host and the two C rows), the observer-bootstrap
+    operation trigger (P15b) and the host-recovery operation trigger (DD-3 amendment, P17), whose
+    failed-closed terminal outcome ends the loop. At the final stage terminal.final closes accepted-open
+    (internal). A refusal of the producer or a handler before the close goes to terminal.prepare_failure;
+    any other exception propagates unchanged (after a release too) and a recovery stage deadline passed without
+    host-recovery leaves the lease held.
     """
     c.require(type(handlers) is dict and set(handlers) == set(KEEPER_EVENTS), "closed keeper handlers")
     c.integer(poll, 1, 25)
     while True:
         keeper.tick()
-        event = next_event(keeper.lease.check()["lifecycle"])
-        if event is None:
+        window = keeper.lease.check()["lifecycle"]
+        if window["stage"] == "final":
+            return terminal.final(keeper)
+        c.require(window["stage"] != "recovery" or keeper.clock() < window["deadline"],
+                  "recovery stage deadline elapsed without host-recovery")
+        try:
+            handled, outcome = _keeper_event(keeper, window, next_event, handlers)
+        except Exception as error:
+            record, _ = keeper.lease.store.get()
+            if record is None or record.get("status") != "held" or record["lifecycle"]["close"] is not None:
+                raise
+            return terminal.prepare_failure(keeper, error)
+        if outcome is not None:
+            return outcome
+        if not handled:
             sleep(poll)
-            continue
-        c.closed(event, "kind reference")
-        c.require(event["kind"] in KEEPER_EVENTS, "closed keeper event")
-        handlers[event["kind"]](keeper, event["reference"])
 
 
 def _verify_session(client, governance, authority, run, expires):
@@ -3162,10 +3375,11 @@ def _verify_session(client, governance, authority, run, expires):
 
 
 def execute(admitted, *, validators=None, event_source=None, product=None):
-    """Operational keeper entry: compose the original keeper and run the stage loop to the unit stage.
+    """Operational keeper entry: compose the original keeper and run the stage loop to its terminal outcome.
 
-    The order is the contract: release, adapter closure, owner authority, credential window, AWS and
-    session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    The order is the contract: release, adapter closure, phase-c child runtime, owner authority, credential
+    window, AWS and session readback, lease binding, keeper, validators, acquire, event source, handlers, loop.
+    Returns: the terminal outcome {kind, promotion_status, receipt}.
     """
     import os
     from pathlib import Path
@@ -3180,6 +3394,7 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
     product = Path.cwd() / "product" if product is None else product
     authenticate_adapter_closure(product, request["source_sha"], governance["application_product_source_manifest"],
                                  governance["application_product_source_closure_sha256"])
+    phase_c_runtime = lr.phase_c_runtime(os.environ)
     authority = session_owner.authenticate_lifecycle(governance, api, request["source_sha"],
                                                      "application", "application-prepare", time.time())
     c.require(type(os.environ.get("AWS_CREDENTIAL_EXPIRATION")) is str, "application credential expiration")
@@ -3217,10 +3432,16 @@ def execute(admitted, *, validators=None, event_source=None, product=None):
         c.require(value["Expiration"].timestamp() >= stage["deadline"], "operation session expiration")
         return client
 
+    from tools.cnesdata_delivery.terminal_gate import TerminalSteps
+    state = {}
     handlers = stage_handlers(keeper=keeper, aws=aws, api=api, governance=governance, request=request, run=run,
                               authority=authority, product=product, credential_limit=credential_limit,
-                              operation_session=operation_session, clock=keeper.clock)
-    keeper_loop(keeper, next_event=next_event, handlers=handlers)
+                              operation_session=operation_session, phase_c_runtime=phase_c_runtime, clock=keeper.clock,
+                              state=state)
+    terminal = TerminalSteps(keeper=keeper, api=api, governance=governance, run=run, state=state, product=product,
+                             credential_limit=credential_limit, clock=keeper.clock)
+    return keeper_loop(keeper, next_event=next_event, handlers=dict(handlers) | {"host-recovery": terminal.host_recovery},
+                       terminal=terminal)
 
 
 def credentials(admitted, *, product=None):
@@ -3306,7 +3527,10 @@ def main(argv=None):
     if args.operation == "credentials":
         return credentials(admitted)
     if args.operation == "execute":
-        return execute(admitted)
+        outcome = execute(admitted)
+        if outcome["promotion_status"] != "accepted":
+            raise SystemExit(f"terminal promotion_status={outcome['promotion_status']} kind={outcome['kind']}")
+        return outcome
     return admitted
 
 

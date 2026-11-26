@@ -177,6 +177,10 @@ def test_regra_unica_de_delta_admite_a_combinacao(purpose, direction, mode):
     ("phase-c-audit", "advance", "audit", "C checkpoint mode"),
     ("static-maintenance", "advance", "static", "maintenance after OPEN"),
     ("static-maintenance", "converge", "post-open", "maintenance after OPEN"),
+    ("phase-b", "advance", "mode-canary", "B checkpoint mode"),
+    ("phase-c-recovery", "advance", "mode-canary", "C checkpoint mode"),
+    ("phase-c-audit", "advance", "mode-canary", "C checkpoint mode"),
+    ("static-maintenance", "advance", "mode-canary", "maintenance after OPEN"),
 ])
 def test_regra_unica_de_delta_recusa_a_combinacao(purpose, direction, mode, reason):
     with pytest.raises(ValueError, match=reason):

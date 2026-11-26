@@ -28,15 +28,22 @@ reviewed recovery acceptance" dentro de `previous_terminal`; como `previous_succ
 `previous_success` (`runtime.py`) autentica recibo, envelope, evidencia do lease e checkpoint do run
 anterior, e qualquer excecao devolve falso ("retain coordinator and demand reviewed recovery").
 
-O modelo F1 `formal/cnesdata_delivery/LeaseTerminal.tla` define o estado alvo: `Admissible(record)` =
-`released` com `result` aceito **ou** `recovered`; a acao `ReviewedRecovery` marca `recovered` num lease
-`held` com `coord = recovery_required` ou `released` com `result = failed`, e a propriedade
-`RefuseFailedUntilReview` diz que nenhum acquire parte de um predecessor `failed` sem essa revisao.
+O modelo F1 `formal/cnesdata_delivery/LeaseTerminal.tla` modela essa recuperacao como reset ao objeto
+ausente (decisao P17, opcao b): `Admissible(record)` = objeto ausente (`NoLease`) **ou** `released` com
+`result` aceito. A acao `ReviewedReset` remove o objeto de um lease `held` com `coord = recovery_required`
+ou `released` com `result = failed`, so com o run dono terminado (`pc = done`), registra a revisao e
+guarda o dono removido (`removed`); o acquire seguinte sobre o objeto ausente herda esse dono como
+predecessor, e a propriedade `RefuseFailedUntilReview` continua valendo: nenhum acquire parte de um
+predecessor `failed` sem a revisao. Os mutantes `LeaseTerminalMutantResetLive` (reset sob um dono vivo,
+viola `ExecuteNeedsLease`) e `LeaseTerminalMutantResetUnreviewed` (reset sem revisao, viola
+`RefuseFailedUntilReview`) provam que as duas condicoes sao necessarias. Nao ha marcador `recovered`
+no modelo nem no codigo.
 
-**Lacuna declarada (para a coordenadora decidir antes da janela):** o marcador `recovered` do modelo nao
-existe no codigo. Nenhum caminho de codigo aceita um lease `released` de terminal `failed`, e nao ha
-comando de recuperacao no CLI do dono. Este runbook nao inventa um. Hoje o unico estado que o acquire
-aceita sem um terminal `accepted` e o objeto do lease ausente, e esse reset tem custos (secao 1.4).
+Por que o reset nao deixa um escritor antigo agir: todo write do dono antigo passa por `check()` (dono,
+etag e `held`) e e um PUT condicional ao etag; um terminal `failed-*` so existe depois que `finish`
+liberou o registro, e o acquire seguinte grava um token novo de 256 bits, entao nenhum etag antigo
+casa. `finish` recusa com incerteza de SDK, o job termina, a readback terminal provou `pending == []`,
+membros resolvidos e `state_clean`, e o fence usa o dono (`promotion_id`), nao a geracao.
 
 ### 1.3 Passo 1: reter toda a evidencia antes de qualquer escrita
 
@@ -59,22 +66,37 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 1. Revisao pelo dono, por escrito (data, run, causa, evidencia retida, decisao), antes de mexer no lease.
    Se o estado e `held`/`recovery_required` ou ha duvida sobre o estado da fence ou das rotas, a
    recuperacao do ambiente (host, rotas, restauracao) vem antes e fora deste runbook.
-2. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente**. Nao ha caminho de
-   remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do dono. Condicoes:
-   precondicao no etag lido no passo 1 quando o mecanismo a suportar, uma escrita, aprovada pelo dono,
-   sem nenhum run em andamento, e leitura de volta confirmando a ausencia. Efeito colateral a decidir
-   na revisao: o acquire seguinte com objeto ausente parte da geracao 1 (`previous_generation = 0`), e o
-   lifecycle (`generation` do predecessor, `predecessor_read`) pode exigir que o proximo run se encadeie
-   ao predecessor original; confirmar na governanca antes do reset.
-3. Proximo acquire so por um novo run gated (Phase A ou promocao). Nao dispare em cima do run vermelho e
-   nao use rerun do mesmo run id.
-4. Registrar o reset (data, quem, etag antes, ausencia confirmada) junto da evidencia retida.
+   Falha do `unit-start` depois da reserva: o keeper nunca roda o `cancel_reserved` do produto (o papel
+   `mode_dispatch` nao tem `ConditionCheckItem` no SEMAPHORE), entao ficam um dispatch de unidade
+   `RESERVED`, o permit do `ENV#prod#SEMAPHORE` (`UNIT`) e o slot do `ENV#prod#ATTEMPTS` que ele
+   consumiu. A recuperacao revisada limpa os tres antes da proxima promocao, depois da evidencia do
+   passo 1 e com a mesma aprovacao escrita.
+2. Falha do host (decisao do dono de 2026-11-25, recuperacao manual): o lease fica `held`. Com
+   `rolled_back`, a API ja esta na versao anterior. Com `recovery_required`, o dono recupera o VPS a mao
+   ate a versao anterior aceita do host e confere por leitura, antes do reset revisado. O `host-recovery`
+   e o `reopen` do `recovery` ficam inertes em producao ate o item adiado.
+3. Reset a um estado que o acquire aceita: apenas **objeto do lease ausente** (`ReviewedReset` do F1).
+   Precondicao: o run attempt dono do lease esta `completed`, lido na API do GitHub (para `held`/
+   `recovery_required` isso e o `pc = done` do modelo; sem isso o reset e o mutante `ResetLive`). Nao ha
+   caminho de remocao no codigo: o mecanismo e a identidade que o executa ficam para a aprovacao do
+   dono. Condicoes: precondicao no etag lido no passo 1 quando o mecanismo a suportar, uma escrita,
+   aprovada pelo dono, sem nenhum run em andamento, e leitura de volta confirmando a ausencia. A geracao
+   recomeca em 1: o acquire seguinte com objeto ausente parte de `previous_generation = 0`. A checagem
+   de epoca do produto (`generation >= promotion_generation` no close-drain) so recusa mais com uma
+   geracao menor, nunca menos.
+4. Proximo acquire so por um novo run gated de **Phase A**: o application recusa o objeto ausente
+   ("original completed delivery required"). Depois, re-fixar `predecessor_read` da governanca nesse run
+   de Phase A. Nao dispare em cima do run vermelho e nao use rerun do mesmo run id.
+5. A primeira promocao depois de um reset precisa de um snapshot de membership vazio. Um membro
+   sobrevivente com geracao maior ou igual a geracao recomecada faz o close-drain recusar (fail closed);
+   a promocao fica retida ate a membership esvaziar. Uma clarificacao dessa comparacao no produto esta na
+   lista adiada (depois do primeiro aceite).
+6. Registrar o reset (data, quem, etag antes, ausencia confirmada) junto da evidencia retida.
 
 ### 1.5 Verificacao
 
-Leitura do objeto do lease mostra ausencia (ou, no futuro, o marcador revisado); o proximo acquire passa
-e escreve geracao e `acquired_at`; a evidencia retida no passo 1 continua legivel e com os mesmos
-sha256.
+Leitura do objeto do lease mostra ausencia; o proximo acquire (Phase A) passa e escreve geracao e
+`acquired_at`; a evidencia retida no passo 1 continua legivel e com os mesmos sha256.
 
 ## 2. Custodia e rotacao da `report_hmac_key`
 

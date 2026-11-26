@@ -339,8 +339,10 @@ def test_com_o_inventario_liquidado_o_gatilho_do_prepare_volta_a_ser_o_prepared(
 
 def test_tabela_de_gatilho_de_operacao_e_a_do_inventario_no_prepare():
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
-    assert lc.OPERATION_TRIGGERS == {"inventory": ("application-prepare", "observer-bootstrap")}
-    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit")
+    assert lc.OPERATION_TRIGGERS == {"inventory": ("application-prepare", "observer-bootstrap"),
+                                     "rollback-api-static": ("recovery", "host-recovery")}
+    assert ag.KEEPER_EVENTS == ("observer-bootstrap", "prepared", "phase-b", "host", "phase-c-recovery", "phase-c-audit",
+                                "host-recovery")
     assert lc.STAGE_TRIGGERS["application-prepare"] == ("prepared", "phase-b")
 
 
@@ -563,7 +565,8 @@ def _production_world(monkeypatch, mutation=None):
     world.handlers["phase-b"](world.keeper, dict(B_REFERENCE))
     world.clock.value = 1200
     world.keeper.tick()
-    return _install_static(monkeypatch, world, {"capability": "real", "source": "production", "versions": ()})
+    return _install_static(monkeypatch, world, {"capability": "real", "source": "production", "versions": (),
+                                                "unit": "real"})
 
 
 def test_insumos_de_producao_do_inventory_vem_do_artefato_static_inputs_e_do_dashboard_fixado(monkeypatch):
@@ -613,14 +616,20 @@ def test_cada_insumo_do_publish_static_recusa_fonte_nao_autenticada_e_nunca_roda
     assert world.store.get()[0]["status"] == "held" and world.store.get()[0]["lifecycle"]["stage"] in {"api", "static"}
 
 
-def test_execute_de_producao_nao_para_mais_em_source_unconnected_e_chega_ao_unit(monkeypatch):
+def test_execute_de_producao_chega_ao_unit_e_o_modo_unit_recusa_o_primeiro_original_nao_autenticado(monkeypatch):
+    """Ruling 4 item 6: the host starts the real unit mode run in the unit window; it refuses at the first original it
+    cannot authenticate (the fixture manifest, with no product checkout in this world), before any mode child, and the
+    lease stays held at unit."""
     from test_cnesdata_stage_events import HOST_REFERENCE
     from tools.cnesdata_delivery import application_gate as ag
     world = _production_world(monkeypatch)
     reads = list(world.github.reads)
-    world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
+    with pytest.raises(ValueError, match="^mode fixture original$"):
+        world.handlers["host"](world.keeper, dict(HOST_REFERENCE))
     lifecycle = world.store.get()[0]["lifecycle"]
-    assert lifecycle["stage"] == "unit" and world.store.get()[0]["status"] == "held"
+    assert lifecycle["stage"] == "unit" and lifecycle["sequence"] == 4 and world.store.get()[0]["status"] == "held"
+    assert [item._request["operation"] for item in world.keeper._contexts if type(item) is ag.AdapterJournal][-1:] == [
+        "publish-static"]
     assert world.github.reads == reads
     (journal,) = [item for item in world.keeper._contexts if type(item) is ag.AdapterJournal
                   and item._request["operation"] == "publish-static"]

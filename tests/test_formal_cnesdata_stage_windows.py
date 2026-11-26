@@ -142,13 +142,16 @@ def published_files():
     source = function_source(RUNTIME, "execute")
     plan = re.search(r'result_files = \{"plan\.bin".*?"checkpoint\.json": [^}]*\}', source, re.S).group(0)
     audit = re.search(r'result_files = \{"approval\.json": [^}]*\}', source).group(0)
-    deploy = re.search(r'result_files = \{"checkpoint\.json": c\.canonical\(checkpoint\), '
-                       r'"approval\.json": [^}]*\}', source).group(0)
-    return {name: len(re.findall(r'"[\w.]+": ', body)) for name, body in
-            (("plan", plan), ("audit", audit), ("deploy", deploy))}
+    assert re.search(r"result_files = deploy_result_files\(step\[\"purpose\"\], ", source)
+    members = function_source(RUNTIME, "deploy_result_files")
+    deploy = re.search(r'files = \{"checkpoint\.json": \w+, "approval\.json": \w+\}', members).group(0)
+    extra = re.search(r'files \| \{"[\w.-]+": \w+\} if purpose in lc\.PHASE_C_PURPOSES', members).group(0)
+    counts = {name: len(re.findall(r'"[\w.-]+": ', body)) for name, body in
+              (("plan", plan), ("audit", audit), ("deploy", deploy), ("extra", extra))}
+    return {name: counts[name] for name in ("plan", "audit", "deploy")} | {"deploy_c": counts["deploy"] + counts["extra"]}
 
 
-def deploy_ops(bounds, cfg):
+def deploy_ops(bounds, cfg, stage=1):
     tofu = {"init": int(cfg["InitTimeout"]), "show": int(cfg["ShowTimeout"]),
             "plan": int(cfg["PlanTimeout"]), "apply": int(cfg["ApplyTimeout"])}
     floor, pub = int(cfg["ReadbackFloor"]), int(cfg["PubActual"])
@@ -167,12 +170,12 @@ def deploy_ops(bounds, cfg):
     return ([job, init, ("plan", tofu["plan"], bounds["plan"]), show] + tail + publish(files["plan"])
             + [job, init, show] + tail + publish(files["audit"])
             + [job, init] + read("aread") + [show, ("apply", tofu["apply"], act["apply"])]
-            + read("pread") + tail + publish(files["deploy"]))
+            + read("pread") + tail + publish(files["deploy_c" if stage in (5, 6) else "deploy"]))
 
 
 def stage_ops(stage, bounds, cfg):
     floor = int(cfg["AdapterFloor"])
-    ops = deploy_ops(bounds, cfg) if stage in (1, 5, 6) else []
+    ops = deploy_ops(bounds, cfg, stage) if stage in (1, 5, 6) else []
     if stage in MODE_PHASE:
         names = underscored(code_modes()[MODE_PHASE[stage]])
     else:
@@ -251,8 +254,14 @@ def test_guardas_pos_chamada_e_de_publicacao_do_codigo_estao_no_modelo():
     assert publish_guards_per_file() == int(cfg["PublishGuardsPerFile"]) == 2
     assert trailing_guards() == int(cfg["TrailingGuards"]) == 1
     files = published_files()
-    assert (files["plan"], files["audit"], files["deploy"]) == (
-        int(cfg["PlanFiles"]), int(cfg["AuditFiles"]), int(cfg["DeployFiles"]))
+    assert (files["plan"], files["audit"], files["deploy"], files["deploy_c"]) == (
+        int(cfg["PlanFiles"]), int(cfg["AuditFiles"]), int(cfg["DeployFiles"]), int(cfg["DeployFilesC"])) == (4, 1, 2, 3)
+
+
+def test_deploy_c_do_modelo_publica_os_membros_do_codigo_nos_estagios_phase_c():
+    assert re.search(r"^Job3\(files\) == .*\n\s+\\o Trail \\o Publish\(files\)$", MODEL, re.M)
+    assert re.findall(r"\[\] s = (\d) -> DeployOps(C?) ", MODEL) == [("5", "C"), ("6", "C")]
+    assert re.search(r"^\s+CASE s = 1 -> DeployOps$", MODEL, re.M)
 
 
 def test_piso_do_watchdog_e_reserva_das_leituras_do_codigo_estao_no_modelo():
