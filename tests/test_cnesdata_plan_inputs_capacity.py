@@ -32,7 +32,9 @@ def _documents(governance):
     names = {"observer": "sp-i-" + "a" * 40, "normal": "sp-publish-" + "a" * 40, "recovery": "sp-rollback-" + "a" * 40,
              "seeder": "canary-seeder-" + "a" * 32, "verifier": "canary-verifier-" + "a" * 32,
              "fence_operator": "promotion-fence-" + "a" * 32}
-    deletes = [f"arn:aws:states:us-east-2:{ACCOUNT}:stateMachine:cnesdata-prod-" + "m" * 40 + str(index) for index in range(8)]
+    from tools.cnesdata_delivery.session_policy import DELETE_ARN_MAX, _delete_bound
+    head = f"arn:aws:states:us-east-2:{ACCOUNT}:stateMachine:cnesdata-prod-"
+    deletes = [(head + "m" * DELETE_ARN_MAX)[:DELETE_ARN_MAX - len(str(index))] + str(index) for index in range(_delete_bound())]
     documents = {}
     for role, direction, resources in (("plan", "advance", ()), ("audit", "advance", ()), ("deploy", "advance", ()),
                                        ("deploy", "converge", deletes)):
@@ -64,10 +66,6 @@ def _measure(governance):
     return rows
 
 
-REFUSED_AT_MAXIMA = {"lifecycle deploy converge", "application normal+observer", "application recovery+observer",
-                     "application fence_operator"}
-
-
 def test_sessoes_do_p40_cabem_em_2048_caracteres_nos_maximos_governados(capsys):
     rows = _measure(_governance())
     with capsys.disabled():
@@ -77,9 +75,9 @@ def test_sessoes_do_p40_cabem_em_2048_caracteres_nos_maximos_governados(capsys):
     assert len(keepers) == 2 and all(type(size) is int and size <= 2048 for size in keepers.values())
 
 
-def test_sessoes_recusadas_nos_maximos_sao_exatamente_as_ja_conhecidas():
-    refused = {name for name, size in _measure(_governance()).items() if type(size) is not int}
-    assert refused == set(REFUSED_AT_MAXIMA)
+def test_toda_sessao_cabe_nos_maximos_governados():
+    rows = _measure(_governance())
+    assert all(type(size) is int and size <= 2048 for size in rows.values()), {n: s for n, s in rows.items() if type(s) is not int}
 
 
 def test_keeper_cresce_so_com_o_balde_e_o_prefixo_nao_com_o_numero_de_planos():
