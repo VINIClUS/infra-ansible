@@ -732,6 +732,7 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
                       "static_inputs.py", "terminal_gate.py", "mode_broker.py", "product_dynamodb_keys.py",
                       "product_mode_canary.py", "product_mode_canary_frames.py", "product_mode_canary_dispatch.py",
+                      "product_mode_canary_unit_observe.py",
                       "runtime-requirements.txt", "phase-c-child-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))

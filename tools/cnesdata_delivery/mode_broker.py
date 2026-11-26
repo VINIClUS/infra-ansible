@@ -35,7 +35,9 @@ PRODUCT_FRAMES = (
     ("cnes_infra.aws.mode_canary_frames", "product_mode_canary_frames.py",
      "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33"),
     ("cnes_infra.aws.mode_canary_dispatch", "product_mode_canary_dispatch.py",
-     "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c"))
+     "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c"),
+    ("cnes_infra.aws.mode_canary_unit_observe", "product_mode_canary_unit_observe.py",
+     "a7673ee24defc40fd661e6e1ea162f662ee003ed111c587d00e138dc59e32382"))
 _PRODUCT = {}
 _RUN = re.compile(r"[a-z0-9-]{1,64}")
 _DISPATCH = re.compile(r"[A-Za-z0-9._:-]{1,128}")
@@ -85,6 +87,14 @@ def product_dispatch():
     Returns: the cnes_infra.aws.mode_canary_dispatch module. Raises: ValueError on any byte drift, before executing.
     """
     return _product_module("cnes_infra.aws.mode_canary_dispatch")
+
+
+def product_unit_observe():
+    """Vendored product unit-start observation builders (P16d), loaded with the frames from the same verified bytes.
+
+    Returns: the cnes_infra.aws.mode_canary_unit_observe module. Raises: ValueError on any byte drift, before executing.
+    """
+    return _product_module("cnes_infra.aws.mode_canary_unit_observe")
 
 
 UNIT_LEASE_SECONDS = 3600
