@@ -242,13 +242,27 @@ def _unit_active(start, item, state):
             and (state is None or payload.get("state") == state))
 
 
-UnitPlan = namedtuple("UnitPlan", "locator record start effect targets execution")
+UnitPlan = namedtuple("UnitPlan", "locator record start effect targets execution cluster")
+
+
+def unit_readback_cluster(readbacks_raw, resources):
+    """Amendment 2: the single Cluster of the machine definition of the unit ModeReadback, equal to the resources cluster.
+
+    Returns: the cluster ARN. Raises: ValueError mode unit cluster.
+    """
+    try:
+        definition = c.loads(readbacks_raw, canonical=True, limit=1024**2)["state_machine"]["definition"]
+    except (ValueError, TypeError, KeyError) as error:
+        raise ValueError("mode unit cluster") from error
+    cluster = product_unit_observe().unit_cluster(definition)
+    c.require(cluster is not None and cluster == resources["cluster_arn"], "mode unit cluster")
+    return cluster
 
 
 def unit_start_plan(keeper, journal, *, resources, now):
     """Q1b (B1, B2): the unit-start of the stage before any mint or write: locator and promotion_id of the record input,
-    the units of the single unit-seed journal of this keeper, UnitStart on the stage clock, its C1 targets and the exact
-    execution ARN of StartExecution name = dispatch_id.
+    the cluster of the readbacks input equal to the resources cluster, the units of the single unit-seed journal of this
+    keeper, UnitStart on the stage clock, its C1 targets and the exact execution ARN of StartExecution name = dispatch_id.
 
     Returns: UnitPlan. Raises: ValueError (product refusals included).
     """
@@ -262,6 +276,7 @@ def unit_start_plan(keeper, journal, *, resources, now):
               and record.machine_arn == resources["machine_arn"], "mode unit plan record")
     locator = UnitLocator("prod-canary-" + record.canary_id, tuple(record.run_ids), owner, c.sha(raw), "unit",
                           record.context_kind)
+    cluster = unit_readback_cluster(journal._inputs.get("readbacks"), resources)
     seeds = _operation_journals(keeper, "unit-seed")
     c.require(len(seeds) == 1 and not seeds[0]._unknown and not seeds[0]._failed, "mode unit seed journal")
     units = unit_seed_units(seeds[0]._settled_calls(), locator)
@@ -269,7 +284,7 @@ def unit_start_plan(keeper, journal, *, resources, now):
     start, effect, targets = unit_start_targets(locator, units, table=resources["table_arn"].rsplit("/", 1)[1], now=moment,
                                                 promotion_id=record.promotion_id)
     execution = resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":" + start.dispatch.dispatch_id
-    return UnitPlan(locator, record, start, effect, targets, execution)
+    return UnitPlan(locator, record, start, effect, targets, execution, cluster)
 
 
 def _unit_binding(locator):

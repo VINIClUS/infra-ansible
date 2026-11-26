@@ -21,6 +21,21 @@ TABLE = RESOURCES["table_arn"].rsplit("/", 1)[1]
 TENANT_ID = RESOURCES["scope"]["tenant_id"]
 RUN_ID = "unit-" + OWNER[:16]
 MACHINE = RESOURCES["machine_arn"]
+SECTION = VECTOR["unit_observe"]
+CLUSTER = RESOURCES["cluster_arn"]
+
+
+def _definition(change=None):
+    value = json.loads(SECTION["definition"].replace(json.dumps(SECTION["cluster_arn"]), json.dumps(CLUSTER)))
+    parameters = value["States"]["RunUnits"]["ItemProcessor"]["States"]["RunProcessor"]["Parameters"]
+    if change is not None:
+        change(value, parameters)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _readbacks(definition=None):
+    return c.canonical(SECTION["readbacks"] | {"state_machine": {"stateMachineArn": MACHINE,
+                                                                 "definition": definition or _definition()}})
 
 
 def _shifted(text):
@@ -118,11 +133,11 @@ class _Dynamo:
                 "input": "{}", "ResponseMetadata": _metadata()}
 
 
-def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, source=None, **dynamo):
+def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, source=None, readbacks=None, **dynamo):
     seeded = [_seed_journal(monkeypatch, _units()) for _ in range(seeds)]
     args, _, _ = _case(monkeypatch, "unit-start", source=source)
     raw = record or _record()
-    args["journal"], _ = _journal("unit-start", {"record": raw.encode()}, source)
+    args["journal"], _ = _journal("unit-start", {"record": raw.encode(), "readbacks": readbacks or _readbacks()}, source)
     start, uw = _mb().assume_unit_start_sessions(**args)
     keeper = SimpleNamespace(_contexts=[*seeded, args["journal"]])
     plan = _mb().unit_start_plan(keeper, args["journal"], resources=RESOURCES, now=NOW)
@@ -167,6 +182,37 @@ def test_plano_exige_exatamente_um_journal_do_unit_seed(monkeypatch, seeds):
 def test_plano_recusa_record_fora_do_unit_start(monkeypatch, changes):
     with pytest.raises(ValueError, match="^mode unit plan record$"):
         _world(monkeypatch, record=_record(**changes))
+
+
+def test_plano_leva_o_cluster_unico_da_maquina_do_readback_igual_ao_cluster_dos_recursos(monkeypatch):
+    _, _, _, plan = _world(monkeypatch)
+    assert plan.cluster == CLUSTER == _mb().product_unit_observe().unit_cluster(_definition())
+
+
+def _other(value, parameters):
+    parameters["Cluster"] = CLUSTER + "-other"
+
+
+def _missing(value, parameters):
+    del parameters["Cluster"]
+
+
+def _two(value, parameters):
+    value["States"]["Extra"] = {"Type": "Task", "End": True, "Parameters": {"Cluster": CLUSTER + "-other"}}
+
+
+def _service(value, parameters):
+    parameters["Cluster"] = CLUSTER.replace(":cluster/", ":service/")
+
+
+@pytest.mark.parametrize("readbacks", [_readbacks(_definition(_other)), _readbacks(_definition(_missing)),
+                                       _readbacks(_definition(_two)), _readbacks(_definition(_service)),
+                                       _readbacks("{"), c.canonical({"fixture_only": "readbacks"})],
+                         ids=["outro-cluster", "sem-cluster", "dois-clusters", "servico-com-conta", "definicao-invalida",
+                              "readback-sem-maquina"])
+def test_plano_recusa_cluster_da_maquina_diferente_do_recurso_antes_de_ler_o_seed(monkeypatch, readbacks):
+    with pytest.raises(ValueError, match="^mode unit cluster$"):
+        _world(monkeypatch, seeds=0, readbacks=readbacks)
 
 
 def test_dispatch_unit_faz_a_sequencia_no_ux_e_espera_no_uw(monkeypatch):

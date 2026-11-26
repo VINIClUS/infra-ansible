@@ -194,7 +194,7 @@ def _plan(effect, order):
         order.append(("plan", len(effect.calls), keeper is effect.world.keeper, journal._request["operation"],
                       resources == effect.args["authority"].scope["resources"], now == effect.args["clock"]()))
         return mb.UnitPlan(mb.UnitLocator("prod-canary-fixture", ("run",), effect.owner["owner_sha256"], "0" * 64, "unit",
-                                          "promotion"), None, None, None, (), "execution")
+                                          "promotion"), None, None, None, (), "execution", "cluster")
     return plan
 
 
