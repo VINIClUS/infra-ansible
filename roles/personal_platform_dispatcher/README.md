@@ -23,8 +23,10 @@ original-platform, original-baseline, activation, activation-signature,
 activation-public-key, probe-unit, probe-recovery), each as {src, sha256}. The
 bytes are copied from the controller file unchanged to their fixed root 0600 paths
 and read back by sha256; host-gate also requires the installed runtime to match its
-runtime_sha256. Probe carriers go to /run/personal-platform/probes (root 0700).
-With personal_platform_dispatcher_api_probe, the same tag derives API.credentials
-on the host from the renewer's current session, so that session never leaves the
-host. Builders, the preflight and the per-run host readback
+runtime_sha256. Probe carriers go to /run/personal-platform/probes (root 0700,
+recreated at boot by tmpfiles.d). The API probe carrier is not a handoff:
+playbooks/personal-platform-api-probe.yml mints a fresh Roles Anywhere session on
+the host into API.credentials and returns only its role and expiry, so the session
+never leaves the host; with personal_platform_api_probe_remove it deletes the
+carrier after the api stage. Builders, the preflight and the per-run host readback
 (playbooks/personal-platform-host-readback.yml) live in tools/personal_platform/.

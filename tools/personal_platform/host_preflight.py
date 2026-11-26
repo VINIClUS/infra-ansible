@@ -63,6 +63,7 @@ def readback(root, observed_at, tunnel_unit):
             "dispatcher_user_locked": locked(USER),
             "tunnel_active": run(["systemctl", "is-active", "--quiet", tunnel_unit])
             is not None,
+            "aws_cli_pinned": os.access(root / "usr" / "bin" / "aws", os.X_OK),
         },
     }
 

@@ -1,0 +1,51 @@
+---
+- name: Mint or remove the CnesData API runtime probe carrier for one api stage
+  hosts: personal_platform
+  become: true
+  gather_facts: false
+  tags: [personal_platform_api_probe]
+  tasks:
+    - name: Require one exact inventory host and a controller destination when minting
+      ansible.builtin.assert:
+        that:
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+          - >-
+            (personal_platform_api_probe_remove | default(false) | bool)
+            or (personal_platform_api_probe_dest is defined
+            and personal_platform_api_probe_dest is abs)
+        fail_msg: The API probe requires one exact host and an absolute destination.
+    - name: Mint a fresh Roles Anywhere session into the API probe carrier
+      when: not (personal_platform_api_probe_remove | default(false) | bool)
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../tools/personal_platform/host_api_probe.py
+          --output /run/personal-platform/api-probe.json
+        executable: /usr/bin/python3
+      changed_when: true
+      no_log: true
+    - name: Read back the API probe carrier
+      when: not (personal_platform_api_probe_remove | default(false) | bool)
+      ansible.builtin.stat:
+        path: /run/personal-platform/probes/API.credentials
+      register: personal_platform_api_probe_carrier
+    - name: Require the API probe carrier
+      when: not (personal_platform_api_probe_remove | default(false) | bool)
+      ansible.builtin.assert:
+        that:
+          - personal_platform_api_probe_carrier.stat.isreg
+          - personal_platform_api_probe_carrier.stat.uid == 0
+          - personal_platform_api_probe_carrier.stat.mode == '0600'
+          - personal_platform_api_probe_carrier.stat.nlink == 1
+          - personal_platform_api_probe_carrier.stat.size <= 16384
+    - name: Fetch the API probe role and expiry to the controller
+      when: not (personal_platform_api_probe_remove | default(false) | bool)
+      ansible.builtin.fetch:
+        src: /run/personal-platform/api-probe.json
+        dest: "{{ personal_platform_api_probe_dest }}"
+        flat: true
+    - name: Remove the API probe carrier after the api stage
+      when: personal_platform_api_probe_remove | default(false) | bool
+      ansible.builtin.file:
+        path: /run/personal-platform/probes/API.credentials
+        state: absent

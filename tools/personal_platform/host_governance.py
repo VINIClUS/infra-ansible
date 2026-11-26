@@ -60,7 +60,7 @@ HOST_STATIC_KEYS = (
     "public_hostname tunnel_health_url readiness_sha256 proxy caddyfile_path"
     " caddy_container proxy_network caddy_ip"
 )
-READBACK_KEYS = "version observed_at caddyfile_b64 listening api_session_expiration"
+READBACK_KEYS = "version observed_at caddyfile_b64 listening"
 ACTIVATION_KEYS = (
     "project environment schema_version repository release_id source_sha candidate_sha256"
     " binding_sha256 canary_id derivation revisions ecr_uri phase_a_evidence_digest inputs"
@@ -81,6 +81,7 @@ class Inputs:
     plan: bytes
     archive: bytes
     readback: bytes
+    api_probe: bytes
     sessions: dict
     signing: dict
     activation: tuple | None = None
@@ -301,8 +302,6 @@ def read_readback(raw):
         "readback fields",
     )
     g.instant(value["observed_at"])
-    if value["api_session_expiration"] is not None:
-        g.instant(value["api_session_expiration"])
     try:
         text = base64.b64decode(value["caddyfile_b64"], validate=True)
     except (binascii.Error, TypeError, ValueError):
@@ -423,7 +422,20 @@ def probe_session(value, role_arn, now):
     return ini.encode(), expires_at
 
 
-def derive_probes(static_probes, sessions, seen, run, now):
+def read_api_probe(raw):
+    """Sessão da API cunhada no host: só role e expiração, canônicas e fechadas.
+
+    Raises:
+        ValueError: bytes não canônicos ou campo fora do contrato.
+    """
+    value = g.closed(canonical_bytes(raw), "version role_arn expires_at")
+    g.require(value["version"] == 1, "API probe version")
+    assumed_prefix(value["role_arn"])
+    g.instant(value["expires_at"])
+    return value
+
+
+def derive_probes(static_probes, sessions, minted, run, now):
     """runtime_probes: carrier fixo, chave ausente por execução e expiração das sessões.
 
     Args:
@@ -435,8 +447,9 @@ def derive_probes(static_probes, sessions, seen, run, now):
     g.runtime_probe_set(static_probes)
     g.require(static_probes["API"]["role_arn"] == renewer_role, "API probe renewer role")
     g.require(set(sessions) == {"unit", "recovery"}, "probe sessions")
-    api = seen["api_session_expiration"]
-    g.require(api is not None and g.instant(api) >= now + PROBE_MARGIN, "API probe session")
+    api = minted["expires_at"]
+    g.require(minted["role_arn"] == renewer_role, "API probe minted role")
+    g.require(g.instant(api) >= now + PROBE_MARGIN, "API probe session")
     result = {}
     for name in g.RUNTIME_IDENTITIES:
         probe = g.closed(static_probes[name], "role_arn bucket")
@@ -535,7 +548,10 @@ def build_governance(static, inputs, run_id, run_attempt, now):
     seen = read_readback(inputs.readback)
     doc["host"] = derive_host(static["host"], seen, port)
     run = (run_id, run_attempt, static["credentials"]["role_arn"])
-    doc["runtime_probes"] = derive_probes(static["runtime_probes"], inputs.sessions, seen, run, now)
+    minted = read_api_probe(inputs.api_probe)
+    doc["runtime_probes"] = derive_probes(
+        static["runtime_probes"], inputs.sessions, minted, run, now
+    )
     pem = signing_pem(inputs.signing)
     doc["signing_spki_pem_sha256"] = g.sha(pem)
     if inputs.activation is not None:
@@ -555,7 +571,7 @@ def write_private(path, data):
 
 
 GOVERNANCE_INPUTS = (
-    "--static", "--plan", "--archive", "--readback", "--signing", "--session-unit",
+    "--static", "--plan", "--archive", "--readback", "--api-probe", "--signing", "--session-unit",
     "--session-recovery", "--out", "--handoff-dir",
 )
 
@@ -593,6 +609,7 @@ def read_inputs(args):
         plan=Path(args.plan).read_bytes(),
         archive=Path(args.archive).read_bytes(),
         readback=Path(args.readback).read_bytes(),
+        api_probe=Path(args.api_probe).read_bytes(),
         sessions={
             "unit": json.loads(Path(args.session_unit).read_bytes()),
             "recovery": json.loads(Path(args.session_recovery).read_bytes()),
@@ -624,10 +641,7 @@ def write_handoffs(args, inputs, doc, now):
         name: {"src": str(path), "sha256": g.sha(path.read_bytes())}
         for name, path in files.items()
     }
-    values = {
-        "personal_platform_dispatcher_handoffs": entries,
-        "personal_platform_dispatcher_api_probe": True,
-    }
+    values = {"personal_platform_dispatcher_handoffs": entries}
     write_private(directory / "handoffs.json", json.dumps(values, sort_keys=True).encode())
 
 

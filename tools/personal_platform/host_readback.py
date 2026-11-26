@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Leitura do host por execução: Caddyfile, portas dos slots ouvindo e expiração da sessão."""
+"""Leitura do host por execução: Caddyfile e portas dos slots ouvindo."""
 
 from __future__ import annotations
 
@@ -17,8 +17,6 @@ from typing import Sequence
 PORTS = (18081, 18082)
 LIMIT = 16 * 1024**2
 INSTANT = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
-DOCUMENT = "run/personal-platform/credentials/cnesdata/current/aws-credentials.json"
-DOCUMENT_KEYS = {"Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
 
 
 def read_caddyfile(path):
@@ -42,24 +40,6 @@ def listening(root):
                 port = int(fields[1].rsplit(":", 1)[1], 16)
                 found.update({port} & set(PORTS))
     return sorted(found)
-
-
-def session_expiration(root):
-    try:
-        value = json.loads((root / DOCUMENT).read_bytes())
-    except (OSError, ValueError):
-        return None
-    valid = (
-        type(value) is dict
-        and set(value) == DOCUMENT_KEYS
-        and type(value["Version"]) is int
-        and value["Version"] == 1
-        and isinstance(value["AccessKeyId"], str)
-        and re.fullmatch(r"ASIA[0-9A-Z]{16}", value["AccessKeyId"]) is not None
-        and isinstance(value["Expiration"], str)
-        and re.fullmatch(INSTANT, value["Expiration"]) is not None
-    )
-    return value["Expiration"] if valid else None
 
 
 def canonical(value):
@@ -90,7 +70,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "observed_at": args.observed_at,
         "caddyfile_b64": base64.b64encode(caddyfile).decode(),
         "listening": listening(root),
-        "api_session_expiration": session_expiration(root),
     }
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as file:
