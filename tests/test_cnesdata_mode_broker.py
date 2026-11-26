@@ -433,7 +433,7 @@ def _observe_capability_case(monkeypatch, mutation=None):
     from test_cnesdata_application_gate import _close_drain_capability_case
     from test_cnesdata_mode_stages import _mode_case
     close = "evaluation-scope" if mutation == "evaluation-scope" else None
-    close = mutation if mutation in {"identity-no-assume", "managed-no-assume", "managed-expired", "delegation",
+    close = mutation if mutation in {"identity-no-assume", "managed-assume-all", "managed-expired", "delegation",
                                      "operation-exchange"} else close
     _, args, sts_calls, keeper, close_journal, events = _close_drain_capability_case(monkeypatch, close)
     request, base_owner, window, inputs = _mode_case("unit-observe")
@@ -463,7 +463,7 @@ OBSERVE_CAPABILITY_REFUSALS = {
     "activation": "^prepared/request/input activation_sha256$", "owner": "^prepared current owner$",
     "delegation": "^fence_operator delegation$", "evaluation-scope": "^capability scope recomputed from prepared policy$",
     "identity-no-assume": "^unit-observe operation session effective IAM$",
-    "managed-no-assume": "^unit-observe operation session effective IAM$",
+    "managed-assume-all": "^unit-observe operation session effective IAM$",
     "managed-expired": "^unit-observe operation session effective IAM$",
     "operation-exchange": "^operation session exchange refused$"}
 

@@ -1987,7 +1987,7 @@ def _fence_operation_iam(governance, authority, journal, role, clock):
                  ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
                  (evidence.replace(f"/{operation}/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
     identity = session_owner.application_identity_document(governance, authority.application_fragment)
-    c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
+    c.require(all(effective_iam(identity, [session_owner.operation_authority(authority).pin["document"], inline], action, resource,
                                 {"aws:CurrentTime": c.utc(clock())} | context) is expected
                   for resource, action, context, expected in decisions), f"{operation} operation session effective IAM")
 
@@ -3370,7 +3370,7 @@ def keeper_loop(keeper, *, next_event, handlers, terminal, poll=5, sleep=time.sl
 
 
 def _verify_session(client, governance, authority, run, expires):
-    """Exact own-role session readback shared by credentials and execute; returns the expiry/freeze guard."""
+    """Exact readback of the managed pin in authority (keeper: application pin, others: ops pin); returns the guard."""
     from tools.cnesdata_delivery import session_owner
     class Guard:
         def check(self, seconds=0):
@@ -3492,7 +3492,8 @@ def credentials(admitted, *, product=None):
     value = lr.oidc_credentials(governance, "application", restriction, run)
     expires = value["Expiration"].timestamp()
     client = lr.AWS(governance, credentials=value)
-    guard = _verify_session(client, governance, authority, run, expires)
+    operation = session_owner.operation_authority(authority)
+    guard = _verify_session(client, governance, authority if request["step"] == "keeper" else operation, run, expires)
     authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
     guard.check()
     lr.export_credentials(value)

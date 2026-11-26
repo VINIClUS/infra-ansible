@@ -2,12 +2,12 @@
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import unquote
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.provenance import validate_proof
-from tools.cnesdata_delivery.session_policy import managed_arn
+from tools.cnesdata_delivery.session_policy import ACTIVATION_ROLE, OPS_ROLE, managed_arn
 
 CONSUMER_WORKFLOWS = {
     ".github/workflows/infra-plan.yml",
@@ -28,6 +28,8 @@ class Authority:
     namespace: dict | None
     application_fragment: dict | None = field(default=None, repr=False)
     proof_sha256: str | None = None
+    ops_pin: dict | None = field(default=None, repr=False)
+    activation_pin: dict | None = field(default=None, repr=False)
 
 
 def authenticate_lifecycle(governance, api, source, role, purpose, now):
@@ -54,12 +56,35 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
     expiry = c.instant(proof["expires_at"])
     c.require(c.instant(pin["observed_at"]) <= now and now + 3600 <= expiry <= c.instant(pin["expires_at"])
               and now + 3600 <= c.instant(pin["frozen_until"]), "full original session freeze")
-    fragment = None
+    fragment, ops, activation = None, None, None
     if role == "application":
         fragment = application_fragment(governance, now)
         c.require(measured.get("application_fragment_sha256") == c.sha(c.canonical(fragment)),
                   "original owner private fragment commitment")
-    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]))
+        ops = _paired_pin(governance, pin, measured, OPS_ROLE, "ops_session_policy")
+    if role == "plan" and governance.get("activation_read") is not None:
+        activation = _paired_pin(governance, pin, measured, ACTIVATION_ROLE, "activation_session_policy")
+    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]), ops, activation)
+
+
+def _paired_pin(governance, pin, measured, role, fact):
+    companion = _pin(governance, role)
+    c.require(measured.get(fact) == _facts(companion, c.report_key(governance))
+              and all(companion[key] == pin[key] for key in ("observed_at", "expires_at", "frozen_until", "owner_producer")),
+              f"original owner {role} session policy commitment")
+    return companion
+
+
+def activation_authority(authority):
+    """Args: plan authority. Returns: the same authority pinned to the activation managed policy. Raises: ValueError."""
+    c.require(type(authority.activation_pin) is dict, "activation session pin absent")
+    return replace(authority, pin=authority.activation_pin)
+
+
+def operation_authority(authority):
+    """Args: application authority. Returns: the same authority pinned to the ops managed policy. Raises: ValueError."""
+    c.require(type(authority.ops_pin) is dict, "ops session pin absent")
+    return replace(authority, pin=authority.ops_pin)
 
 
 FREEZE_POLICY = "cnesdata-budget-freeze"
@@ -263,7 +288,7 @@ def _pin(governance, role):
     )
     c.require(
         pin["account_id"] == governance["account_id"]
-        and pin["role_arn"] == governance["roles"][role]
+        and pin["role_arn"] == governance["roles"][{OPS_ROLE: "application", ACTIVATION_ROLE: "plan"}.get(role, role)]
         and pin["policy_arn"] == managed_arn(governance, role),
         "own deterministic session policy",
     )
