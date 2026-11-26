@@ -1,0 +1,5 @@
+---
+personal_platform_dispatcher_handoff_paths:
+  host-gate: /etc/personal-platform/host-gate.json
+  original-platform: /var/lib/personal-platform/deployments/original-platform.json
+  original-baseline: /var/lib/personal-platform/deployments/original-baseline.json
