@@ -19,7 +19,12 @@ refuses the installation.
 
 Per run, `--tags personal_platform_private_handoffs` installs only the private
 handoffs named in personal_platform_dispatcher_handoffs (host-gate,
-original-platform, original-baseline), each as {src, sha256}. The bytes are copied
-from the controller file unchanged to their fixed root 0600 paths and read back by
-sha256; host-gate also requires the installed runtime to match its runtime_sha256.
-Builders and the preflight readback live in tools/personal_platform/.
+original-platform, original-baseline, activation, activation-signature,
+activation-public-key, probe-unit, probe-recovery), each as {src, sha256}. The
+bytes are copied from the controller file unchanged to their fixed root 0600 paths
+and read back by sha256; host-gate also requires the installed runtime to match its
+runtime_sha256. Probe carriers go to /run/personal-platform/probes (root 0700).
+With personal_platform_dispatcher_api_probe, the same tag derives API.credentials
+on the host from the renewer's current session, so that session never leaves the
+host. Builders, the preflight and the per-run host readback
+(playbooks/personal-platform-host-readback.yml) live in tools/personal_platform/.

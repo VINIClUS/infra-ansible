@@ -1,0 +1,30 @@
+---
+- name: Read the CnesData host fields of one api stage without changing the host
+  hosts: personal_platform
+  become: true
+  gather_facts: false
+  tags: [personal_platform_host_readback]
+  tasks:
+    - name: Require one exact inventory host, the Caddyfile path and a controller destination
+      ansible.builtin.assert:
+        that:
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+          - personal_platform_readback_dest is defined
+          - personal_platform_readback_dest is abs
+          - personal_platform_readback_caddyfile is defined
+          - personal_platform_readback_caddyfile is abs
+        fail_msg: The host readback requires one exact host and absolute paths.
+    - name: Produce the canonical host readback on the host
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../tools/personal_platform/host_readback.py
+          --caddyfile {{ personal_platform_readback_caddyfile }}
+          --output /run/personal-platform/host-readback.json
+        executable: /usr/bin/python3
+      changed_when: false
+    - name: Fetch the exact host readback bytes to the controller
+      ansible.builtin.fetch:
+        src: /run/personal-platform/host-readback.json
+        dest: "{{ personal_platform_readback_dest }}"
+        flat: true

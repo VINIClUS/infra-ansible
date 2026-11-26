@@ -135,6 +135,18 @@
             personal_platform_dispatcher_handoff_runtime.stat.checksum ==
             (lookup('ansible.builtin.file', personal_platform_dispatcher_handoffs['host-gate'].src)
             | from_json).runtime_sha256
+    - name: Create the private runtime probe directory
+      tags: [personal_platform_private_handoffs]
+      when: >-
+        personal_platform_dispatcher_api_probe | bool
+        or personal_platform_dispatcher_handoffs.keys() | select('match', '^probe-')
+        | list | length > 0
+      ansible.builtin.file:
+        path: /run/personal-platform/probes
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
     - name: Install the exact private handoff bytes from the controller
       tags: [personal_platform_private_handoffs]
       ansible.builtin.copy:
@@ -167,3 +179,28 @@
       loop: "{{ personal_platform_dispatcher_handoff_readback.results }}"
       loop_control:
         label: "{{ item.item.key }}"
+    - name: Derive the API runtime probe from the host renewer session
+      tags: [personal_platform_private_handoffs]
+      when: personal_platform_dispatcher_api_probe | bool
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../tools/personal_platform/host_api_probe.py
+          --output /run/personal-platform/probes/API.credentials
+        executable: /usr/bin/python3
+      changed_when: true
+      no_log: true
+    - name: Read back the derived API runtime probe carrier
+      tags: [personal_platform_private_handoffs]
+      when: personal_platform_dispatcher_api_probe | bool
+      ansible.builtin.stat:
+        path: /run/personal-platform/probes/API.credentials
+      register: personal_platform_dispatcher_api_probe_readback
+    - name: Require the derived API runtime probe carrier
+      tags: [personal_platform_private_handoffs]
+      when: personal_platform_dispatcher_api_probe | bool
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_api_probe_readback.stat.isreg
+          - personal_platform_dispatcher_api_probe_readback.stat.uid == 0
+          - personal_platform_dispatcher_api_probe_readback.stat.mode == '0600'
+          - personal_platform_dispatcher_api_probe_readback.stat.nlink == 1

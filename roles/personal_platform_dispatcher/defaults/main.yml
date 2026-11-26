@@ -3,3 +3,4 @@ personal_platform_dispatcher_enabled: false
 personal_platform_dispatcher_user: personal-cnesdata-deploy
 personal_platform_dispatcher_authorized_key: null
 personal_platform_dispatcher_handoffs: {}
+personal_platform_dispatcher_api_probe: false
