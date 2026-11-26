@@ -26,7 +26,9 @@ def test_filho_real_despacha_o_unit_pelo_kind_do_keeper_e_recebe_a_observacao(tm
     product, source, manifest = _product(tmp_path, _code())
     broker, journal, table, _ = _world(monkeypatch, source=source)
     result = _invoke(monkeypatch, product, source, manifest, journal)
-    assert result == {"status": "SUCCEEDED", "tasks": [], "outputs": [], "keys": ["execution", "outputs", "tasks"]}
+    assert result == {"status": "SUCCEEDED", "tasks": broker.unit_observed["tasks"], "outputs": broker.unit_observed["outputs"],
+                      "keys": ["execution", "failures", "outputs", "tasks"]}
+    assert len(result["tasks"]) == len(result["outputs"]) == 2
     assert _names(table).count("start_execution") == 1 and broker.uncertainty == []
 
 
@@ -38,7 +40,9 @@ def test_filho_real_com_binding_de_outro_run_recusa_no_keeper_sem_chamada(tmp_pa
     assert table.calls == []
 
 
-@pytest.mark.parametrize("reply", [{"execution": {}, "tasks": []}, {"execution": {}, "tasks": [], "outputs": [], "x": 1}])
+@pytest.mark.parametrize("reply", [{"execution": {}, "tasks": []}, {"execution": {}, "tasks": [], "outputs": []},
+                                   {"execution": {}, "failures": [], "outputs": [], "tasks": [], "x": 1}],
+                         ids=["dois-campos", "tres-campos", "cinco-campos"])
 def test_filho_recusa_resposta_do_dispatch_fora_do_contrato(tmp_path, monkeypatch, reply):
     binding = ("__import__('types').SimpleNamespace(tenant_id='t', run_ids=('r',), owner_sha256='o', record_sha256='s', "
                "phase='unit', context_kind='promotion')")

@@ -8,12 +8,6 @@ from test_cnesdata_mode_readback_context import SOURCE, _keys, _readback
 OPERATIONS = ("unit-start", "unit-observe", "recovery-start", "recovery-observe", "audit-start", "audit-observe")
 
 
-@pytest.fixture(autouse=True)
-def _unit_start_aberto(monkeypatch):
-    from tools.cnesdata_delivery import mode_broker
-    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
-
-
 @pytest.mark.parametrize("operation", ["unit-start", "unit-observe"])
 def test_origem_readbacks_entrega_os_bytes_relidos_pela_cadeia_do_readback_do_modo(monkeypatch, operation):
     readback, world, _, native, _ = _readback(monkeypatch)
