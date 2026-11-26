@@ -263,10 +263,37 @@ Implemented on `main`:
 - Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
   trusts (F3), and stage windows with pre-approved jobs (F4).
 
+Unit-start open (P16b follow-up, #118). unit-start has no gate left in the mode broker or in
+the stage capability; it gets the same refusals as the other effects. Its sequence is:
+- The plan reads the single ECS cluster of the state machine definition in the unit-start
+  readbacks and requires it to equal the prepared `cluster_arn`, before the seed check and
+  before any STS. A service ARN, a missing cluster, two clusters or an invalid definition
+  refuse with `mode unit cluster`.
+- `ux` reserves, admits, claims and starts the execution. `uw` polls DescribeExecution to a
+  terminal status, then calls DescribeTasks only when the execution names task ARNs, then
+  reads each RUNUNIT item of the unit run in order with a strongly consistent GetItem. C1
+  admits on `uw` only the exact DescribeExecution, the expected DescribeTasks whose `cluster`
+  equals the prepared `cluster_arn`, and the next exact RUNUNIT read; on `ux` it admits no
+  describe call. The `uw` session policy grants GetItem only with LeadingKeys equal to the
+  partition key of the owner's unit run.
+- `dispatch_unit` returns `{execution, tasks, failures, outputs}`. The execution keeps
+  `executionArn`, `stateMachineArn`, `name`, `status`, `input` and, when present, `output`;
+  the dates are dropped. Tasks and failures are bounded projections. The outputs come from
+  the product `unit_outputs`. If the product refuses the RUNUNIT items, the operation fails
+  with `mode_unit_outputs=refused`: the lease stays held, the receipts already written stay
+  durable and no mode-result is written.
+- The reply is kept in its own slot, apart from the recovery and audit `described`. The
+  `unit-execution`, `unit-task` and `unit-output` step receipts must equal the slot element
+  at the same position, in child order.
+- unit-observe's `observed` input is derived by the keeper from this lease's single
+  unit-start journal, which must be neither failed nor unknown: the one `unit-execution` and
+  the `unit-task` and `unit-output` receipts in journal order, as the product's three-field
+  `observed`. The origin re-checks the readback cluster against the prepared `cluster_arn`,
+  the third of the three cluster checks.
+
 Pending at this draft head, to be described from the merged code before X*: the ops session,
-the activation managed policy and N=273 (P41); unit-start open with its three cluster checks
-(P16b follow-up); the plan inputs and the D2/D2b checkpoint origins (P40); the real brokers
-(P17b).
+the activation managed policy and N=273 (P41); the plan inputs and the D2/D2b checkpoint
+origins (P40); the real brokers (P17b).
 
 Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
