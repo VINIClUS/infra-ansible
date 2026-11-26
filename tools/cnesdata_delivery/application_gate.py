@@ -3363,7 +3363,7 @@ def keeper_loop(keeper, *, next_event, handlers, terminal, poll=5, sleep=time.sl
 
 
 def _verify_session(client, governance, authority, run, expires):
-    """Exact own-role session readback shared by credentials and execute; returns the expiry/freeze guard."""
+    """Exact readback of the managed pin in authority (keeper: application pin, others: ops pin); returns the guard."""
     from tools.cnesdata_delivery import session_owner
     class Guard:
         def check(self, seconds=0):
@@ -3485,7 +3485,8 @@ def credentials(admitted, *, product=None):
     value = lr.oidc_credentials(governance, "application", restriction, run)
     expires = value["Expiration"].timestamp()
     client = lr.AWS(governance, credentials=value)
-    guard = _verify_session(client, governance, session_owner.operation_authority(authority), run, expires)
+    operation = session_owner.operation_authority(authority)
+    guard = _verify_session(client, governance, authority if request["step"] == "keeper" else operation, run, expires)
     authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
     guard.check()
     lr.export_credentials(value)

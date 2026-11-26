@@ -11,7 +11,7 @@ NAMES = {"observer": "sp-i-" + "a" * 40, "normal": "sp-publish-" + "a" * 40, "re
          "fence_operator": "promotion-fence-" + "a" * 32}
 ALIASES = (("normal", "observer"), ("recovery", "observer"), ("normal",), ("recovery",), ("observer",), ("seeder",),
            ("verifier",), ("fence_operator",))
-STEP = "s" * 52
+STEP = "s" * 64
 
 
 def governance(bucket, prefix):

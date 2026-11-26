@@ -298,6 +298,7 @@ def test_native_application_sessions_separate_keeper_history_and_operation(nativ
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
     identity["Statement"] += json.loads(resources["aws_iam_role_policy.application_history[0]"]["policy"])["Statement"]
     managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    ops = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     governance = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -312,31 +313,32 @@ def test_native_application_sessions_separate_keeper_history_and_operation(nativ
     keeper, operation = (json.loads(x["Policy"]) for x in requests)
     lease = "arn:aws:s3:::synthetic-state/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
     assert effective(identity, managed, keeper, "s3:PutObject", lease)
-    assert not effective(identity, managed, operation, "s3:PutObject", lease)
-    assert effective(identity, managed, operation, "s3:GetObject", lease)
+    assert not effective(identity, ops, operation, "s3:PutObject", lease)
+    assert effective(identity, ops, operation, "s3:GetObject", lease)
     history = outputs["application_promotion"]["value"]["predecessor_reads"]["object_arns"]
     for arn in history:
         assert effective(identity, managed, keeper, "s3:GetObject", arn)
-        assert not effective(identity, managed, operation, "s3:GetObject", arn)
+        assert not effective(identity, ops, operation, "s3:GetObject", arn)
         assert not effective(identity, managed, keeper, "s3:PutObject", arn)
         context = {"kms:ViaService": "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn": arn}
         assert effective(identity, managed, keeper, "kms:Decrypt", settings["evidence_kms_arn"], context)
         assert not effective(identity, managed, keeper, "kms:Encrypt", settings["evidence_kms_arn"], context)
     own = "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/" + "b" * 40 + "/44/1/"
-    for policy, step in ((keeper, "terminal"), (operation, "publish-static")):
-        assert effective(identity, managed, policy, "s3:PutObject", own + step + "/receipt.json")
-        assert not effective(identity, managed, policy, "s3:PutObject", own + "other-step/receipt.json")
-        assert not effective(identity, managed, policy, "s3:GetObject", own.replace("/44/1/", "/45/1/") + "receipt.json")
-        assert not effective(identity, managed, policy, "s3:GetObject", "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate")
+    for policy, document, step in ((keeper, managed, "terminal"), (operation, ops, "publish-static")):
+        assert effective(identity, document, policy, "s3:PutObject", own + step + "/receipt.json")
+        assert not effective(identity, document, policy, "s3:PutObject", own + "other-step/receipt.json")
+        assert not effective(identity, document, policy, "s3:GetObject", own.replace("/44/1/", "/45/1/") + "receipt.json")
+        assert not effective(identity, document, policy, "s3:GetObject", "arn:aws:s3:::synthetic-state/cnesdata/prod/opentofu.tfstate")
     for role, pattern in (("normal", "sp-publish-" + "a" * 40), ("observer", "sp-i-" + "a" * 40)):
-        assert effective(identity, managed, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
+        assert effective(identity, ops, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
         assert not effective(identity, managed, keeper, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern})
-        assert not effective(identity, managed, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern[:-1] + "b"})
-    assert not effective(identity, managed, operation, "sts:AssumeRole", roles["recovery"], {"sts:RoleSessionName": "sp-rollback-" + "a" * 40})
+        assert not effective(identity, ops, operation, "sts:AssumeRole", roles[role], {"sts:RoleSessionName": pattern[:-1] + "b"})
+    assert not effective(identity, ops, operation, "sts:AssumeRole", roles["recovery"], {"sts:RoleSessionName": "sp-rollback-" + "a" * 40})
 
 
+@pytest.mark.parametrize("step", ["closed-ready", "keeper"])
 @pytest.mark.parametrize("with_history", [False, True])
-def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, monkeypatch, tmp_path):
+def test_native_application_fragment_requires_original_owner_and_exact_iam_readback(native, with_history, step, monkeypatch, tmp_path):
     import copy
     from urllib.parse import quote
     from tools.cnesdata_delivery import contract as c, session_owner
@@ -485,12 +487,13 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
             self.mutation, self.roles_read, self.policies_read = mutation, 0, 0
         def call(self, service, operation, **parameters):
             assert service == "iam"
+            served = ops if parameters.get("PolicyArn") == ops["policy_arn"] else pin
             if operation == "get_policy":
-                return {"Policy": {"Arn": pin["policy_arn"], "PolicyName": pin["policy_arn"].rsplit("/", 1)[1],
-                    "DefaultVersionId": "v9" if self.mutation == "managed-default" else pin["default_version_id"],
+                return {"Policy": {"Arn": served["policy_arn"], "PolicyName": served["policy_arn"].rsplit("/", 1)[1],
+                    "DefaultVersionId": "v9" if self.mutation == "managed-default" else served["default_version_id"],
                     "AttachmentCount": 0, "PermissionsBoundaryUsageCount": 0}}
             if operation == "get_policy_version":
-                return {"PolicyVersion": {"VersionId": pin["default_version_id"], "IsDefaultVersion": True, "Document": pin["document"]}}
+                return {"PolicyVersion": {"VersionId": served["default_version_id"], "IsDefaultVersion": True, "Document": served["document"]}}
             if operation == "get_role":
                 self.roles_read += 1
                 value = {"RoleName": fragment["application_role_name"], "Arn": fragment["application_role_arn"],
@@ -561,7 +564,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     manifest = {"version": 1, "source_sha": source, "files": {"scripts/promotion/promote_api.py": c.sha(script.read_bytes())}}
     gov.update(role="application", application_product_source_manifest=manifest,
                application_product_source_closure_sha256=c.sha(c.canonical(manifest)))
-    request = {"source_sha": source, "step": "closed-ready", "application_purpose": "promotion"}
+    request = {"source_sha": source, "step": step, "application_purpose": "promotion"}
     run = {"id": 44, "run_attempt": 1}
     exported = tmp_path / "github-env"
     monkeypatch.setenv("GITHUB_ENV", str(exported))
@@ -571,7 +574,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     def oidc(governance, role, restriction, current_run):
         assert role == "application" and current_run == run
         statements = json.loads(restriction["Policy"])["Statement"]
-        assert {"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"} in statements
+        assert ({"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"} in statements) is (step == "keeper")
+        assert not any(item["Effect"] == "Allow" and item["Action"] == "sts:AssumeRole" for item in statements)
         bootstrap_exchanges.append(restriction)
         return native_credentials
     identity_change = {}
@@ -696,7 +700,7 @@ def test_native_mode_sessions_intersect_exact_role_session_and_purpose(native):
     data = application_values()
     resources, _ = render(native, data, "mode-session-exact")
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -732,7 +736,7 @@ def test_native_closed_ready_composition_is_readonly_and_frozen(native):
     data = application_values()
     resources, _ = render(native, data, "application-closed-ready")
     identity = json.loads(resources["aws_iam_role_policy.application[0]"]["policy"])
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings = data["github_delivery"]
     roles = data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
@@ -820,15 +824,16 @@ def test_finite_iam_date_less_than_has_no_other_deny_condition(now, expected):
 
 DEFAULT_DOCUMENT_SHA256 = {
     "plain": {
-        'aws_iam_policy.delivery_session["deploy"]': "1debe5e7852c11ecc6b1a6a102e31c4744958183c92c1846e9a0c33e2d6f5080",
-        'aws_iam_policy.delivery_session["plan"]': "f49af95a26535f0d184fe4fec371f3e8ff349b90601bdc48da91d0bd74a63584",
+        'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
+        'aws_iam_policy.delivery_session["plan"]': "a73ab6cccc820f02ddb6aa145ab81daf147c668c6b07d82e6db6cd6ade071e5d",
         'aws_iam_role_policy.delivery["deploy"]': "286093d626a9c3051f03c62a98e446e15bab6075c67a2a5a7a86d9d8b8c87653",
         'aws_iam_role_policy.delivery["plan"]': "175b7b6eacffbc7a2ed4e75191432cf5a3e5e7a77dc07f2f0ae27241257738eb",
     },
     "app": {
+        "aws_iam_policy.application_ops_session[0]": "a0aa515ffebe8a51ef07b73456cd28a21fb39ecbb7d4507ec5cb19e68b2835e4",
         "aws_iam_policy.application_session[0]": "ba15d380c9aad4fa7894797da53089d206f761f719a7140000bfb1bd3b99ea78",
-        'aws_iam_policy.delivery_session["deploy"]': "1debe5e7852c11ecc6b1a6a102e31c4744958183c92c1846e9a0c33e2d6f5080",
-        'aws_iam_policy.delivery_session["plan"]': "f49af95a26535f0d184fe4fec371f3e8ff349b90601bdc48da91d0bd74a63584",
+        'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
+        'aws_iam_policy.delivery_session["plan"]': "a73ab6cccc820f02ddb6aa145ab81daf147c668c6b07d82e6db6cd6ade071e5d",
         "aws_iam_role_policy.application[0]": "cdd962ba7ca45fbd678534edc316c77faf3038627c4c05ff76d5dd5886558651",
         'aws_iam_role_policy.delivery["deploy"]': "3262f5d742ca349bbe578b4d70361679567e646b7b020b9e309b459be9e7b403",
         'aws_iam_role_policy.delivery["plan"]': "005f685acf956337d8dd9d7c7ba12209fbbbe4ccca101d93e227d990cddc0c6b",
@@ -1021,7 +1026,7 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
     data = application_values()
     resources, outputs = render(native, data, "application-prepared-scope")
     coordination = resources["aws_iam_role_policy.application[0]"]["policy"]
-    managed = json.loads(resources["aws_iam_policy.application_session[0]"]["policy"])
+    managed = json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"])
     settings, roles = data["github_delivery"], data["application_promotion"]["delegations"]
     gov = {"account_id": data["account_id"], "state_bucket": "synthetic-state", "evidence_bucket": "synthetic-evidence",
            "evidence_prefix": settings["evidence_prefix"], "evidence_kms_key_arn": settings["evidence_kms_arn"],

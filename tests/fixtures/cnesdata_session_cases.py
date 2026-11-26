@@ -47,7 +47,7 @@ def expected_documents(gov, role):
     }
     lease = {
         "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:PutObject"],
+        "Action": ["s3:GetObject"],
         "Resource": state[2],
     }
     listing = {
@@ -212,8 +212,8 @@ def assert_matrix(identity, managed, policy, gov, role):
     assert check("s3:PutObject", states[0]) is (role == "deploy")
     for state in states:
         assert check("s3:GetObject", state)
-    for state in states[1:]:
-        assert check("s3:PutObject", state)
+    assert check("s3:PutObject", states[1])
+    assert not check("s3:PutObject", states[2])
     assert check("s3:DeleteObject", states[1])
     assert not check("s3:DeleteObject", states[0]) and not check(
         "s3:DeleteObject", states[2]

@@ -29,7 +29,8 @@ def test_pin_ops_e_aceito_com_o_role_da_application_e_o_arn_ops():
 @pytest.mark.parametrize("changes", [
     {"policy_arn": f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-prod-application-session"},
     {"role_arn": f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-plan"},
-    {"owner_producer": {**OWNER, "workflow_sha": "b" * 40}}])
+    {"owner_producer": {**OWNER, "workflow_sha": "b" * 40}},
+    {"extra_field": "x"}])
 def test_pin_ops_recusa_arn_do_keeper_role_alheio_e_produtor_nao_provado(changes):
     from tools.cnesdata_delivery import session_owner
     with pytest.raises(ValueError):
@@ -86,4 +87,13 @@ def test_autenticacao_da_application_carrega_o_pin_ops_comprometido_na_prova(mon
 def test_autenticacao_da_application_recusa_prova_sem_ou_com_janela_diferente_do_pin_ops(monkeypatch, ops_fact, changes):
     session_owner, gov, api, descriptor, now, _, _ = _owned(monkeypatch, ops_fact=ops_fact, ops_changes=changes)
     with pytest.raises(ValueError):
+        session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
+
+
+def test_autenticacao_recusa_pin_ops_de_outro_produtor_provado_que_o_da_application(monkeypatch):
+    other = {**OWNER, "workflow_sha": "b" * 40}
+    session_owner, gov, api, descriptor, now, pin, ops = _owned(monkeypatch, ops_changes={"owner_producer": other})
+    gov["proof_producers"] = [*gov["proof_producers"], other]
+    assert session_owner._pin(gov, "application_ops")["owner_producer"] == other
+    with pytest.raises(ValueError, match="ops session policy commitment"):
         session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)

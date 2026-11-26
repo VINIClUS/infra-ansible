@@ -62,7 +62,7 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
                   "original owner private fragment commitment")
         ops = _pin(governance, OPS_ROLE)
         c.require(measured.get("ops_session_policy") == _facts(ops, c.report_key(governance))
-                  and all(ops[key] == pin[key] for key in ("observed_at", "expires_at", "frozen_until")),
+                  and all(ops[key] == pin[key] for key in ("observed_at", "expires_at", "frozen_until", "owner_producer")),
                   "original owner ops session policy commitment")
     return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]), ops if role == "application" else None)
 

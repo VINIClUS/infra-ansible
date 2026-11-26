@@ -115,6 +115,13 @@ def test_keeper_e_negado_em_assume_role():
     assert allowed(keeper(), OPS_MANAGED, "sts:AssumeRole", ROLE("static-normal")) is False
 
 
+def test_keeper_com_delegacoes_e_recusado_antes_do_sts():
+    from tools.cnesdata_delivery.session_policy import application_request
+    with pytest.raises(ValueError, match="keeper cannot assume product roles"):
+        application_request(governance(), SOURCE, RUN, ATTEMPT, "keeper", application_purpose="promotion",
+                            delegations=["normal"], sessions={"normal": NAME_N})
+
+
 @pytest.mark.parametrize("role", ["plan", "audit", "deploy"])
 def test_sessao_de_lifecycle_e_negada_em_lease_put_sem_negacao_inline(role):
     from tools.cnesdata_delivery.session_policy import lifecycle_request
