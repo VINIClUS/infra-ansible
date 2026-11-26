@@ -209,7 +209,9 @@ def session(name, expiration="2030-01-01T00:00:00+00:00", access=ACCESS, role=No
         },
         "AssumedRoleUser": {
             "AssumedRoleId": "AROASYNTHETIC:probe",
-            "Arn": f"arn:aws:sts::111122223333:assumed-role/{role or 'cnesdata-prod-' + name}/probe",
+            "Arn": "arn:aws:sts::111122223333:assumed-role/"
+            + (role or "cnesdata-prod-" + name)
+            + "/probe",
         },
     }
 
@@ -317,18 +319,18 @@ def probes():
         name: {
             "role_arn": f"arn:aws:iam::111122223333:role/cnesdata-prod-{name.lower()}",
             "bucket": "cnesdata-probe-synthetic",
+            "key": "cnesdata/host-gate/missing-probe",
         }
         for name in ("unit", "recovery", "API")
     }
 
 
-def derived_probes(run_id=11, attempt=1):
+def derived_probes():
     return {
         name: {
             **value,
             "credential_path": f"/run/personal-platform/probes/{name}.credentials",
             "expires_at": EXPIRES,
-            "key": f"cnesdata/host-probe/{name.lower()}/absent-{run_id}-{attempt}",
         }
         for name, value in probes().items()
     }
@@ -756,16 +758,14 @@ def test_carrier_e_fingerprint_passam_pelo_handoff_e_ssh_reais(tmp_path, monkeyp
         g.ssh_exchange(request, value, secrets)
 
 
-def test_execucoes_diferentes_mudam_so_o_caller_e_a_chave_da_sonda(tmp_path, monkeypatch):
+def test_execucoes_diferentes_mudam_so_o_caller(tmp_path, monkeypatch):
     g, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
     first = g.host_json(build(hp, static, seen, run_id=11, attempt=1))
     second = g.host_json(build(hp, static, seen, run_id=12, attempt=2))
-    assert second["runtime_probes"] == derived_probes(12, 2)
+    assert second["runtime_probes"] == derived_probes()
     for value in (first, second):
         value["binding"]["caller"].pop("run_id")
         value["binding"]["caller"].pop("run_attempt")
-        for probe in value["runtime_probes"].values():
-            probe.pop("key")
     assert first == second
 
 

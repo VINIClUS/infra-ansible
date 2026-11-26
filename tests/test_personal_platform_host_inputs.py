@@ -395,13 +395,13 @@ def test_sessao_de_probe_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeyp
     assert f"Credential={ACCESS}/" in request.get_header("Authorization")
 
 
-def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
+def test_runtime_probes_derivam_caminho_e_expiracao_com_destino_estatico():
     g, hp = runtime(), builder()
     minted = hp.read_api_probe(api_probe(expires="2030-01-01T00:10:00Z"))
     sessions = {"unit": session("unit"), "recovery": session("recovery")}
     api = probes()["API"]["role_arn"]
-    value = hp.derive_probes(probes(), sessions, minted, (4242, 3, api), g.instant(NOW))
-    expected = derived_probes(4242, 3)
+    value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+    expected = derived_probes()
     expected["API"]["expires_at"] = "2030-01-01T00:10:00Z"
     assert value == expected
     assert g.runtime_probe_set(value) == expected
@@ -416,7 +416,9 @@ def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
         {"session": {"Credentials": session("unit")["Credentials"]}},
         {"minted": api_probe(expires="2029-12-31T23:08:00Z")},
         {"minted": api_probe(role="arn:aws:iam::111122223333:role/cnesdata-prod-other")},
-        {"static": {**probes()["unit"], "key": "cnesdata/x"}},
+        {"static": {**probes()["unit"], "extra": True}},
+        {"static": {**probes()["unit"], "key": "other/missing-probe"}},
+        {"static": {**probes()["unit"], "key": "cnesdata/../x"}},
         {"drop": "recovery"},
         {"api_role": "arn:aws:iam::111122223333:role/cnesdata-prod-other"},
     ],
@@ -429,7 +431,7 @@ def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
     static = {**probes(), "unit": case.get("static", probes()["unit"])}
     api = case.get("api_role", probes()["API"]["role_arn"])
     with pytest.raises((ValueError, KeyError)):
-        hp.derive_probes(static, sessions, minted, (11, 1, api), g.instant(NOW))
+        hp.derive_probes(static, sessions, minted, api, g.instant(NOW))
 
 
 @pytest.mark.parametrize(
@@ -650,7 +652,10 @@ def test_tmpfiles_recria_o_diretorio_das_sondas_no_boot():
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-core absent")
 def test_tag_dos_handoffs_cria_o_diretorio_antes_da_copia(tmp_path):
     text = listed(tmp_path, "--tags", TAG)
-    present = ["Create the private runtime probe directory", "Install the exact private handoff bytes"]
+    present = [
+        "Create the private runtime probe directory",
+        "Install the exact private handoff bytes",
+    ]
     positions = [text.index(name) for name in present]
     assert positions == sorted(positions)
     assert "Recreate the runtime probe directory on every boot" not in text
