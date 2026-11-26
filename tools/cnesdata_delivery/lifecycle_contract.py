@@ -261,7 +261,7 @@ MODE_EFFECT_METHODS = {
 }
 MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", 400),
                         ("s3", "put_object"): ("PreconditionFailed", 412)}
-MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate")
+MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "input", "output")
 MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
                         ("dynamodb", "update_item"): set(), ("stepfunctions", "start_execution"): {"executionArn", "startDate"},
                         ("stepfunctions", "describe_execution"): set(MODE_UNIT_EXECUTION_FIELDS),
@@ -284,7 +284,7 @@ MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", na
                     "unit-start": frozenset(("mode_dispatch", "dynamodb", name) for name in ("get_item", "transact_write_items"))}
 MODE_UNIT_CALLS = {"unit-start": frozenset(("mode_dispatch", *call) for call in (
     ("dynamodb", "get_item"), ("dynamodb", "transact_write_items"), ("dynamodb", "update_item"),
-    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution")))}
+    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution"), ("ecs", "describe_tasks")))}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
@@ -548,7 +548,8 @@ _MODE_CASE_ACTIONS = {
            "describe-own-execution": "states:DescribeExecution"},
     "uw": {"describe-own-execution": "states:DescribeExecution", "describe-own-task": "ecs:DescribeTasks",
            "describe-foreign-cluster-task": "ecs:DescribeTasks", "start-execution": "states:StartExecution",
-           "describe-other-machine-execution": "states:DescribeExecution"},
+           "describe-other-machine-execution": "states:DescribeExecution", "get-own-unit": "dynamodb:GetItem",
+           "get-tenant": "dynamodb:GetItem", "get-recovery-run": "dynamodb:GetItem", "put-own-unit": "dynamodb:PutItem"},
     "uo": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
            "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-output": "s3:GetObject"},
     "rs": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
@@ -732,6 +733,7 @@ APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
                       "static_inputs.py", "plan_inputs.py", "terminal_gate.py", "mode_broker.py", "product_dynamodb_keys.py",
                       "product_mode_canary.py", "product_mode_canary_frames.py", "product_mode_canary_dispatch.py",
+                      "product_mode_canary_unit_observe.py",
                       "runtime-requirements.txt", "phase-c-child-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))

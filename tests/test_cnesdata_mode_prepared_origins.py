@@ -1,5 +1,5 @@
-"""P16b Falta 6 and 7, ruling 8 item 2: the (a) mode origins from the prepared package and the authenticated product
-checkout, the readbacks origin the stage builds, and unit-start refused in production before any origin."""
+"""P16b Falta 6 and 7: the (a) mode origins from the prepared package and the authenticated product
+checkout, the readbacks origin the stage builds, and unit-start's keeper origins with no gate (follow-up item 5)."""
 import copy
 import json
 from types import SimpleNamespace
@@ -153,15 +153,17 @@ def test_original_de_fixture_recusa_byte_fora_do_manifesto_de_fonte_ou_do_de_fix
                 owner=arguments["owner"])
 
 
-@pytest.mark.parametrize("names", [["mode-start"], ["readbacks"], ["mode-seed"], ["previous"]])
-def test_unit_start_recusa_na_producao_antes_de_qualquer_origem(names):
+@pytest.mark.parametrize("names, message", [(["readbacks"], "^mode prepared origin context$"),
+                                            (["mode-seed"], "^mode_inputs=source_unconnected$")],
+                         ids=["readbacks-sem-contexto", "mode-seed-nao-ligado"])
+def test_unit_start_na_producao_recusa_origem_sem_contexto_ou_nao_ligada(names, message):
     keeper = SimpleNamespace(_contexts=[])
-    with pytest.raises(ValueError, match="^mode_unit_start=p16d_pending$"):
+    with pytest.raises(ValueError, match=message):
         _source("unit-start", names, context=None, owner={}, keeper=keeper)
     assert keeper._contexts == []
 
 
-def test_unit_start_sempre_pede_origem_ao_estagio_logo_o_portao_sempre_roda():
+def test_unit_start_pede_ao_estagio_mode_start_previous_e_readbacks_depois_do_seed():
     from tools.cnesdata_delivery import application_gate as ag
     produced = set(lc.ADAPTER_OBSERVATIONS.values()) | {"record", "audit-event-ids"}
     known = {"activation", "close-drain", "phase-b", "recovery-result"}
@@ -169,11 +171,13 @@ def test_unit_start_sempre_pede_origem_ao_estagio_logo_o_portao_sempre_roda():
     assert ag.MODE_RUNS["unit"].index("unit-start") > ag.MODE_RUNS["unit"].index("unit-seed")
 
 
-def test_unit_start_aberto_so_por_fixture_deriva_as_origens_do_keeper(monkeypatch):
-    monkeypatch.setattr(_mb(), "MODE_UNIT_START_OPEN", True)
+def test_unit_start_na_producao_deriva_mode_start_e_previous_do_keeper():
+    keeper = SimpleNamespace(_contexts=[])
     window = _mode_case("unit-start")[2]
-    assert _source("unit-start", ["mode-start"], context=None, owner={}) == {"mode-start": c.canonical(
-        {"version": 1, "kind": "mode-start", "frozen": False, "started_at": c.utc(window["admitted_at"])})}
+    assert _source("unit-start", ["mode-start", "previous"], context=None, owner={}, keeper=keeper) == {
+        "mode-start": c.canonical({"version": 1, "kind": "mode-start", "frozen": False,
+                                   "started_at": c.utc(window["admitted_at"])}), "previous": b"null\n"}
+    assert keeper._contexts == []
 
 
 class _Readback:
@@ -200,7 +204,6 @@ def _readback_world(monkeypatch):
     monkeypatch.setattr(mb, "mode_prepared_authority", lambda prepared, **kwargs: authorities.append(kwargs) or "authority")
     monkeypatch.setattr(mb, "assume_readback_session", lambda **kwargs: sessions.append(kwargs) or "readback-session")
     monkeypatch.setattr(mb, "ModeReadback", _Readback)
-    monkeypatch.setattr(mb, "MODE_UNIT_START_OPEN", True)
     _Readback.made = []
     context = _ag().ModeContext(governance="g", authority="a", prepared="p", credential_limit=6000, operation_session="o",
                                 clock="k", aws="evidence", activation_sha256="1" * 64, product="product")

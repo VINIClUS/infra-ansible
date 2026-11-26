@@ -1576,7 +1576,7 @@ def execute(role):
             result_files = deploy_result_files(step["purpose"], c.canonical(checkpoint), payload["approval.json"],
                                                (temp / "apply.log").read_bytes())
             if step["purpose"] == "application-prepare" and step["mode"] == "operational":
-                # Amendment 2026-11-13 item 6: the eight-file observation is produced inside this running gate.
+                # Amendment 2026-11-13 item 6: the eleven-file observation is produced inside this running gate.
                 c.require(len(plan_indexes) == 1, "fence single authenticated current plan index")
                 result_files = fence_prepare_package(api=api, aws=aws, governance=governance, request=request, run=run,
                     owner=owner, guard=guard, authority=application_authority, predecessor=predecessor, carrier=carrier,

@@ -246,7 +246,7 @@ def _probes(policy):
 
 
 def _wait(deadline=DEADLINE):
-    return _sp().mode_unit_wait_policy(resources=RESOURCES, deadline=deadline)
+    return _sp().mode_unit_wait_policy(resources=RESOURCES, owner_sha256=OWNER, deadline=deadline)
 
 
 def test_papel_e_espera_do_ux_admitem_as_etapas_unit_execution_e_unit_task():
@@ -266,7 +266,7 @@ def test_cada_permissao_da_espera_do_ux_esta_na_concessao_do_papel():
                          ids=["maquina-de-outra-regiao", "cluster-curinga"])
 def test_espera_do_ux_recusa_recursos_fora_da_forma(change):
     with pytest.raises(ValueError, match="^mode session resources$"):
-        _sp().mode_unit_wait_policy(resources=RESOURCES | change, deadline=DEADLINE)
+        _sp().mode_unit_wait_policy(resources=RESOURCES | change, owner_sha256=OWNER, deadline=DEADLINE)
 
 
 @pytest.mark.parametrize("operation", OPERATIONS)

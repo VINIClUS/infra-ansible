@@ -646,7 +646,8 @@ def _api_stage_fakes(monkeypatch, world, ready, probe):
 def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=None, manifest=None, carrier=None,
                  observations=1, pending=False, capability=None, capability_seconds=5, credential_limit=6000,
                  omit_earliest=False, noncanonical=(), github_mutation=None, real_broker=False, child_error=None,
-                 probe="in_progress", ready=None, static_inventory=c.canonical({"fixture": "inventory"})):
+                 probe="in_progress", ready=None, static_inventory=c.canonical({"fixture": "inventory"}), b_readbacks=None,
+                 product="product", phase_c_runtime=None):
     """Real Keeper/Lease/windows and real same-run reads; GitHub, S3, fence payload, capability and child are fakes.
 
     ready holds the API-stage fakes: closed-ready capability, child, artifact upload and host handoff."""
@@ -775,16 +776,16 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
                           "state_object": {"status": "present", "version_id": "v4", "etag_sha256": "5" * 64},
                           "owner": owner, "purpose": "phase-b", "plan_sha256": "9" * 64, "readbacks": [
                               {"service": "stepfunctions", "operation": "describe_state_machine",
-                               "observed": {"stateMachineArn": MACHINE_ARN, "status": "ACTIVE"}}]}
+                               "observed": {"stateMachineArn": MACHINE_ARN, "status": "ACTIVE"}}] if b_readbacks is None else b_readbacks}
     world.b_approval = {"checkpoint_sha256": c.sha(PREPARED_CHECKPOINT), "plan_sha256": "9" * 64,
                         "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial", "before": {}}}
     world.b_files = {"checkpoint.json": c.canonical(world.b_checkpoint), "approval.json": c.canonical(world.b_approval)}
     world.b_moments = {"artifact_created_at": c.utc(1115), "job_completed_at": c.utc(1125)}
     _api_stage_fakes(monkeypatch, world, ready, probe)
     world.operation_session = lambda operation, role, stage: pytest.fail("the capability fake never mints the operation session")
-    world.phase_c_runtime = object()
+    world.phase_c_runtime = object() if phase_c_runtime is None else phase_c_runtime
     world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
-                                       authority=world.authority, product="product", credential_limit=credential_limit,
+                                       authority=world.authority, product=product, credential_limit=credential_limit,
                                        operation_session=world.operation_session, clock=clock,
                                        phase_c_runtime=world.phase_c_runtime)
     return world

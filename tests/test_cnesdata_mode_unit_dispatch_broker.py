@@ -21,6 +21,24 @@ TABLE = RESOURCES["table_arn"].rsplit("/", 1)[1]
 TENANT_ID = RESOURCES["scope"]["tenant_id"]
 RUN_ID = "unit-" + OWNER[:16]
 MACHINE = RESOURCES["machine_arn"]
+SECTION = VECTOR["unit_observe"]
+CLUSTER = RESOURCES["cluster_arn"]
+TASK_PREFIX = CLUSTER.replace(":cluster/", ":task/") + "/"
+TASK_IDS = ("ab" * 16, "0f" * 16)
+REVISION = RESOURCES["revisions"]["unit"]
+
+
+def _definition(change=None):
+    value = json.loads(SECTION["definition"].replace(json.dumps(SECTION["cluster_arn"]), json.dumps(CLUSTER)))
+    parameters = value["States"]["RunUnits"]["ItemProcessor"]["States"]["RunProcessor"]["Parameters"]
+    if change is not None:
+        change(value, parameters)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _readbacks(definition=None):
+    return c.canonical(SECTION["readbacks"] | {"state_machine": {"stateMachineArn": MACHINE,
+                                                                 "definition": definition or _definition()}})
 
 
 def _shifted(text):
@@ -69,8 +87,24 @@ def _seed_journal(monkeypatch, units):
     return args["journal"]
 
 
+def _native_task(arn):
+    return {"taskArn": arn, "clusterArn": CLUSTER, "lastStatus": "STOPPED", "taskDefinitionArn": REVISION,
+            "stopCode": "EssentialContainerExited", "cpu": "256", "attachments": [{"id": "eni"}],
+            "containers": [{"name": "processor", "exitCode": 0, "containerArn": arn + "/c", "lastStatus": "STOPPED"}],
+            "overrides": {"containerOverrides": [{"name": "processor", "command": ["run"],
+                                                  "environment": [{"name": "UNIT_ID", "value": arn[-32:]}]}],
+                          "inferenceAcceleratorOverrides": []}}
+
+
+def _projected(arn):
+    return {"taskArn": arn, "clusterArn": CLUSTER, "lastStatus": "STOPPED", "taskDefinitionArn": REVISION,
+            "containers": [{"name": "processor", "exitCode": 0}],
+            "overrides": {"containerOverrides": [{"name": "processor", "environment": [{"name": "UNIT_ID", "value": arn[-32:]}]}]}}
+
+
 class _Dynamo:
-    def __init__(self, record, *, statuses=("RUNNING", "SUCCEEDED"), execution=None, after=None):
+    def __init__(self, record, *, statuses=("RUNNING", "SUCCEEDED"), execution=None, after=None, output=None,
+                 described=None, terminal=None):
         frames, keys = _mb().product_frames(), _keys()
         tenant = frames.tenant_partition(TENANT_ID)
         run = keys.run_entity_key(TENANT_ID, RUN_ID)
@@ -84,12 +118,18 @@ class _Dynamo:
         for key, item in self.items.items():
             item.update({"pk": {"S": key[0]}, "sk": {"S": key[1]}})
         self.calls, self.statuses, self.execution, self.after = [], list(statuses), execution, after or {}
+        self.uw, self.terminal, self.described = [], terminal, described
+        tasks = [{"TaskArn": TASK_PREFIX + task_id, "LastStatus": "STOPPED"} for task_id in TASK_IDS]
+        self.output_text = json.dumps(tasks if output is None else output)
+
+    def _item(self, parameters):
+        item = self.items.get((parameters["Key"]["pk"]["S"], parameters["Key"]["sk"]["S"]))
+        return ({"Item": copy.deepcopy(item)} if item is not None else {}) | {"ResponseMetadata": _metadata()}
 
     def __call__(self, service, name, /, **parameters):
         self.calls.append((name, copy.deepcopy(parameters)))
         if name == "get_item":
-            item = self.items.get((parameters["Key"]["pk"]["S"], parameters["Key"]["sk"]["S"]))
-            return ({"Item": copy.deepcopy(item)} if item is not None else {}) | {"ResponseMetadata": _metadata()}
+            return self._item(parameters)
         if name == "start_execution":
             arn = self.execution or MACHINE.replace(":stateMachine:", ":execution:") + ":" + parameters["name"]
             return {"executionArn": arn, "startDate": datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc),
@@ -110,19 +150,43 @@ class _Dynamo:
             hook(self)
         return {"ResponseMetadata": _metadata()}
 
+    def _commit(self, dispatch_id):
+        for unit in _units():
+            key = _keys().unit_key(TENANT_ID, RUN_ID, unit["unit_id"])
+            manifest = {"manifest_id": "manifest-" + unit["unit_id"], "manifest_key": f"tmp/{unit['unit_id']}/manifest.json"}
+            payload = json.loads(self.items[key]["payload"]["S"]) | {"state": "SUCCEEDED", "attempt": 1,
+                                                                      "dispatch_id": dispatch_id, "output_manifests": [manifest]}
+            self.items[key]["payload"]["S"] = json.dumps(payload)
+
     def describe(self, service, name, /, **parameters):
         self.calls.append((name, copy.deepcopy(parameters)))
+        self.uw.append(name)
+        if name == "get_item":
+            return self._item(parameters)
+        if name == "describe_tasks":
+            response = (self.described(parameters["tasks"]) if self.described is not None
+                        else {"tasks": [_native_task(arn) for arn in parameters["tasks"]], "failures": []})
+            return response | {"ResponseMetadata": _metadata()}
         status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
-        return {"executionArn": parameters["executionArn"], "stateMachineArn": MACHINE, "name": parameters["executionArn"].rsplit(":", 1)[1],
-                "status": status, "startDate": datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc),
-                "input": "{}", "ResponseMetadata": _metadata()}
+        moment = datetime.datetime.fromtimestamp(NOW, datetime.timezone.utc)
+        response = {"executionArn": parameters["executionArn"], "stateMachineArn": MACHINE,
+                    "name": parameters["executionArn"].rsplit(":", 1)[1], "status": status, "startDate": moment,
+                    "input": "{}", "ResponseMetadata": _metadata()}
+        if status == "SUCCEEDED":
+            self._commit(response["name"])
+            response["output"] = self.output_text
+        if status != "RUNNING":
+            response["stopDate"] = moment
+            if self.terminal is not None:
+                self.terminal(self)
+        return response
 
 
-def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, source=None, **dynamo):
+def _world(monkeypatch, *, record=None, clock=None, seeds=1, wait=True, source=None, readbacks=None, **dynamo):
     seeded = [_seed_journal(monkeypatch, _units()) for _ in range(seeds)]
     args, _, _ = _case(monkeypatch, "unit-start", source=source)
     raw = record or _record()
-    args["journal"], _ = _journal("unit-start", {"record": raw.encode()}, source)
+    args["journal"], _ = _journal("unit-start", {"record": raw.encode(), "readbacks": readbacks or _readbacks()}, source)
     start, uw = _mb().assume_unit_start_sessions(**args)
     keeper = SimpleNamespace(_contexts=[*seeded, args["journal"]])
     plan = _mb().unit_start_plan(keeper, args["journal"], resources=RESOURCES, now=NOW)
@@ -169,18 +233,130 @@ def test_plano_recusa_record_fora_do_unit_start(monkeypatch, changes):
         _world(monkeypatch, record=_record(**changes))
 
 
-def test_dispatch_unit_faz_a_sequencia_no_ux_e_espera_no_uw(monkeypatch):
+def test_plano_leva_o_cluster_unico_da_maquina_do_readback_igual_ao_cluster_dos_recursos(monkeypatch):
+    _, _, _, plan = _world(monkeypatch)
+    assert plan.cluster == CLUSTER == _mb().product_unit_observe().unit_cluster(_definition())
+
+
+def _other(value, parameters):
+    parameters["Cluster"] = CLUSTER + "-other"
+
+
+def _missing(value, parameters):
+    del parameters["Cluster"]
+
+
+def _two(value, parameters):
+    value["States"]["Extra"] = {"Type": "Task", "End": True, "Parameters": {"Cluster": CLUSTER + "-other"}}
+
+
+def _service(value, parameters):
+    parameters["Cluster"] = CLUSTER.replace(":cluster/", ":service/")
+
+
+@pytest.mark.parametrize("readbacks", [_readbacks(_definition(_other)), _readbacks(_definition(_missing)),
+                                       _readbacks(_definition(_two)), _readbacks(_definition(_service)),
+                                       _readbacks("{"), c.canonical({"fixture_only": "readbacks"})],
+                         ids=["outro-cluster", "sem-cluster", "dois-clusters", "servico-com-conta", "definicao-invalida",
+                              "readback-sem-maquina"])
+def test_plano_recusa_cluster_da_maquina_diferente_do_recurso_antes_de_ler_o_seed(monkeypatch, readbacks):
+    with pytest.raises(ValueError, match="^mode unit cluster$"):
+        _world(monkeypatch, seeds=0, readbacks=readbacks)
+
+
+def _reads(plan):
+    return list(_mb().product_unit_observe().unit_output_reads(TABLE, TENANT_ID, RUN_ID, plan.start.dispatch.unit_ids))
+
+
+def test_dispatch_unit_faz_a_sequencia_no_ux_e_no_uw_espera_descreve_as_tasks_e_le_os_outputs(monkeypatch):
     broker, journal, table, plan = _world(monkeypatch)
     reply = _dispatch(broker)
-    assert reply["tasks"] == [] and reply["outputs"] == []
+    reads, arns = _reads(plan), [TASK_PREFIX + task_id for task_id in sorted(TASK_IDS)]
+    assert set(reply) == {"execution", "tasks", "failures", "outputs"}
     assert reply["execution"] == {"executionArn": plan.execution, "stateMachineArn": MACHINE,
-                                  "name": plan.start.dispatch.dispatch_id, "status": "SUCCEEDED",
-                                  "startDate": c.utc(NOW)}
+                                  "name": plan.start.dispatch.dispatch_id, "status": "SUCCEEDED", "input": "{}",
+                                  "output": table.output_text}
+    assert reply["tasks"] == [_projected(arn) for arn in arns] and reply["failures"] == []
+    items = [table.items[(read["Key"]["pk"]["S"], read["Key"]["sk"]["S"])] for read in reads]
+    assert reply["outputs"] == _mb().product_unit_observe().unit_outputs(TENANT_ID, RUN_ID, plan.start.dispatch.unit_ids,
+                                                                         items)
+    assert [output["state"] for output in reply["outputs"]] == ["SUCCEEDED"] * len(reads) == ["SUCCEEDED"] * 2
+    assert table.uw == ["describe_execution", "describe_execution", "describe_tasks", "get_item", "get_item"]
+    assert [call for name, call in table.calls if name == "describe_tasks"] == [{"cluster": CLUSTER, "tasks": arns}]
+    assert [call for _, call in table.calls[-2:]] == reads
     names = _names(table)
-    assert names.count("start_execution") == 1 and names.count("describe_execution") == 2
-    assert names.index("start_execution") < names.index("describe_execution")
+    assert names.count("start_execution") == 1 and names.index("start_execution") < names.index("describe_execution")
     assert len(journal.call_receipts) == len(table.calls) and broker.uncertainty == []
     assert [timing["kind"] for timing in journal._timings] == ["wait"]
+
+
+def test_slot_do_unit_guarda_a_resposta_e_o_described_fica_so_para_recovery_e_audit(monkeypatch):
+    broker, _, _, _ = _world(monkeypatch)
+    assert broker.unit_observed is None
+    reply = _dispatch(broker)
+    assert broker.unit_observed == reply and broker.unit_observed is not reply and broker.described is None
+
+
+def test_execucao_sem_sucesso_nao_descreve_tasks_e_projeta_a_unidade_pendente_sem_recusar(monkeypatch):
+    broker, _, table, plan = _world(monkeypatch, statuses=("RUNNING", "FAILED"))
+    reply = _dispatch(broker)
+    assert reply["execution"]["status"] == "FAILED" and "output" not in reply["execution"]
+    assert (reply["tasks"], reply["failures"]) == ([], []) and "describe_tasks" not in table.uw
+    assert [(output["state"], output["attempt"], output["dispatch_id"], output["output_manifests"])
+            for output in reply["outputs"]] == [("PENDING", 0, None, [])] * 2
+    assert table.uw[-2:] == ["get_item", "get_item"] and [call for _, call in table.calls[-2:]] == _reads(plan)
+
+
+def test_falhas_do_describe_tasks_seguem_na_resposta(monkeypatch):
+    def described(arns):
+        return {"tasks": [_native_task(arns[0])], "failures": [{"arn": arns[1], "reason": "MISSING", "detail": "x"}]}
+    broker, _, _, _ = _world(monkeypatch, described=described)
+    reply = _dispatch(broker)
+    arns = [TASK_PREFIX + task_id for task_id in sorted(TASK_IDS)]
+    assert reply["tasks"] == [_projected(arns[0])] and reply["failures"] == [{"arn": arns[1], "reason": "MISSING"}]
+
+
+@pytest.mark.parametrize("name", sorted(case["name"] for case in SECTION["cases"]))
+def test_projecoes_do_uw_preservam_as_respostas_sinteticas_do_vetor_e_descartam_as_datas(name):
+    """Amendment 3: the synthetic responses check projection completeness only, never as AWS fixtures."""
+    case = {item["name"]: item for item in SECTION["cases"]}[name]
+    execution = case["execution"]["response"]
+    native = execution | {"startDate": "2026-11-26T00:00:00Z", "stopDate": "2026-11-26T00:01:00Z", "ResponseMetadata": {}}
+    projected = _mb()._mode_response("stepfunctions", "describe_execution", native, {})
+    assert set(projected) == set(execution) == {"executionArn", "stateMachineArn", "name", "status", "input"} | (
+        {"output"} if name != "execucao-nao-succeeded" else set())
+    assert projected == execution
+    if case["describe_tasks"] is not None:
+        response = case["describe_tasks"]["response"]
+        assert _mb()._mode_response("ecs", "describe_tasks", response, {}, unit=True) == response
+
+
+def _many(count, item):
+    return [copy.deepcopy(item) for _ in range(count)]
+
+
+@pytest.mark.parametrize("response", [
+    {"tasks": _many(101, _projected(TASK_PREFIX + "0" * 32)), "failures": []},
+    {"tasks": [], "failures": _many(101, {"arn": "a", "reason": "MISSING"})},
+    {"tasks": ["task"], "failures": []},
+    {"tasks": [_projected(TASK_PREFIX + "0" * 32) | {"containers": _many(11, {"name": "p", "exitCode": 0})}],
+     "failures": []},
+    {"tasks": [_projected(TASK_PREFIX + "0" * 32) | {"overrides": {"containerOverrides": [
+        {"name": "p", "environment": _many(33, {"name": "N", "value": "v"})}]}}], "failures": []},
+    {"tasks": [_projected(TASK_PREFIX + "0" * 32) | {"overrides": ["x"]}], "failures": []},
+    {"tasks": [], "failures": [], "nextToken": "x"}],
+    ids=["101-tasks", "101-falhas", "task-nao-objeto", "11-containers", "33-variaveis", "overrides-nao-objeto",
+         "campo-de-topo"])
+def test_projecao_das_tasks_do_uw_recusa_resposta_fora_dos_limites(response):
+    with pytest.raises(ValueError, match="^finite native unit ECS response$"):
+        _mb()._mode_response("ecs", "describe_tasks", response, {}, unit=True)
+
+
+def test_projecao_das_tasks_de_recovery_e_audit_continua_a_de_uma_task():
+    response = {"tasks": [_native_task(TASK_PREFIX + task_id) for task_id in TASK_IDS], "failures": []}
+    assert len(_mb()._mode_response("ecs", "describe_tasks", response, {}, unit=True)["tasks"]) == 2
+    with pytest.raises(ValueError, match="^finite native ECS response$"):
+        _mb()._mode_response("ecs", "describe_tasks", response, {})
 
 
 def test_frame_do_dispatch_le_o_dispatch_ativo_record_control_e_ticket_e_grava_a_admissao(monkeypatch):
@@ -282,6 +458,93 @@ def test_espera_so_descreve_o_arn_exato_ate_o_terminal(monkeypatch):
     assert described == [{"executionArn": plan.execution}] * 3 and reply["execution"]["status"] == "FAILED"
 
 
+def test_c1_recusa_describe_tasks_de_cluster_diferente_do_recurso_antes_do_sdk(monkeypatch):
+    """Second of the three cluster checks: C1 compares the DescribeTasks cluster with the resources cluster."""
+    other = CLUSTER + "-other"
+    broker, journal, table, plan = _world(monkeypatch, output=[{"TaskArn": other.replace(":cluster/", ":task/") + "/" + "0" * 32}])
+    broker.unit = plan._replace(cluster=other)
+    with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+        _dispatch(broker)
+    assert "describe_tasks" not in table.uw and "get_item" not in table.uw and broker.unit_observed is None
+
+
+def _scope(broker, part, **changes):
+    return broker._call_scope() | {"unit": broker._unit_scope() | {"part": part} | changes}
+
+
+def _native(service, operation, parameters):
+    return {"role": "mode_dispatch", "service": service, "operation": operation, "parameters": parameters}
+
+
+def test_c1_do_uw_admite_so_a_proxima_leitura_exata_dos_outputs(monkeypatch):
+    broker, _, _, plan = _world(monkeypatch)
+    first, second = _reads(plan)
+    scope = _scope(broker, "uw")
+    assert _mb().validate_mode_dispatch_call("unit-start", _native("dynamodb", "get_item", first), scope) == first
+    foreign = first | {"Key": first["Key"] | {"sk": {"S": "UNIT#" + "0" * 64}}}
+    for parameters in (second, foreign, first | {"ConsistentRead": False}, first | {"TableName": "outra"}):
+        with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+            _mb().validate_mode_dispatch_call("unit-start", _native("dynamodb", "get_item", parameters), scope)
+    broker._unit_reads = 1
+    assert _mb().validate_mode_dispatch_call("unit-start", _native("dynamodb", "get_item", second),
+                                             _scope(broker, "uw")) == second
+    broker._unit_reads = 2
+    with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+        _mb().validate_mode_dispatch_call("unit-start", _native("dynamodb", "get_item", second), _scope(broker, "uw"))
+
+
+def test_c1_do_uw_admite_so_o_describe_tasks_esperado_no_cluster_dos_recursos(monkeypatch):
+    broker, _, _, _ = _world(monkeypatch)
+    request = {"cluster": CLUSTER, "tasks": [TASK_PREFIX + "0" * 32]}
+    assert _mb().validate_mode_dispatch_call("unit-start", _native("ecs", "describe_tasks", request),
+                                             _scope(broker, "uw", describe=request)) == request
+    other = {"cluster": CLUSTER + "-other", "tasks": [TASK_PREFIX + "0" * 32]}
+    for parameters, describe in ((request, None), (request | {"tasks": [TASK_PREFIX + "1" * 32]}, request),
+                                 (other, other)):
+        with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+            _mb().validate_mode_dispatch_call("unit-start", _native("ecs", "describe_tasks", parameters),
+                                              _scope(broker, "uw", describe=describe))
+
+
+def test_c1_separa_a_espera_e_as_leituras_no_uw_do_inicio_no_ux(monkeypatch):
+    broker, _, _, plan = _world(monkeypatch)
+    request = {"cluster": CLUSTER, "tasks": [TASK_PREFIX + "0" * 32]}
+    for native in (_native("stepfunctions", "describe_execution", {"executionArn": plan.execution}),
+                   _native("ecs", "describe_tasks", request)):
+        with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+            _mb().validate_mode_dispatch_call("unit-start", native, _scope(broker, "ux", describe=request))
+    start = broker._unit_scope()["start"]
+    for native in (_native("stepfunctions", "start_execution", start),
+                   _native("dynamodb", "transact_write_items", {"TransactItems": []})):
+        with pytest.raises(ValueError, match="^mode unit dispatch call$"):
+            _mb().validate_mode_dispatch_call("unit-start", native, _scope(broker, "uw"))
+
+
+def _drop_unit(table):
+    key = _keys().unit_key(TENANT_ID, RUN_ID, _units()[1]["unit_id"])
+    del table.items[key]
+
+
+def _other_entity(table):
+    table.items[_keys().unit_key(TENANT_ID, RUN_ID, _units()[1]["unit_id"])]["entity"] = {"S": "RUN"}
+
+
+def _no_manifests(table):
+    item = table.items[_keys().unit_key(TENANT_ID, RUN_ID, _units()[1]["unit_id"])]
+    payload = json.loads(item["payload"]["S"])
+    del payload["output_manifests"]
+    item["payload"]["S"] = json.dumps(payload)
+
+
+@pytest.mark.parametrize("spoil", [_drop_unit, _other_entity, _no_manifests], ids=["ausente", "entidade", "sem-campo"])
+def test_output_recusado_pelo_produto_falha_a_operacao_sem_slot_e_mantem_os_recibos(monkeypatch, spoil):
+    broker, journal, table, _ = _world(monkeypatch, terminal=spoil)
+    with pytest.raises(ValueError, match="^mode_unit_outputs=refused$"):
+        _dispatch(broker)
+    assert broker.unit_observed is None and table.uw[-2:] == ["get_item", "get_item"]
+    assert len(journal.call_receipts) == len(table.calls) and broker.uncertainty == []
+
+
 def test_dispatch_ativo_de_outro_dispatch_recusa_antes_da_admissao(monkeypatch):
     def other(table):
         key = _keys().dispatch_key(TENANT_ID, RUN_ID)
@@ -325,7 +588,7 @@ def test_dispatch_unit_sem_parte_de_espera_recusa_antes_de_qualquer_chamada(monk
 ])
 def test_validador_do_dispatch_recusa_execucao_fora_do_arn_exato_e_do_construtor(monkeypatch, operation, parameters):
     broker, _, _, plan = _world(monkeypatch)
-    scope = broker._call_scope() | {"unit": broker._unit_scope()}
+    scope = _scope(broker, "uw" if operation == "describe_execution" else "ux")
     native = {"role": "mode_dispatch", "service": "stepfunctions", "operation": operation, "parameters": parameters}
     with pytest.raises(ValueError, match="^mode unit dispatch call$"):
         _mb().validate_mode_dispatch_call("unit-start", native, scope)
@@ -336,7 +599,7 @@ def test_validador_do_dispatch_recusa_execucao_fora_do_arn_exato_e_do_construtor
 @pytest.mark.parametrize("operation", ["recovery-start", "audit-start", "unit-seed"])
 def test_validador_do_dispatch_e_so_do_unit_start(monkeypatch, operation):
     broker, _, _, plan = _world(monkeypatch)
-    scope = broker._call_scope() | {"unit": broker._unit_scope()}
+    scope = _scope(broker, "uw")
     native = {"role": "mode_dispatch", "service": "stepfunctions", "operation": "describe_execution",
               "parameters": {"executionArn": plan.execution}}
     with pytest.raises(ValueError, match="^mode unit dispatch call$"):
@@ -386,3 +649,41 @@ def test_passo_unit_execution_sem_mode_broker_recusa():
     journal = _start_journal("unit-start")
     with pytest.raises(ValueError, match="^mode step receipt$"):
         journal.observe("unit-execution", c.canonical({"step": "unit-execution"}))
+
+
+def test_passos_unit_task_e_unit_output_sao_os_elementos_do_slot_na_ordem_do_filho(monkeypatch):
+    broker, journal, _, _ = _world(monkeypatch)
+    reply = _dispatch(broker)
+    for kind, items in (("unit-task", reply["tasks"]), ("unit-output", reply["outputs"])):
+        for item in items:
+            body = _product_text(item)
+            assert journal.observe(kind, body) == c.sha(body)
+    assert [entry["kind"] for entry in journal._observations] == ["unit-task"] * 2 + ["unit-output"] * 2
+
+
+@pytest.mark.parametrize("kind, field", [("unit-task", "tasks"), ("unit-output", "outputs")])
+def test_passo_fora_da_ordem_ou_alem_do_slot_recusa(monkeypatch, kind, field):
+    broker, journal, _, _ = _world(monkeypatch)
+    reply = _dispatch(broker)
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe(kind, _product_text(reply[field][1]))
+    for item in reply[field]:
+        journal.observe(kind, _product_text(item))
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe(kind, _product_text(reply[field][0]))
+    assert [entry["kind"] for entry in journal._observations] == [kind] * 2
+
+
+@pytest.mark.parametrize("kind", ["unit-task", "unit-output"])
+def test_passos_do_unit_start_antes_do_dispatch_recusam(monkeypatch, kind):
+    broker, journal, _, _ = _world(monkeypatch)
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe(kind, _product_text({"taskArn": TASK_PREFIX + "0" * 32}))
+    assert journal._observations == []
+
+
+def test_passo_unit_task_sem_tasks_no_slot_recusa(monkeypatch):
+    broker, journal, _, _ = _world(monkeypatch, statuses=("RUNNING", "FAILED"))
+    _dispatch(broker)
+    with pytest.raises(ValueError, match="^mode step receipt$"):
+        journal.observe("unit-task", _product_text(_projected(TASK_PREFIX + "0" * 32)))
