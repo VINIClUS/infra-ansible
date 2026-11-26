@@ -318,7 +318,7 @@ document plus managed ARN. The changes are:
 - The inverse deletion inventory is bounded by the largest scheduler closure of the recovery
   and audit modes instead of a fixed count, and each ARN is at most 104 characters.
 - The activation read uses the managed `<plan role>-activation-session` policy, and each
-  activation object key is at most 273 bytes (N=273).
+  activation object key is at most 128 bytes (N=128).
 - The managed plan and audit session policies carry a static Deny of the lifecycle deletions;
   the forward request adds that Deny only for deploy, and the inverse keeps its exact
   `NotResource` inventory.

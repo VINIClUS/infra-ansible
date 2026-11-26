@@ -5,6 +5,7 @@ locals {
     "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
   ]
   delivery_evidence_prefix_denies = ["s3:*ObjectVersion*", "s3:*ObjectAcl", "s3:*ObjectTagging", "s3:*ObjectRetention", "s3:*ObjectLegalHold", "s3:RestoreObject", "s3:GetObjectAttributes", "s3:*Multipart*"]
+  delivery_bucket_read_arns       = var.github_delivery == null ? [] : [for arn in var.github_delivery.read_resource_arns : arn if startswith(arn, "arn:aws:s3:::")]
   delivery_lifecycle_deletes      = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup", "events:DeleteRule", "cloudwatch:DeleteAlarms"]
   delivery_activation_denies = concat(
     local.delivery_activation == null ? [] : [{ Effect = "Deny", Action = ["s3:*ObjectVersion*", "s3:*ObjectRetention"], NotResource = local.delivery_activation_objects }],
@@ -83,8 +84,8 @@ resource "aws_iam_policy" "delivery_session" {
       { Effect = "Deny", Action = ["iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicyVersion", "iam:DeletePolicy", "iam:Attach*Policy", "iam:Put*PermissionsBoundary"], Resource = "*" }
       ], each.key == "deploy" ? [
       { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
-      ] : [], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
-      { Effect = "Allow", Action = ["s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration"], Resource = var.github_delivery.read_resource_arns }
+      ] : [], length(local.delivery_bucket_read_arns) == 0 ? [] : [
+      { Effect = "Allow", Action = ["s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration"], Resource = local.delivery_bucket_read_arns }
       ], [for statement in local.delivery_activation_denies : statement if each.key == "plan"], local.delivery_activation_policy_reads[each.key], each.key == "deploy" ? [] : [
       { Effect = "Deny", Action = local.delivery_lifecycle_deletes, Resource = "*" }
     ])

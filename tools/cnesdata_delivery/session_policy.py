@@ -16,7 +16,7 @@ LIFECYCLE_DELETES = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "s
 
 OPS_ROLE = "application_ops"
 ACTIVATION_ROLE = "plan_activation"
-ACTIVATION_KEY_LIMIT = 273
+ACTIVATION_KEY_LIMIT = 128
 DELETE_ARN_MAX = 104
 
 ACTIVATION_BUCKET_READS = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
