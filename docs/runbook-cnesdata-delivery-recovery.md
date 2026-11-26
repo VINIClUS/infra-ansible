@@ -71,6 +71,12 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
    `RESERVED`, o permit do `ENV#prod#SEMAPHORE` (`UNIT`) e o slot do `ENV#prod#ATTEMPTS` que ele
    consumiu. A recuperacao revisada limpa os tres antes da proxima promocao, depois da evidencia do
    passo 1 e com a mesma aprovacao escrita.
+   Lease retido no `unit` com o seed ja gravado: o `unit-seed` grava, para o tenant
+   `prod-canary-*`, os itens RUN, RUNUNIT (`PENDING`) e RAWMANIFESTRECORD e os objetos
+   `raw/<tenant>/...`, e eles ficam quando o `unit-start` ou o `unit-observe` param depois dele
+   (cluster da maquina diferente do cluster dos recursos, recusa do plano ou do STS, saida recusada
+   com `mode_unit_outputs=refused`, resultado `canary=pending`). A mesma recuperacao revisada limpa
+   esses itens e objetos, depois da evidencia do passo 1 e com a mesma aprovacao escrita.
 2. Falha do host (decisao do dono de 2026-11-25, recuperacao manual): o lease fica `held`. Com
    `rolled_back`, a API ja esta na versao anterior. Com `recovery_required`, o dono recupera o VPS a mao
    ate a versao anterior aceita do host e confere por leitura, antes do reset revisado. O `host-recovery`

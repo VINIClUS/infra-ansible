@@ -59,8 +59,7 @@ def test_elementos_fora_do_conjunto_do_modo_recusam(operation, elements):
 
 @pytest.mark.parametrize("operation", ["unit-observe", "unit-start", "recovery-record", "recovery-start", "audit-record",
                                        "audit-start"])
-def test_origem_phase_c_so_abre_para_os_observes_de_recovery_e_audit(monkeypatch, operation):
-    monkeypatch.setattr(mode_broker, "MODE_UNIT_START_OPEN", True)
+def test_origem_phase_c_so_abre_para_os_observes_de_recovery_e_audit(operation):
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         _source(operation, {"phase-c-recovery": RECOVERY, "phase-c-audit": AUDIT})
 
