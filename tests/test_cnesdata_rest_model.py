@@ -15,11 +15,11 @@ CONDITION_2 = {"jobs": 0.0, "artifacts": 0.8}
 
 GOVERNED_WORST = {"phase-b": 720, "api": 180, "static": 180, "unit": 180, "phase-c-recovery": 240, "phase-c-audit": 240, "final": 60}
 EXACT = {
-    "measured": 2350.158, "condition_2": 3447.0, "vectors": 2827,
-    "measured_components": {"keeper": 714.48, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
+    "measured": 2504.778, "condition_2": 3627.0, "vectors": 2827,
+    "measured_components": {"keeper": 869.1, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
                             "probes": 71.862, "own_job": 15.0, "non_consumers": 25.0, "plan_inputs_keeper": 35.0,
                             "plan_inputs_reader": 20.0, "residual": 20},
-    "governed_measured": (2392.758, GOVERNED_WORST, 1500), "governed_condition_2": (3567.0, GOVERNED_WORST, 1500),
+    "governed_measured": (2547.378, GOVERNED_WORST, 1500), "governed_condition_2": (3747.0, GOVERNED_WORST, 1500),
 }
 
 
@@ -42,7 +42,8 @@ def test_poll_do_keeper_no_modelo_e_o_default_de_keeper_loop():
 def test_o_modelo_conta_o_keeper_com_uma_listagem_de_jobs_por_sondagem_mais_as_leituras_dos_handlers():
     model = _model()
     stages = len(stage_wait.WINDOW_ORDER) + 1
-    expected = math.ceil(model["run_seconds"] / stage_wait.KEEPER_POLL_SECONDS) + stages * stage_wait.HANDLER_READS_PER_STAGE
+    expected = math.ceil(model["run_seconds"] / stage_wait.KEEPER_POLL_SECONDS) + stages * stage_wait.HANDLER_READS_PER_STAGE \
+        + stage_wait.P40_WAIT_READS_PER_POLL * math.ceil(stage_wait.P40_WAIT_SECONDS / stage_wait.POLL_SECONDS)
     assert model["components"]["keeper"] == expected
 
 

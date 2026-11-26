@@ -2963,6 +2963,34 @@ def _publish_plan_inputs(keeper, api, run, governance, credential_limit, clock):
     return _publish_composed_inputs(keeper, api, run, governance, (name, step, static_args, {}, (credential_limit, clock)))
 
 
+def _operational_pending(api, run, governance, guard):
+    """Reason the operational plan inputs cannot be published yet, None once the probe is done and the consumer runs."""
+    from tools.cnesdata_delivery import plan_inputs, stage_wait
+    guard.check(SAME_RUN_READ_SECONDS)
+    jobs = stage_wait._jobs_by_name(api, run)
+    guard.check()
+    probe = jobs.get(INVENTORY_PROBE)
+    if probe is None or probe["status"] != "completed":
+        return "static_inventory_timeout"
+    c.require(probe["conclusion"] == "success", "operational_inputs=static_inventory_failed")
+    consumer = jobs.get(governance["lifecycle_steps"][plan_inputs.OPERATIONAL_PLAN]["job_name"])
+    return None if consumer is not None and consumer["status"] == "in_progress" else "consumer_not_started"
+
+
+def _await_operational_inputs(keeper, api, run, governance, timing):
+    """P40: bounded keeper wait (conditional jobs listing, stage deadline minus the ceiling margin) before publishing."""
+    from tools.cnesdata_delivery import stage_wait
+    clock, sleep = timing
+    guard = KeeperGuard(keeper)
+    deadline = lc.terminal_deadline(keeper.lease.check()["lifecycle"]) - stage_wait.CEILING_MARGIN_SECONDS
+    while True:
+        pending = _operational_pending(api, run, governance, guard)
+        if pending is None:
+            return
+        c.require(clock() < deadline, f"operational_inputs={pending}")
+        sleep(stage_wait.POLL_SECONDS)
+
+
 def _publish_operational_plan_inputs(keeper, api, run, governance, settled, clock):
     """P40, once the inventory settled: the operational plan's inputs from the static plan and the relayed mode_canary."""
     from tools.cnesdata_delivery import plan_inputs
@@ -3172,6 +3200,7 @@ def stage_handlers(*, keeper, aws, api, governance, request, run, authority, pro
         (journal,) = _operation_journals(current, "inventory")
         raw = _inventory_observation(current, journal)
         publish_inventory(keeper=current, api=api, run=run, owner=owner, raw=raw, credential_limit=credential_limit, clock=clock)
+        _await_operational_inputs(current, api, run, governance, (clock, time.sleep))
         _publish_operational_plan_inputs(current, api, run, governance, (raw, credential_limit), clock)
         current.static_inputs = {name: inputs[name] for name in ("candidate", "dashboard-artifact")}
         current.static_inventory = raw

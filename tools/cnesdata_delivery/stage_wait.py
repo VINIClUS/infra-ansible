@@ -214,6 +214,8 @@ UNMODELED_RESIDUAL_READS = 20
 P40_PUBLISH_READS = 3
 P40_CALLER_ARTIFACT_READS = 1 + LIFECYCLE_ARTIFACT_READS
 P40_READER_READS = 4
+P40_WAIT_READS_PER_POLL = 1
+P40_WAIT_SECONDS = PREPARATION_ALLOWANCE_SECONDS - CEILING_MARGIN_SECONDS
 P40_PLAN_JOBS = {"application-prepare": 2, "phase-b": 1, "phase-c-recovery": 1, "phase-c-audit": 1}
 P40_KEEPER_STAGE_READS = {
     "application-prepare": 2 * P40_PUBLISH_READS + 4 * P40_CALLER_ARTIFACT_READS, "phase-b": P40_PUBLISH_READS,
@@ -260,6 +262,7 @@ def rest_model(hit_rates=None, *, windows, prepare_open=0, include_keeper=True):
 
     if include_keeper:
         add("keeper", 0, end, jobs, KEEPER_POLL_SECONDS)
+        add("keeper", 0, P40_WAIT_SECONDS, P40_WAIT_READS_PER_POLL * jobs, POLL_SECONDS)
         for stage in opens:
             point("keeper", opens[stage], HANDLER_READS_PER_STAGE)
     for stage, count in G_JOBS.items():
