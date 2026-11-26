@@ -435,15 +435,14 @@ def read_api_probe(raw):
     return value
 
 
-def derive_probes(static_probes, sessions, minted, run, now):
-    """runtime_probes: carrier fixo, chave ausente por execução e expiração das sessões.
+def derive_probes(static_probes, sessions, minted, renewer_role, now):
+    """runtime_probes: carrier fixo, destino estático e expiração das sessões.
 
     Args:
-        run: (run_id, run_attempt, role_arn do renewer, que é a sessão da sonda API).
+        renewer_role: role_arn de credentials, a identidade da sessão da sonda API.
     Raises:
         ValueError: probe fora do conjunto fechado ou sessão sem vida suficiente.
     """
-    run_id, run_attempt, renewer_role = run
     g.runtime_probe_set(static_probes)
     g.require(static_probes["API"]["role_arn"] == renewer_role, "API probe renewer role")
     g.require(set(sessions) == {"unit", "recovery"}, "probe sessions")
@@ -452,8 +451,15 @@ def derive_probes(static_probes, sessions, minted, run, now):
     g.require(g.instant(api) >= now + PROBE_MARGIN, "API probe session")
     result = {}
     for name in g.RUNTIME_IDENTITIES:
-        probe = g.closed(static_probes[name], "role_arn bucket")
-        g.require(re.fullmatch(r"[a-z0-9-]{3,63}", str(probe["bucket"])), "probe bucket")
+        probe = g.closed(static_probes[name], "role_arn bucket key")
+        key = probe["key"]
+        g.require(
+            re.fullmatch(r"[a-z0-9-]{3,63}", str(probe["bucket"]))
+            and isinstance(key, str)
+            and key.startswith("cnesdata/")
+            and ".." not in key.split("/"),
+            "probe destination",
+        )
         assumed_prefix(probe["role_arn"])
         expires_at = api if name == "API" else probe_session(
             sessions[name], probe["role_arn"], now
@@ -462,7 +468,6 @@ def derive_probes(static_probes, sessions, minted, run, now):
             **probe,
             "credential_path": f"{PROBE_DIRECTORY}/{name}.credentials",
             "expires_at": expires_at,
-            "key": f"cnesdata/host-probe/{name.lower()}/absent-{run_id}-{run_attempt}",
         }
     return result
 
@@ -547,10 +552,9 @@ def build_governance(static, inputs, run_id, run_attempt, now):
     port = archive_port(inputs.archive, manifest, original["archive_sha256"])
     seen = read_readback(inputs.readback)
     doc["host"] = derive_host(static["host"], seen, port)
-    run = (run_id, run_attempt, static["credentials"]["role_arn"])
     minted = read_api_probe(inputs.api_probe)
     doc["runtime_probes"] = derive_probes(
-        static["runtime_probes"], inputs.sessions, minted, run, now
+        static["runtime_probes"], inputs.sessions, minted, static["credentials"]["role_arn"], now
     )
     pem = signing_pem(inputs.signing)
     doc["signing_spki_pem_sha256"] = g.sha(pem)
