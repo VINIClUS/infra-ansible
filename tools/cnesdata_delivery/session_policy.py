@@ -15,6 +15,8 @@ LIFECYCLE_DELETES = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "s
                      "events:DeleteRule", "cloudwatch:DeleteAlarms"]
 
 OPS_ROLE = "application_ops"
+ACTIVATION_ROLE = "plan_activation"
+ACTIVATION_KEY_LIMIT = 273
 DELETE_ARN_MAX = 104
 
 ACTIVATION_BUCKET_READS = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
@@ -32,7 +34,7 @@ def activation_ceiling(governance):
     c.closed(ceiling["keys"], "payload signature receipt")
     from tools.cnesdata_delivery.evidence import key_valid
     keys = list(ceiling["keys"].values())
-    c.require(all(type(key) is str and key_valid(key) and len(key.encode()) <= 1024 for key in keys)
+    c.require(all(type(key) is str and key_valid(key) and len(key.encode()) <= ACTIVATION_KEY_LIMIT for key in keys)
               and len(set(keys)) == 3, "activation exact distinct keys")
     for key in keys:
         c.require(not key.startswith(_prefix(governance) + "lifecycle/")
@@ -50,10 +52,9 @@ def activation_ordinary_denies(governance, role):
     if role != "plan" or governance.get("activation_read") is None:
         return []
     ceiling = activation_ceiling(governance)
-    result = [{"Effect": "Deny", "Action": ["s3:GetObjectVersion", "s3:GetObjectRetention"], "Resource": "*"}]
-    if governance["activation_read"]["ordinary_bucket_denies"]:
-        result.append({"Effect": "Deny", "Action": governance["activation_read"]["ordinary_bucket_denies"], "Resource": ceiling["bucket_arn"]})
-    return result
+    if not governance["activation_read"]["ordinary_bucket_denies"]:
+        return []
+    return [{"Effect": "Deny", "Action": governance["activation_read"]["ordinary_bucket_denies"], "Resource": ceiling["bucket_arn"]}]
 
 
 def activation_request(governance, versions, *, deadline):
@@ -66,23 +67,17 @@ def activation_request(governance, versions, *, deadline):
     c.require(type(deadline) is str and re.fullmatch(r"20\d\d-\d\d-\d\dT\d\d:\d\d:\d\dZ", deadline), "activation original deadline")
     c.instant(deadline)
     objects = {slot: ceiling["bucket_arn"] + "/" + ceiling["keys"][slot] for slot in ACTIVATION_SLOTS}
-    statements = [
-        {"Effect": "Deny", "NotAction": ["s3:GetObjectVersion", "s3:GetObjectRetention", *ACTIVATION_BUCKET_READS,
-            "kms:Decrypt", "kms:GenerateDataKey", "sts:GetCallerIdentity"], "Resource": "*"},
-        {"Effect": "Deny", "Action": "*", "Resource": "*", "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": deadline}}},
-    ]
+    receipt_only = set(versions) == {"receipt"}
+    statements = [{"Effect": "Deny", "Action": "*", "Resource": "*", "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": deadline}}}]
     statements += [{"Effect": "Deny", "Action": "s3:GetObjectVersion", "Resource": objects[slot],
         "Condition": {"StringNotEquals": {"s3:VersionId": versions[slot]}}} for slot in ACTIVATION_SLOTS if slot in versions]
-    if set(versions) == {"receipt"}:
-        statements.append({"Effect": "Deny", "Action": ["s3:GetObjectVersion", "s3:GetObjectRetention"],
-            "Resource": [objects["payload"], objects["signature"]]})
-    statements += [
-        {"Effect": "Deny", "Action": ["s3:GetBucket*", "s3:GetEncryptionConfiguration", "kms:*"],
-            "NotResource": [ceiling["bucket_arn"], ceiling["cipher_kms_key_arn"]]},
-        {"Effect": "Deny", "Action": "kms:*", "Resource": "*", "Condition": {"StringNotEquals": {
-            "kms:EncryptionContext:aws:s3:arn": objects["receipt"] if set(versions) == {"receipt"} else list(objects.values())}}},
-    ]
-    return {"Policy": _encode(governance, "plan", statements), "PolicyArns": [{"arn": managed_arn(governance, "plan")}]}
+    if receipt_only:
+        statements += [
+            {"Effect": "Deny", "Action": ["s3:GetObjectVersion", "s3:GetObjectRetention"], "Resource": [objects["payload"], objects["signature"]]},
+            {"Effect": "Deny", "Action": "kms:*", "Resource": "*",
+             "Condition": {"StringNotEquals": {"kms:EncryptionContext:aws:s3:arn": objects["receipt"]}}},
+        ]
+    return {"Policy": _encode(governance, ACTIVATION_ROLE, statements), "PolicyArns": [{"arn": managed_arn(governance, ACTIVATION_ROLE)}]}
 
 
 def fence_session_policy(*, control_table_arn, execution_prefix, deadline):
@@ -482,8 +477,8 @@ class PhaseInputScope(str):
 
 
 def managed_arn(governance, role):
-    c.require(role in {"plan", "deploy", "application", "audit", OPS_ROLE}, "session role")
-    base = "application" if role == OPS_ROLE else role
+    c.require(role in {"plan", "deploy", "application", "audit", OPS_ROLE, ACTIVATION_ROLE}, "session role")
+    base = {OPS_ROLE: "application", ACTIVATION_ROLE: "plan"}.get(role, role)
     account = governance["account_id"]
     c.require(
         type(account) is str and re.fullmatch(r"[0-9]{12}", account), "session account"
@@ -495,7 +490,7 @@ def managed_arn(governance, role):
         ),
         "deterministic governed session role",
     )
-    kind = "-ops-session" if role == OPS_ROLE else "-session"
+    kind = {OPS_ROLE: "-ops-session", ACTIVATION_ROLE: "-activation-session"}.get(role, "-session")
     return f"arn:aws:iam::{account}:policy/{role_arn.rsplit('/', 1)[1]}{kind}"
 
 

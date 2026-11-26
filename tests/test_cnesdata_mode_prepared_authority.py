@@ -115,7 +115,7 @@ def test_autoridade_do_estagio_recusa_um_byte_trocado_em_cada_arquivo_ou_origina
     if mutation == "evaluator":
         prepared = _rewrite(prepared, "mode-evaluation.json", _evaluator)
     if mutation == "pin":
-        arguments["application"].pin["document"]["Statement"].append(
+        arguments["application"].ops_pin["document"]["Statement"].append(
             {"Effect": "Deny", "Action": "s3:GetObject", "Resource": "*"})
     if mutation == "missing-file":
         prepared = lr.PreparedFence({name: raw for name, raw in prepared.items() if name != "mode-roles.json"})

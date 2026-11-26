@@ -197,3 +197,40 @@ def test_os_nove_documentos_session_de_modo_ficam_identicos_aos_bytes_do_main():
     from tools.cnesdata_delivery import contract as c
     found = {name: c.sha(c.canonical(value)) for name, value in _documents().items() if name.startswith("session.")}
     assert found == MAIN_SESSION_DIGESTS
+
+
+OIDC_TF = TF.parent / "oidc.tf"
+
+
+def test_tf_politica_de_ativacao_so_tem_as_tres_permissoes_movidas_e_o_plan_nao_as_carrega():
+    text = TF.read_text()
+    block = text[text.index('resource "aws_iam_policy" "plan_activation_session"'):text.index('resource "aws_iam_policy" "delivery_session"')]
+    assert "Statement = local.delivery_activation_allows" in block and "count       = local.delivery_activation == null ? 0 : 1" in block
+    assert "-activation-session" in block
+    plan = text[text.index('resource "aws_iam_policy" "delivery_session"'):]
+    assert "local.delivery_activation_allows" not in plan
+    assert "for statement in local.delivery_activation_denies : statement if each.key == \"plan\"" in plan
+    oidc = OIDC_TF.read_text()
+    allows = oidc[oidc.index("delivery_activation_allows = concat("):oidc.index("delivery_roles = ")]
+    assert allows.count("Effect = \"Allow\"") == 3
+    assert '"kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = local.delivery_activation_objects' in allows
+
+
+def test_politica_de_ativacao_nova_com_pins_antigos_e_pins_novos_com_politica_ausente_falham_fechado():
+    from tools.cnesdata_delivery import session_owner
+
+    class Missing:
+        def call(self, service, operation, **parameters):
+            raise ValueError("NoSuchEntity")
+
+    authority = session_owner.Authority({"policy_arn": "plan", "frozen_until": "2099-01-01T00:00:00Z"}, 9e9, None, None, None, None,
+                                        {"policy_arn": "arn:aws:iam::111122223333:policy/cnesdata-prod-plan-activation-session",
+                                         "frozen_until": "2099-01-01T00:00:00Z"})
+    with pytest.raises(ValueError, match="NoSuchEntity"):
+        session_owner.verify_managed(Missing(), session_owner.activation_authority(authority), 1e9, clock=lambda: 0)
+
+
+def test_arn_da_politica_de_ativacao_deriva_do_role_do_plan():
+    from tools.cnesdata_delivery.session_policy import managed_arn
+    assert managed_arn(governance(), "plan_activation") == f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-prod-plan-activation-session"
+    assert managed_arn(governance(), "plan") == f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-prod-plan-session"

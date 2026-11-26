@@ -25,6 +25,26 @@ def governance(bucket, prefix):
             "roles": roles, "application_delegations": delegations}
 
 
+def activated(gov, bucket, key_length):
+    from tools.cnesdata_delivery import session_policy as sp
+    base = gov["evidence_prefix"] + "ext2/"
+    keys = {slot: base + slot[0] * (key_length - len(base)) for slot in sp.ACTIVATION_SLOTS}
+    return dict(gov, activation_read={
+        "ceiling": {"bucket_arn": "arn:aws:s3:::" + gov["evidence_bucket"], "cipher_kms_key_arn": gov["evidence_kms_key_arn"], "keys": keys},
+        "ordinary_bucket_denies": list(sp.ACTIVATION_BUCKET_READS), "plan_role_arn": gov["roles"]["plan"],
+        "identity_sha256": "b" * 64, "session_sha256": "c" * 64})
+
+
+VERSIONS = {"payload": "P" * 32, "signature": "S" * 32, "receipt": "R" * 32}
+DEADLINE = "2030-01-01T00:15:00Z"
+
+
+def activation_sizes(gov):
+    from tools.cnesdata_delivery import session_policy as sp
+    return {name: size(sp.activation_request(gov, selected, deadline=DEADLINE))
+            for name, selected in (("receipt-only", {"receipt": VERSIONS["receipt"]}), ("three-versions", VERSIONS))}
+
+
 def delete_arns(count, length):
     head = f"arn:aws:cloudwatch:us-east-2:{ACCOUNT}:alarm:cnesdata-prod-"
     return [(head + "a" * length)[: length - 1] + str(index) for index in range(count)]
@@ -48,6 +68,11 @@ def documents(point):
     for purpose in lc.APPLICATION_CONTEXTS:
         found[f"keeper {purpose}"] = lambda p=purpose: sp.application_request(gov, SOURCE, run, attempt, "keeper", application_purpose=p)
     found["closed-ready"] = lambda: sp.application_request(gov, SOURCE, run, attempt, "closed-ready", application_purpose="promotion")
+    found["plan operational with activation"] = lambda: sp.lifecycle_request(
+        activated(gov, bucket, sp.ACTIVATION_KEY_LIMIT), SOURCE, run, attempt, "plan", STEP, direction="advance")
+    for scope, selected in (("receipt-only", {"receipt": VERSIONS["receipt"]}), ("three-versions", VERSIONS)):
+        found["activation " + scope] = lambda s=selected: sp.activation_request(
+            activated(gov, bucket, sp.ACTIVATION_KEY_LIMIT), s, deadline=DEADLINE)
     for aliases in ALIASES:
         found["application " + "+".join(aliases)] = lambda a=aliases: sp.application_request(
             gov, SOURCE, run, attempt, "publish-static", application_purpose="promotion", delegations=list(a),
@@ -98,3 +123,41 @@ def test_nenhum_nome_real_do_produto_passa_de_104_caracteres():
     longest = f"arn:aws:cloudwatch:us-east-2:{ACCOUNT}:alarm:cnesdata-prod-scheduler-recovery-repeated-failure"
     from tools.cnesdata_delivery import session_policy as sp
     assert len(longest) == 97 <= sp.DELETE_ARN_MAX == 104
+
+
+def test_limite_de_chave_de_ativacao_e_justo_no_ponto_p1(monkeypatch):
+    from tools.cnesdata_delivery import session_policy as sp
+    gov = governance(63, 32)
+    limit = sp.ACTIVATION_KEY_LIMIT
+    assert limit == 273
+    assert max(activation_sizes(activated(gov, 63, limit)).values()) <= LIMIT
+    monkeypatch.setattr(sp, "ACTIVATION_KEY_LIMIT", limit + 1)
+    assert max(activation_sizes(activated(gov, 63, limit + 1)).values()) > LIMIT
+
+
+def test_chave_de_ativacao_acima_do_limite_e_recusada():
+    from tools.cnesdata_delivery import session_policy as sp
+    gov = governance(63, 32)
+    sp.activation_request(activated(gov, 63, sp.ACTIVATION_KEY_LIMIT), VERSIONS, deadline=DEADLINE)
+    with pytest.raises(ValueError, match="activation exact distinct keys"):
+        sp.activation_request(activated(gov, 63, sp.ACTIVATION_KEY_LIMIT + 1), VERSIONS, deadline=DEADLINE)
+
+
+def test_versao_longa_demais_para_o_limite_total_e_recusada_antes_do_sts():
+    from tools.cnesdata_delivery import session_policy as sp
+    gov = activated(governance(63, 32), 63, sp.ACTIVATION_KEY_LIMIT)
+    with pytest.raises(ValueError, match="exceeds 2048"):
+        sp.activation_request(gov, VERSIONS | {"receipt": "R" * 1024}, deadline=DEADLINE)
+
+
+def test_limite_de_2048_conta_o_arn_exato_anexado_a_sessao_de_ativacao():
+    from tools.cnesdata_delivery import session_policy as sp
+    gov = activated(governance(63, 32), 63, sp.ACTIVATION_KEY_LIMIT)
+
+    def total(length):
+        try:
+            return size(sp.activation_request(gov, VERSIONS | {"receipt": "R" * length}, deadline=DEADLINE))
+        except ValueError:
+            return None
+    fits = max(length for length in range(1, 1025) if total(length) is not None)
+    assert total(fits) == 2048 and total(fits + 1) is None

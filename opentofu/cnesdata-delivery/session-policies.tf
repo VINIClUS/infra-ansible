@@ -49,6 +49,16 @@ resource "aws_iam_policy" "application_ops_session" {
   })
 }
 
+resource "aws_iam_policy" "plan_activation_session" {
+  count       = local.delivery_activation == null ? 0 : 1
+  name        = "${var.github_delivery.plan_role_name}-activation-session"
+  description = "Activation read session restriction only; never attach as identity or permissions boundary."
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.delivery_activation_allows
+  })
+}
+
 resource "aws_iam_policy" "delivery_session" {
   for_each    = local.delivery_roles
   name        = "${each.value.name}-session"
@@ -74,7 +84,7 @@ resource "aws_iam_policy" "delivery_session" {
       { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
       ] : [], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
       { Effect = "Allow", Action = ["s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration"], Resource = var.github_delivery.read_resource_arns }
-    ], [for statement in concat(local.delivery_activation_allows, local.delivery_activation_denies) : statement if each.key == "plan"])
+    ], [for statement in local.delivery_activation_denies : statement if each.key == "plan"], local.delivery_activation_policy_reads[each.key])
   })
   lifecycle {
     precondition {

@@ -1330,13 +1330,14 @@ def revalidate_activation(governance, activation, decoded):
 ACTIVATION_POLICY_LIMIT = 2048
 
 
-def activation_session_factory(governance, run):
+def activation_session_factory(governance, run, authority):
     """Production read sessions: one OIDC exchange per activation_request scope, size-checked first."""
-    from tools.cnesdata_delivery import session_policy, signing_gate
+    from tools.cnesdata_delivery import session_owner, session_policy, signing_gate
     def open_session(versions, deadline):
         restriction = session_policy.activation_request(governance, versions, deadline=deadline)
         c.require(len(restriction["Policy"].encode()) <= ACTIVATION_POLICY_LIMIT, "activation session policy size")
         credentials = oidc_credentials(governance, "plan", restriction, run)
+        session_owner.verify_managed(AWS(governance), session_owner.activation_authority(authority), credentials["Expiration"].timestamp())
         return signing_gate._sdk_clients(credentials)["s3"]
     return open_session
 
@@ -1502,7 +1503,7 @@ def execute(role):
         published_inputs = payload["inputs.json"]
         if role == "plan" and step["purpose"] == "application-prepare" and step["mode"] == "operational":
             published_inputs = plan_activation_carrier(governance=governance, step=step, owner=owner, window=guard.window,
-                terraform_raw=terraform_raw, github=api, session_factory=activation_session_factory(governance, run), now=time.time())
+                terraform_raw=terraform_raw, github=api, session_factory=activation_session_factory(governance, run, authority), now=time.time())
             guard.check()
         if role == "plan":
             guard.run([tofu, "plan", "-input=false", "-lock-timeout=20s", "-var-file=" + str(temp / "inputs.json"), "-out=" + str(temp / "plan.bin")],

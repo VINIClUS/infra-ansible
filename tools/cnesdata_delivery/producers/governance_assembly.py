@@ -9,7 +9,7 @@ from tools.cnesdata_delivery.producers.chain import expiry_chain
 
 CLI_CEILING = 43856
 SECRET_CEILING = 47952
-SESSION_ROLES = ("plan", "deploy", "audit", "application", "application_ops")
+SESSION_ROLES = ("plan", "deploy", "audit", "application", "application_ops", "plan_activation")
 PLAN_CYCLE_ROLES = ("deploy", "audit")
 GOVERNANCE_KEYS = frozenset("""
     account_id activation_enabled activation_read activation_receipts admission_reference application_configuration

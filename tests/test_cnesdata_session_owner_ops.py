@@ -97,3 +97,70 @@ def test_autenticacao_recusa_pin_ops_de_outro_produtor_provado_que_o_da_applicat
     assert session_owner._pin(gov, "application_ops")["owner_producer"] == other
     with pytest.raises(ValueError, match="ops session policy commitment"):
         session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
+
+
+def _owned_plan(monkeypatch, *, activation_read=True, fact=True, pin=True, changes=None):
+    import copy
+    from tools.cnesdata_delivery import session_owner
+    from tools.cnesdata_delivery.session_policy import managed_arn
+    from test_cnesdata_session_owner import original_owner
+    gov, descriptor, proof, files, api, now = original_owner("plan", "application-prepare")
+    plan_pin = gov["session_policy_pins"]["plan"]
+    activation = copy.deepcopy(plan_pin) | {"policy_arn": managed_arn(gov, "plan_activation")} | (changes or {})
+    if pin:
+        gov["session_policy_pins"]["plan_activation"] = activation
+    if activation_read:
+        gov["activation_read"] = {"ceiling": {}}
+    key = c.report_key(gov)
+    measured = {"managed_session_policy": session_owner._facts(plan_pin, key)}
+    if fact:
+        measured["activation_session_policy"] = session_owner._facts(activation, key)
+    name = "policy-evaluation.json"
+    files[name] = c.canonical({"check_id": "policy-evaluation", "source_sha": descriptor["source_sha"], "measurement": measured})
+    next(x for x in proof["reports"] if x["check_id"] == "policy-evaluation").update(size=len(files[name]), sha256=c.sha(files[name]))
+    digest = c.sha(c.canonical(measured))
+    next(x for x in proof["checks"] if x["check_id"] == "policy-evaluation").update(expected_sha256=digest, observed_sha256=digest)
+    api.freeze_owner(gov, proof, files)
+    gov["session_owner_references"] = {"plan": api.owner_reference}
+    return session_owner, gov, api, descriptor, now, plan_pin, activation
+
+
+def test_autenticacao_do_plan_com_ativacao_carrega_o_pin_de_ativacao_comprometido_na_prova(monkeypatch):
+    session_owner, gov, api, descriptor, now, plan_pin, activation = _owned_plan(monkeypatch)
+    authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "plan", "application-prepare", now)
+    assert authority.pin == plan_pin and authority.activation_pin == activation and authority.ops_pin is None
+    assert session_owner.activation_authority(authority).pin == activation
+
+
+def test_autenticacao_do_plan_sem_ativacao_nao_exige_o_pin_de_ativacao(monkeypatch):
+    session_owner, gov, api, descriptor, now, plan_pin, _ = _owned_plan(monkeypatch, activation_read=False, fact=False, pin=False)
+    authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "plan", "application-prepare", now)
+    assert authority.activation_pin is None
+    with pytest.raises(ValueError, match="activation session pin absent"):
+        session_owner.activation_authority(authority)
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"fact": False}, "plan_activation session policy commitment"),
+    ({"pin": False}, "original owner session pin absent"),
+    ({"changes": {"observed_at": "2026-01-01T00:00:00Z"}}, "plan_activation session policy commitment"),
+    ({"changes": {"frozen_until": "2026-01-01T00:00:00Z"}}, "plan_activation session policy commitment")])
+def test_autenticacao_do_plan_com_ativacao_recusa_prova_ou_pin_ausente_ou_com_janela_diferente(monkeypatch, kwargs, message):
+    session_owner, gov, api, descriptor, now, _, _ = _owned_plan(monkeypatch, **kwargs)
+    with pytest.raises(ValueError, match=message):
+        session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "plan", "application-prepare", now)
+
+
+def test_pin_de_ativacao_recusa_arn_do_plan_role_alheio_e_campo_extra():
+    from tools.cnesdata_delivery import session_owner
+    base = governance()
+    pin = base["session_policy_pins"].pop("application_ops")
+    plan = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-plan"
+    good = pin | {"role_arn": plan, "policy_arn": f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-prod-plan-activation-session"}
+    base["roles"]["plan"] = plan
+    base["session_policy_pins"]["plan_activation"] = good
+    assert session_owner._pin(base, "plan_activation")["policy_arn"].endswith("plan-activation-session")
+    for changes in ({"policy_arn": good["policy_arn"].replace("activation-", "")}, {"role_arn": APPLICATION}, {"extra_field": "x"}):
+        base["session_policy_pins"]["plan_activation"] = good | changes
+        with pytest.raises(ValueError):
+            session_owner._pin(base, "plan_activation")

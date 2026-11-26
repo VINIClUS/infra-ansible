@@ -505,7 +505,7 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
     carriers, var_files = [], []
     if plan_operational:
         # Item 9 wiring only: plan_activation_carrier itself is proven against the published EXT2 fixture.
-        monkeypatch.setattr(lr, "activation_session_factory", lambda governance, run: ("session-factory", run["id"]))
+        monkeypatch.setattr(lr, "activation_session_factory", lambda governance, run, authority: ("session-factory", run["id"]))
         monkeypatch.setattr(lr, "plan_activation_carrier", lambda **kwargs: carriers.append(kwargs) or b"carrier-v2")
         monkeypatch.setattr(lr, "publish", lambda *args: published.append(args))
     class ApplyBoundary(Exception):
@@ -1229,19 +1229,29 @@ def test_activation_session_policy_size_is_measured_before_each_sts_call(monkeyp
     calls = []
     monkeypatch.setattr(lr, "oidc_credentials", lambda governance, role, restriction, run: calls.append(restriction) or {"fixture": True})
     monkeypatch.setattr(signing_gate, "_sdk_clients", lambda credentials: {"s3": ("s3", credentials)})
-    factory = lr.activation_session_factory(governance, {"id": 41, "run_attempt": 1})
+    from datetime import datetime, timezone
+    from tools.cnesdata_delivery import session_owner
+    verified = []
+    monkeypatch.setattr(lr, "oidc_credentials", lambda governance, role, restriction, run: calls.append(restriction) or {"fixture": True, "Expiration": datetime.fromtimestamp(2e9, timezone.utc)})
+    monkeypatch.setattr(lr, "AWS", lambda governance, **kwargs: ("aws", kwargs))
+    monkeypatch.setattr(session_owner, "verify_managed", lambda aws, authority, expires: verified.append((aws, authority.pin, expires)))
+    activation = session_owner.Authority({"policy_arn": "plan"}, 9e9, None, None, None, None, {"policy_arn": "activation"})
+    factory = lr.activation_session_factory(governance, {"id": 41, "run_attempt": 1}, activation)
     deadline = "2027-01-01T00:05:00Z"
+    def versions(length):
+        return {slot: "v" * length for slot in ("payload", "signature", "receipt")}
     def total(length):
         try:
-            statements_policy = session_policy.activation_request(governance, {"receipt": "v" * length}, deadline=deadline)
+            statements_policy = session_policy.activation_request(governance, versions(length), deadline=deadline)
         except ValueError:
             return None
         return len(statements_policy["Policy"]) + sum(len(item["arn"]) for item in statements_policy["PolicyArns"])
     fits = max(length for length in range(1, 1025) if total(length) is not None)
-    assert total(fits) == 2048
-    assert factory({"receipt": "v" * fits}, deadline) == ("s3", {"fixture": True}) and len(calls) == 1
+    assert fits < 1024 and 2048 - 3 < total(fits) <= 2048
+    assert factory(versions(fits), deadline)[0] == "s3" and len(calls) == 1
+    assert verified == [(("aws", {}), {"policy_arn": "activation"}, 2e9)]
     with pytest.raises(ValueError, match="exceeds 2048 characters"):
-        factory({"receipt": "v" * (fits + 1)}, deadline)
+        factory(versions(fits + 1), deadline)
     assert len(calls) == 1
 
 

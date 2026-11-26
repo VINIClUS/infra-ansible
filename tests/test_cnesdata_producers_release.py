@@ -472,7 +472,7 @@ def test_render_do_cli_recusa_o_manifesto_inline_pelo_cruzamento(tmp_path, capsy
 
 
 def test_sessoes_da_cadeia_de_expiracao_incluem_o_audit_com_o_inicio_do_plan():
-    assert governance_assembly.SESSION_ROLES == ("plan", "deploy", "audit", "application", "application_ops")
+    assert governance_assembly.SESSION_ROLES == ("plan", "deploy", "audit", "application", "application_ops", "plan_activation")
     pins = {"plan": pin_at(), "deploy": pin_at(), "audit": pin_at()}
     governance_assembly.crosscheck(document_with(session_policy_pins=pins), COMMITMENTS)
 
