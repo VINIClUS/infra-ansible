@@ -438,12 +438,12 @@ def test_descriptor_e_canonico_fechado_e_o_sha_vai_junto():
 @pytest.mark.parametrize("change", ["step", "payload-extra", "purpose", "binding"])
 def test_descriptor_recusa_campo_fora_da_forma_que_o_consumidor_admite(change):
     kwargs = {"source_sha": "b" * 40, "step": "operational-deploy", "purpose": "promotion",
-              "payloads": {"plan": {"artifact_id": 1, "artifact_digest": "sha256:" + "1" * 64, "job_id": 2}}}
+              "payloads": {"plan": {"step": "prepared"}}}
     binding = "c" * 64
     if change == "step":
         kwargs["step"] = "Operational"
     if change == "payload-extra":
-        kwargs["payloads"]["plan"]["name"] = "x"
+        kwargs["payloads"]["plan"]["artifact_id"] = 1
     if change == "purpose":
         kwargs["purpose"] = "other"
     if change == "binding":

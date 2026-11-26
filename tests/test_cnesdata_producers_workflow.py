@@ -96,6 +96,9 @@ def closure(entry):
                 if name.startswith("tools.cnesdata_delivery.") and (TOOLS / relative).is_file() and relative not in seen:
                     seen.add(relative)
                     pending.append(relative)
+    if "mode_broker.py" in seen:
+        from tools.cnesdata_delivery import mode_broker
+        seen |= {name for _, name, _ in mode_broker.PRODUCT_FRAMES}
     return seen
 
 

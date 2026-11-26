@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_roles import role_readbacks
@@ -337,6 +339,10 @@ class _GitHub:
     def read(self, path, **_):
         self.reads.append(path)
         return self.responses[path]
+
+    def read_conditional(self, path, **_):
+        self.conditional = [*getattr(self, "conditional", []), path]
+        return self.read(path)
 
 
 class _Guard:
@@ -776,9 +782,11 @@ def _stage_world(monkeypatch, *, plan_step=PLAN_STEP, origins=None, approval=Non
     world.b_moments = {"artifact_created_at": c.utc(1115), "job_completed_at": c.utc(1125)}
     _api_stage_fakes(monkeypatch, world, ready, probe)
     world.operation_session = lambda operation, role, stage: pytest.fail("the capability fake never mints the operation session")
+    world.phase_c_runtime = object()
     world.handlers = ag.stage_handlers(keeper=keeper, aws=world.aws, api=api, governance=governance, request=request, run=dict(RUN),
                                        authority=world.authority, product="product", credential_limit=credential_limit,
-                                       operation_session=world.operation_session, clock=clock)
+                                       operation_session=world.operation_session, clock=clock,
+                                       phase_c_runtime=world.phase_c_runtime)
     return world
 
 
@@ -1256,7 +1264,8 @@ def test_host_handler_admite_a_janela_static_com_o_handoff_aceito_do_closed_read
 
 _HOST_REFUSALS = {
     "rolled-back": ({"handoff": {"status": "rolled_back"}}, "host handoff accepted for the keeper closed-ready"),
-    "recovery": ({"handoff": {"status": "recovery_required"}}, "host handoff accepted for the keeper closed-ready"),
+    "recovery": ({"handoff": {"status": "recovery_required"}},
+                 "host recovery_required handoff with the decision of the keeper closed-ready"),
     "other-ready": ({"handoff": {"closed_ready_sha256": "0" * 64}}, "host handoff accepted for the keeper closed-ready"),
     "kind": ({"handoff": {"kind": "closed-ready"}}, "terminal source kind=host-handoff"),
     "extra": ({"handoff": {"extra": 1}}, "closed object fields"),
@@ -1326,12 +1335,14 @@ def test_close_expirations_kinds_stay_inside_the_product_close_drain_contract_af
     assert lc.CLOSE_EXPIRATION_KINDS - {"envelope"} == PRODUCT_EXPIRATION_KINDS
 
 
-def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish_static_despachados(monkeypatch):
-    """R18 and R15 after P15: the reachable end is the unit stage; prepared -> B -> API (closed-ready) -> host -> static
-    (publish-static, internal) -> unit."""
+def test_keeper_para_no_estagio_unit_com_o_lease_retido_quando_o_modo_unit_recusa_o_primeiro_original_nao_autenticado(monkeypatch):
+    """R18 and R15 after P15 and P16b ruling 4 item 6: prepared -> B -> API (closed-ready) -> host -> static (publish-static,
+    internal) -> unit, whose mode run (internal) refuses at the first original it cannot authenticate (the fixture
+    manifest, with no product checkout in this world); the lease stays held at unit."""
+    from test_cnesdata_application_gate import _ReraisingTerminal
     from test_cnesdata_static_stage import _install_static, _static_carrier
     from tools.cnesdata_delivery import application_gate as ag, lifecycle_contract as lc
-    world = _install_static(monkeypatch, _stage_world(monkeypatch, carrier=_static_carrier()))
+    world = _install_static(monkeypatch, _stage_world(monkeypatch, carrier=_static_carrier()), {"unit": "real"})
     for name in ("publish_terminal", "published_terminal"):
         monkeypatch.setattr(ag, name, lambda *a, _name=name, **kw: pytest.fail(_name + " reached before the unit stage ends the slice"))
     world.keeper.finish = lambda reference: pytest.fail("finish reached before the unit stage ends the slice")
@@ -1343,9 +1354,10 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
     triggers = {"application-prepare": {"kind": "prepared", "reference": dict(PREPARED_REFERENCE)},
                 "phase-b": {"kind": "phase-b", "reference": dict(B_REFERENCE)},
                 "api": {"kind": "host", "reference": dict(HOST_REFERENCE)}}
-    with pytest.raises(ValueError, match="^stage trigger not connected stage=unit$"):
+    with pytest.raises(ValueError, match="^mode fixture original$"):
         ag.keeper_loop(world.keeper, next_event=lambda window: triggers.get(window["stage"]) or real(window),
-                       handlers=world.handlers, sleep=lambda seconds: None)
+                       handlers=world.handlers | {"host-recovery": lambda *a: pytest.fail("host-recovery reached")},
+                       terminal=_ReraisingTerminal(), sleep=lambda seconds: None)
     record = world.store.get()[0]
     assert record["status"] == "held" and set(statuses) == {"held"} and record["lifecycle"]["stage"] == "unit"
     assert [item["journal"]._request["operation"] for item in world.invoke] == ["close-drain", "closed-ready", "publish-static"]
@@ -1363,3 +1375,56 @@ def test_keeper_para_no_estagio_unit_com_o_lease_retido_e_closed_ready_e_publish
     static = window | {"sequence": 3, "stage": "static", "admitted_at": 1130, "deadline": 1310}
     lc.validate_adapter_request(c.canonical(published._request), operation="publish-static", owner=world.owner, window=static,
                                 inputs=published._inputs, activation_sha256=c.sha(world.activation))
+
+
+def test_prepared_handler_anuncia_a_janela_do_phase_b_depois_do_checkpoint_do_lease(monkeypatch, stage_open_published):
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    (args,) = stage_open_published
+    assert args[0] is world.keeper and args[1] is world.api and args[3] is world.governance
+    assert world.keeper.lease.check()["lifecycle"]["stage"] == "phase-b"
+
+
+def test_anuncio_do_phase_b_so_roda_com_a_janela_ja_checkpointada(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ag, "_publish_stage_open", lambda keeper, *rest: seen.append(keeper.lease.check()["lifecycle"]["stage"]))
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert seen == ["phase-b"]
+
+
+def test_prepared_handler_nao_avanca_alem_do_checkpoint_se_o_anuncio_recusa(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import application_gate as ag
+    world = _stage_world(monkeypatch)
+    def refuse(*args):
+        raise ValueError("stage-open first job in progress before publication")
+    monkeypatch.setattr(ag, "_publish_stage_open", refuse)
+    with pytest.raises(ValueError, match="first job in progress"):
+        world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    assert world.store.get()[0]["status"] == "held"
+
+
+def test_anuncio_real_publica_o_marcador_da_janela_aberta_com_o_primeiro_job_governado(monkeypatch, stage_open_published):
+    from tools.cnesdata_delivery import stage_wait
+    world = _stage_world(monkeypatch)
+    world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
+    seen = {}
+    monkeypatch.setattr(stage_wait, "publish_stage_open", lambda **kwargs: seen.update(kwargs))
+    stage_open_published.original(world.keeper, world.api, RUN, world.governance, 6000, world.clock)
+    assert seen["window"]["stage"] == "phase-b" and seen["first_job"] == "phase-b-plan / execute"
+    assert seen["owner"]["generation"] == world.owner["generation"] and seen["credential_limit"] == 6000
+
+
+def test_stage_event_source_le_a_lista_de_jobs_com_get_condicional():
+    _, job_name, step = _TRIGGERS["phase-b"]
+    api = _GitHub(job_name, step)
+    _source(api)(_window("phase-b"))
+    assert api.conditional == [JOBS, ARTIFACTS][:len(api.conditional)] and api.conditional[0] == JOBS
+
+
+def test_estagio_aberto_nao_usa_get_condicional_fora_do_poll_do_keeper():
+    from tools.cnesdata_delivery import application_gate as ag
+    api = _GitHub("phase-b / execute", "phase-b-advance")
+    ag._same_run_job(api, dict(RUN), kind="x", job_name="phase-b / execute", guard=_Guard())
+    assert not hasattr(api, "conditional")

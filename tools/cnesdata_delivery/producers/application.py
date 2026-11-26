@@ -115,12 +115,8 @@ def caller_binding(governance, run):
 
 
 def _payload(reference):
-    c.closed(reference, "artifact_id artifact_digest job_id")
-    c.integer(reference["artifact_id"])
-    c.integer(reference["job_id"])
-    digest = reference["artifact_digest"]
-    c.require(type(digest) is str and digest == "sha256:" + c.digest(digest.removeprefix("sha256:")),
-              "payload artifact digest")
+    c.closed(reference, "step")
+    c.require(type(reference["step"]) is str and STEP_NAME.fullmatch(reference["step"]) is not None, "payload producer step")
 
 
 def descriptor(binding_sha256, *, source_sha, step, payloads, purpose):

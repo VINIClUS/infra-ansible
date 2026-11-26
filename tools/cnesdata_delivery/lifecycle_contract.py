@@ -5,6 +5,7 @@ No credentials, network, caller commands or lifecycle side effects in this modul
 """
 import base64
 import hashlib
+import json
 import time
 import re
 
@@ -196,6 +197,7 @@ MODE_SESSION_OPERATIONS = {
     "drill-hang-second": ("h2", "mode_dispatch", "readiness", "readiness"),
     "drill-observe": ("do", "mode_observe", "readiness", "readiness"),
 }
+MODE_SESSION_PARTS = {"uw": "ux"}
 CALLER_BINDING_FIELDS = ("application_purpose context_kind repository workflow_path ref environment source_sha "
                          "run_id run_attempt producer_workflow_sha producer_source_closure_sha256")
 ADAPTER_INPUTS = {
@@ -215,6 +217,9 @@ ADAPTER_INPUTS = {
     "unit-observe": "activation close-drain record mode-result readbacks observed",
     "recovery-observe": "activation network close-drain phase-b phase-c mode-result readbacks",
     "audit-observe": "activation network close-drain phase-b phase-c mode-result readbacks recovery-result recovery-readbacks",
+    "unit-record": "activation close-drain fixture-manifest mode-input",
+    "recovery-record": "activation close-drain fixture-manifest mode-input",
+    "audit-record": "activation close-drain fixture-manifest mode-input mode-seed",
 }
 # Amendment 6886977054 decision 5 put retire-static in final; 6963763481 decision 1 (R16) admits it in no
 # stage in this slice, because the final budget does not fit it. The remedy belongs to the post-API amendment.
@@ -222,9 +227,9 @@ ADAPTER_STAGES = {
     "inventory": {"application-prepare"}, "close-drain": {"application-prepare"}, "closed-ready": {"api"},
     "publish-static": {"static"}, "rollback-api-static": {"recovery"}, "reopen": {"final", "recovery"},
     "terminal-readback": {"application-prepare", "final", "recovery"}, "retire-static": set(),
-    **{name: {"unit"} for name in ("unit-seed", "unit-start", "unit-observe")},
-    **{name: {"phase-c-recovery"} for name in ("recovery-seed", "recovery-start", "recovery-observe")},
-    **{name: {"phase-c-audit"} for name in ("audit-start", "audit-observe")},
+    **{name: {"unit"} for name in ("unit-record", "unit-seed", "unit-start", "unit-observe")},
+    **{name: {"phase-c-recovery"} for name in ("recovery-record", "recovery-seed", "recovery-start", "recovery-observe")},
+    **{name: {"phase-c-audit"} for name in ("audit-record", "audit-start", "audit-observe")},
 }
 ADAPTER_OBSERVATIONS = {
     "inventory": "inventory", "close-drain": "close-drain", "closed-ready": "closed-ready",
@@ -233,7 +238,53 @@ ADAPTER_OBSERVATIONS = {
     **{name: "mode-seed" for name in ("unit-seed", "recovery-seed")},
     **{name: "mode-result" for name in ("unit-start", "recovery-start", "audit-start")},
     **{name: "mode" for name in ("unit-observe", "recovery-observe", "audit-observe")},
+    **{name: "mode-record" for name in ("unit-record", "recovery-record", "audit-record")},
 }
+ADAPTER_STEPS = {
+    "unit-start": frozenset({"unit-execution", "unit-task", "unit-output"}),
+    "recovery-start": frozenset({"recovery-task"}), "audit-start": frozenset({"audit-task"}),
+}
+MODE_SINGLE_STEPS = frozenset({"unit-execution", "recovery-task", "audit-task"})
+MODE_TASK_STEPS = frozenset({"recovery-task", "audit-task"})
+MODE_READBACK_OPERATIONS = {"unit": "unit-readbacks", "recovery": "recovery-readbacks", "audit": "audit-readbacks"}
+_MODE_SEED_CALLS = frozenset(("mode_seed", service, name) for service, name in (
+    ("dynamodb", "put_item"), ("dynamodb", "get_item"), ("s3", "put_object"), ("s3", "get_object")))
+MODE_EFFECT_CALLS = {
+    "unit-seed": _MODE_SEED_CALLS, "recovery-seed": _MODE_SEED_CALLS, "unit-start": frozenset(),
+    "recovery-start": frozenset({("mode_dispatch", "ecs", "run_task"), ("mode_dispatch", "ecs", "describe_tasks")}),
+    "audit-start": frozenset({("mode_audit_launch", "ecs", "run_task"), ("mode_audit_launch", "ecs", "describe_tasks")}),
+}
+MODE_EFFECT_METHODS = {
+    "unit-seed": frozenset(), "recovery-seed": frozenset(), "unit-start": frozenset({"dispatch_unit", "mode_readbacks"}),
+    "recovery-start": frozenset({"ledger_admit_effect", "ledger_mark_unknown", "ledger_settle", "mode_readbacks"}),
+    "audit-start": frozenset({"mode_readbacks"}),
+}
+MODE_DEFINITE_ERRORS = {("dynamodb", "put_item"): ("ConditionalCheckFailedException", 400),
+                        ("s3", "put_object"): ("PreconditionFailed", 412)}
+MODE_UNIT_EXECUTION_FIELDS = ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate")
+MODE_RESPONSE_FIELDS = {("dynamodb", "put_item"): set(), ("dynamodb", "get_item"): {"Item"}, ("s3", "put_object"): set(),
+                        ("dynamodb", "update_item"): set(), ("stepfunctions", "start_execution"): {"executionArn", "startDate"},
+                        ("stepfunctions", "describe_execution"): set(MODE_UNIT_EXECUTION_FIELDS),
+                        ("s3", "get_object"): {"Body"}, ("ecs", "run_task"): {"tasks", "failures"},
+                        ("ecs", "describe_tasks"): {"tasks", "failures"}, ("dynamodb", "transact_write_items"): set(),
+                        ("stepfunctions", "describe_state_machine"): {"stateMachineArn", "definition"},
+                        ("scheduler", "get_schedule"): {"Target"}, ("ecs", "describe_task_definition"): {"taskDefinition"},
+                        ("cloudwatch", "describe_alarms"): {"AlarmName", "Dimensions", "EvaluationPeriods",
+                                                            "DatapointsToAlarm", "ActionsEnabled", "AlarmActions"}}
+_MODE_UNIT_READS = (("stepfunctions", "describe_state_machine"), ("ecs", "describe_task_definition"))
+MODE_READBACK_FRAME_CALLS = {
+    "unit-start": frozenset(("mode_observe", *call) for call in _MODE_UNIT_READS),
+    **{operation: frozenset(("mode_observe", *call) for call in (*_MODE_UNIT_READS, ("scheduler", "get_schedule"),
+                                                                 ("cloudwatch", "describe_alarms")))
+       for operation in ("recovery-start", "audit-start")}}
+MODE_LEDGER_FRAMES = {"ledger-admit": "ledger_admit_effect", "ledger-unknown": "ledger_mark_unknown",
+                      "ledger-settle": "ledger_settle"}
+MODE_FRAME_CALLS = {"recovery-start": frozenset(("mode_dispatch", "dynamodb", name)
+                                                for name in ("get_item", "put_item", "transact_write_items")),
+                    "unit-start": frozenset(("mode_dispatch", "dynamodb", name) for name in ("get_item", "transact_write_items"))}
+MODE_UNIT_CALLS = {"unit-start": frozenset(("mode_dispatch", *call) for call in (
+    ("dynamodb", "get_item"), ("dynamodb", "transact_write_items"), ("dynamodb", "update_item"),
+    ("stepfunctions", "start_execution"), ("stepfunctions", "describe_execution")))}
 STATIC_BINDING_FIELDS = "release_id run_id run_attempt generation product_source_sha shared_source_sha static_plan_sha256"
 # #498 static-promotion.tf locals.static_operations by ABI operation. Queue item 3e admits the observer
 # (inventory session) in the static stage; decision 5 gives retire-static its own normal session.
@@ -471,8 +522,10 @@ FENCE_PREPARE_STEPS = (
     "Bridge masked artifact runtime from Node action handler", "Repeat source gate then request exact OIDC role",
     FENCE_PREPARE_PRODUCER["step_name"],
 )
+FENCE_MODE_FILES = frozenset({"mode-input.json", "mode-roles.json", "mode-evaluation.json"})
 FENCE_PREPARE_FILES = frozenset({"checkpoint.json", "approval.json", "fence-prepared.json", "fence-role.json",
-                               "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json"})
+                               "fence-readbacks.json", "fence-origins.json", "fence-chain.json", "fence-evaluation.json",
+                               *FENCE_MODE_FILES})
 FENCE_ORIGIN_FIELDS = "repository source_sha run_id run_attempt job_id artifact_id artifact_digest producer_name step name sha256 size"
 FENCE_PHASE_A_FILES = frozenset({"envelope.json", "checkpoint.json", "drift.json"})
 FENCE_HISTORY_GAPS = frozenset({"plan.json", "inputs.tfvars.json"})
@@ -482,6 +535,58 @@ FENCE_EVALUATION_CASES = {
     "probe-own": "states:DescribeExecution", "probe-foreign": "states:DescribeExecution", "write-own-evidence": "s3:PutObject",
     "put-lease": "s3:PutObject", "freeze-expired": "dynamodb:GetItem",
 }
+_MODE_CASE_ACTIONS = {
+    "us": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
+           "put-foreign-tenant": "dynamodb:PutItem", "put-other-mode-run": "dynamodb:PutItem", "get-fence": "dynamodb:GetItem",
+           "put-output": "s3:PutObject"},
+    "ux": {"put-ticket": "dynamodb:PutItem", "put-binding": "dynamodb:PutItem", "start-execution": "states:StartExecution",
+           "update-control": "dynamodb:UpdateItem", "run-task": "ecs:RunTask", "stop-execution": "states:StopExecution",
+           "put-recovery-run": "dynamodb:PutItem", "check-fence": "dynamodb:ConditionCheckItem",
+           "update-semaphore": "dynamodb:UpdateItem", "consume-attempt": "dynamodb:UpdateItem",
+           "check-unit-run": "dynamodb:ConditionCheckItem", "check-semaphore": "dynamodb:ConditionCheckItem",
+           "query-unit-run": "dynamodb:Query", "update-unit-run": "dynamodb:UpdateItem",
+           "describe-own-execution": "states:DescribeExecution"},
+    "uw": {"describe-own-execution": "states:DescribeExecution", "describe-own-task": "ecs:DescribeTasks",
+           "describe-foreign-cluster-task": "ecs:DescribeTasks", "start-execution": "states:StartExecution",
+           "describe-other-machine-execution": "states:DescribeExecution"},
+    "uo": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-output": "s3:GetObject"},
+    "rs": {"put-tenant": "dynamodb:PutItem", "put-own-run": "dynamodb:PutItem", "put-raw": "s3:PutObject",
+           "put-foreign-tenant": "dynamodb:PutItem", "put-other-mode-run": "dynamodb:PutItem", "get-fence": "dynamodb:GetItem",
+           "put-output": "s3:PutObject"},
+    "rx": {"run-recovery": "ecs:RunTask", "pass-recovery-role": "iam:PassRole", "put-ticket": "dynamodb:PutItem",
+           "run-audit-revision": "ecs:RunTask", "run-other-cluster": "ecs:RunTask", "pass-unit-role": "iam:PassRole",
+           "put-run-partition": "dynamodb:PutItem", "start-execution": "states:StartExecution"},
+    "ro": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-own-schedule": "scheduler:GetSchedule",
+           "describe-own-alarm": "cloudwatch:DescribeAlarms", "get-audit-schedule": "scheduler:GetSchedule",
+           "get-output": "s3:GetObject"},
+    "ax": {"run-audit": "ecs:RunTask", "pass-audit-role": "iam:PassRole", "run-recovery-revision": "ecs:RunTask",
+           "pass-other-role": "iam:PassRole", "get-tenant": "dynamodb:GetItem"},
+    "ao": {"describe-machine": "states:DescribeStateMachine", "describe-task-definition": "ecs:DescribeTaskDefinition",
+           "get-tenant": "dynamodb:GetItem", "get-audit-object": "s3:GetObject", "get-own-schedule": "scheduler:GetSchedule",
+           "describe-own-alarm": "cloudwatch:DescribeAlarms", "get-recovery-schedule": "scheduler:GetSchedule",
+           "get-output": "s3:GetObject"},
+}
+
+
+def _mode_evaluation_cases():
+    cases = {}
+    for code, actions in _MODE_CASE_ACTIONS.items():
+        cases |= {f"assume-{code}": (code, "sts:AssumeRole"), f"assume-{code}-other-session": (code, "sts:AssumeRole")}
+        cases |= {f"{code}-{name}": (code, action) for name, action in actions.items()}
+        cases[f"{code}-expired"] = (code, next(iter(actions.values())))
+    return cases
+
+
+MODE_EVALUATION_CASES = _mode_evaluation_cases()
+MODE_EVALUATION_DOCUMENTS = frozenset({"application_identity", "application_managed",
+                                       *(f"session.{code}" for code in _MODE_CASE_ACTIONS),
+                                       *(f"application_session.{code}" for code in _MODE_CASE_ACTIONS
+                                         if code not in MODE_SESSION_PARTS),
+                                       *(f"role.{alias}" for alias in MODE_ALIASES)})
+MODE_EVALUATION_CONTEXT = frozenset({"aws:CurrentTime", "sts:RoleSessionName", "dynamodb:LeadingKeys", "ecs:cluster",
+                                     "iam:PassedToService"})
 FENCE_SCHEMAS = {
     "fence-prepared.json": "schema_version proof_kind operation application_purpose context_kind owner caller_binding_sha256 activation_sha256 application_fragment_sha256 producer preparation files outcome",
     "fence-role.json": "schema_version role_arn role_name role_id policy_name release_id session_name trust policy max_session_duration tags original_projection_sha256 current_projection_sha256",
@@ -489,6 +594,9 @@ FENCE_SCHEMAS = {
     "fence-chain.json": "schema_version owner_sha256 generation anchor_sha256 head_sha256 entries",
     "fence-evaluation.json": "schema_version evaluator_source_sha documents cases",
     "fence-readbacks.json": "proof_kind readbacks",
+    "mode-input.json": "mode_canary",
+    "mode-roles.json": "proof_kind readbacks",
+    "mode-evaluation.json": "schema_version evaluator_source_sha documents cases",
 }
 
 
@@ -617,12 +725,14 @@ def fence_predecessor_baseline(raw, reference, carrier):
 
 APPLICATION_GATE_REPOSITORY = "VINIClUS/infra-ansible"
 APPLICATION_GATE_WORKFLOW = ".github/workflows/reusable-cnesdata-application-gate.yml"
-APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py", "aws_boundary.py",
+APPLICATION_PYBOOT = ("contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py", "stage_wait.py", "aws_boundary.py",
                       "runtime.py",
                       "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py", "outputs.py",
                       "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py", "iam_source.py",
                       "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                      "static_inputs.py", "plan_inputs.py", "runtime-requirements.txt")
+                      "static_inputs.py", "plan_inputs.py", "terminal_gate.py", "mode_broker.py", "product_dynamodb_keys.py",
+                      "product_mode_canary.py", "product_mode_canary_frames.py", "product_mode_canary_dispatch.py",
+                      "runtime-requirements.txt", "phase-c-child-requirements.txt")
 APPLICATION_CLOSURE_PATHS = tuple(sorted(["tools/cnesdata_delivery/" + name for name in APPLICATION_PYBOOT]
                                          + [APPLICATION_GATE_WORKFLOW]))
 
@@ -857,7 +967,92 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
             else:
                 c.require(type(value) is str and 1 <= len(value) <= 128, "fence finite IAM context value")
         seen.add(case["case_id"])
+    _fence_mode_files(values, files, producer=producer, account=fragment["account_id"], preparation=preparation)
     return manifest
+
+
+def _fence_mode_files(values, files, *, producer, account, preparation):
+    decode_mode_context(files["mode-input.json"])
+    c.closed(values["mode-input.json"]["mode_canary"], MODE_INPUT_FIELDS)
+    roles = mode_prepared_roles(values["mode-roles.json"], account=account, preparation=preparation)
+    evaluation = values["mode-evaluation.json"]
+    validate_mode_evaluation(evaluation)
+    c.require(evaluation["evaluator_source_sha"] == producer["workflow_sha"]
+              and all(evaluation["documents"]["role." + alias] == c.sha(c.canonical(roles[alias]["policy"]["PolicyDocument"]))
+                      for alias in MODE_ALIASES), "fence mode evaluation original")
+
+
+def mode_prepared_roles(proof, *, account, preparation):
+    """Roles of the prepared mode-roles.json (P16b Falta 6): the two equal mode_canary_output readback rounds inside the
+    preparation window, in sorted alias order, each with the exact role and policy identity and a RoleId.
+
+    Returns: alias -> {role, policy}. Raises: ValueError.
+    """
+    c.closed(proof, "proof_kind readbacks")
+    rounds = proof["readbacks"]
+    c.require(proof["proof_kind"] == "iam-readback-and-evaluation" and type(rounds) is list and len(rounds) == 2
+              and all(type(item) is dict and set(item) == {"observed_at", "observations"}
+                      and type(item["observed_at"]) is int for item in rounds)
+              and preparation["admitted_at"] <= rounds[0]["observed_at"]
+              and rounds[0]["observed_at"] + 10 <= rounds[1]["observed_at"] < preparation["deadline"]
+              and c.canonical(rounds[0]["observations"]) == c.canonical(rounds[1]["observations"]),
+              "fence mode roles readback rounds")
+    aliases, observations = sorted(MODE_ALIASES), rounds[1]["observations"]
+    c.require(type(observations) is list and len(observations) == 2 * len(aliases), "fence mode roles readback inventory")
+    return {alias: _mode_prepared_role(observations[2 * index:2 * index + 2], alias, account)
+            for index, alias in enumerate(aliases)}
+
+
+def _mode_prepared_role(pair, alias, account):
+    name = "cnesdata-prod-" + APPLICATION_DELEGATIONS[alias]
+    role, policy = pair
+    c.require(all(type(item) is dict and set(item) == {"service", "operation", "observed"} and item["service"] == "iam"
+                  for item in pair) and role["operation"] == "get_role" and policy["operation"] == "get_role_policy",
+              "fence mode roles readback inventory")
+    body, document = role["observed"], policy["observed"]
+    native = body.get("Role") if type(body) is dict and set(body) == {"Role"} else None
+    c.require(type(native) is dict and type(document) is dict and set(document) == {"RoleName", "PolicyName", "PolicyDocument"}
+              and native.get("RoleName") == document["RoleName"] == name
+              and native.get("Arn") == f"arn:aws:iam::{account}:role/{name}"
+              and type(native.get("RoleId")) is str and bool(native["RoleId"]) and native.get("MaxSessionDuration") == 3600
+              and type(native.get("AssumeRolePolicyDocument")) is dict and document["PolicyName"] == name + "-runtime"
+              and type(document["PolicyDocument"]) is dict, "fence mode roles readback identity")
+    return {"role": body, "policy": document}
+
+
+def validate_mode_evaluation(evaluation):
+    """Closed mode-evaluation.json (P16b ruling 4 item 2): the fence-evaluation shape over MODE_EVALUATION_CASES.
+
+    Raises: ValueError mode evaluation.
+    """
+    c.require(type(evaluation) is dict and set(evaluation) == {"schema_version", "evaluator_source_sha", "documents", "cases"}
+              and type(evaluation["schema_version"]) is int and evaluation["schema_version"] == 1
+              and type(evaluation["evaluator_source_sha"]) is str
+              and re.fullmatch(r"[0-9a-f]{40}", evaluation["evaluator_source_sha"]) is not None
+              and type(evaluation["documents"]) is dict and set(evaluation["documents"]) == MODE_EVALUATION_DOCUMENTS
+              and all(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+                      for value in evaluation["documents"].values())
+              and type(evaluation["cases"]) is list and len(evaluation["cases"]) == len(MODE_EVALUATION_CASES)
+              and all(_mode_evaluation_case(case) for case in evaluation["cases"])
+              and len({case["case_id"] for case in evaluation["cases"]}) == len(MODE_EVALUATION_CASES), "mode evaluation")
+
+
+def _mode_evaluation_case(case):
+    if type(case) is not dict or set(case) != {"case_id", "action", "resource", "context", "expected", "observed"}:
+        return False
+    context = case["context"]
+    return (type(case["case_id"]) is str and case["case_id"] in MODE_EVALUATION_CASES
+            and case["action"] == MODE_EVALUATION_CASES[case["case_id"]][1]
+            and type(case["resource"]) is str and 1 <= len(case["resource"]) <= 2048
+            and type(case["expected"]) is bool and case["expected"] is case["observed"]
+            and type(context) is dict and "aws:CurrentTime" in context and set(context) <= MODE_EVALUATION_CONTEXT
+            and all(_mode_context_value(key, value) for key, value in context.items()))
+
+
+def _mode_context_value(key, value):
+    if key == "dynamodb:LeadingKeys":
+        return type(value) is list and 1 <= len(value) <= 2 and all(type(item) is str and 1 <= len(item) <= 256 for item in value)
+    return type(value) is str and 1 <= len(value) <= 2048
 
 
 def validate_adapter_request(raw, *, operation, owner, window, inputs, activation_sha256):
@@ -909,7 +1104,8 @@ def validate_adapter_result(raw, *, request, observations, call_receipts, pendin
     c.require(type(result["observations"]) is list and result["observations"] == observations, "adapter registered observations")
     for item in result["observations"]:
         c.closed(item, "kind sha256 size")
-        c.require(item["kind"] == ADAPTER_OBSERVATIONS[result["operation"]], "adapter operation observation")
+        c.require(item["kind"] == ADAPTER_OBSERVATIONS[result["operation"]]
+                  or item["kind"] in ADAPTER_STEPS.get(result["operation"], ()), "adapter operation observation")
         c.digest(item["sha256"])
         c.integer(item["size"], 1, 1024**2)
     c.require(type(call_receipts) is list and result["call_receipts_sha256"] == c.sha(c.canonical(call_receipts)),
@@ -1065,10 +1261,12 @@ def closed_ready_probe_response(response, *, execution_arn, machine_arn):
     return {key: response[key] for key in ("executionArn", "stateMachineArn", "name", "status", "startDate", "stopDate") if key in response}
 
 
+MODE_OBSERVES = ("unit-observe", "recovery-observe", "audit-observe")
 FENCE_SDK_OPERATIONS = {
     "closed-ready": frozenset({("dynamodb", "get_item"), ("stepfunctions", "describe_execution")}),
     "close-drain": frozenset({("dynamodb", "get_item"), ("dynamodb", "update_item"), ("dynamodb", "transact_write_items"),
                               ("stepfunctions", "describe_execution")}),
+    **dict.fromkeys(MODE_OBSERVES, frozenset({("dynamodb", "get_item")})),
 }
 # Correction 6906038586 item 3: sha256 of each canonical template of the product call vector
 # (CnesData 2c66f62c tests/production/delivery/close_drain_call_vector.json, sha256 44d0cf91...).
@@ -1202,10 +1400,28 @@ def validate_close_drain_call(*, request, role, service, operation, parameters, 
     return parameters
 
 
+def validate_mode_observe_call(*, request, role, service, operation, parameters, account, control_table_arn, machine_arn):
+    """P16b: the observe _gate reads FENCE and SEMAPHORE strongly on the fence session, in its own stage; nothing else."""
+    c.require(request["operation"] in MODE_OBSERVES and {request["stage"]["stage"]} == ADAPTER_STAGES[request["operation"]]
+              and role == "fence_operator" and (service, operation) == ("dynamodb", "get_item"),
+              "mode observe finite SDK operation")
+    c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account) is not None, "mode observe account")
+    table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
+    c.require(table is not None and machine_arn == "arn:aws:states:us-east-2:" + account + ":stateMachine:cnesdata-prod",
+              "mode observe protected resource scope")
+    c.closed(parameters, "TableName Key ConsistentRead")
+    allowed = [{"TableName": table[1], "Key": {"pk": {"S": pk}, "sk": {"S": sk}}, "ConsistentRead": True}
+               for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT"))]
+    c.require(any(c.canonical(parameters) == c.canonical(value) for value in allowed), "mode observe strong fence read")
+    return parameters
+
+
 def validate_fence_call(*, request, history=(), **arguments):
     """Per-operation fence SDK scope; closed-ready keeps its frozen-member validator."""
     if request["operation"] == "close-drain":
         return validate_close_drain_call(request=request, history=history, **arguments)
+    if request["operation"] in MODE_OBSERVES:
+        return validate_mode_observe_call(request=request, **arguments)
     return validate_closed_ready_call(request=request, **arguments)
 
 
@@ -1266,7 +1482,8 @@ STAGE_TRIGGERS = {"application-prepare": ("prepared", "phase-b"), "phase-b": ("p
                   "unit": ("unit", "phase-c-recovery"),
                   "phase-c-recovery": ("phase-c-recovery", "phase-c-audit"),
                   "phase-c-audit": ("phase-c-audit", "final")}
-OPERATION_TRIGGERS = {"inventory": ("application-prepare", "observer-bootstrap")}
+OPERATION_TRIGGERS = {"inventory": ("application-prepare", "observer-bootstrap"),
+                      "rollback-api-static": ("recovery", "host-recovery")}
 MODE_STAGE_PREVIOUS = {"phase-c-recovery": "unit", "phase-c-audit": "phase-c-recovery", "final": "phase-c-audit"}
 CLOSE_DRAIN_FIELDS = ("version kind common fence close_confirmed_at drain_observed_at frozen_membership_sha256 members proofs "
                       "permit input_expirations fixed_deadline decision windows")
@@ -1842,6 +2059,84 @@ def phase_capacity(window, *, now, credential_deadline, operation_seconds):
                   and fixed - now >= max(0, deadline - now) + later + FINAL_RESERVE, "phase remaining capacity")
 
 
+PHASE_C_ROUTE_MODES = ("recovery", "audit")
+PHASE_C_PURPOSES = ("phase-c-recovery", "phase-c-audit")
+PHASE_C_PRODUCT_FILES = {
+    "scripts/promotion/phase_c_recovery.py": "42d5ae7f7f2b61a0470d49fa410e93f23af804f3244057c9382c3d0282516a36",
+    "scripts/promotion/_phase_c_core.py": "2bcc1649c92ac5071e91104400291dee0adb514fe2ca2b36d9a30b0626083fcb"}
+
+
+def state_point(checkpoint):
+    """Args: a lifecycle checkpoint. Returns: its state identity plus the state object version (B and C elements)."""
+    return dict(c.closed(dict(checkpoint["state"]), "lineage serial state_sha256"),
+                object_version=checkpoint["state_object"]["version_id"])
+
+
+def _observed_rows(rows, service, operation):
+    return [row["observed"] for row in rows if row["service"] == service and row["operation"] == operation]
+
+
+def _task_definition_targets(node):
+    if type(node) is dict:
+        for key, value in node.items():
+            if key == "TaskDefinition":
+                yield value
+            yield from _task_definition_targets(value)
+    elif type(node) is list:
+        for item in node:
+            yield from _task_definition_targets(item)
+
+
+def _phase_c_machine(after, phase_b):
+    machines = _observed_rows(after, "stepfunctions", "describe_state_machine")
+    previous = _observed_rows(phase_b, "stepfunctions", "describe_state_machine")
+    c.require(len(machines) == len(previous) == 1, "phase_c=routes field=machine")
+    machine, before = machines[0], previous[0]
+    c.require(machine["stateMachineArn"] == before["stateMachineArn"]
+              and json.loads(machine["definition"]) == json.loads(before["definition"]), "phase_c=routes field=machine")
+    targets = set(_task_definition_targets(json.loads(machine["definition"])))
+    c.require(len(targets) == 1 and all(type(item) is str for item in targets), "phase_c=routes field=machine")
+    return machine["stateMachineArn"], targets.pop()
+
+
+def _phase_c_schedules(after, routes):
+    for observed in _observed_rows(after, "scheduler", "get_schedule"):
+        if observed.get("absent") is True:
+            continue
+        revision = observed["Target"]["EcsParameters"]["TaskDefinitionArn"]
+        modes = [mode for mode in PHASE_C_ROUTE_MODES if type(revision) is str and f"processor-{mode}:" in revision]
+        c.require(len(modes) == 1 and routes[modes[0]] is None, "phase_c=routes field=scheduler_mode")
+        routes[modes[0]] = revision
+
+
+def _phase_c_environments(after, routes, machine_arn):
+    tasks = _observed_rows(after, "ecs", "describe_task_definition")
+    for mode in ("unit", "recovery"):
+        found = [item["taskDefinition"] for item in tasks if item["taskDefinition"]["taskDefinitionArn"] == routes[mode]]
+        containers = found[0]["containerDefinitions"] if len(found) == 1 else []
+        environment = {item["name"]: item.get("value") for item in containers[0]["environment"]} if len(containers) == 1 else {}
+        c.require(environment.get("AWS_STATE_MACHINE_ARN") == machine_arn, "phase_c=routes field=environment")
+
+
+def phase_c_routes(mode, *, after, phase_b):
+    """P17 ruling 1g: Phase C element routes projected from the C deploy post-apply readback rows (product read_routes).
+
+    Args: mode recovery or audit, the C deploy and the Phase B checkpoint readback rows.
+    Returns: {unit, recovery, audit}; a mode not scheduled yet is null. Raises: ValueError phase_c=routes field=.
+    """
+    c.require(mode in PHASE_C_ROUTE_MODES, "phase_c=routes field=mode")
+    try:
+        machine_arn, unit = _phase_c_machine(after, phase_b)
+        routes = {"unit": unit, "recovery": None, "audit": None}
+        _phase_c_schedules(after, routes)
+        applied = PHASE_C_ROUTE_MODES[:PHASE_C_ROUTE_MODES.index(mode) + 1]
+        c.require(all(type(routes[name]) is str for name in applied), "phase_c=routes field=applied")
+        _phase_c_environments(after, routes, machine_arn)
+    except (KeyError, TypeError, AttributeError, json.JSONDecodeError) as error:
+        raise ValueError("phase_c=routes field=readbacks") from error
+    return routes
+
+
 def adapter_seconds(window, *, now, credential_deadline, operation):
     """Args: lifecycle window, sampled now, credential deadline, operation. Returns: largest admitted timeout."""
     margin = 158 if window["close"] is None else 38
@@ -1865,9 +2160,11 @@ def terminal_result(value, *, now, deadline):
     common = "kind fence accepted_modes routes_match state_clean quiescent pending unknown observed_at"
     failure = value.get("kind") in {"failed-closed-quiescent", "failed-prepare-quiescent"}
     c.closed(value, common + (" restoration" if failure else ""))
+    prepare = value["kind"] == "failed-prepare-quiescent"
+    routes = (value["fence"], value["routes_match"]) == (None, None) if prepare else value["routes_match"] is True
     c.require(value["state_clean"] is True and value["quiescent"] is True
               and value["pending"] == [] and value["unknown"] == []
-              and value["routes_match"] is True and value["observed_at"] <= now < deadline
+              and routes and value["observed_at"] <= now < deadline
               and now - value["observed_at"] <= 30, "terminal uncertainty/drift/expiry")
     if value["kind"] == "accepted-open":
         c.require(value["fence"] == "OPEN" and set(value["accepted_modes"]) == {"unit", "recovery", "audit"}
@@ -1878,7 +2175,7 @@ def terminal_result(value, *, now, deadline):
     c.closed(restored, "unit recovery audit api static first_static_absent")
     c.require(all(restored[k] is True for k in ("unit", "recovery", "audit", "api"))
               and (restored["static"] is True or restored["first_static_absent"] is True), "original recovery incomplete")
-    c.require(value["fence"] == "CLOSED" or value["kind"] == "failed-prepare-quiescent", "failed promotion must remain CLOSED")
+    c.require(value["fence"] == "CLOSED" or prepare, "failed promotion must remain CLOSED")
     return "failed"
 
 

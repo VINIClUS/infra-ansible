@@ -5,13 +5,16 @@ apply approval: deploy additionally consumes an independent, source-pinned audit
 No AWS client is constructed before public admission. Default configuration closes.
 """
 import base64
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
+from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import drift_catalog as dc
@@ -82,7 +85,26 @@ class ArtifactDigests:
         return getattr(self._inner, name)
 
 
-def admission(role):
+def payload_references(api, run, payloads, input_jobs):
+    """Resolve producer step names to this run's completed-success job and its unique in-interval artifact.
+
+    Args: GitHub reader, run, request payload names, governed input jobs.
+    Returns: reference per payload. Raises: ValueError on the id shape or any ambiguity.
+    """
+    from tools.cnesdata_delivery.application_gate import _same_run_job
+    from tools.cnesdata_delivery.stage_wait import NoReservation, payload_names, payload_publication
+    references = {}
+    for name, producer in payload_names(payloads, input_jobs).items():
+        job = _same_run_job(api, run, kind="payload", job_name=producer["name"], guard=NoReservation())
+        c.require(job is not None and job["status"] == "completed", "completed payload producer")
+        listing = api.read(f"repos/{c.REPOSITORY}/actions/runs/{run['id']}/artifacts?per_page=100&page=1")
+        c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
+        found = payload_publication(job, listing["artifacts"], producer["step"])
+        references[name] = {"job_id": job["id"], "artifact_id": found["id"], "artifact_digest": found["digest"]}
+    return references
+
+
+def admission(role, *, resolve_payloads=True):
     raw = os.environ.get("CNESDATA_DELIVERY_GOVERNANCE", "").encode()
     c.require(raw, "protected governance absent; lifecycle disabled")
     governance = c.loads(raw, canonical=True, limit=262144)
@@ -106,7 +128,6 @@ def admission(role):
     step = governance["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
     c.require(step["purpose"] in lc.PURPOSES or role == "application", "closed purpose")
-    c.require(set(request["payloads"]) == set(step["input_jobs"]), "complete payload inventory")
     caller, original_job = application_caller(api, governance, run, role, step, include_job=True)
     c.require(request["application_purpose"] == caller["application_purpose"]
               and request["caller_binding_sha256"] == c.sha(c.canonical(caller)), "original requested application caller")
@@ -131,7 +152,12 @@ def admission(role):
     document = api.read(f"repos/{contract['repository']}/contents/{contract['path']}?ref={contract['source_sha']}")
     c.require(c.sha(base64.b64decode(document["content"])) == c.digest(contract["sha256"]), "authority original bytes")
     payloads = {}
-    for name, reference in request["payloads"].items():
+    if not resolve_payloads:
+        from tools.cnesdata_delivery.stage_wait import payload_names
+        payload_names(request["payloads"], step["input_jobs"])
+        return governance | {"role": role}, request, step, api, run, payloads
+    references = payload_references(api, run, request["payloads"], step["input_jobs"])
+    for name, reference in references.items():
         producer = step["input_jobs"][name]
         c.closed(producer, "name step")
         c.require(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", producer["step"]), "original producer step")
@@ -481,16 +507,42 @@ def fence_current_role_projection(*, plan_raw, inputs_raw, state_raw, sources, o
         "current_state": checkpoint["state"], "historical_checkpoint_sha256": c.sha(c.canonical(old_checkpoint)),
         "source_files": [{"path": path, "sha256": c.sha(sources[path])} for path in sorted(resolver.blocks)]}
 
+_READBACK_INTENT = "schema_version operation owner caller checkpoint_sha256 sequence previous role_session_sha256 call"
+_ADAPTER_INTENT = ("schema_version operation owner sequence previous_receipt_sha256 caller adapter_request_sha256 "
+                   "checkpoint_sha256 activation_sha256 prepared_sha256 role_session_sha256 call")
+
+
+def _evidence_tag(operation):
+    readback = operation in lc.MODE_READBACK_OPERATIONS.values()
+    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static")
+              or operation in lc.MODE_EFFECT_CALLS or readback, "fence evidence operation")
+    return 3 if readback else 2
+
+
+def evidence_intent(raw, *, operation):
+    """Ruling 5a: the intent verifier, dispatching on namespace, tag and closed field set; tag 3 and the readback
+    fields only in the three <mode>-readbacks namespaces, tag 2 and the adapter fields in every operation namespace.
+
+    Returns: the intent mapping. Raises: ValueError outside the namespace, its tag or its fields.
+    """
+    tag = _evidence_tag(operation)
+    value = c.loads(raw, canonical=True, limit=128 * 1024)
+    c.require(type(value) is dict and value.get("schema_version") == tag and value.get("operation") == operation,
+              "evidence intent shape")
+    c.closed(value, _READBACK_INTENT if tag == 3 else _ADAPTER_INTENT)
+    return value
+
+
 def closed_ready_evidence_keys(governance, *, owner, caller, checkpoint_sha256, sequence, operation="closed-ready"):
     """Single derivation of own-run SDK intent/response/receipt keys, one namespace per operation.
 
     Used by ClosedReadyEvidence (fence, inventory and publish-static) and by the prepared evaluation scope (item 2);
     closed-ready bytes are unchanged.
     """
-    c.require(operation in lc.FENCE_SDK_OPERATIONS or operation in ("inventory", "publish-static"), "fence evidence operation")
+    tag = _evidence_tag(operation)
     c.closed(owner, " ".join(lc.OWNER_FIELDS) + " owner_sha256")
     c.integer(sequence, 0, 8191)
-    digest = c.sha(c.canonical({"schema_version": 2, "operation": operation, "owner": owner, "caller": caller,
+    digest = c.sha(c.canonical({"schema_version": tag, "operation": operation, "owner": owner, "caller": caller,
                                 "checkpoint_sha256": c.digest(checkpoint_sha256), "sequence": sequence}))
     prefix = namespace(governance, {"source_sha": owner["source_sha"], "step": operation},
                        {"id": owner["run_id"], "run_attempt": owner["run_attempt"]})
@@ -648,12 +700,13 @@ def fence_phase_a_origin(history, projection_source_files):
 
 def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, authority, predecessor, carrier, plan_index,
                           plan_raw, inputs_raw, terraform_raw, approval_raw, previous_raw, checkpoint_raw, state_raw,
-                          sources, activation_sha256, clock=time.time, sleep=time.sleep):
-    """Eight-file prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6).
+                          sources, activation_sha256, mode_input_raw, mode_readbacks, clock=time.time, sleep=time.sleep):
+    """Prepared observation inside the running gate (amendment 2026-11-13 items 2, 3, 5, 6; P16b Falta 6).
 
     Only protected inputs already authenticated by execute: owner/lease, schema4
     authority, H4 predecessor and carrier, the plan index read by private_payload,
-    the audited approval, the applied checkpoint/state and product sources.
+    the audited approval, the applied checkpoint/state, product sources, the
+    mode_canary projection of the admitted request and the mode role readbacks.
     Returns bytes to publish; it never grants a capability.
     """
     from tools.cnesdata_delivery.iam_boundary import fence_effective_evaluation
@@ -661,13 +714,17 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     c.require(request["step"] == producer_step["step"], "fence producer step")
     fragment = authority.application_fragment
     c.require(type(fragment) is dict, "fence schema4 application authority")
+    history = lc.phase_a_originals(carrier)
+    admitted = mode_input_admission(mode_input_raw, governance=governance, historical=history, owner=owner,
+                                    activation_sha256=activation_sha256, principal_arn=fragment["application_role_arn"])
+    roles = lc.mode_prepared_roles(mode_readbacks, account=governance["account_id"], preparation={
+        "admitted_at": guard.window["admitted_at"], "deadline": guard.window["preparation_deadline"]})
     job = fence_producer_job(api, run, request["source_sha"])
     producer = producer_step | {"repository": c.REPOSITORY, "source_sha": request["source_sha"],
         "workflow_sha": c.digest(governance["gate_shas"]["deploy"], 40), "run_id": run["id"],
         "run_attempt": run["run_attempt"], "job_id": job["id"]}
     chain, baseline = current_checkpoint_chain(api, aws, governance, request, run, owner=owner, predecessor=predecessor,
         current_raw=checkpoint_raw, approval_raw=approval_raw, previous_raw=previous_raw, producer=producer, guard=guard, now=clock())
-    history = lc.phase_a_originals(carrier)
     original_sources = historical_sources(api, carrier, current_source=request["source_sha"], paths=sorted(sources), guard=guard)
     checkpoint = c.loads(checkpoint_raw, canonical=True)
     projection = fence_current_role_projection(plan_raw=plan_raw, inputs_raw=inputs_raw, terraform_raw=terraform_raw,
@@ -702,9 +759,36 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     originals = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw, "fence-role.json": c.canonical(role),
                  "fence-readbacks.json": c.canonical(readbacks), "fence-origins.json": c.canonical(origins),
                  "fence-chain.json": c.canonical(chain), "fence-evaluation.json": c.canonical(evaluation)}
+    originals |= mode_prepared_files(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
+                                     admitted=admitted, roles=roles, mode_readbacks=mode_readbacks,
+                                     evaluator=(producer["workflow_sha"], preparation["observed_at"]), window=window)
     guard.check()
     return fence_prepared_files(originals=originals, owner=owner, fragment=fragment, activation_sha256=activation_sha256,
         producer=producer, preparation=preparation, predecessor_raw=baseline, predecessor_reference=predecessor)
+
+
+def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, admitted, roles, evaluator, window):
+    """The scope, documents and mode-evaluation of the prepared mode files (P16b Falta 6), one derivation for the
+    package producer and the stage recompute.
+
+    Args: authority is the application authority; evaluator is (workflow sha, observed_at); window the lease window.
+    Returns: (scope, documents, evaluation). Raises: ValueError.
+    """
+    from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation, mode_evaluation_documents, mode_prepared_scope
+    scope = mode_prepared_scope(mode_input_raw, admitted, owner=owner, governance=governance, window=window)
+    documents = mode_evaluation_documents(governance=governance, fragment=authority.application_fragment,
+        pin_document=authority.pin["document"], owner=owner, scope=scope,
+        policies={alias: roles[alias]["policy"]["PolicyDocument"] for alias in lc.MODE_ALIASES})
+    evaluation = mode_effective_evaluation(documents, scope, evaluator_source_sha=evaluator[0], observed_at=c.utc(evaluator[1]))
+    return scope, documents, evaluation
+
+
+def mode_prepared_files(*, governance, authority, owner, mode_input_raw, admitted, roles, mode_readbacks, evaluator, window):
+    """Args: as mode_prepared_evaluation plus the mode role readback proof. Returns: the three mode files by name."""
+    evaluation = mode_prepared_evaluation(governance=governance, authority=authority, owner=owner, mode_input_raw=mode_input_raw,
+                                          admitted=admitted, roles=roles, evaluator=evaluator, window=window)[2]
+    return {"mode-input.json": mode_input_raw, "mode-roles.json": c.canonical(mode_readbacks),
+            "mode-evaluation.json": c.canonical(evaluation)}
 
 
 class PreparedFence(dict):
@@ -1007,16 +1091,30 @@ def mode_canary_admission(*, plan, step_mode, inputs_raw, owner, governance, his
     Returns: the admitted mode input. Raises: ValueError.
     """
     c.require((step_mode == "mode-canary") == (owner["context_kind"] == "readiness"), "mode step context")
+    admitted = mode_input_admission(inputs_raw, governance=governance, historical=historical, owner=owner,
+                                    activation_sha256=activation_sha256, principal_arn=principal_arn)
+    lc.validate_mode_canary_trust(plan, admitted)
+    return admitted
+
+
+def mode_input_admission(inputs_raw, *, governance, historical, owner, activation_sha256, principal_arn):
+    """validate_mode_canary_input against the gate originals of governance and the Phase A release, the one admission of
+    the mode input at the prepare step, the package producer and the stage (P16b ruling 1 item 1).
+
+    Returns: the admitted mode input. Raises: ValueError.
+    """
     originals = {"product_source_closure_sha256": governance["application_product_source_closure_sha256"],
                  "shared_source_sha": governance["gate_shas"]["application"],
                  "shared_source_closure_sha256": governance["application_source_closure_sha256"],
                  "release_id": historical["envelope"]["plan"]["release"]["release_id"],
                  "fixture_manifest_sha256": lc.mode_fixture_manifest_sha256(governance["application_product_source_manifest"])}
-    admitted = lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
-                                             principal_arn=principal_arn, originals=originals,
-                                             activation_sha256=activation_sha256)
-    lc.validate_mode_canary_trust(plan, admitted)
-    return admitted
+    return lc.validate_mode_canary_input(inputs_raw, owner=owner, application_purpose=owner["application_purpose"],
+                                         principal_arn=principal_arn, originals=originals, activation_sha256=activation_sha256)
+
+
+def mode_input_projection(terraform_raw):
+    """Args: the admitted generated request bytes. Returns: canonical {mode_canary}, the prepared mode-input.json."""
+    return c.canonical({"mode_canary": c.loads(terraform_raw, limit=131072)["mode_canary"]})
 
 
 def mode_canary_output(aws, *, state, account, guard, clock=time.time, sleep=time.sleep):
@@ -1290,6 +1388,15 @@ def plan_activation_carrier(*, governance, step, owner, window, terraform_raw, g
     return raw
 
 
+def bind_stage_open_owner(owner, environ):
+    """Refuse a lease owner or generation other than the one the stage-open marker named."""
+    from tools.cnesdata_delivery.stage_wait import STAGES_WITH_EXTERNAL_FIRST_JOB
+    if environ.get("PURPOSE") not in STAGES_WITH_EXTERNAL_FIRST_JOB:
+        return
+    c.require(environ.get("STAGE_OPEN_OWNER_SHA256") == owner["owner_sha256"]
+              and environ.get("STAGE_OPEN_GENERATION") == str(owner["generation"]), "stage-open owner")
+
+
 def execute(role):
     from tools.cnesdata_delivery import runtime
     from tools.cnesdata_delivery.iam_boundary import authenticate_sources, prepare
@@ -1303,6 +1410,7 @@ def execute(role):
     session_owner.verify_managed(aws, authority, c.instant(os.environ["AWS_CREDENTIAL_EXPIRATION"]))
     record, _ = S3LeaseStore(aws).get()
     owner = lc.owner_binding(record)
+    bind_stage_open_owner(owner, os.environ)
     c.require(owner["source_sha"] == request["source_sha"] and owner["run_id"] == run["id"]
               and owner["run_attempt"] == run["run_attempt"]
               and lc.application_identity(owner, required=True) == {"application_purpose": request["application_purpose"],
@@ -1433,6 +1541,7 @@ def execute(role):
             plan = c.loads(payload["plan.json"], state=True)
             c.require(approval["delta"]["before"] == lc.state_resources(c.loads(before_raw, state=True)), "audit actual full state")
             lc.validate_delta(plan, approval["delta"])
+            mode_readbacks = None
             if mode_rows:
                 mode_canary_admission(plan=plan, **mode_arguments)
             resolver = prepare(plan, inputs, governance["account_id"], step["purpose"], sources, mode=step["mode"])
@@ -1459,11 +1568,12 @@ def execute(role):
             c.drift_coverage(plan, reports, approval["drift_matrix"], source, step["purpose"], "after", state=state,
                              specs=after_calls, envelope=dc.LIFECYCLE_ENVELOPE)
             if mode_rows:
-                mode_canary_output(aws, state=state, account=governance["account_id"], guard=guard)
+                mode_readbacks = mode_canary_output(aws, state=state, account=governance["account_id"], guard=guard)
             checkpoint = {"state": c.state_identity(after_raw), "state_object": after_object, "owner": owner,
                           "purpose": step["purpose"], "plan_sha256": c.sha(payload["plan.bin"]), "readbacks": reports,
                           "phase_a_originals": carrier, "previous_checkpoint_sha256": c.sha(payload["checkpoint.json"])}
-            result_files = {"checkpoint.json": c.canonical(checkpoint), "approval.json": payload["approval.json"]}
+            result_files = deploy_result_files(step["purpose"], c.canonical(checkpoint), payload["approval.json"],
+                                               (temp / "apply.log").read_bytes())
             if step["purpose"] == "application-prepare" and step["mode"] == "operational":
                 # Amendment 2026-11-13 item 6: the eight-file observation is produced inside this running gate.
                 c.require(len(plan_indexes) == 1, "fence single authenticated current plan index")
@@ -1472,7 +1582,8 @@ def execute(role):
                     plan_index=plan_indexes[0], plan_raw=payload["plan.json"], inputs_raw=payload["inputs.json"],
                     terraform_raw=terraform_raw, approval_raw=payload["approval.json"], previous_raw=payload["checkpoint.json"],
                     checkpoint_raw=result_files["checkpoint.json"], state_raw=after_raw, sources=sources,
-                    activation_sha256=activation_sha256)
+                    activation_sha256=activation_sha256, mode_input_raw=mode_input_projection(terraform_raw),
+                    mode_readbacks=mode_readbacks)
             status = "applied"
         guard.check()
         publish(aws, governance, request, run, owner, result_files, api, guard, temp, status)
@@ -1486,6 +1597,111 @@ def bootstrap_hop(governance, step, checkpoint, origins, window):
             == ("deploy", "application-prepare", "observer-bootstrap")
             and checkpoint.get("purpose") == "application-prepare"
             and checkpoint.get("previous_checkpoint_sha256") == window["checkpoint_sha256"])
+
+
+def deploy_result_files(purpose, checkpoint_raw, approval_raw, apply_output):
+    """P17 ruling 6 item 2: the deploy publication members; apply-output.bin only for the two C purposes.
+
+    Args: step purpose, checkpoint bytes, approval bytes, apply log bytes. Returns: member name -> bytes.
+    """
+    files = {"checkpoint.json": checkpoint_raw, "approval.json": approval_raw}
+    return files | {"apply-output.bin": apply_output} if purpose in lc.PHASE_C_PURPOSES else files
+
+
+PhaseCSources = namedtuple("PhaseCSources", "purpose published before_raw phase_b_raw close_raw observed_at")
+PhaseCRuntime = namedtuple("PhaseCRuntime", "python target")
+_PHASE_C_MEMBERS = frozenset({"checkpoint.json", "approval.json", "apply-output.bin"})
+_PHASE_C_BEFORE = {"phase-c-recovery": "phase-b", "phase-c-audit": "phase-c-recovery"}
+_PHASE_C_CHILD = r"""
+sys.path.insert(1, sys.argv[2])
+import base64, json
+from datetime import datetime, timezone
+from scripts.promotion.phase_c_recovery import PhaseCEvidence, phase_c_evidence
+request = json.loads(sys.stdin.buffer.read(8 * 1024**2 + 1))
+observed = datetime.strptime(request["observed_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+sys.stdout.buffer.write(phase_c_evidence(PhaseCEvidence(request["mode"], request["close"], request["before"], request["after"],
+    request["plan_sha256"], request["audit_sha256"], base64.b64decode(request["apply_output"]), request["routes"], observed)))
+"""
+
+
+def phase_c_element(sources, *, product, runtime, run=None):
+    """Design 6 and 8 item 3 as amended by P17 ruling 6: the keeper-side phase-c element of one C deploy publication,
+    shaped by the product builder at the pinned source in a child under the pinned runtime; routes come from the deploy's
+    own after readbacks (ruling 1g), never from the plan or the approval delta.
+
+    Args: sources PhaseCSources; product the authenticated tree; runtime PhaseCRuntime. Returns: the element bytes.
+    Raises: ValueError phase_c=<reason>.
+    """
+    request = _phase_c_request(sources)
+    for name, digest in lc.PHASE_C_PRODUCT_FILES.items():
+        c.require(c.sha((Path(product) / name).read_bytes()) == digest, f"phase_c=product_pin file={name}")
+    raw = (run or _phase_c_child)(product, runtime, request)
+    c.require(raw == _phase_c_element(request, sources.published["apply-output.bin"]), "phase_c=element_parity")
+    return raw
+
+
+def _phase_c_request(sources):
+    c.require(sources.purpose in lc.PHASE_C_PURPOSES, "phase_c=element_purpose")
+    c.require(type(sources.published) is dict and set(sources.published) == _PHASE_C_MEMBERS, "phase_c=element_members")
+    close = c.closed(c.loads(sources.close_raw, canonical=True, limit=1024**2), lc.CLOSE_DRAIN_FIELDS)
+    checkpoint, approval = (c.loads(sources.published[name], canonical=True) for name in ("checkpoint.json", "approval.json"))
+    before, phase_b = (c.loads(raw, canonical=True) for raw in (sources.before_raw, sources.phase_b_raw))
+    c.instant(sources.observed_at)
+    c.require(checkpoint["purpose"] == approval["purpose"] == sources.purpose and phase_b["purpose"] == "phase-b"
+              and before["purpose"] == _PHASE_C_BEFORE[sources.purpose]
+              and (sources.purpose != "phase-c-recovery" or sources.before_raw == sources.phase_b_raw)
+              and approval["checkpoint_sha256"] == c.sha(sources.before_raw)
+              and approval["plan_sha256"] == checkpoint["plan_sha256"], "phase_c=element_ancestry")
+    mode = sources.purpose.removeprefix("phase-c-")
+    return {"mode": mode, "close": close, "before": lc.state_point(before), "after": lc.state_point(checkpoint),
+            "plan_sha256": checkpoint["plan_sha256"], "audit_sha256": c.sha(sources.published["approval.json"]),
+            "apply_output": base64.b64encode(sources.published["apply-output.bin"]).decode(),
+            "routes": lc.phase_c_routes(mode, after=checkpoint["readbacks"], phase_b=phase_b["readbacks"]),
+            "observed_at": sources.observed_at}
+
+
+def phase_c_runtime(environ):
+    """P17 ruling 6 item 3: the hash-pinned Python 3.13 child runtime the application job provisioned before credentials.
+
+    Args: the job environment. Returns: PhaseCRuntime. Raises: ValueError phase_c=runtime.
+    """
+    python, target = environ.get("CNESDATA_PHASE_C_PYTHON"), environ.get("CNESDATA_PHASE_C_TARGET")
+    c.require(all(type(value) is str and os.path.isabs(value) for value in (python, target))
+              and os.access(python, os.X_OK) and os.path.isdir(target), "phase_c=runtime")
+    try:
+        done = subprocess.run([python, "-I", "-S", "-c", "import sys; sys.exit(sys.version_info[:2] != (3, 13))"],
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError("phase_c=runtime") from error
+    c.require(done.returncode == 0, "phase_c=runtime")
+    return PhaseCRuntime(python, target)
+
+
+def _product_text(value):
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _phase_c_element(request, apply_output):
+    close = request["close"]
+    return _product_text({"version": 1, "kind": "phase-c-" + request["mode"], "common": close["common"],
+                          "close_drain_sha256": c.sha(_product_text(close)), "before": request["before"],
+                          "after": request["after"], "plan_sha256": request["plan_sha256"],
+                          "audit_sha256": request["audit_sha256"], "apply_sha256": c.sha(apply_output),
+                          "routes": request["routes"], "observed_at": request["observed_at"]})
+
+
+def _phase_c_child(product, runtime, request):
+    from tools.cnesdata_delivery.application_gate import PRODUCT_IMPORTS
+    root = Path(product).resolve()
+    with tempfile.TemporaryDirectory(prefix="cnesdata-phase-c-") as home:
+        try:
+            done = subprocess.run([runtime.python, "-I", "-S", "-B", "-c", PRODUCT_IMPORTS + _PHASE_C_CHILD, str(root),
+                                   runtime.target], cwd=root, env={"PATH": os.defpath, "HOME": home, "LANG": "C.UTF-8"},
+                                  input=c.canonical(request), capture_output=True, timeout=20, check=False)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("phase_c=element_child") from error
+    c.require(done.returncode == 0, "phase_c=element_child")
+    return done.stdout
 
 
 def admit_approval_origin(governance, role, origins):
@@ -1660,7 +1876,7 @@ def export_credentials(value):
 def main(role, operation):
     c.require(role in {"plan", "deploy", "audit"} and operation in {"preflight", "credentials", "execute"}, "closed lifecycle command")
     if operation == "preflight":
-        admission(role)
+        admission(role, resolve_payloads=False)
     elif operation == "credentials":
         credentials(role)
     else:

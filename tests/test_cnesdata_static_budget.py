@@ -5,6 +5,8 @@ import io
 
 import pytest
 
+from fixtures.cnesdata_stage_open import stage_open_published  # noqa: F401
+
 from tools.cnesdata_delivery import contract as c
 
 from test_cnesdata_static_stage import (ACTIVATION, BUCKET, BODIES, EVIDENCE_GOVERNANCE, INVALIDATION, PAIR, _Evidence,

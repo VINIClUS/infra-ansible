@@ -313,9 +313,9 @@ def test_audit_aceita_c_inicial_que_cria_o_schedule_do_modo():
 
 def test_main_aceita_o_papel_audit_e_recusa_papel_desconhecido(monkeypatch):
     seen = []
-    monkeypatch.setattr(lr, "admission", lambda role: seen.append(role))
+    monkeypatch.setattr(lr, "admission", lambda role, **options: seen.append((role, options)))
     lr.main("audit", "preflight")
-    assert seen == ["audit"]
+    assert seen == [("audit", {"resolve_payloads": False})]
     with pytest.raises(ValueError, match="closed lifecycle command"):
         lr.main("approve", "preflight")
 

@@ -14,7 +14,7 @@ MODEL = FORMAL / "LeaseTerminal.tla"
 DELIVERY = ROOT / "tools/cnesdata_delivery"
 TERMINAL_KIND = re.compile(r"(accepted|failed)(-[a-z]+)+")
 
-# P17 owes these names to the code; it must empty this list in the same PR.
+# Ruling (b): recovery_required (held, run red) and reviewed_recovery (operator reset) are runbook states, not code names.
 EXPECTED_MODEL_ONLY = {
     "TerminalKinds": set(),
     "FailedKinds": set(),
@@ -32,11 +32,15 @@ MUTANTS = {
     "LeaseTerminalMutantB7": {"INVARIANT": {"HolderCanMove"}, "PROPERTY": {"AcquireEnds"}},
     "LeaseTerminalMutantO22": {"INVARIANT": {"RefuseFailedUntilReview"}, "PROPERTY": set()},
     "LeaseTerminalMutantReachability": {"INVARIANT": {"NoFullStory"}, "PROPERTY": set()},
+    "LeaseTerminalMutantResetLive": {"INVARIANT": {"ExecuteNeedsLease"}, "PROPERTY": set()},
+    "LeaseTerminalMutantResetUnreviewed": {"INVARIANT": {"RefuseFailedUntilReview"}, "PROPERTY": set()},
 }
 EXPECTED_VIOLATIONS = {
     "LeaseTerminalMutantB7": ["invariant:HolderCanMove"],
     "LeaseTerminalMutantO22": ["invariant:RefuseFailedUntilReview"],
     "LeaseTerminalMutantReachability": ["invariant:NoFullStory"],
+    "LeaseTerminalMutantResetLive": ["invariant:ExecuteNeedsLease"],
+    "LeaseTerminalMutantResetUnreviewed": ["invariant:RefuseFailedUntilReview"],
 }
 
 
@@ -130,7 +134,7 @@ def test_nome_do_modelo_iguala_a_tabela_do_codigo_salvo_a_divida_declarada_do_p1
     assert code - model == set()
 
 
-def test_divida_do_p17_e_exatamente_os_desfechos_de_recuperacao_revisada():
+def test_so_os_desfechos_de_recuperacao_revisada_ficam_fora_do_codigo():
     assert {name: names for name, names in EXPECTED_MODEL_ONLY.items() if names} == {
         "LeaseOutcomes": {"recovery_required", "reviewed_recovery"}}
     assert set(EXPECTED_MODEL_ONLY) == set(CODE_TABLES)
@@ -144,10 +148,11 @@ def test_tabela_do_codigo_tem_os_nomes_atuais_do_gate():
 
 
 def terminal(kind):
-    value = {"kind": kind, "fence": "OPEN" if kind == "accepted-open" else "CLOSED",
+    fence = {"accepted-open": "OPEN", "failed-closed-quiescent": "CLOSED"}.get(kind)
+    value = {"kind": kind, "fence": fence,
              "accepted_modes": ["unit", "recovery", "audit"] if kind == "accepted-open" else [],
-             "routes_match": True, "state_clean": True, "quiescent": True, "pending": [], "unknown": [],
-             "observed_at": 100}
+             "routes_match": None if fence is None else True, "state_clean": True, "quiescent": True, "pending": [],
+             "unknown": [], "observed_at": 100}
     if kind != "accepted-open":
         value["restoration"] = {"unit": True, "recovery": True, "audit": True, "api": True, "static": True,
                                 "first_static_absent": False}
@@ -198,3 +203,16 @@ def test_mutante_obrigatorio_declara_a_violacao_esperada(name):
 
 def test_conjunto_de_mutantes_do_lease_e_fechado():
     assert {path.stem for path in FORMAL.glob("LeaseTerminal*.tla")} == {"LeaseTerminal", *MUTANTS}
+
+
+def test_reset_revisado_devolve_o_objeto_ao_ausente_sem_marcador_recovered():
+    text = MODEL.read_text(encoding="utf-8")
+    assert "recovered" not in text and "ReviewedRecovery" not in text
+    assert re.search(r"^CONSTANTS Runs, Initial, NoRun, NoLease$", text, re.M)
+    assert re.search(r"^ReviewedReset\(r\) ==$", text, re.M)
+    assert re.search(r"^    /\\ pc\[r\] = \"done\" /\\ lease /= NoLease /\\ lease\.owner = r$", text, re.M)
+    assert re.search(r"^    /\\ lease' = NoLease$", text, re.M) and "removed' = r" in text
+    assert re.search(r"pred' = \[pred EXCEPT !\[r\] = IF lease = NoLease THEN removed ELSE lease\.owner\]", text)
+    for name in ["LeaseTerminal", *MUTANTS]:
+        assert "    NoLease = NoLease" in (FORMAL / f"{name}.cfg").read_text(encoding="utf-8").splitlines(), name
+    assert "recovered" not in (FORMAL / "LeaseTerminalMutantO22.tla").read_text(encoding="utf-8")

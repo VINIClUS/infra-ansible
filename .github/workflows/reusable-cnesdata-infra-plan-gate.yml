@@ -62,7 +62,7 @@ jobs:
     environment: production
     env:
       CNESDATA_DELIVERY_GOVERNANCE: ${{ secrets.CNESDATA_DELIVERY_GOVERNANCE }}
-    timeout-minutes: 55
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: read
@@ -118,11 +118,15 @@ jobs:
           pin = refs[0]["sha"]
           assert re.fullmatch("[0-9a-f]{40}", pin) and refs[0]["path"] == path + "@" + pin
           files = ["contract.py", "provenance.py", "coordination_lease.py", "drift_catalog.py", "drift_handoff.py",
+                   "stage_wait.py",
                    "aws_boundary.py",
                    "runtime.py", "lifecycle_contract.py", "lifecycle_runtime.py", "application_gate.py",
                    "outputs.py", "session_policy.py", "evidence.py", "ext2_transport.py", "iam_expression.py",
                    "iam_source.py", "iam_boundary.py", "session_owner.py", "session_grouping.py", "signing_gate.py",
-                   "plan_gate.py", "apply_gate.py", "static_inputs.py", "plan_inputs.py", "runtime-requirements.txt"]
+                   "plan_gate.py", "apply_gate.py", "static_inputs.py", "plan_inputs.py", "terminal_gate.py", "mode_broker.py",
+                   "product_dynamodb_keys.py", "product_mode_canary.py", "product_mode_canary_frames.py",
+                   "product_mode_canary_dispatch.py",
+                   "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
           root.mkdir(parents=True, exist_ok=True)
           for name in files:
@@ -183,6 +187,8 @@ jobs:
               core.setSecret(value);
               core.exportVariable(name, value);
             }
+      - name: Wait for the stage-open marker without credentials
+        run: python3 -m tools.cnesdata_delivery.stage_wait
       - name: Repeat source gate then request exact OIDC role
         run: python3 -m tools.cnesdata_delivery.plan_gate credentials
       - name: Execute under CAS watchdog and verify final publication
