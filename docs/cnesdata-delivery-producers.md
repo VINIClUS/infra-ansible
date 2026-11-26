@@ -392,7 +392,7 @@ Todos são `{check_id, source_sha, measurement}`, canônicos, `public_safe` e <=
 
 | check_id | Medição | Fonte |
 |---|---|---|
-| `source-develop-checks` | `{branch: "main", compare_status, required: [{name, conclusion: "success", head_sha}]}` para `governance.required_checks` e os 10 de `REQUIRED_CHECKS` (CD `release/build_candidate.py:24-27`) | API de check-runs e `compare/<S>...main` (espelha `pv:332-336`) |
+| `source-develop-checks` | `{branch: "main", compare_status, required: [{name, conclusion: "success", head_sha}], pull: {number, head_sha, merged_at, checks: {<contexto>: {id, completed_at}}}}`: `required` cobre `governance.required_checks` no source; `pull` cobre o PR que fez o merge do source, com cada contexto obrigatorio do ruleset de `main` lido ao vivo (`rules/branches/main`), sem piso fixo de contagem. O build do candidato (CD `release/build_candidate.py:24-27`) continua exigindo os 10 de `REQUIRED_CHECKS` | API de check-runs, `compare/<S>...main`, `commits/<S>/pulls` e `rules/branches/main` (espelha `pv:332-336`) |
 | `artifact-origin-attempt-expiry` | por propósito: `{purpose, reference_sha256, artifact_digest, run_id, run_attempt, run_started_at, created_at, updated_at, expires_at, interior: true}` | API de runs/artifacts |
 | `dependency-pins` | `{pins: governance.dependencies, closure_recomputed_sha256}` com a closure de `X*` recalculada via `git cat-file` | repositório em `X*` |
 | `toolchain-lock-selections` | o baseline `toolchain` completo + `lock_providers_equal: true` (providers do lock == providers da medição) | artefato P-B |

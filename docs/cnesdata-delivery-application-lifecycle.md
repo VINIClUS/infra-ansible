@@ -234,12 +234,41 @@ objects on a failed, CLOSED, quiescent outcome; it does not claim rollback of a
 nonexistent pair or successful promotion. Maintenance occurs in a later manual
 run after authenticated accepted-open, without extending promotion F.
 
-## Remaining integration gates
+## Integration state at X*
 
-The #499 v4 contract now names the real mode execution, readiness and proof
-paths. Its code is not inferred from the shared ten-alias ceiling. The existing
-audit canary cannot prove unit/recovery, and a clone state machine cannot prove
-production admission. Mode preparation now has an isolated eight-address structural gate and an
+This section records the delivery contract as it stands at X*, the merge commit of P20. The
+sha256 of this document is the `contract_sha256` that governance pins; no closure file changes
+after X*. Each item below merged to `main` with RED-first tests and an independent audit.
+
+Implemented on `main`:
+- Readbacks per stage with identity-derived parameters (G4, P05), the drift catalog and the G5
+  envelope (P06), the Phase A G3 handoff, `public_safe` and envelope (P07), and the per-cycle
+  G6 HMAC with the authenticated cost source.
+- The product source manifest from an authenticated artifact (P10), with `source_closure` and
+  `lifecycle_steps` hydrated from it (P37); the independent lifecycle audit and
+  `approval.json` (P11); the lifecycle catalog, the absence proof and the specified callers
+  (P12).
+- Plan and deploy reusables with a single `execute` job each: `validate` is folded into
+  `execute` (P34), and pre-approved jobs wait for their stage without a credential (P35).
+- The keeper: the API stage with closed-ready and the host handoff (P14); the static stage
+  with its broker, STS session and publish-static (P15) and its authenticated inputs (P15b);
+  governed stage windows and the fixed deadline (P36); the mode-canary oracle and the `unit`,
+  `phase-c-recovery` and `phase-c-audit` stages (P16); the mode broker, mode sessions,
+  ModeReadback and the phase-c element (P16b); terminal, restoration, reopen,
+  terminal-readback and release (P17).
+- Producers: proof, observer, cost, `phase_a_graph` and the owner CLI (P18); the application
+  governance producers (P19); the observer, phase-inputs writer and audit roles (P22); the
+  in-job rehearsal plan with bucket-key state decryption (P21b); read-only calibration and
+  the governance size measurement (P21); the recovery runbook, HMAC custody and drills (P32).
+- Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
+  trusts (F3), and stage windows with pre-approved jobs (F4).
+
+Pending at this draft head, to be described from the merged code before X*: the ops session,
+the activation managed policy and N=273 (P41); unit-start open with its three cluster checks
+(P16b follow-up); the plan inputs and the D2/D2b checkpoint origins (P40); the real brokers
+(P17b).
+
+Mode preparation has an isolated eight-address structural gate and an
 exclusive `runtime-iam/mode-canary.tf` source resolver, including all four inline
 policies on no-op plans. Its native closed-Deny fixture proves source grammar
 and address binding only. A finite internal IAM reader compares two identical
@@ -257,21 +286,26 @@ the exact eight promotion or six readiness sessions. The fourteen session
 algorithms retain their separate ASCII canonical codec. This pure validator
 does not authenticate its producer arguments or authorize STS/apply.
 
-The complete mode-canary input/trust/policy/output oracle, its native product
-fixtures, the readiness D14400 protocol and operational-pending terminal union
-still require integration. Until those producers exist, these
-paths remain closed; no offline vector is an operational acceptance receipt.
-F2/F3 still require fresh post-B CLOSED-ready admission under the original API180
-window and full current/prior static baseline bytes, including non-latest current.
+Commitments that are not authenticated:
+- `scenario_plan_sha256` in the mode-canary record (`MODE_PRODUCT_COMMITTED`) is a
+  product-bound commitment. No producer emits it under authentication and no consumer checks
+  it against other bytes; it proves nothing beyond the product's own record.
+- `rehearsal_plan_sha256` in the `drift-baseline` measurement is the identity of the plan the
+  observer generates inside its own job (P21b). That plan is never stored or uploaded, carries
+  timestamps and cannot be reproduced; the gate checks only that the value is a sha256 digest
+  (`drift_handoff`).
 
-The keeper polling loop, protected terminal assessment producer, application
-reusable/dispatcher, concrete F2/F3 adapter flows
-and complete initial/live/inverse native product plan fixtures remain
-implementation work. Terminal publication and successor verification now have
-offline integration tests, but are not yet connected to that polling/reusable
-flow. The fragment consumer/readback and adapter source preflight are implemented
-and tested but also require that integration. Current local tests do not make
-this extension ready for deployment.
+Window duties at a new X*:
+- `CATALOG_SHA256` is computed from the drift catalog document, and P38 changed it (prefix
+  `8d5b62af`). `drift_handoff` refuses a handoff with another `catalog_sha256`, so the
+  rehearsal drift handoff must be regenerated at X*. The closure is recomputed too, because
+  `drift_catalog` is part of `APPLICATION_PYBOOT`.
+- P39 changed the `policy_sha256` outputs of the application role and of the delivery roles.
+  Any governance record that holds the old digests must be regenerated from the outputs of
+  apply #1 in the window.
+
+No offline vector or local test is an operational acceptance receipt: acceptance comes only
+from the authenticated runs of the window.
 
 
 ## Adapter boundary implementation checkpoint
