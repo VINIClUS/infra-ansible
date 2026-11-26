@@ -325,11 +325,13 @@ def test_leitores_recebem_o_catalogo_e_a_closure_hidratados(monkeypatch, tmp_pat
     assert c.sha(c.canonical(governance["source_closure"])) == gov["source_closure_sha256"]
 
 
-READERS = {("lifecycle_runtime.py", "admission"), ("lifecycle_runtime.py", "current_checkpoint_chain"),
+READERS = {("application_gate.py", "_operational_pending"), ("lifecycle_runtime.py", "admission"), ("lifecycle_runtime.py", "current_checkpoint_chain"),
            ("lifecycle_runtime.py", "fence_prepare_package"), ("lifecycle_runtime.py", "execute"),
             ("lifecycle_runtime.py", "admit_approval_origin"), ("application_gate.py", "_deploy_step"),
             ("application_gate.py", "_plan_activation"), ("application_gate.py", "_observer_step"),
-           ("stage_wait.py", "first_job_name"), ("stage_wait.py", "_producers")}
+           ("lifecycle_runtime.py", "bootstrap_hop"), ("lifecycle_runtime.py", "historical_origin"),
+           ("application_gate.py", "_publish_operational_plan_inputs"),
+           ("stage_wait.py", "first_plan"), ("stage_wait.py", "_producers")}
 
 
 def _readers():

@@ -156,16 +156,27 @@ def _jobs_by_name(api, run):
     return {job["name"]: job for job in listing["jobs"]}
 
 
-def wait_for_payloads(api, run, *, producers, ceiling, clock=time.time, sleep=time.sleep):
-    """Credential-free wait: poll the artifacts listing until every producer artifact is listed, then decide with
-    payload_publication over one jobs listing per poll (conditional GETs on both)."""
+def plan_inputs_present(artifacts, plan_inputs):
+    """DD-2 consumer-interval presence: the unique plan-inputs artifact created strictly after the plan job's own start."""
+    if plan_inputs is None:
+        return True
+    name, started = plan_inputs
+    found = [item for item in artifacts if item["name"] == name]
+    c.require(len(found) <= 1, "unique plan-inputs publication")
+    return bool(found) and started < c.instant(found[0]["created_at"])
+
+
+def wait_for_payloads(api, run, *, producers, ceiling, plan_inputs=None, clock=time.time, sleep=time.sleep):
+    """Credential-free wait: poll the artifacts listing until every producer artifact (and, for a plan job, its own
+    plan-inputs artifact) is listed, then decide with payload_publication over one jobs listing per poll (conditional
+    GETs on both). plan_inputs is (artifact name, own job start seconds) or None."""
     started = clock()
     while True:
         listing = api.read_conditional(f"{_root()}/runs/{run['id']}/artifacts?per_page=100&page=1")
         c.require(listing["total_count"] == len(listing["artifacts"]) <= 100, "complete payload publication inventory")
         listed = {item["name"] for item in listing["artifacts"]}
-        if all("lifecycle-" + producer["step"] in listed for producer in producers):
-            jobs = _jobs_by_name(api, run)
+        if all("lifecycle-" + producer["step"] in listed for producer in producers) and plan_inputs_present(listing["artifacts"], plan_inputs):
+            jobs = _jobs_by_name(api, run) if producers else {}
             published = [payload_publication(jobs.get(producer["name"]), listing["artifacts"], producer["step"])
                          for producer in producers]
             if all(item is not None for item in published):
@@ -200,7 +211,19 @@ GOVERNED_GRID_SECONDS = 60
 OWN_JOB_READS_PER_G_JOB = 1
 NON_CONSUMER_PAYLOAD_READS = 2 + PRODUCERS_READS
 UNMODELED_RESIDUAL_READS = 20
-P40_POINT_READS = 41
+P40_PUBLISH_READS = 3
+P40_CALLER_ARTIFACT_READS = 1 + LIFECYCLE_ARTIFACT_READS
+P40_READER_READS = 4
+P40_WAIT_READS_PER_POLL = 1
+P40_GUARDED_READ_SECONDS = 20
+P40_PUBLISH_RESERVE_SECONDS = UPLOAD_READBACK_SECONDS + 3 * P40_GUARDED_READ_SECONDS
+P40_PREPARATION_SECONDS = 900
+P40_WAIT_SECONDS = P40_PREPARATION_SECONDS - P40_PUBLISH_RESERVE_SECONDS
+P40_PLAN_JOBS = {"application-prepare": 2, "phase-b": 1, "phase-c-recovery": 1, "phase-c-audit": 1}
+P40_KEEPER_STAGE_READS = {
+    "application-prepare": 2 * P40_PUBLISH_READS + 4 * P40_CALLER_ARTIFACT_READS, "phase-b": P40_PUBLISH_READS,
+    "phase-c-recovery": P40_PUBLISH_READS, "phase-c-audit": P40_PUBLISH_READS}
+P40_POINT_READS = sum(P40_KEEPER_STAGE_READS.values()) + P40_READER_READS * sum(P40_PLAN_JOBS.values())
 PROBE_END_STAGES = {"closed-ready": "api"}
 HOUR_SECONDS = 3600
 
@@ -227,7 +250,8 @@ def rest_model(hit_rates=None, *, windows, prepare_open=0, include_keeper=True):
     jobs, artifacts = 1 - rates["jobs"], 1 - rates["artifacts"]
     opens, end = _stage_opens(windows, prepare_open)
     seconds = [0.0] * (end + 1)
-    names = ("keeper", "marker_waiters", "payload_waiters", "admission", "probes", "own_job", "non_consumers")
+    names = ("keeper", "marker_waiters", "payload_waiters", "admission", "probes", "own_job", "non_consumers",
+             "plan_inputs_keeper", "plan_inputs_reader")
     totals = dict.fromkeys(names, 0.0) | {"residual": UNMODELED_RESIDUAL_READS}
 
     def add(component, start, stop, cost, every=POLL_SECONDS):
@@ -241,9 +265,12 @@ def rest_model(hit_rates=None, *, windows, prepare_open=0, include_keeper=True):
 
     if include_keeper:
         add("keeper", 0, end, jobs, KEEPER_POLL_SECONDS)
+        add("keeper", 0, P40_WAIT_SECONDS, P40_WAIT_READS_PER_POLL * jobs, POLL_SECONDS)
         for stage in opens:
             point("keeper", opens[stage], HANDLER_READS_PER_STAGE)
     for stage, count in G_JOBS.items():
+        point("plan_inputs_keeper", opens[stage], P40_KEEPER_STAGE_READS[stage])
+        point("plan_inputs_reader", opens[stage], P40_READER_READS * P40_PLAN_JOBS[stage])
         for _ in range(count):
             add("marker_waiters", 0, opens[stage], artifacts)
             point("marker_waiters", opens[stage], MARKER_HIT_READS)
@@ -303,13 +330,18 @@ def governed_worst(hit_rates=None):
     return _governed_worst(tuple(sorted((hit_rates or {}).items())))
 
 
-def first_job_name(governance, stage):
-    """Job name of the unique governed plan step that opens the stage (observer-bootstrap for preparation)."""
-    found = [step["job_name"] for step in governance["lifecycle_steps"].values()
+def first_plan(governance, stage):
+    """Name and catalog step of the unique governed plan step that opens the stage (observer-bootstrap for preparation)."""
+    found = [(name, step) for name, step in governance["lifecycle_steps"].items()
              if step["role"] == "plan" and step["purpose"] == stage and step["direction"] == "advance"
              and (stage != "application-prepare" or step.get("mode") == "observer-bootstrap")]
     c.require(len(found) == 1, "stage-open first job unique")
     return found[0]
+
+
+def first_job_name(governance, stage):
+    """Job name of the unique governed plan step that opens the stage (observer-bootstrap for preparation)."""
+    return first_plan(governance, stage)[1]["job_name"]
 
 
 def publish_stage_open(*, keeper, guard, api, run, owner, window, first_job, credential_limit, clock=time.time):
@@ -333,13 +365,19 @@ def publish_stage_open(*, keeper, guard, api, run, owner, window, first_job, cre
                                         credential_limit=credential_limit, clock=clock)
 
 
+class _Producers(list):
+    role = None
+
+
 def _producers(api, run, governance, request):
     """Governed producers of the request payloads, from the authenticated catalog (GITHUB_TOKEN only)."""
     from tools.cnesdata_delivery.provenance import lifecycle_objects, product_source_manifest
     manifest = product_source_manifest(api, governance, time.time())
     step = lifecycle_objects(api, governance, manifest)["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict, "governed step")
-    return list(payload_names(request["payloads"], step["input_jobs"]).values())
+    found = _Producers(payload_names(request["payloads"], step["input_jobs"]).values())
+    found.role = step["role"]
+    return found
 
 
 def main():
@@ -366,9 +404,12 @@ def main():
 def _wait_and_export(api, run, job, stage, windows, began):
     import json
     index = wait_for_stage(api, run, job=job, stage=stage, windows=windows)
-    producers = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]),
-                           json.loads(os.environ["REQUEST_DESCRIPTOR"]))
-    wait_for_payloads(api, run, producers=producers, ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
+    request = json.loads(os.environ["REQUEST_DESCRIPTOR"])
+    producers = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]), request)
+    from tools.cnesdata_delivery import plan_inputs
+    own = (plan_inputs.artifact_name(request["step"], run["id"], run["run_attempt"]), c.instant(job["started_at"])) if getattr(producers, "role", None) == "plan" else None
+    wait_for_payloads(api, run, producers=producers, plan_inputs=own,
+                      ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
         handle.write(f"STAGE_OPEN_OWNER_SHA256={index['owner_sha256']}\nSTAGE_OPEN_GENERATION={index['generation']}\n")
 
