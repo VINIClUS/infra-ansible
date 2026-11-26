@@ -56,7 +56,7 @@ def _case(monkeypatch, mode="unit", mutation=None, purpose=None):
     if mutation == "session-name":
         authority.scope["session_names"][code] = "mc-" + code + "-" + "0" * 40
     if mutation == "identity":
-        application.pin["document"] = {"Version": "2012-10-17", "Statement": []}
+        application.ops_pin["document"] = {"Version": "2012-10-17", "Statement": []}
     if mutation == "late":
         world.clock.value = window["deadline"] - 40
     now = world.clock.value

@@ -26,6 +26,7 @@ GOVERNANCE = {"account_id": "111122223333", "state_bucket": "synthetic-state", "
               "application_delegations": ROLE_ARNS}
 SYNTHETIC = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole",
                                                      "Resource": sorted(ROLE_ARNS.values())}]}
+OPS_MANAGED = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:GetRole", "Resource": "*"}]}
 PROPOSAL_CASES = (
     [f"assume-{code}" for code in CODES] + [f"assume-{code}-other-session" for code in CODES] + [f"{code}-expired" for code in CODES]
     + [f"{code}-{name}" for code in ("us", "rs") for name in ("put-tenant", "put-own-run", "put-raw", "put-foreign-tenant",
@@ -53,7 +54,7 @@ def _ib():
 def _documents(codes=tuple(CODES), deadline=DEADLINE):
     """Application identity and managed policy are synthetic; the role policies come from the mode-roles fixture."""
     from tools.cnesdata_delivery import session_policy
-    documents = {"application_identity": SYNTHETIC, "application_managed": SYNTHETIC}
+    documents = {"application_identity": SYNTHETIC, "application_managed": OPS_MANAGED}
     for code in codes:
         operation, alias = CODES[code]
         request = session_policy.application_request(GOVERNANCE, "b" * 40, 44, 1, operation, application_purpose="promotion",
@@ -148,8 +149,8 @@ def test_parte_de_espera_assume_o_mesmo_papel_e_nome_do_ux_sem_documento_de_apli
     ("role.mode_seed", lambda doc: doc | {"Statement": doc["Statement"][:1]}, "us-put-raw"),
     ("role.mode_dispatch", lambda doc: doc | {"Statement": doc["Statement"] + [{"Effect": "Allow", "Action": "*", "Resource": "*"}]},
      None),
-    ("application_session.ux", lambda doc: doc | {"Statement": [s for s in doc["Statement"] if "NotResource" not in s
-                                                                and "Condition" not in s]}, "assume-ux-other-session")],
+    ("application_session.ux", lambda doc: doc | {"Statement": [{key: value for key, value in s.items() if key != "Condition"}
+                                                                for s in doc["Statement"]]}, "assume-ux-other-session")],
     ids=["papel-sem-raw", "papel-amplo-continua-negado-pela-sessao", "sessao-da-aplicacao-sem-nome"])
 def test_documento_que_muda_um_caso_recusa_a_preparacao(name, change, case_id):
     documents = _documents()

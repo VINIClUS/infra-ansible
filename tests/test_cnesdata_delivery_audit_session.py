@@ -47,16 +47,16 @@ def test_managed_arn_do_audit_recusa_role_fora_do_padrao_do_audit(name):
         managed_arn(governance, "audit")
 
 
-def test_lifecycle_request_do_audit_usa_a_sessao_do_audit_e_nega_deletes():
+def test_lifecycle_request_do_audit_usa_a_sessao_do_audit_e_deixa_o_deny_ao_gerenciado():
     request = audit_request()
     policy = json.loads(request["Policy"])
     assert request["PolicyArns"] == [{"arn": AUDIT_SESSION_ARN}]
-    assert {"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"} in policy["Statement"]
+    assert {"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"} not in policy["Statement"]
 
 
 def test_lifecycle_request_do_audit_converge_continua_sessao_de_leitura():
     policy = json.loads(audit_request(direction="converge")["Policy"])
-    assert {"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"} in policy["Statement"]
+    assert {"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"} not in policy["Statement"]
     arn = f"arn:aws:states:us-east-2:{ACCOUNT}:stateMachine:cnesdata-prod-mode"
     with pytest.raises(ValueError, match="advance/read session cannot delete"):
         audit_request(direction="converge", delete_resources=[arn])
