@@ -188,3 +188,11 @@ def test_304_dentro_da_tolerancia_continua_devolvendo_o_corpo_em_cache(monkeypat
     sample = api.sample
     assert api.read_conditional(PATH) == {"a": 1}
     assert api.sample != sample
+
+
+def test_200_com_data_fora_da_tolerancia_e_recusado(monkeypatch):
+    response = Response(b"{}")
+    response.headers.replace_header("Date", formatdate(1_000_000_000, usegmt=True))
+    api, _ = _api(monkeypatch, response)
+    with pytest.raises(ValueError, match="GitHub time uncertainty"):
+        api.read(PATH)
