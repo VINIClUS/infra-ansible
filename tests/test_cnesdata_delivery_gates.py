@@ -121,6 +121,7 @@ def test_actionlint_executes_pinned_workflows():
 
 
 def _import_closure(entries):
+    """AST import closure plus runtime-requirements.txt and the product frames that mode_broker loads by exec (C2)."""
     import ast
     package = "tools.cnesdata_delivery"
     directory = ROOT / "tools/cnesdata_delivery"
@@ -137,6 +138,9 @@ def _import_closure(entries):
                 pending.update(alias.name for alias in node.names)
             elif node.module and node.module.startswith(package + "."):
                 pending.add(node.module.removeprefix(package + ".").split(".", 1)[0])
+    if "mode_broker.py" in required:
+        from tools.cnesdata_delivery import mode_broker
+        required |= {name for _, name, _ in mode_broker.PRODUCT_FRAMES}
     return required | {"runtime-requirements.txt"}
 
 
@@ -189,7 +193,7 @@ def test_application_gate_bootstrap_fetches_complete_runtime_import_closure():
     _, found = _fetch_lists("reusable-cnesdata-application-gate.yml")
     assert len(found) == 1
     assert len(found[0]) == len(set(found[0]))
-    assert set(found[0]) == _import_closure({"application_gate"})
+    assert set(found[0]) == _import_closure({"application_gate"}) | {"phase-c-child-requirements.txt"}
 
 
 def test_purpose_cost_pre_requires_real_guardrail_context(contract):

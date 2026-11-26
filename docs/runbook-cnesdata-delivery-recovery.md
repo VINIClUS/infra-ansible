@@ -66,6 +66,11 @@ Nada do que segue e feito antes de o item abaixo estar completo e conferido por 
 1. Revisao pelo dono, por escrito (data, run, causa, evidencia retida, decisao), antes de mexer no lease.
    Se o estado e `held`/`recovery_required` ou ha duvida sobre o estado da fence ou das rotas, a
    recuperacao do ambiente (host, rotas, restauracao) vem antes e fora deste runbook.
+   Falha do `unit-start` depois da reserva: o keeper nunca roda o `cancel_reserved` do produto (o papel
+   `mode_dispatch` nao tem `ConditionCheckItem` no SEMAPHORE), entao ficam um dispatch de unidade
+   `RESERVED`, o permit do `ENV#prod#SEMAPHORE` (`UNIT`) e o slot do `ENV#prod#ATTEMPTS` que ele
+   consumiu. A recuperacao revisada limpa os tres antes da proxima promocao, depois da evidencia do
+   passo 1 e com a mesma aprovacao escrita.
 2. Falha do host (decisao do dono de 2026-11-25, recuperacao manual): o lease fica `held`. Com
    `rolled_back`, a API ja esta na versao anterior. Com `recovery_required`, o dono recupera o VPS a mao
    ate a versao anterior aceita do host e confere por leitura, antes do reset revisado. O `host-recovery`

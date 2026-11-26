@@ -467,7 +467,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         c.require(audit_role != "refuse", "fixture mode input refused")
         return {"fixture": True}
     monkeypatch.setattr(lr, "mode_canary_admission", admit_mode)
-    monkeypatch.setattr(lr, "mode_canary_output", lambda aws, **kwargs: mode_outputs.append(kwargs) or {"fixture": True})
+    mode_proof = {"fixture": True}
+    monkeypatch.setattr(lr, "mode_canary_output", lambda aws, **kwargs: mode_outputs.append(kwargs) or mode_proof)
     def private_payload(*args, **kwargs):
         audit = args[4]["index.json"] == b"audit"
         approval_here = audit != (approval_flag == "approval_from_plan")
@@ -514,6 +515,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
             commands.append(command[1])
             if command[1] == "apply" and not after_apply:
                 raise ApplyBoundary()
+            if command[1] == "apply":
+                Path(kwargs["output"]).write_bytes(b"Apply complete!\n")
             if command[1] == "plan":
                 var_files.append(Path(command[4].split("=", 1)[1]).read_bytes())
                 Path(command[5].split("=", 1)[1]).write_bytes(b"synthetic-plan")
@@ -555,6 +558,8 @@ def test_execute_binds_protected_step_to_original_approval_before_apply(tmp_path
         assert kwargs["previous_raw"] == payload["checkpoint.json"] and kwargs["approval_raw"] == payload["approval.json"]
         assert kwargs["activation_sha256"] == c.sha(b"p" * 40) and kwargs["plan_index"]["step"] == "prepared"
         assert c.loads(kwargs["checkpoint_raw"], canonical=True)["owner"] == owner and kwargs["sources"] is sources
+        assert kwargs["mode_readbacks"] is mode_proof and len(mode_outputs) == 1
+        assert kwargs["mode_input_raw"] == c.canonical({"mode_canary": inputs["mode_canary"]})
         assert published[0][5] == {"fence-prepared.json": b"{}\n"}
         # Item 6: exactly the objects private_payload, authenticate_predecessor and keeper_transport returned.
         assert len(returned["predecessor"]) == len(returned["transport"]) == 1 and len(returned["index"]) == 2
