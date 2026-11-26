@@ -8,6 +8,7 @@ import base64
 import copy
 import hashlib
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,8 @@ PLAN_KEYS = (
     "version product inventory dependencies host_preflight inventory_sha256"
     " dependencies_sha256 host_preflight_sha256 host_key_fingerprint expires_at"
 )
+RUNNER_KEYS = "role_arn objects ssm_parameters ssh_hostname known_hosts cloudflared"
+SSM_LEAVES = "ssh-key cloudflare-client-id cloudflare-client-secret"
 STATIC_KEYS = (
     "enabled runtime_sha256 runtime_contract_sha256 binding envelope workflows images"
     " required_checks source_files archive_member cost_handoff plan_run_id region runner"
@@ -180,8 +183,24 @@ def check_pins(doc, plan):
     )
 
 
+def check_runner(runner):
+    g.closed(runner, RUNNER_KEYS)
+    for obj in runner["objects"]:
+        g.closed(obj, "bucket key version sha256 size")
+    parameters = g.closed(runner["ssm_parameters"], SSM_LEAVES)
+    for name, arn in parameters.items():
+        g.require(
+            isinstance(arn, str)
+            and re.fullmatch(
+                r"arn:aws:ssm:[a-z0-9-]+:\d{12}:parameter/cnesdata/deploy/" + name, arn
+            ),
+            "CnesData SSM leaf",
+        )
+
+
 def check_host(doc, plan):
     inventory, runner, host = plan["inventory"], doc["runner"], doc["host"]
+    check_runner(runner)
     g.require(
         runner["ssh_hostname"] == inventory["ssh_hostname"]
         and fingerprint(runner["known_hosts"], runner["ssh_hostname"])

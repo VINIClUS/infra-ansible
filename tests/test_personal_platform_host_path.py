@@ -600,6 +600,10 @@ def test_execucoes_diferentes_mudam_so_o_caller(tmp_path, monkeypatch):
         lambda s: s["binding"]["approval"].update(governance_sha256=H),
         lambda s: s["envelope"]["release_manifest"]["platform_plan"].update(evidence_id="x"),
         lambda s: s["host"].update(padding="x" * 48000),
+        lambda s: s["runner"]["ssm_parameters"].update({"ssh-key": "arn:aws:ssm:x"}),
+        lambda s: s["runner"]["ssm_parameters"].pop("cloudflare-client-id"),
+        lambda s: s["runner"]["objects"][0].update(extra=True),
+        lambda s: s["runner"].update(extra=True),
     ],
 )
 def test_governanca_recusa_static_incoerente(tmp_path, monkeypatch, mutate):
