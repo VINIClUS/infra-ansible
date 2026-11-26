@@ -123,7 +123,11 @@ def preflight_bytes():
                 "sshd_dispatcher_conf": H,
                 "sudoers_dispatcher": H,
             },
-            "checks": {"dispatcher_user_locked": True, "tunnel_active": True},
+            "checks": {
+                "dispatcher_user_locked": True,
+                "tunnel_active": True,
+                "aws_cli_pinned": True,
+            },
         }
     )
 
@@ -180,16 +184,19 @@ def caddyfile(upstream="central-api:8000"):
     ).encode()
 
 
-def readback(upstream="central-api:8000", listening=(), expiration=EXPIRES, text=None):
+def readback(upstream="central-api:8000", listening=(), text=None):
     return runtime().canonical(
         {
             "version": 1,
             "observed_at": "2029-12-31T23:00:00Z",
             "caddyfile_b64": base64.b64encode(text or caddyfile(upstream)).decode(),
             "listening": list(listening),
-            "api_session_expiration": expiration,
         }
     )
+
+
+def api_probe(role="arn:aws:iam::111122223333:role/cnesdata-prod-api", expires=EXPIRES):
+    return runtime().canonical({"version": 1, "role_arn": role, "expires_at": expires})
 
 
 def session(name, expiration="2030-01-01T00:00:00+00:00", access=ACCESS, role=None):
@@ -332,6 +339,7 @@ def inputs(hp, raw, archive, *, signing, activation=None, **seen):
         plan=raw,
         archive=archive,
         readback=readback(**seen),
+        api_probe=api_probe(),
         sessions={"unit": session("unit"), "recovery": session("recovery")},
         signing=signing,
         activation=activation,
@@ -514,6 +522,10 @@ def test_preflight_emite_bytes_canonicos_so_com_versoes_hashes_e_booleanos(tmp_p
     installed = root / "usr/local/lib/personal-platform"
     installed.mkdir(parents=True)
     (installed / "host_gate.py").write_bytes(b"runtime")
+    aws = root / "usr" / "bin" / "aws"
+    aws.parent.mkdir(parents=True)
+    aws.write_text("#!/bin/sh\n")
+    aws.chmod(0o755)
     output = run_preflight(tmp_path, fake_tools(tmp_path))
     raw = output.read_bytes()
     value = g.host_json(raw)
@@ -534,7 +546,11 @@ def test_preflight_emite_bytes_canonicos_so_com_versoes_hashes_e_booleanos(tmp_p
         "sshd_dispatcher_conf": None,
         "sudoers_dispatcher": None,
     }
-    assert value["checks"] == {"dispatcher_user_locked": True, "tunnel_active": True}
+    assert value["checks"] == {
+        "dispatcher_user_locked": True,
+        "tunnel_active": True,
+        "aws_cli_pinned": True,
+    }
     assert not re.search(rb"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", raw)
 
 
@@ -542,7 +558,11 @@ def test_preflight_reporta_conta_destravada_e_tunel_ausente(tmp_path):
     g = runtime()
     output = run_preflight(tmp_path, fake_tools(tmp_path, locked="P"), "--tunnel-unit", "x")
     value = g.host_json(output.read_bytes())
-    assert value["checks"] == {"dispatcher_user_locked": False, "tunnel_active": False}
+    assert value["checks"] == {
+        "dispatcher_user_locked": False,
+        "tunnel_active": False,
+        "aws_cli_pinned": False,
+    }
 
 
 def test_playbook_de_preflight_busca_os_bytes_exatos_do_host():
@@ -784,6 +804,7 @@ def write_inputs(tmp_path, seen, static, activation=None):
         "plan": seen.plan,
         "archive": seen.archive,
         "readback": seen.readback,
+        "api-probe": seen.api_probe,
         "signing": json.dumps(seen.signing).encode(),
         "session-unit": json.dumps(seen.sessions["unit"]).encode(),
         "session-recovery": json.dumps(seen.sessions["recovery"]).encode(),
@@ -820,7 +841,7 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
     assert "arn:aws" not in result.stdout + result.stderr
     assert "synthetic-secret" not in result.stdout + result.stderr
     values = json.loads((handoff / "handoffs.json").read_text())
-    assert values["personal_platform_dispatcher_api_probe"] is True
+    assert set(values) == {"personal_platform_dispatcher_handoffs"}
     entries = values["personal_platform_dispatcher_handoffs"]
     assert set(entries) == {"host-gate", "activation-public-key", "probe-unit", "probe-recovery"}
     assert entries["host-gate"]["src"] == str(out)

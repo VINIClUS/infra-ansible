@@ -30,7 +30,9 @@ from test_personal_platform_host_path import (
     SHA,
     TAG,
     activation_value,
+    api_probe,
     builder,
+    credentials,
     caddyfile,
     compose_bytes,
     derived_probes,
@@ -50,9 +52,9 @@ from test_personal_platform_host_path import (
 READBACK_PLAY = ROOT / "playbooks" / "personal-platform-host-readback.yml"
 READBACK = ROOT / "tools" / "personal_platform" / "host_readback.py"
 API_PROBE = ROOT / "tools" / "personal_platform" / "host_api_probe.py"
+API_PROBE_PLAY = ROOT / "playbooks" / "personal-platform-api-probe.yml"
 BUILDER = ROOT / "tools" / "personal_platform" / "host_governance.py"
 CADDYFILE = "/opt/cnesdata/caddy/Caddyfile"
-DOC = "run/personal-platform/credentials/cnesdata/current/aws-credentials.json"
 PROBE_OUT = "/run/personal-platform/probes/API.credentials"
 INI = (
     f"[default]\naws_access_key_id={ACCESS}\naws_secret_access_key=synthetic-secret"
@@ -395,10 +397,10 @@ def test_sessao_de_probe_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeyp
 
 def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
     g, hp = runtime(), builder()
-    seen = hp.read_readback(readback(expiration="2030-01-01T00:10:00Z"))
+    minted = hp.read_api_probe(api_probe(expires="2030-01-01T00:10:00Z"))
     sessions = {"unit": session("unit"), "recovery": session("recovery")}
     api = probes()["API"]["role_arn"]
-    value = hp.derive_probes(probes(), sessions, seen, (4242, 3, api), g.instant(NOW))
+    value = hp.derive_probes(probes(), sessions, minted, (4242, 3, api), g.instant(NOW))
     expected = derived_probes(4242, 3)
     expected["API"]["expires_at"] = "2030-01-01T00:10:00Z"
     assert value == expected
@@ -412,8 +414,8 @@ def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
         {"session": session("unit", role="cnesdata-prod-api")},
         {"session": session("unit", expiration="2029-12-31T23:08:00+00:00")},
         {"session": {"Credentials": session("unit")["Credentials"]}},
-        {"expiration": None},
-        {"expiration": "2029-12-31T23:08:00Z"},
+        {"minted": api_probe(expires="2029-12-31T23:08:00Z")},
+        {"minted": api_probe(role="arn:aws:iam::111122223333:role/cnesdata-prod-other")},
         {"static": {**probes()["unit"], "key": "cnesdata/x"}},
         {"drop": "recovery"},
         {"api_role": "arn:aws:iam::111122223333:role/cnesdata-prod-other"},
@@ -421,16 +423,30 @@ def test_runtime_probes_derivam_caminho_chave_e_expiracao_por_execucao():
 )
 def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
     g, hp = runtime(), builder()
-    seen = hp.read_readback(readback(expiration=case.get("expiration", EXPIRES)))
+    minted = hp.read_api_probe(case.get("minted", api_probe()))
     sessions = {"unit": case.get("session", session("unit")), "recovery": session("recovery")}
     sessions.pop(case.get("drop", "none"), None)
     static = {**probes(), "unit": case.get("static", probes()["unit"])}
     api = case.get("api_role", probes()["API"]["role_arn"])
     with pytest.raises((ValueError, KeyError)):
-        hp.derive_probes(static, sessions, seen, (11, 1, api), g.instant(NOW))
+        hp.derive_probes(static, sessions, minted, (11, 1, api), g.instant(NOW))
 
 
-def host_root(tmp_path, doc=None, link=False):
+@pytest.mark.parametrize(
+    "raw",
+    [
+        api_probe().replace(b'":', b'": '),
+        api_probe().replace(b'"version":1', b'"extra":1,"version":1'),
+        api_probe(expires="2030-01-01"),
+        api_probe(role="arn:aws:iam::111122223333:user/x"),
+    ],
+)
+def test_sessao_da_api_cunhada_recusa_bytes_fora_do_contrato(raw):
+    with pytest.raises(ValueError):
+        builder().read_api_probe(raw)
+
+
+def host_root(tmp_path, link=False):
     root = tmp_path / "root"
     caddy = root / CADDYFILE.lstrip("/")
     caddy.parent.mkdir(parents=True)
@@ -448,21 +464,7 @@ def host_root(tmp_path, doc=None, link=False):
         + "   1: 0100007F:46A2 0100007F:D431 01 00000000:00000000\n"
     )
     (net / "tcp6").write_text(header)
-    if doc is not None:
-        path = root / DOC
-        path.parent.mkdir(parents=True)
-        path.write_bytes(runtime().canonical(doc))
     return root
-
-
-def credential_doc(access=ACCESS, expiration=EXPIRES):
-    return {
-        "Version": 1,
-        "AccessKeyId": access,
-        "SecretAccessKey": "synthetic-secret",
-        "SessionToken": "synthetic-token",
-        "Expiration": expiration,
-    }
 
 
 def run_readback(root, out):
@@ -473,62 +475,131 @@ def run_readback(root, out):
     )
 
 
-def test_leitura_do_host_emite_caddyfile_portas_ouvindo_e_so_a_expiracao_da_sessao(tmp_path):
+def test_leitura_do_host_emite_so_o_caddyfile_e_as_portas_ouvindo(tmp_path):
     out = tmp_path / "readback.json"
-    result = run_readback(host_root(tmp_path, credential_doc()), out)
+    result = run_readback(host_root(tmp_path), out)
     assert result.returncode == 0, result.stderr
     assert out.read_bytes() == readback(listening=(18081,))
     assert stat.S_IMODE(out.stat().st_mode) == 0o600
-    data = out.read_bytes() + result.stdout + result.stderr
-    assert b"synthetic-secret" not in data and b"synthetic-token" not in data
-    assert ACCESS.encode() not in data
-
-
-def test_leitura_do_host_sem_sessao_temporaria_reporta_expiracao_nula(tmp_path):
-    out = tmp_path / "readback.json"
-    run_readback(host_root(tmp_path, credential_doc(access="AKIASYNTHETICEXAMPLE")), out)
-    assert runtime().host_json(out.read_bytes())["api_session_expiration"] is None
 
 
 def test_leitura_do_host_recusa_caddyfile_por_symlink(tmp_path):
     out = tmp_path / "readback.json"
-    result = run_readback(host_root(tmp_path, credential_doc(), link=True), out)
+    result = run_readback(host_root(tmp_path, link=True), out)
     assert result.returncode != 0 and not out.exists()
 
 
-def run_api_probe(root):
+HELPER = """#!/bin/sh
+here=$(dirname "$0")
+printf '%s\\n' "$@" > "$here/argv.txt"
+cat "$here/response.json"
+exit "$(cat "$here/rc")"
+"""
+
+
+def helper_response(access=ACCESS, expiration=EXPIRES, version=1):
+    return {
+        "Version": version,
+        "AccessKeyId": access,
+        "SecretAccessKey": "synthetic-secret",
+        "SessionToken": "synthetic-token",
+        "Expiration": expiration,
+    }
+
+
+def mint_root(tmp_path, response=None, rc=0, creds=None, governance=True):
+    root = tmp_path / "root"
+    helper = root / "usr" / "local" / "bin" / "aws_signing_helper"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(HELPER)
+    helper.chmod(0o755)
+    (helper.parent / "response.json").write_text(json.dumps(response or helper_response()))
+    (helper.parent / "rc").write_text(str(rc))
+    (root / "run" / "personal-platform").mkdir(parents=True, mode=0o700)
+    if governance:
+        path = root / "etc" / "personal-platform" / "host-gate.json"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(runtime().canonical({"credentials": creds or credentials(), "x": 1}))
+        path.chmod(0o600)
+    return root
+
+
+def run_mint(root, out):
     return subprocess.run(
-        [sys.executable, "-I", str(API_PROBE), "--root", str(root), "--output", PROBE_OUT],
+        [sys.executable, "-I", str(API_PROBE), "--root", str(root), "--output", str(out)],
         capture_output=True, check=False,
     )
 
 
-def test_sonda_da_api_deriva_o_ini_no_host_sem_imprimir_a_sessao(tmp_path):
-    root = host_root(tmp_path, credential_doc())
-    result = run_api_probe(root)
+def test_sonda_da_api_cunha_sessao_ra_nova_no_host_e_devolve_so_a_expiracao(tmp_path):
+    root, out = mint_root(tmp_path), tmp_path / "api-probe.json"
+    result = run_mint(root, out)
     assert result.returncode == 0, result.stderr
     path = root / PROBE_OUT.lstrip("/")
     assert path.read_text() == INI
     assert stat.S_IMODE(path.stat().st_mode) == 0o600 and path.stat().st_nlink == 1
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
-    assert b"synthetic" not in result.stdout + result.stderr
+    assert out.read_bytes() == api_probe(role=credentials()["role_arn"])
+    assert stat.S_IMODE(out.stat().st_mode) == 0o600
+    c = credentials()
+    argv = (root / "usr" / "local" / "bin" / "argv.txt").read_text().splitlines()
+    assert argv == [
+        "credential-process", "--certificate", c["certificate"], "--private-key",
+        c["private_key"], "--trust-anchor-arn", c["trust_anchor_arn"], "--profile-arn",
+        c["profile_arn"], "--role-arn", c["role_arn"], "--session-duration", "3600",
+    ]
+    data = out.read_bytes() + result.stdout + result.stderr
+    assert b"synthetic" not in data and ACCESS.encode() not in data
 
 
 @pytest.mark.parametrize(
-    "doc",
+    "case",
     [
-        credential_doc(access="AKIASYNTHETICEXAMPLE"),
-        credential_doc(expiration="2020-01-01T00:00:00Z"),
-        {**credential_doc(), "Version": 2},
-        None,
+        {"response": helper_response(access="AKIASYNTHETICEXAMPLE")},
+        {"response": helper_response(expiration="2020-01-01T00:00:00Z")},
+        {"response": helper_response(version=2)},
+        {"rc": 1},
+        {"creds": {**credentials(), "application": "limnopulse"}},
+        {"creds": {**credentials(), "private_key": "/tmp/private-key.pem"}},
+        {"creds": {**credentials(), "duration_seconds": 900}},
+        {"governance": False},
     ],
 )
-def test_sonda_da_api_recusa_documento_sem_sessao_temporaria_valida(tmp_path, doc):
-    root = host_root(tmp_path, doc)
-    result = run_api_probe(root)
+def test_sonda_da_api_recusa_sessao_ou_identidade_fora_do_contrato(tmp_path, case):
+    root, out = mint_root(tmp_path, **case), tmp_path / "api-probe.json"
+    result = run_mint(root, out)
     assert result.returncode != 0
-    assert not (root / PROBE_OUT.lstrip("/")).exists()
+    assert not (root / PROBE_OUT.lstrip("/")).exists() and not out.exists()
     assert b"synthetic" not in result.stdout + result.stderr
+
+
+def test_playbook_da_sonda_da_api_cunha_le_de_volta_busca_e_remove():
+    [play] = yaml.safe_load(API_PROBE_PLAY.read_text())
+    assert play["hosts"] == "personal_platform" and play["become"] is True
+    assert play["gather_facts"] is False
+    assert play["tags"] == ["personal_platform_api_probe"]
+    guard, mint, stat_task, check, fetch, remove = play["tasks"]
+    rules = guard["ansible.builtin.assert"]["that"]
+    assert "ansible_limit | default('') == inventory_hostname" in rules
+    assert "ansible_play_hosts_all | length == 1" in rules
+    script = mint["ansible.builtin.script"]
+    assert "tools/personal_platform/host_api_probe.py" in script["cmd"]
+    assert "--output /run/personal-platform/api-probe.json" in script["cmd"]
+    assert script["executable"] == "/usr/bin/python3" and mint["no_log"] is True
+    assert stat_task["ansible.builtin.stat"]["path"] == PROBE_OUT
+    checks = " ".join(check["ansible.builtin.assert"]["that"])
+    for fragment in ("isreg", "uid == 0", "'0600'", "nlink == 1", "size <= 16384"):
+        assert fragment in checks, fragment
+    module = fetch["ansible.builtin.fetch"]
+    assert module["src"] == "/run/personal-platform/api-probe.json"
+    assert module["dest"] == "{{ personal_platform_api_probe_dest }}"
+    assert module["flat"] is True
+    removal = remove["ansible.builtin.file"]
+    assert (removal["path"], removal["state"]) == (PROBE_OUT, "absent")
+    remove_flag = "personal_platform_api_probe_remove | default(false) | bool"
+    assert remove["when"] == remove_flag
+    for task in (mint, stat_task, check, fetch):
+        assert task["when"] == "not (" + remove_flag + ")", task["name"]
 
 
 def test_playbook_de_leitura_busca_so_o_documento_do_host_sem_fatos():
@@ -553,44 +624,36 @@ def test_playbook_de_leitura_busca_so_o_documento_do_host_sem_fatos():
     assert module["flat"] is True
 
 
-def test_handoffs_criam_o_diretorio_das_sondas_e_derivam_a_sonda_da_api_no_host():
+def test_handoffs_criam_o_diretorio_das_sondas_e_nao_derivam_mais_a_sonda_da_api():
     names = [t["name"] for t in tasks()]
     directory = named("Create the private runtime probe directory")
     module = directory["ansible.builtin.file"]
     assert module["path"] == "/run/personal-platform/probes"
     assert (module["state"], module["owner"], module["mode"]) == ("directory", "root", "0700")
-    derive = named("Derive the API runtime probe from the host renewer session")
-    script = derive["ansible.builtin.script"]
-    assert "tools/personal_platform/host_api_probe.py" in script["cmd"]
-    assert f"--output {PROBE_OUT}" in script["cmd"]
-    assert script["executable"] == "/usr/bin/python3"
-    assert derive["no_log"] is True
-    assert derive["when"] == "personal_platform_dispatcher_api_probe | bool"
-    check = named("Require the derived API runtime probe carrier")
-    rules = " ".join(check["ansible.builtin.assert"]["that"])
-    for fragment in ("uid == 0", "'0600'", "nlink == 1", "isreg"):
-        assert fragment in rules, fragment
+    assert "api_probe" not in directory["when"]
     install = names.index("Install the exact private handoff bytes from the controller")
-    assert names.index(directory["name"]) < install
-    assert names.index(directory["name"]) < names.index(derive["name"])
-    assert names.index(derive["name"]) < names.index(check["name"])
-    for task in (directory, derive, check):
-        assert TAG in task["tags"], task["name"]
+    assert names.index(directory["name"]) < install and TAG in directory["tags"]
+    assert not [n for n in names if "API runtime probe" in n]
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
-    assert defaults["personal_platform_dispatcher_api_probe"] is False
+    assert "personal_platform_dispatcher_api_probe" not in defaults
+
+
+def test_tmpfiles_recria_o_diretorio_das_sondas_no_boot():
+    task = named("Recreate the runtime probe directory on every boot")
+    module = task["ansible.builtin.copy"]
+    assert module["dest"] == "/etc/tmpfiles.d/personal-platform-probes.conf"
+    assert module["content"] == "d /run/personal-platform/probes 0700 root root -\n"
+    assert (module["owner"], module["mode"]) == ("root", "0644")
+    assert TAG not in task.get("tags", [])
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-core absent")
-def test_tag_dos_handoffs_lista_as_sondas_na_ordem(tmp_path):
+def test_tag_dos_handoffs_cria_o_diretorio_antes_da_copia(tmp_path):
     text = listed(tmp_path, "--tags", TAG)
-    present = [
-        "Create the private runtime probe directory",
-        "Install the exact private handoff bytes",
-        "Derive the API runtime probe from the host renewer session",
-        "Require the derived API runtime probe carrier",
-    ]
+    present = ["Create the private runtime probe directory", "Install the exact private handoff bytes"]
     positions = [text.index(name) for name in present]
     assert positions == sorted(positions)
+    assert "Recreate the runtime probe directory on every boot" not in text
 
 
 def test_governanca_de_deploy_verifica_a_ativacao_real_no_build(tmp_path, monkeypatch):
