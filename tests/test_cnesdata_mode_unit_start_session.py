@@ -48,7 +48,7 @@ def _session():
 
 def _wait():
     from tools.cnesdata_delivery import session_policy
-    return session_policy.mode_unit_wait_policy(resources=RESOURCES, deadline=DEADLINE)
+    return session_policy.mode_unit_wait_policy(resources=RESOURCES, owner_sha256=OWNER, deadline=DEADLINE)
 
 
 def _effective(policy, action, key, at=NOW, role=ROLE):
@@ -222,9 +222,12 @@ def test_inicio_do_ux_inicia_a_execucao_e_nao_descreve():
 
 
 @pytest.mark.parametrize("role", [ROLE, BROAD], ids=["papel", "papel-amplo"])
-def test_espera_do_ux_so_descreve_a_execucao_e_as_tarefas_do_cluster_ate_o_prazo(role):
+def test_espera_do_ux_descreve_a_execucao_e_as_tarefas_do_cluster_e_le_o_run_unit_ate_o_prazo(role):
     wait, now, expired = _wait(), {"aws:CurrentTime": NOW}, {"aws:CurrentTime": c.utc(DEADLINE)}
-    assert [statement["Action"] for statement in wait["Statement"]] == [["states:DescribeExecution"], ["ecs:DescribeTasks"]]
+    assert [statement["Action"] for statement in wait["Statement"]] == [["states:DescribeExecution"], ["ecs:DescribeTasks"],
+                                                                        ["dynamodb:GetItem"]]
+    assert _effective(wait, "GetItem", RUN, role=role)
+    assert not _effective(wait, "GetItem", RUN, at=c.utc(DEADLINE), role=role)
     assert effective_iam(role, [wait], "states:DescribeExecution", EXECUTION, now)
     assert effective_iam(role, [wait], "ecs:DescribeTasks", TASK, now | CLUSTER)
     assert not effective_iam(role, [wait], "states:DescribeExecution", EXECUTION, expired)
@@ -233,12 +236,39 @@ def test_espera_do_ux_so_descreve_a_execucao_e_as_tarefas_do_cluster_ate_o_prazo
                              now | {"ecs:cluster": RESOURCES["cluster_arn"] + "-foreign"})
     for action in ACTIONS:
         assert not _effective(wait, action, TENANT, role=role)
+    for key in PROBE_KEYS:
+        assert all(not _effective(wait, action, key, role=role) for action in ACTIONS if (action, key) != ("GetItem", RUN))
 
 
 def test_espera_do_ux_esta_na_concessao_do_mode_dispatch():
     now = {"aws:CurrentTime": NOW}
     assert effective_iam(ROLE, [ROLE], "states:DescribeExecution", EXECUTION, now)
     assert effective_iam(ROLE, [ROLE], "ecs:DescribeTasks", TASK, now | CLUSTER)
+    assert _effective(ROLE, "GetItem", RUN)
+
+
+def test_chave_do_get_do_uw_e_a_particao_das_leituras_vendorizadas_dos_outputs_sem_depender_das_unidades():
+    observe = _mb().product_unit_observe()
+    for units in (("0" * 32,), ("f" * 32, "1" * 32)):
+        reads = observe.unit_output_reads(TABLE, RESOURCES["scope"]["tenant_id"], UNIT_RUN, units)
+        assert {read["Key"]["pk"]["S"] for read in reads} == {RUN} == _mb().unit_wait_grants(RESOURCES, OWNER)
+
+
+def test_espera_do_ux_recusa_owner_sem_run_unit_no_escopo():
+    from tools.cnesdata_delivery import session_policy
+    with pytest.raises(ValueError, match="^mode session runs$"):
+        session_policy.mode_unit_wait_policy(resources=RESOURCES, owner_sha256="b" * 64, deadline=DEADLINE)
+
+
+def test_espera_do_ux_cabe_em_1998_bytes_nos_maximos_dos_recursos():
+    from tools.cnesdata_delivery import session_policy
+    prefix = "arn:aws:{}:us-east-2:111122223333:"
+    resources = RESOURCES | {"table_arn": prefix.format("dynamodb") + "table/cnesdata-prod-" + "t" * 241,
+                             "machine_arn": prefix.format("states") + "stateMachine:" + "m" * 80,
+                             "cluster_arn": prefix.format("ecs") + "cluster/" + "c" * 255}
+    resources["scope"] = RESOURCES["scope"] | {"tenant_id": "prod-canary-" + "c" * 32}
+    wait = session_policy.mode_unit_wait_policy(resources=resources, owner_sha256=OWNER, deadline=DEADLINE)
+    assert _size(wait) <= 1998
 
 
 @pytest.mark.parametrize("action, key", [("ConditionCheckItem", SEMAPHORE), ("Query", RUN), ("UpdateItem", TENANT),

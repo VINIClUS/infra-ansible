@@ -222,16 +222,19 @@ def mode_session_policy(operation, *, resources, owner_sha256, deadline):
     return _mode_expiring(statements, deadline)
 
 
-def mode_unit_wait_policy(*, resources, deadline):
-    """ux wait part (P16b ruling 5 item 3 (2)): the unit-execution and unit-task reads after StartExecution, assumed on
-    the ux role and session name, until the deadline.
+def mode_unit_wait_policy(*, resources, owner_sha256, deadline):
+    """ux wait part (P16b ruling 5 item 3 (2), P16d): the unit-execution, unit-task and unit-output reads after
+    StartExecution, assumed on the ux role and session name, until the deadline.
 
     Raises: ValueError before any STS call.
     """
+    from tools.cnesdata_delivery.mode_broker import unit_wait_grants
     _mode_session_resources(resources)
+    c.require(type(owner_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", owner_sha256) is not None, "mode session owner")
     c.integer(deadline)
     execution = resources["machine_arn"].replace(":stateMachine:", ":execution:") + ":*"
-    return _mode_expiring([_mode_allow(["states:DescribeExecution"], execution), _mode_tasks(resources)], deadline)
+    return _mode_expiring([_mode_allow(["states:DescribeExecution"], execution), _mode_tasks(resources),
+                           _mode_table(["dynamodb:GetItem"], resources, unit_wait_grants(resources, owner_sha256))], deadline)
 
 
 def _mode_expiring(statements, deadline):

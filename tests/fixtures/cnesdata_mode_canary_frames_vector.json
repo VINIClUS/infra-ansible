@@ -389,6 +389,7 @@
   "packages/cnes_domain/src/cnes_domain/orchestration/mode_canary.py": "255431e9f02f0f26554c42370ee0b0c55b1ab9287a79422c24be377df45571d2",
   "packages/cnes_infra/src/cnes_infra/aws/mode_canary_dispatch.py": "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c",
   "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py": "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33",
+  "packages/cnes_infra/src/cnes_infra/aws/mode_canary_unit_observe.py": "a7673ee24defc40fd661e6e1ea162f662ee003ed111c587d00e138dc59e32382",
   "packages/cnes_infra/src/cnes_infra/control_plane/dynamodb_keys.py": "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"
  },
  "dispatch": {
@@ -3158,5 +3159,803 @@
   "path": "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py",
   "sha256": "35cd96e6362a53c835369f0683e8eaec8b3eb9d3ea134f02e1689437df08cf33"
  },
- "table": "cnesdata-prod-control-plane"
+ "table": "cnesdata-prod-control-plane",
+ "unit_observe": {
+  "cases": [
+   {
+    "describe_request": {
+     "cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+     "tasks": [
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+     ]
+    },
+    "describe_tasks": {
+     "response": {
+      "failures": [],
+      "tasks": [
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "31d49e0b2a20378b6b2998411e4f305f"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       },
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "7687b440a8dd5123aa4000858436bdb6"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       }
+      ]
+     },
+     "synthetic": true
+    },
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"31d49e0b2a20378b6b2998411e4f305f\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}, {\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"7687b440a8dd5123aa4000858436bdb6\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "aceito-pascal",
+    "pending": [],
+    "task_arns": [
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+    ]
+   },
+   {
+    "describe_request": {
+     "cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+     "tasks": [
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+     ]
+    },
+    "describe_tasks": {
+     "response": {
+      "failures": [],
+      "tasks": [
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "31d49e0b2a20378b6b2998411e4f305f"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       },
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "7687b440a8dd5123aa4000858436bdb6"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       }
+      ]
+     },
+     "synthetic": true
+    },
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"taskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"lastStatus\": \"STOPPED\"}, {\"taskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab\", \"lastStatus\": \"STOPPED\"}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "aceito-camel",
+    "pending": [],
+    "task_arns": [
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+    ]
+   },
+   {
+    "describe_request": null,
+    "describe_tasks": null,
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"StopCode\": \"EssentialContainerExited\"}, {\"StopCode\": \"EssentialContainerExited\"}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "sem-arn",
+    "pending": [
+     "unit_task_unbound"
+    ],
+    "task_arns": []
+   },
+   {
+    "describe_request": {
+     "cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+     "tasks": [
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+     ]
+    },
+    "describe_tasks": {
+     "response": {
+      "failures": [],
+      "tasks": [
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "31d49e0b2a20378b6b2998411e4f305f"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:ffffffffffffffff"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       },
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "7687b440a8dd5123aa4000858436bdb6"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       }
+      ]
+     },
+     "synthetic": true
+    },
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"31d49e0b2a20378b6b2998411e4f305f\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}, {\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"7687b440a8dd5123aa4000858436bdb6\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "task-alheia",
+    "pending": [
+     "unit_task_unbound"
+    ],
+    "task_arns": [
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+    ]
+   },
+   {
+    "describe_request": {
+     "cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+     "tasks": [
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+     ]
+    },
+    "describe_tasks": {
+     "response": {
+      "failures": [
+       {
+        "arn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "reason": "MISSING"
+       }
+      ],
+      "tasks": [
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "7687b440a8dd5123aa4000858436bdb6"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       }
+      ]
+     },
+     "synthetic": true
+    },
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"31d49e0b2a20378b6b2998411e4f305f\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}, {\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"7687b440a8dd5123aa4000858436bdb6\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "task-missing",
+    "pending": [
+     "unit_task_missing"
+    ],
+    "task_arns": [
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+    ]
+   },
+   {
+    "describe_request": {
+     "cluster": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+     "tasks": [
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+     ]
+    },
+    "describe_tasks": {
+     "response": {
+      "failures": [],
+      "tasks": [
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 1,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "31d49e0b2a20378b6b2998411e4f305f"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       },
+       {
+        "clusterArn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+        "containers": [
+         {
+          "exitCode": 0,
+          "name": "processor"
+         }
+        ],
+        "lastStatus": "STOPPED",
+        "overrides": {
+         "containerOverrides": [
+          {
+           "environment": [
+            {
+             "name": "TENANT_ID",
+             "value": "prod-canary-cccccccccccccccccccccccccccccccc"
+            },
+            {
+             "name": "RUN_ID",
+             "value": "unit-aaaaaaaaaaaaaaaa"
+            },
+            {
+             "name": "WAVE_ID",
+             "value": "61d919281eb236c7"
+            },
+            {
+             "name": "DISPATCH_ID",
+             "value": "09e6289a08ced292"
+            },
+            {
+             "name": "UNIT_ID",
+             "value": "7687b440a8dd5123aa4000858436bdb6"
+            },
+            {
+             "name": "EXECUTION_OWNER",
+             "value": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+            },
+            {
+             "name": "LEASE_SECONDS",
+             "value": "3600"
+            }
+           ],
+           "name": "processor"
+          }
+         ]
+        },
+        "taskArn": "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab",
+        "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+       }
+      ]
+     },
+     "synthetic": true
+    },
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "output": "[{\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"31d49e0b2a20378b6b2998411e4f305f\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}, {\"TaskArn\": \"arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab\", \"ClusterArn\": \"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\", \"LastStatus\": \"STOPPED\", \"TaskDefinitionArn\": \"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\", \"StopCode\": \"EssentialContainerExited\", \"Containers\": [{\"Name\": \"processor\", \"ExitCode\": 0}], \"Overrides\": {\"ContainerOverrides\": [{\"Name\": \"processor\", \"Environment\": [{\"Name\": \"TENANT_ID\", \"Value\": \"prod-canary-cccccccccccccccccccccccccccccccc\"}, {\"Name\": \"RUN_ID\", \"Value\": \"unit-aaaaaaaaaaaaaaaa\"}, {\"Name\": \"WAVE_ID\", \"Value\": \"61d919281eb236c7\"}, {\"Name\": \"DISPATCH_ID\", \"Value\": \"09e6289a08ced292\"}, {\"Name\": \"UNIT_ID\", \"Value\": \"7687b440a8dd5123aa4000858436bdb6\"}, {\"Name\": \"EXECUTION_OWNER\", \"Value\": \"arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292\"}, {\"Name\": \"LEASE_SECONDS\", \"Value\": \"3600\"}]}]}}]",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "SUCCEEDED"
+     },
+     "synthetic": true
+    },
+    "name": "exit-nao-zero",
+    "pending": [
+     "unit_task_failed"
+    ],
+    "task_arns": [
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+     "arn:aws:ecs:us-east-2:111122223333:task/cnesdata-prod/abababababababababababababababab"
+    ]
+   },
+   {
+    "describe_request": null,
+    "describe_tasks": null,
+    "execution": {
+     "response": {
+      "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+      "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+      "name": "09e6289a08ced292",
+      "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+      "status": "FAILED"
+     },
+     "synthetic": true
+    },
+    "name": "execucao-nao-succeeded",
+    "pending": [
+     "unit_execution_not_succeeded",
+     "unit_task_unbound"
+    ],
+    "task_arns": []
+   }
+  ],
+  "cluster_arn": "arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod",
+  "definition": "{\"StartAt\":\"RunUnits\",\"States\":{\"RunUnits\":{\"End\":true,\"ItemProcessor\":{\"ProcessorConfig\":{\"Mode\":\"INLINE\"},\"StartAt\":\"RunProcessor\",\"States\":{\"RunProcessor\":{\"End\":true,\"Parameters\":{\"Cluster\":\"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\",\"LaunchType\":\"FARGATE\",\"NetworkConfiguration\":{\"AwsvpcConfiguration\":{\"AssignPublicIp\":\"ENABLED\",\"SecurityGroups\":[\"sg-a\"],\"Subnets\":[\"subnet-a\"]}},\"Overrides\":{\"ContainerOverrides\":[{\"Environment\":[{\"Name\":\"TENANT_ID\",\"Value.$\":\"$.tenant_id\"},{\"Name\":\"RUN_ID\",\"Value.$\":\"$.run_id\"},{\"Name\":\"WAVE_ID\",\"Value.$\":\"$.wave_id\"},{\"Name\":\"DISPATCH_ID\",\"Value.$\":\"$.dispatch_id\"},{\"Name\":\"UNIT_ID\",\"Value.$\":\"$.unit_id\"},{\"Name\":\"EXECUTION_OWNER\",\"Value.$\":\"$$.Execution.Id\"},{\"Name\":\"LEASE_SECONDS\",\"Value\":\"3600\"}],\"Name\":\"processor\"}]},\"TaskDefinition\":\"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\"},\"Resource\":\"arn:aws:states:::ecs:runTask.sync\",\"Retry\":[{\"BackoffRate\":2,\"ErrorEquals\":[\"AmazonECS.Unknown\"],\"IntervalSeconds\":3,\"JitterStrategy\":\"FULL\",\"MaxAttempts\":3,\"MaxDelaySeconds\":5}],\"TimeoutSeconds\":3600,\"Type\":\"Task\"}}},\"ItemSelector\":{\"dispatch_id.$\":\"$.dispatch_id\",\"run_id.$\":\"$.run_id\",\"tenant_id.$\":\"$.tenant_id\",\"unit_id.$\":\"$$.Map.Item.Value\",\"wave_id.$\":\"$.wave_id\"},\"ItemsPath\":\"$.unit_ids\",\"MaxConcurrencyPath\":\"$.max_concurrency\",\"Type\":\"Map\"}}}",
+  "dispatch": {
+   "dispatch_id": "09e6289a08ced292",
+   "execution_ref": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292",
+   "input": "{\"dispatch_id\":\"09e6289a08ced292\",\"max_concurrency\":1,\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"unit_ids\":[\"31d49e0b2a20378b6b2998411e4f305f\",\"7687b440a8dd5123aa4000858436bdb6\"],\"wave_id\":\"61d919281eb236c7\"}",
+   "name": "09e6289a08ced292",
+   "run_id": "unit-aaaaaaaaaaaaaaaa",
+   "tenant_id": "prod-canary-cccccccccccccccccccccccccccccccc",
+   "unit_ids": [
+    "31d49e0b2a20378b6b2998411e4f305f",
+    "7687b440a8dd5123aa4000858436bdb6"
+   ]
+  },
+  "execution_request": {
+   "executionArn": "arn:aws:states:us-east-2:111122223333:execution:cnesdata-prod:09e6289a08ced292"
+  },
+  "machine_arn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod",
+  "output_reads": [
+   {
+    "ConsistentRead": true,
+    "Key": {
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+     },
+     "sk": {
+      "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+     }
+    },
+    "TableName": "cnesdata-prod-control-plane"
+   },
+   {
+    "ConsistentRead": true,
+    "Key": {
+     "pk": {
+      "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+     },
+     "sk": {
+      "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+     }
+    },
+    "TableName": "cnesdata-prod-control-plane"
+   }
+  ],
+  "outputs": [
+   {
+    "attempt": 1,
+    "dispatch_id": "09e6289a08ced292",
+    "output_manifests": [
+     {
+      "manifest_id": "manifest-31d49e0b2a20378b6b2998411e4f305f",
+      "manifest_key": "tmp/prod-canary-cccccccccccccccccccccccccccccccc/unit-aaaaaaaaaaaaaaaa/31d49e0b2a20378b6b2998411e4f305f/1/manifests/manifest-31d49e0b2a20378b6b2998411e4f305f/manifest.json"
+     }
+    ],
+    "state": "SUCCEEDED",
+    "unit_id": "31d49e0b2a20378b6b2998411e4f305f"
+   },
+   {
+    "attempt": 1,
+    "dispatch_id": "09e6289a08ced292",
+    "output_manifests": [
+     {
+      "manifest_id": "manifest-7687b440a8dd5123aa4000858436bdb6",
+      "manifest_key": "tmp/prod-canary-cccccccccccccccccccccccccccccccc/unit-aaaaaaaaaaaaaaaa/7687b440a8dd5123aa4000858436bdb6/1/manifests/manifest-7687b440a8dd5123aa4000858436bdb6/manifest.json"
+     }
+    ],
+    "state": "SUCCEEDED",
+    "unit_id": "7687b440a8dd5123aa4000858436bdb6"
+   }
+  ],
+  "readbacks": {
+   "state_machine": {
+    "definition": "{\"StartAt\":\"RunUnits\",\"States\":{\"RunUnits\":{\"End\":true,\"ItemProcessor\":{\"ProcessorConfig\":{\"Mode\":\"INLINE\"},\"StartAt\":\"RunProcessor\",\"States\":{\"RunProcessor\":{\"End\":true,\"Parameters\":{\"Cluster\":\"arn:aws:ecs:us-east-2:111122223333:cluster/cnesdata-prod\",\"LaunchType\":\"FARGATE\",\"NetworkConfiguration\":{\"AwsvpcConfiguration\":{\"AssignPublicIp\":\"ENABLED\",\"SecurityGroups\":[\"sg-a\"],\"Subnets\":[\"subnet-a\"]}},\"Overrides\":{\"ContainerOverrides\":[{\"Environment\":[{\"Name\":\"TENANT_ID\",\"Value.$\":\"$.tenant_id\"},{\"Name\":\"RUN_ID\",\"Value.$\":\"$.run_id\"},{\"Name\":\"WAVE_ID\",\"Value.$\":\"$.wave_id\"},{\"Name\":\"DISPATCH_ID\",\"Value.$\":\"$.dispatch_id\"},{\"Name\":\"UNIT_ID\",\"Value.$\":\"$.unit_id\"},{\"Name\":\"EXECUTION_OWNER\",\"Value.$\":\"$$.Execution.Id\"},{\"Name\":\"LEASE_SECONDS\",\"Value\":\"3600\"}],\"Name\":\"processor\"}]},\"TaskDefinition\":\"arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17\"},\"Resource\":\"arn:aws:states:::ecs:runTask.sync\",\"Retry\":[{\"BackoffRate\":2,\"ErrorEquals\":[\"AmazonECS.Unknown\"],\"IntervalSeconds\":3,\"JitterStrategy\":\"FULL\",\"MaxAttempts\":3,\"MaxDelaySeconds\":5}],\"TimeoutSeconds\":3600,\"Type\":\"Task\"}}},\"ItemSelector\":{\"dispatch_id.$\":\"$.dispatch_id\",\"run_id.$\":\"$.run_id\",\"tenant_id.$\":\"$.tenant_id\",\"unit_id.$\":\"$$.Map.Item.Value\",\"wave_id.$\":\"$.wave_id\"},\"ItemsPath\":\"$.unit_ids\",\"MaxConcurrencyPath\":\"$.max_concurrency\",\"Type\":\"Map\"}}}",
+    "stateMachineArn": "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod"
+   },
+   "task_definitions": {
+    "unit": {
+     "taskDefinition": {
+      "containerDefinitions": [
+       {
+        "name": "processor"
+       }
+      ],
+      "taskDefinitionArn": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17"
+     }
+    }
+   }
+  },
+  "revision": "arn:aws:ecs:us-east-2:111122223333:task-definition/cnesdata-prod-unit:17",
+  "table": "cnesdata-prod-control-plane",
+  "unit_items": [
+   {
+    "entity": {
+     "S": "RUNUNIT"
+    },
+    "gsi5pk": {
+     "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+    },
+    "gsi5sk": {
+     "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+    },
+    "payload": {
+     "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"31d49e0b2a20378b6b2998411e4f305f\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_LOCAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_LOCAL/2026-01/fixture-cnes-local-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"SUCCEEDED\",\"attempt\":1,\"fencing_token\":1,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":\"09e6289a08ced292\",\"output_manifests\":[{\"manifest_id\":\"manifest-31d49e0b2a20378b6b2998411e4f305f\",\"manifest_key\":\"tmp/prod-canary-cccccccccccccccccccccccccccccccc/unit-aaaaaaaaaaaaaaaa/31d49e0b2a20378b6b2998411e4f305f/1/manifests/manifest-31d49e0b2a20378b6b2998411e4f305f/manifest.json\"}],\"error_code\":null}"
+    },
+    "pk": {
+     "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+    },
+    "sk": {
+     "S": "UNIT#3331643439653062326132303337386236623239393834313165346633303566"
+    }
+   },
+   {
+    "entity": {
+     "S": "RUNUNIT"
+    },
+    "gsi5pk": {
+     "S": "RUN_ITEMS#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#756e69742d61616161616161616161616161616161"
+    },
+    "gsi5sk": {
+     "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+    },
+    "payload": {
+     "S": "{\"tenant_id\":\"prod-canary-cccccccccccccccccccccccccccccccc\",\"run_id\":\"unit-aaaaaaaaaaaaaaaa\",\"unit_id\":\"7687b440a8dd5123aa4000858436bdb6\",\"stage\":\"NORMALIZE\",\"source_type\":\"CNES_NACIONAL\",\"file_subtype\":\"CNES_VINCULO\",\"partition\":\"2026-01\",\"depends_on_unit_ids\":[],\"input_manifests\":[{\"manifest_id\":\"fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa\",\"manifest_key\":\"raw/prod-canary-cccccccccccccccccccccccccccccccc/CNES_NACIONAL/2026-01/fixture-cnes-nacional-v1-unit-aaaaaaaaaaaaaaaa/manifest.json\"}],\"state\":\"SUCCEEDED\",\"attempt\":1,\"fencing_token\":1,\"lease_owner\":null,\"lease_until\":null,\"dispatch_id\":\"09e6289a08ced292\",\"output_manifests\":[{\"manifest_id\":\"manifest-7687b440a8dd5123aa4000858436bdb6\",\"manifest_key\":\"tmp/prod-canary-cccccccccccccccccccccccccccccccc/unit-aaaaaaaaaaaaaaaa/7687b440a8dd5123aa4000858436bdb6/1/manifests/manifest-7687b440a8dd5123aa4000858436bdb6/manifest.json\"}],\"error_code\":null}"
+    },
+    "pk": {
+     "S": "TENANT#70726f642d63616e6172792d6363636363636363636363636363636363636363636363636363636363636363#RUN#756e69742d61616161616161616161616161616161"
+    },
+    "sk": {
+     "S": "UNIT#3736383762343430613864643531323361613430303038353834333662646236"
+    }
+   }
+  ]
+ }
 }

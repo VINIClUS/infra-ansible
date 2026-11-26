@@ -1,5 +1,5 @@
-"""P16b fix round 1 item 2, ruling 8 amendment 1: the seed and start capability on the stage ModeAuthority (us, rs, rx,
-ax; ux and uw behind the unit-start gate), the readback session of the mode as reads, and both unit-start gate layers."""
+"""P16b fix round 1 item 2 and follow-up item 5: the seed and start capability on the stage ModeAuthority (us, ux and uw,
+rs, rx, ax), the readback session of the mode as reads, and unit-start with no gate left in the broker or the stage."""
 import ast
 import inspect
 from types import SimpleNamespace
@@ -30,14 +30,15 @@ class _Stop(Exception):
     pass
 
 
-def test_portao_do_unit_start_entregue_e_o_literal_fechado_sem_outra_atribuicao():
-    tree = ast.parse(inspect.getsource(mb))
-    assigned = [node for node in ast.walk(tree) if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign))
-                and any(isinstance(target, ast.Name) and target.id == "MODE_UNIT_START_OPEN"
-                        for target in (node.targets if isinstance(node, ast.Assign) else [node.target]))]
-    assert mb.MODE_UNIT_START_OPEN is False and len(assigned) == 1
-    assert isinstance(assigned[0].value, ast.Constant) and assigned[0].value.value is False
-    assert not any(isinstance(node, ast.Global) and "MODE_UNIT_START_OPEN" in node.names for node in ast.walk(tree))
+def test_unit_start_nao_tem_portao_no_broker_nem_no_estagio():
+    for module in (mb, ag):
+        tree = ast.parse(inspect.getsource(module))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        texts = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant) and type(node.value) is str]
+        assert "MODE_UNIT_START_OPEN" not in names
+        assert not any(word in text for text in texts for word in ("MODE_UNIT_START_OPEN", "p16d_pending"))
+    assert not hasattr(mb, "MODE_UNIT_START_OPEN")
 
 
 def _touch(monkeypatch):
@@ -50,21 +51,8 @@ def _touch(monkeypatch):
     return touched
 
 
-def test_capability_do_unit_start_recusa_antes_de_qualquer_sts_e_le_o_portao_a_cada_chamada(monkeypatch):
-    touched = _touch(monkeypatch)
-    journal = SimpleNamespace(_failed=False, _request={"operation": "unit-start"})
-    with pytest.raises(ValueError, match="^mode_unit_start=p16d_pending$"):
-        CAPABILITY(journal=journal, keeper=None, guard=None, context=None)
-    assert journal._failed is True and touched == []
-    monkeypatch.setattr(mb, "MODE_UNIT_START_OPEN", True)
-    journal = SimpleNamespace(_failed=False, _request={"operation": "unit-start"})
-    with pytest.raises(ValueError, match="^mode effect original context$"):
-        CAPABILITY(journal=journal, keeper=None, guard=None, context=None)
-    assert journal._failed is True and touched == []
-
-
-def test_estagio_de_producao_recusa_o_unit_start_antes_de_qualquer_capability_ou_sts(monkeypatch):
-    from test_cnesdata_mode_stages import _enter_unit, _known, _mode_world
+def test_estagio_de_producao_leva_o_unit_start_das_origens_do_keeper_ate_a_autoridade_preparada(monkeypatch):
+    from test_cnesdata_mode_stages import _enter_unit, _known, _mode_world, _record
     world = _mode_world(monkeypatch)
     _enter_unit(world)
     fake_source, fake_capability = ag.mode_input_source, ag.mode_capability
@@ -74,7 +62,10 @@ def test_estagio_de_producao_recusa_o_unit_start_antes_de_qualquer_capability_ou
     capabilities = []
 
     def source(**kwargs):
-        return (SOURCE if kwargs["operation"] == "unit-start" else fake_source)(**kwargs)
+        if kwargs["operation"] != "unit-start":
+            return fake_source(**kwargs)
+        assert kwargs["names"] == ["mode-start", "previous", "readbacks"]
+        return SOURCE(**kwargs | {"names": ["mode-start", "previous"]}) | fake_source(**kwargs | {"names": ["readbacks"]})
 
     def capability(*, journal, keeper, guard):
         capabilities.append(journal._request["operation"])
@@ -84,17 +75,19 @@ def test_estagio_de_producao_recusa_o_unit_start_antes_de_qualquer_capability_ou
     def invoke(*, journal, timeout):
         return ag.invoke_adapter(journal=journal, timeout=timeout)
     monkeypatch.setattr(ag, "mode_input_source", source)
-    with pytest.raises(ValueError, match="^mode_unit_start=p16d_pending$"):
+    with pytest.raises(AssertionError, match="^mode_prepared_authority$"):
         ag.mode_stage(world.keeper, "unit", known=_known(world), invoke=invoke, capability=capability,
                       credential_limit=6000, clock=world.clock, context=context)
-    assert touched == [] and capabilities == ["unit-record", "unit-seed"]
+    assert touched == ["mode_prepared_authority"] and capabilities == ["unit-record", "unit-seed", "unit-start"]
     assert [call[0] for call in world.mode.calls] == ["unit-record", "unit-seed"]
-    assert not any(type(item) is mb.ModeReadback for item in world.keeper._contexts)
-    assert all(item._request["operation"] != "unit-start" for item in world.keeper._contexts
-               if type(item) is ag.AdapterJournal)
+    (start,) = [item for item in world.keeper._contexts
+                if type(item) is ag.AdapterJournal and item._request["operation"] == "unit-start"]
+    assert start._failed is True and start._inputs["previous"] == b"null\n"
+    assert start._inputs["mode-start"] == c.canonical({"version": 1, "kind": "mode-start", "frozen": False,
+                                                       "started_at": c.utc(_record(world)["admitted_at"])})
 
 
-@pytest.mark.parametrize("operation", ["unit-seed", "recovery-seed", "recovery-start", "audit-start"])
+@pytest.mark.parametrize("operation", ["unit-seed", "unit-start", "recovery-seed", "recovery-start", "audit-start"])
 def test_nenhum_seed_ou_start_recusa_mais_com_mode_broker_unconnected(monkeypatch, operation):
     touched = _touch(monkeypatch)
     journal = SimpleNamespace(_failed=False, _request={"operation": operation})
@@ -194,12 +187,11 @@ def _plan(effect, order):
         order.append(("plan", len(effect.calls), keeper is effect.world.keeper, journal._request["operation"],
                       resources == effect.args["authority"].scope["resources"], now == effect.args["clock"]()))
         return mb.UnitPlan(mb.UnitLocator("prod-canary-fixture", ("run",), effect.owner["owner_sha256"], "0" * 64, "unit",
-                                          "promotion"), None, None, None, (), "execution")
+                                          "promotion"), None, None, None, (), "execution", "cluster")
     return plan
 
 
-def test_unit_start_aberto_por_fixture_planeja_antes_de_cunhar_ux_e_uw_e_entrega_o_plano_ao_broker(monkeypatch):
-    monkeypatch.setattr(mb, "MODE_UNIT_START_OPEN", True)
+def test_unit_start_planeja_antes_de_cunhar_ux_e_uw_e_entrega_o_plano_ao_broker(monkeypatch):
     effect, order = _effect(monkeypatch, "unit-start"), []
     monkeypatch.setattr(mb, "unit_start_plan", _plan(effect, order))
     broker, (_, client, reads, wait) = _run(effect, "unit-start")
@@ -211,8 +203,7 @@ def test_unit_start_aberto_por_fixture_planeja_antes_de_cunhar_ux_e_uw_e_entrega
     assert broker.session.client is None and broker.reads.client is None and broker.wait.client is None
 
 
-def test_unit_start_aberto_por_fixture_recusa_no_plano_sem_cunhar_credencial(monkeypatch):
-    monkeypatch.setattr(mb, "MODE_UNIT_START_OPEN", True)
+def test_unit_start_recusa_no_plano_sem_cunhar_credencial(monkeypatch):
     effect = _effect(monkeypatch, "unit-start")
 
     def plan(keeper, journal, *, resources, now):

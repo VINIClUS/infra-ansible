@@ -318,7 +318,8 @@ def mode_session_document(code, operation, scope):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     from tools.cnesdata_delivery.session_policy import mode_session_policy, mode_unit_wait_policy
     if code in lc.MODE_SESSION_PARTS:
-        return mode_unit_wait_policy(resources=scope["resources"], deadline=scope["deadline"])
+        return mode_unit_wait_policy(resources=scope["resources"], owner_sha256=scope["owner_sha256"],
+                                     deadline=scope["deadline"])
     return mode_session_policy(operation, resources=scope["resources"], owner_sha256=scope["owner_sha256"],
                                deadline=scope["deadline"])
 
@@ -395,7 +396,10 @@ def _mode_start_specs(targets):
         "uw": {"describe-own-execution": (targets["execution"], {}, True), "describe-own-task": (targets["task"], cluster, True),
                "describe-foreign-cluster-task": (targets["foreign_task"], foreign, False),
                "start-execution": (resources["machine_arn"], {}, False),
-               "describe-other-machine-execution": (targets["other_execution"], {}, False)},
+               "describe-other-machine-execution": (targets["other_execution"], {}, False),
+               "get-own-unit": (table, _mode_leading(targets["runs"]["unit"]), True), "get-tenant": (table, tenant, False),
+               "get-recovery-run": (table, _mode_leading(targets["runs"]["recovery"]), False),
+               "put-own-unit": (table, _mode_leading(targets["runs"]["unit"]), False)},
         "rx": {"run-recovery": (revisions["recovery"], cluster, True), "pass-recovery-role": (roles["recovery"], passed, True),
                "put-ticket": (table, tenant, True), "run-audit-revision": (revisions["audit"], cluster, False),
                "run-other-cluster": (revisions["recovery"], foreign, False), "pass-unit-role": (roles["unit"], passed, False),

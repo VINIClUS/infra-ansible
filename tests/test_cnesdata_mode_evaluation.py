@@ -34,7 +34,8 @@ PROPOSAL_CASES = (
        "ux-stop-execution", "ux-put-recovery-run", "ux-check-fence", "ux-update-semaphore", "ux-consume-attempt",
        "ux-check-unit-run", "ux-check-semaphore", "ux-query-unit-run", "ux-update-unit-run", "ux-describe-own-execution"]
     + ["assume-uw", "assume-uw-other-session", "uw-expired", "uw-describe-own-execution", "uw-describe-own-task",
-       "uw-describe-foreign-cluster-task", "uw-start-execution", "uw-describe-other-machine-execution"]
+       "uw-describe-foreign-cluster-task", "uw-start-execution", "uw-describe-other-machine-execution", "uw-get-own-unit",
+       "uw-get-tenant", "uw-get-recovery-run", "uw-put-own-unit"]
     + ["rx-run-recovery", "rx-pass-recovery-role", "rx-put-ticket", "rx-run-audit-revision", "rx-run-other-cluster",
        "rx-pass-unit-role", "rx-put-run-partition", "rx-start-execution"]
     + ["ax-run-audit", "ax-pass-audit-role", "ax-run-recovery-revision", "ax-pass-other-role", "ax-get-tenant"]
@@ -62,7 +63,8 @@ def _documents(codes=tuple(CODES), deadline=DEADLINE):
                                                                           deadline=deadline)
         documents["role." + alias] = ROLES["roles"][alias]["policy"]["PolicyDocument"]
     if "ux" in codes:
-        documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=RESOURCES, deadline=deadline)
+        documents["session.uw"] = session_policy.mode_unit_wait_policy(resources=RESOURCES, owner_sha256=OWNER,
+                                                                       deadline=deadline)
     return documents
 
 
@@ -72,7 +74,7 @@ def _prepare(documents=None, scope=None, observed=OBSERVED):
 
 
 def test_casos_de_modo_sao_os_da_tabela_aceita_no_ruling_4():
-    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 95
+    assert len(PROPOSAL_CASES) == len(set(PROPOSAL_CASES)) == 99
     assert set(lc.MODE_EVALUATION_CASES) == set(PROPOSAL_CASES)
     assert all(lc.MODE_EVALUATION_CASES[case][0] in set(CODES) | set(PARTS) for case in PROPOSAL_CASES)
     assert lc.MODE_SESSION_PARTS == PARTS
@@ -103,7 +105,8 @@ def test_casos_permitidos_e_negados_seguem_a_tabela():
     allowed = {case["case_id"] for case in report["cases"] if case["expected"]}
     assert allowed == {f"assume-{code}" for code in [*CODES, *PARTS]} | {
         "us-put-tenant", "us-put-own-run", "us-put-raw", "rs-put-tenant", "rs-put-own-run", "rs-put-raw", "ux-put-ticket",
-        "ux-put-binding", "ux-start-execution", "uw-describe-own-execution", "uw-describe-own-task", "ux-check-fence",
+        "ux-put-binding", "ux-start-execution", "uw-describe-own-execution", "uw-describe-own-task", "uw-get-own-unit",
+        "ux-check-fence",
         "ux-update-semaphore",
         "ux-consume-attempt", "ux-check-unit-run", "rx-run-recovery", "rx-pass-recovery-role",
         "rx-put-ticket", "ax-run-audit", "ax-pass-audit-role", "uo-describe-machine", "uo-describe-task-definition",
@@ -316,3 +319,17 @@ def test_casos_da_divisao_do_ux_separam_o_inicio_da_espera(case_id, action, reso
     case = _case(report, case_id)
     assert (case["action"], case["resource"], case["expected"], case["observed"]) == (action, resources[resource], expected,
                                                                                     expected)
+
+
+@pytest.mark.parametrize("case_id, action, key, expected", [
+    ("uw-get-own-unit", "dynamodb:GetItem", "unit", True), ("uw-get-tenant", "dynamodb:GetItem", "tenant", False),
+    ("uw-get-recovery-run", "dynamodb:GetItem", "recovery", False), ("uw-put-own-unit", "dynamodb:PutItem", "unit", False)])
+def test_casos_da_espera_do_ux_leem_so_o_run_unit_dos_outputs(case_id, action, key, expected):
+    report = _prepare()
+    tenant = "TENANT#" + RESOURCES["scope"]["tenant_id"].encode().hex()
+    runs = {"unit": tenant + "#RUN#" + ("unit-" + OWNER[:16]).encode().hex(),
+            "recovery": tenant + "#RUN#" + ("recovery-a-" + OWNER[:16]).encode().hex(), "tenant": tenant}
+    case = _case(report, case_id)
+    assert (case["action"], case["resource"], case["expected"], case["observed"]) == (
+        action, RESOURCES["table_arn"], expected, expected)
+    assert case["context"]["dynamodb:LeadingKeys"] == [runs[key]]
