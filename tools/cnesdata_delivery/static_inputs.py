@@ -111,6 +111,13 @@ def static_plan_bytes(raw, *, binding, inventory):
     return raw
 
 
+def binding_release_id(candidate_id):
+    """CnesData publish_dashboard.binding_release_id: "r" + 31 hex of the sha256 of the candidate id (#498 binding release_id)."""
+    c.require(type(candidate_id) is str and re.fullmatch(r"candidate-[0-9a-f]{40}-[1-9][0-9]*-[1-9][0-9]*", candidate_id) is not None,
+              "static binding candidate")
+    return "r" + c.sha(candidate_id.encode())[:31]
+
+
 def carrier_binding(terraform):
     """static_promotion.binding of the authenticated operational inputs (canonical tfvars JSON).
 
@@ -123,6 +130,8 @@ def carrier_binding(terraform):
     promotion = value.get("static_promotion") if type(value) is dict else None
     binding = promotion.get("binding") if type(promotion) is dict else None
     c.require(type(binding) is dict and set(binding) == set(lc.STATIC_BINDING_FIELDS.split()), "static_binding=carrier_absent")
+    c.require(promotion.get("mode") in ("operational", "observer-bootstrap"), "static_binding=carrier_mode")
+    c.require((binding["static_plan_sha256"] is None) == (promotion["mode"] == "observer-bootstrap"), "static_binding=carrier_plan_sha256")
     return binding
 
 

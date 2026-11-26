@@ -1620,7 +1620,8 @@ def _fence_contract_case(*, original_serial=1, probe=False):
     role.update(original_projection_sha256=c.sha(c.canonical(projection)), current_projection_sha256=c.sha(c.canonical(projection)))
     checkpoint = {"state": {"lineage": "original-lineage", "serial": 2, "state_sha256": "7" * 64},
         "state_object": {"status": "present", "version_id": "current-version", "etag_sha256": "8" * 64},
-        "owner": owner, "purpose": "application-prepare", "plan_sha256": "a" * 64, "readbacks": [], "phase_a_originals": carrier}
+        "owner": owner, "purpose": "application-prepare", "plan_sha256": "a" * 64, "readbacks": [], "phase_a_originals": carrier,
+        "previous_checkpoint_sha256": phase_a["files"]["checkpoint.json"]["sha256"]}
     checkpoint_sha = c.sha(c.canonical(checkpoint))
     chain = {"schema_version": 3, "owner_sha256": owner["owner_sha256"], "generation": owner["generation"],
         "anchor_sha256": phase_a["files"]["checkpoint.json"]["sha256"], "head_sha256": checkpoint_sha,
@@ -2925,7 +2926,8 @@ def _current_fence_projection_case(mutation=None, serial=2, *, probe=False):
     if mutation == "current-index": current_index["files"][0]["sha256"] = "f" * 64
     if mutation == "caller": current_index["caller_binding_sha256"] = "f" * 64
     checkpoint = {"state": c.state_identity(state_raw), "state_object": {"status": "present", "version_id": "v2", "etag_sha256": "e" * 64},
-                  "owner": owner, "purpose": "application-prepare", "plan_sha256": c.sha(b"current-saved-plan"), "readbacks": [], "phase_a_originals": carrier}
+                  "owner": owner, "purpose": "application-prepare", "plan_sha256": c.sha(b"current-saved-plan"), "readbacks": [], "phase_a_originals": carrier,
+                  "previous_checkpoint_sha256": c.sha(c.canonical(old_checkpoint))}
     if mutation == "checkpoint-owner":
         checkpoint["owner"] = copy.deepcopy(owner)
         checkpoint["owner"]["run_attempt"] = True
@@ -4114,7 +4116,8 @@ def test_readonly_snapshot_does_not_clear_poison_or_allow_omitted_unknown(monkey
 
 
 @pytest.mark.parametrize("kind", ["initial", "established"])
-@pytest.mark.parametrize("mutation", [None, "gap", "old-source", "wrong-owner", "zip", "anchor", "carrier", "ambiguous"])
+@pytest.mark.parametrize("mutation", [None, "gap", "old-source", "wrong-owner", "zip", "anchor", "carrier", "ambiguous",
+                                      "previous-field"])
 def test_current_checkpoint_transport_authenticates_real_same_run_publications(kind, mutation):
     import io
     import zipfile
@@ -4140,7 +4143,9 @@ def test_current_checkpoint_transport_authenticates_real_same_run_publications(k
         checkpoint["state"]["serial"] = 5
     prior_checkpoint = copy.deepcopy(checkpoint)
     prior_checkpoint["state"]["serial"] -= 1
+    prior_checkpoint["previous_checkpoint_sha256"] = c.sha(baseline)
     prior_raw = c.canonical(prior_checkpoint)
+    checkpoint["previous_checkpoint_sha256"] = "e" * 64 if mutation == "previous-field" else c.sha(prior_raw)
     current_raw = c.canonical(checkpoint)
     approval = copy.deepcopy(documents["approval.json"])
     prior_approval = copy.deepcopy(approval)
@@ -4720,7 +4725,7 @@ def _closed_ready_capability_case(monkeypatch, mutation=None, windows=MINIMUM_WI
         "state_object": {"status": "present", "version_id": "v3", "etag_sha256": "5" * 64}, "owner": owner, "purpose": "phase-b",
         "plan_sha256": "9" * 64, "readbacks": [{"service": "stepfunctions", "operation": "describe_state_machine",
             "observed": {"stateMachineArn": scope["machine_arn"] + ("-other" if mutation == "machine" else ""), "status": "ACTIVE"}}],
-        "phase_a_originals": carrier}
+        "phase_a_originals": carrier, "previous_checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"])}
     b_approval = {"version": 1, "owner": owner, "purpose": "phase-b", "direction": "advance", "plan_sha256": "9" * 64,
         "inputs_sha256": "8" * 64, "checkpoint_sha256": "0" * 64 if mutation == "ancestry" else c.sha(files["checkpoint.json"]),
         "delta": {"purpose": "phase-b", "direction": "advance", "mode": "initial", "before": {}}, "drift_matrix": {},
@@ -5936,8 +5941,13 @@ def test_capability_e_dispatch_so_tem_os_call_sites_fechados_alcancaveis_por_mai
         visit(tree, "<module>")
     gate = "tools/cnesdata_delivery/application_gate.py"
     assert sites == {
+        ("tools/cnesdata_delivery/plan_inputs.py", "publish_plan_inputs", "KeeperGuard"),
+        ("tools/cnesdata_delivery/plan_inputs.py", "static_promotion_input", "static_plan"),
         (gate, "run_closed_ready", "KeeperGuard"),
         (gate, "_publish_stage_open", "KeeperGuard"),
+        (gate, "_publish_plan_inputs", "KeeperGuard"),
+        (gate, "_publish_operational_plan_inputs", "KeeperGuard"),
+        (gate, "_await_operational_inputs", "KeeperGuard"),
         (gate, "closed_ready_capability", "_assume_fence_session"),
         (gate, "closed_ready_capability", "ClosedReadyBroker"),
         (gate, "close_expirations", "infra_expiration_bound"),      # close_expirations has no production caller

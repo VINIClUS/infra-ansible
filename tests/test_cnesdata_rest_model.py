@@ -15,10 +15,11 @@ CONDITION_2 = {"jobs": 0.0, "artifacts": 0.8}
 
 GOVERNED_WORST = {"phase-b": 720, "api": 180, "static": 180, "unit": 180, "phase-c-recovery": 240, "phase-c-audit": 240, "final": 60}
 EXACT = {
-    "measured": 2295.158, "condition_2": 3392.0, "vectors": 2827,
-    "measured_components": {"keeper": 714.48, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
-                            "probes": 71.862, "own_job": 15.0, "non_consumers": 25.0, "residual": 20},
-    "governed_measured": (2337.758, GOVERNED_WORST, 1500), "governed_condition_2": (3512.0, GOVERNED_WORST, 1500),
+    "measured": 2487.598, "condition_2": 3607.0, "vectors": 2827,
+    "measured_components": {"keeper": 851.92, "marker_waiters": 392.616, "payload_waiters": 441.2, "admission": 615.0,
+                            "probes": 71.862, "own_job": 15.0, "non_consumers": 25.0, "plan_inputs_keeper": 35.0,
+                            "plan_inputs_reader": 20.0, "residual": 20},
+    "governed_measured": (2530.198, GOVERNED_WORST, 1500), "governed_condition_2": (3727.0, GOVERNED_WORST, 1500),
 }
 
 
@@ -41,7 +42,8 @@ def test_poll_do_keeper_no_modelo_e_o_default_de_keeper_loop():
 def test_o_modelo_conta_o_keeper_com_uma_listagem_de_jobs_por_sondagem_mais_as_leituras_dos_handlers():
     model = _model()
     stages = len(stage_wait.WINDOW_ORDER) + 1
-    expected = math.ceil(model["run_seconds"] / stage_wait.KEEPER_POLL_SECONDS) + stages * stage_wait.HANDLER_READS_PER_STAGE
+    expected = math.ceil(model["run_seconds"] / stage_wait.KEEPER_POLL_SECONDS) + stages * stage_wait.HANDLER_READS_PER_STAGE \
+        + stage_wait.P40_WAIT_READS_PER_POLL * math.ceil(stage_wait.P40_WAIT_SECONDS / stage_wait.POLL_SECONDS)
     assert model["components"]["keeper"] == expected
 
 
@@ -203,9 +205,10 @@ def test_pior_hora_governada_cabe_nos_dois_orcamentos():
     assert stage_wait.governed_worst(CONDITION_2)["worst_rolling_hour"] <= stage_wait.REST_BUDGET_NO_JOBS_CREDIT
 
 
-def test_folga_para_as_41_leituras_pontuais_do_p40_nos_dois_limiares():
-    assert stage_wait.P40_POINT_READS == 41
+def test_folga_para_as_55_leituras_pontuais_do_p40_nos_dois_limiares():
+    assert stage_wait.P40_POINT_READS == 55
     measured = stage_wait.governed_worst(stage_wait.MEASURED_HIT_RATES)["worst_rolling_hour"]
     condition_2 = stage_wait.governed_worst(CONDITION_2)["worst_rolling_hour"]
-    assert measured + stage_wait.P40_POINT_READS <= stage_wait.REST_BUDGET
-    assert condition_2 + stage_wait.P40_POINT_READS <= stage_wait.REST_BUDGET_NO_JOBS_CREDIT
+    assert measured == pytest.approx(EXACT["governed_measured"][0], abs=1e-3)
+    assert condition_2 == pytest.approx(EXACT["governed_condition_2"][0], abs=1e-3)
+    assert measured <= stage_wait.REST_BUDGET and condition_2 <= stage_wait.REST_BUDGET_NO_JOBS_CREDIT

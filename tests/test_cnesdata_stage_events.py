@@ -1407,10 +1407,11 @@ def test_prepared_handler_nao_avanca_alem_do_checkpoint_se_o_anuncio_recusa(monk
 
 
 def test_anuncio_real_publica_o_marcador_da_janela_aberta_com_o_primeiro_job_governado(monkeypatch, stage_open_published):
-    from tools.cnesdata_delivery import stage_wait
+    from tools.cnesdata_delivery import application_gate as ag, stage_wait
     world = _stage_world(monkeypatch)
     world.handlers["prepared"](world.keeper, dict(PREPARED_REFERENCE))
     seen = {}
+    monkeypatch.setattr(ag, "_publish_plan_inputs", lambda *args: None)
     monkeypatch.setattr(stage_wait, "publish_stage_open", lambda **kwargs: seen.update(kwargs))
     stage_open_published.original(world.keeper, world.api, RUN, world.governance, 6000, world.clock)
     assert seen["window"]["stage"] == "phase-b" and seen["first_job"] == "phase-b-plan / execute"
