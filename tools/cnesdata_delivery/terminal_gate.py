@@ -1,5 +1,6 @@
 """Keeper terminal producer (P17): final, host recovery and failed prepare, restoration and released publication."""
 import tempfile
+from collections import namedtuple
 from pathlib import Path
 
 from tools.cnesdata_delivery import contract as c
@@ -107,16 +108,115 @@ def restoration_validator(keeper):
     return validator
 
 
-def terminal_capability(*, journal, keeper, guard):
-    """Production broker of reopen, terminal-readback and rollback-api-static: not connected in this slice (P17b),
-    so the attached journal fails and the lease stays held. Raises: ValueError."""
-    journal._failed = True
-    raise ValueError("terminal_broker=unconnected")
+TerminalContext = namedtuple("TerminalContext", "governance authority state credential_limit operation_session clock")
+
+
+def _fence_scope(journal, keeper, context, prepared):
+    from tools.cnesdata_delivery import application_gate as ag, lifecycle_runtime as lr
+    governance, operation = context.governance, journal._request["operation"]
+    keeper.lease.check()
+    owner = journal._request["owner"] | journal._identity
+    manifest, role, evaluation = (c.loads(prepared[name], canonical=True)
+                                  for name in ("fence-prepared.json", "fence-role.json", "fence-evaluation.json"))
+    c.require(manifest["activation_sha256"] == journal._request["activation_sha256"], "prepared/request activation_sha256")
+    c.require(role["role_arn"] == governance["application_delegations"]["fence_operator"], "fence_operator delegation")
+    c.require(c.canonical(manifest["owner"]) == c.canonical(owner), "prepared current owner")
+    cases = {case["case_id"]: case for case in evaluation["cases"]}
+    derived = lr.fence_policy_scope(governance, role["policy"])
+    c.require(cases["get-fence"]["resource"] == derived["control_table_arn"]
+              and cases["probe-own"]["resource"] == derived["execution_prefix"] + "0" * 16,
+              "capability scope recomputed from prepared policy")
+    scope = {"account": governance["account_id"], "control_table_arn": derived["control_table_arn"],
+             "machine_arn": derived["machine_arn"]}
+    if operation == "terminal-readback":
+        membership = journal._inputs["membership"]
+        frozen = (c.canonical({"frozen_membership_sha256": c.sha(c.canonical([])), "members": []})
+                  if journal._request["stage"]["close"] is None else ag._frozen_membership(context.state["close-drain"]))
+        c.require(membership == frozen, "terminal-readback membership is the close-drain frozen set")
+        scope["members"] = c.loads(membership, canonical=True)["members"]
+    return role, scope
+
+
+def terminal_fence_capability(*, journal, keeper, context):
+    """reopen and terminal-readback on the fence session of the authenticated PreparedFence (P17b): the recomputed
+    scope, the local operation-session effective IAM, the fence STS, then ClosedReadyBroker for reopen (the final CAS)
+    and FenceReadBroker for terminal-readback. Every check precedes STS. Returns: the broker. Raises: ValueError."""
+    from tools.cnesdata_delivery import application_gate as ag
+    from tools.cnesdata_delivery.application_gate import ClosedReadyBroker, _assume_fence_session
+    from tools.cnesdata_delivery.mode_broker import FenceReadBroker
+    prepared = context.state.get("prepared")
+    c.require(prepared is not None, "terminal_broker=prepared_absent")
+    role, scope = _fence_scope(journal, keeper, context, prepared)
+    ag._fence_operation_iam(context.governance, context.authority, journal, role, context.clock)
+    journal.guard()
+    prepared_sha256 = c.sha(prepared["fence-prepared.json"])
+    session = _assume_fence_session(governance=context.governance, role=role, scope=scope, journal=journal,
+                                    prepared_sha256=prepared_sha256, credential_limit=context.credential_limit,
+                                    operation_session=context.operation_session, clock=context.clock)
+    arguments = (session.evidence, context.governance, journal, session)
+    if journal._request["operation"] == "reopen":
+        broker = ClosedReadyBroker(*arguments, prepared_sha256=prepared_sha256, clock=context.clock)
+    else:
+        broker = FenceReadBroker(*arguments, prepared_sha256=prepared_sha256, clock=context.clock)
+    keeper.attach(broker)
+    return broker
+
+
+def rollback_capability(*, journal, keeper, context):
+    """rollback-api-static in StaticBroker under the static recovery alias (P17b): the static plan the keeper holds,
+    the run binding against the operational carrier, the recovery role facts of the operational deploy, the
+    sp-rollback STS. Every check precedes STS. Returns: StaticBroker. Raises: ValueError."""
+    from tools.cnesdata_delivery import application_gate as ag, static_inputs
+    from tools.cnesdata_delivery.application_gate import StaticBroker, _assume_static_session
+    state, governance = context.state, context.governance
+    keeper.lease.check()
+    plan = lc.static_plan(journal._inputs["static-plan"], bucket=ag.STATIC_BUCKET)
+    c.require(journal._inputs["static-plan"] == state.get("static-plan")
+              and plan["inventory_sha256"] == c.sha(journal._inputs["inventory"])
+              and plan["distribution_arn"].split(":")[4] == governance["account_id"], "terminal rollback static plan")
+    binding = ag._static_binding(governance, journal, candidate=(keeper.static_inputs or {}).get("candidate"))
+    ag._compare_carrier(binding, static_inputs.carrier_binding(state["terraform"]))
+    roles = static_inputs.static_role_facts(state["prepared"]["checkpoint.json"], state["prepared"]["approval.json"],
+                                            governance=governance, aliases=("recovery",))
+    session = _assume_static_session(governance=governance, journal=journal, binding=binding, roles=roles,
+                                     credential_limit=context.credential_limit,
+                                     operation_session=context.operation_session, clock=context.clock)
+    broker = StaticBroker(session.evidence, governance, journal, session, clock=context.clock)
+    keeper.attach(broker)
+    return broker
+
+
+def terminal_capability(*, journal, keeper, guard, context):
+    """Production broker of reopen, terminal-readback and rollback-api-static (P17b): the fence session for the first
+    two, StaticBroker under the recovery alias for the rollback. A refusal fails the journal and the lease stays held.
+    Returns: the attached broker. Raises: ValueError."""
+    try:
+        c.require(type(context) is TerminalContext, "terminal_broker=unconnected")
+        if journal._request["operation"] == "rollback-api-static":
+            return rollback_capability(journal=journal, keeper=keeper, context=context)
+        return terminal_fence_capability(journal=journal, keeper=keeper, context=context)
+    except BaseException:
+        journal._failed = True
+        raise
+
+
+def final_routes(keeper):
+    """Routes document of reopen at final (ruling 1g): the closed projection of the routes of the authenticated
+    phase-c-audit element, which the C deploy job read back after apply. Raises: ValueError."""
+    elements = getattr(keeper, "phase_c_elements", None)
+    raw = elements.get("phase-c-audit") if type(elements) is dict else None
+    element = c.loads(raw) if type(raw) is bytes else None
+    routes = element.get("routes") if type(element) is dict else None
+    c.require(element is not None and element.get("kind") == "phase-c-audit" and type(routes) is dict
+              and set(routes) == set(MODES) and all(type(routes[mode]) is str for mode in MODES), "terminal final routing")
+    return c.canonical({mode: routes[mode] for mode in MODES})
 
 
 def terminal_input_source(*, keeper, owner, window, operation, names):
-    """The routes document of reopen at final has no authenticated producer yet (P17b), so production refuses here."""
-    raise ValueError("terminal_inputs=source_unconnected")
+    """The keeper-held originals of a terminal operation: only routing of reopen at final. Raises: ValueError."""
+    c.require(operation == "reopen" and window["stage"] == "final" and list(names) == ["routing"],
+              "terminal_inputs=source_unconnected")
+    return {"routing": final_routes(keeper)}
 
 
 def recovery_routes(state):
@@ -128,7 +228,7 @@ def recovery_routes(state):
     return c.canonical({mode: revisions[mode] for mode in MODES})
 
 
-def run_terminal_operation(keeper, operation, *, inputs, activation, invoke, credential_limit, clock):
+def run_terminal_operation(keeper, operation, *, inputs, activation, invoke, credential_limit, clock, context=None):
     """One terminal operation: journal under the keeper guard, the injected capability before the child, timeout
     from the keeper window. Returns: the single observation bytes. Raises: ValueError."""
     from tools.cnesdata_delivery import application_gate as ag
@@ -142,7 +242,7 @@ def run_terminal_operation(keeper, operation, *, inputs, activation, invoke, cre
                                 operation=operation, owner=owner, window=window, inputs=inputs,
                                 activation_sha256=c.sha(activation), guard=guard)
     keeper.attach(journal)
-    broker = terminal_capability(journal=journal, keeper=keeper, guard=guard)
+    broker = terminal_capability(journal=journal, keeper=keeper, guard=guard, context=context)
     try:
         invoke(journal=journal, timeout=lc.adapter_seconds(window, now=clock(), credential_deadline=credential_limit,
                                                             operation=operation))
@@ -203,9 +303,12 @@ def enter_recovery(keeper, raw, *, ready, state, clock):
 
 class TerminalSteps:
     """The three terminal sequences of the keeper; each closes with finish and the released publication."""
-    def __init__(self, *, keeper, api, governance, run, state, product, credential_limit, clock):
+    def __init__(self, *, keeper, api, governance, run, state, product, credential_limit, clock, authority,
+                 operation_session):
         self.keeper, self.api, self.governance, self.run = keeper, api, governance, run
         self.state, self.product, self.credential_limit, self.clock = state, product, credential_limit, clock
+        self.context = TerminalContext(governance=governance, authority=authority, state=state,
+                                       credential_limit=credential_limit, operation_session=operation_session, clock=clock)
 
     def _operation(self, keeper, operation, inputs, *, activation=None):
         from tools.cnesdata_delivery import application_gate as ag
@@ -218,7 +321,8 @@ class TerminalSteps:
                                      journal=journal, timeout=timeout)
         return run_terminal_operation(keeper, operation, inputs=inputs,
                                       activation=self.state["activation"] if activation is None else activation,
-                                      invoke=invoke, credential_limit=self.credential_limit, clock=self.clock)
+                                      invoke=invoke, credential_limit=self.credential_limit, clock=self.clock,
+                                      context=self.context)
 
     def _reopen(self, keeper, extra, *, routing=None):
         if routing is None:
