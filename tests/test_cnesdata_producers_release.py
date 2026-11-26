@@ -314,11 +314,17 @@ APPLICATION_PIN = {"observed_at": "2026-11-21T09:00:00Z", "expires_at": "2026-11
                    "frozen_until": "2026-11-21T13:00:00Z"}
 
 
-def test_cruzamento_aceita_documento_3_com_context_kind_e_pin_do_application_na_propria_cadeia():
-    pins_ = {"plan": pin_at(), "deploy": pin_at(), "application": APPLICATION_PIN}
+def test_cruzamento_aceita_documento_3_com_context_kind_e_pins_do_application_de_um_run():
+    pins_ = {role: dict(APPLICATION_PIN) for role in ("plan", "deploy", "application", "application_ops")}
     governance_assembly.crosscheck(document_with(context_kind="promotion", session_policy_pins=pins_), COMMITMENTS)
-    only = {"application": APPLICATION_PIN}
+    only = {"application": APPLICATION_PIN, "application_ops": APPLICATION_PIN}
     governance_assembly.crosscheck(document_with(context_kind="promotion", session_policy_pins=only), COMMITMENTS)
+
+
+def test_cruzamento_recusa_documento_3_com_pins_da_phase_a_e_do_application_de_runs_diferentes():
+    pins_ = {"plan": pin_at(), "deploy": pin_at(), "application": APPLICATION_PIN, "application_ops": APPLICATION_PIN}
+    with pytest.raises(ValueError, match="session pins from one observe run"):
+        governance_assembly.crosscheck(document_with(context_kind="promotion", session_policy_pins=pins_), COMMITMENTS)
 
 
 def test_cruzamento_recusa_pin_de_role_fora_de_plan_deploy_e_application():
@@ -344,7 +350,8 @@ def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem()
             read |= {first or second for first, second in pattern.findall(path.read_text())}
     closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS | {RUNTIME_MANIFEST}
     assert "account_id" in read and read <= closed, sorted(read - closed)
-    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure"}
+    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure", "application_coordination_policy",
+                                                 "application_delegations"}
     assert governance_assembly.HYDRATED_KEYS.isdisjoint(governance_assembly.GOVERNANCE_KEYS)
 
 

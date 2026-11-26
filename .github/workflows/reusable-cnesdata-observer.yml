@@ -9,7 +9,7 @@ name: CnesData observer and admission assembler
         required: true
         type: string
       role:
-        description: Delivery role, plan, audit or deploy
+        description: Delivery role, plan, audit, deploy or application (lifecycle owner cycle)
         required: true
         type: string
       source_sha:
@@ -49,7 +49,7 @@ env:
 
 jobs:
   observe:
-    if: ${{ inputs.role == 'plan' || inputs.role == 'audit' }}
+    if: ${{ inputs.role == 'plan' || inputs.role == 'audit' || inputs.role == 'application' }}
     runs-on: ubuntu-latest
     environment: cnesdata-observer
     timeout-minutes: 20
@@ -296,7 +296,7 @@ jobs:
               fs.writeFileSync("tools/cnesdata_delivery/" + name, Buffer.from(item.content, "base64"), {mode: 0o600});
             }
       - name: Download the observations of this run
-        if: ${{ inputs.role == 'plan' || inputs.role == 'audit' }}
+        if: ${{ inputs.role == 'plan' || inputs.role == 'audit' || inputs.role == 'application' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: delivery-observed-${{ inputs.role }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -310,6 +310,30 @@ jobs:
         with:
           name: delivery-admission-${{ inputs.role }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/admission
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the lifecycle plan owner proof of the application cycle
+        if: ${{ inputs.role == 'application' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-admission-${{ inputs.role }}-lifecycle-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/admission-plan
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the lifecycle deploy owner proof of the application cycle
+        if: ${{ inputs.role == 'application' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-admission-${{ inputs.role }}-lifecycle-deploy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/admission-deploy
+          retention-days: 30
+          if-no-files-found: error
+      - name: Upload the lifecycle audit owner proof of the application cycle
+        if: ${{ inputs.role == 'application' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: delivery-admission-${{ inputs.role }}-lifecycle-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/admission-audit
           retention-days: 30
           if-no-files-found: error
       - name: Wait for the artifact to be strictly interior to the run

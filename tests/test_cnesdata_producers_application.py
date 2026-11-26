@@ -17,14 +17,22 @@ from tools.cnesdata_delivery.session_policy import managed_arn, predecessor_keys
 PREDECESSOR_JOB = {"id": 91, "name": "apply / execute"}
 TRUST = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRoleWithWebIdentity",
          "Principal": {"Federated": "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com"}}]}
-POLICY = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject",
-          "Resource": "arn:aws:s3:::synthetic-evidence/cnesdata/prod/evidence/lifecycle/*"}]}
 KEEPER = {"job_name": "promote / keeper", "producer_job": "keeper",
           "admission_steps": ["Authenticate original caller", "Issue credentials"]}
 
 
 def producer():
     return importlib.import_module("tools.cnesdata_delivery.producers.application")
+
+
+def coordination_policy(fragment):
+    from tools.cnesdata_delivery.session_policy import coordination_policy as derived
+    return derived(fragment)
+
+
+def admitted(governance):
+    from tools.cnesdata_delivery.session_policy import coordination_object
+    return governance | coordination_object(governance)
 
 
 def digest_of(value):
@@ -171,22 +179,24 @@ def entry(monkeypatch, tmp_path):
     from tools.cnesdata_delivery import lifecycle_runtime as lr
     gov, request, run, job, configure, store, reads = _application_entry_case(
         monkeypatch, tmp_path, steps=producer().catalog(full_catalog()))
-    gov["application_fragment"].update(trust_sha256=digest_of(TRUST), policy_sha256=digest_of(POLICY))
+    gov["application_fragment"].update(trust_sha256=digest_of(TRUST),
+                                       policy_sha256=digest_of(coordination_policy(gov["application_fragment"])))
     configuration, fragment = gov.pop("application_configuration"), gov.pop("application_fragment")
     for key in ("application_delegations", "application_coordination_policy"):
         gov.pop(key, None)
     now = time.time()
     section = producer().application_section(gov, configuration=configuration, fragment=fragment,
-                                             coordination_policy=json.dumps(POLICY), now=now)
+                                             coordination_policy=json.dumps(coordination_policy(fragment)), now=now)
     return SimpleNamespace(gov=gov, request=request, run=run, configure=configure, store=store, reads=reads,
                            section=section, now=now, api=lr.GitHub())
 
 
 def test_secao_do_application_copia_a_saida_do_tofu_e_deriva_as_delegacoes(entry):
     section = entry.section
-    assert set(section) == {"application_configuration", "application_fragment", "application_delegations",
-                            "application_coordination_policy"}
-    assert section["application_delegations"] == section["application_fragment"]["delegations"]
+    from tools.cnesdata_delivery.session_policy import coordination_object
+    assert set(section) == {"application_configuration", "application_fragment"}
+    hydrated = coordination_object(entry.gov | section)
+    assert hydrated["application_delegations"] == section["application_fragment"]["delegations"]
     assert section["application_configuration"]["predecessor_read"] == entry.gov["predecessor_read"]
 
 
@@ -219,11 +229,11 @@ def test_campos_da_configuracao_cobrem_o_validador_fechado_do_consumidor(entry):
 def test_consumidor_recusa_configuracao_produzida_com_um_campo_mudado(entry, field):
     governance = entry.gov | copy.deepcopy(entry.section)
     if field is None:
-        assert session_owner.application_fragment(governance, entry.now) == entry.section["application_fragment"]
+        assert session_owner.application_fragment(admitted(governance), entry.now) == entry.section["application_fragment"]
         return
     CONFIGURATION_FIELDS[field](governance["application_configuration"])
     with pytest.raises(ValueError, match=re.escape(CONFIGURATION_REASONS[field])):
-        session_owner.application_fragment(governance, entry.now)
+        session_owner.application_fragment(admitted(governance), entry.now)
 
 
 def other_account(value):
@@ -274,19 +284,22 @@ def test_campos_do_fragmento_cobrem_o_validador_fechado_do_consumidor(entry):
 def test_consumidor_recusa_fragmento_produzido_com_um_campo_mudado(entry, field):
     governance = entry.gov | copy.deepcopy(entry.section)
     if field is None:
-        session_owner.application_fragment(governance, entry.now)
+        session_owner.application_fragment(admitted(governance), entry.now)
         return
     FRAGMENT_FIELDS[field](governance["application_fragment"])
     with pytest.raises(ValueError, match=re.escape(FRAGMENT_REASONS[field])):
-        session_owner.application_fragment(governance, entry.now)
+        session_owner.application_fragment(admitted(governance), entry.now)
 
 
 @pytest.mark.parametrize("changed", [False, True])
 def test_consumidor_recusa_fragmento_com_policy_sha256_mudado(entry, changed):
+    from tools.cnesdata_delivery.session_policy import coordination_object
     governance = entry.gov | copy.deepcopy(entry.section)
+    governance |= coordination_object(governance)
     fragment = governance["application_fragment"]
     if not changed:
-        assert session_owner.application_identity_document(governance, fragment)["Statement"][0] == POLICY["Statement"][0]
+        expected = coordination_policy(fragment)["Statement"][0]
+        assert session_owner.application_identity_document(governance, fragment)["Statement"][0] == expected
         return
     fragment["policy_sha256"] = "9" * 64
     with pytest.raises(ValueError, match="application coordination policy commitment"):
@@ -317,7 +330,7 @@ class IAM:
             return {"IsTruncated": False, "AttachedPolicies": []}
         assert operation == "get_role_policy"
         from tools.cnesdata_delivery.session_policy import predecessor_policy
-        document = POLICY if parameters["PolicyName"].endswith("coordination") else predecessor_policy(
+        document = coordination_policy(self.fragment) if parameters["PolicyName"].endswith("coordination") else predecessor_policy(
             self.governance, self.governance["predecessor_read"])
         return {"RoleName": parameters["RoleName"], "PolicyName": parameters["PolicyName"],
                 "PolicyDocument": quote(json.dumps(document))}
@@ -353,7 +366,7 @@ def test_consumidor_recusa_fragmento_com_trust_sha256_mudado_na_leitura_do_iam(e
 def test_secao_do_application_recusa_saida_que_o_consumidor_recusa(entry, change):
     configuration = copy.deepcopy(entry.section["application_configuration"])
     fragment = copy.deepcopy(entry.section["application_fragment"])
-    policy = json.dumps(POLICY)
+    policy = json.dumps(coordination_policy(fragment))
     if change == "policy-text":
         policy = json.dumps({"Version": "2012-10-17", "Statement": []})
     if change == "configuration-extra":

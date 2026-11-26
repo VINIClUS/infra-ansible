@@ -3080,7 +3080,7 @@ def _application_entry_case(monkeypatch, tmp_path, steps=None):
     fragment["predecessor_reads"] = gov["predecessor_read"] | {
         "object_arns": ["arn:aws:s3:::" + gov["evidence_bucket"] + "/" + key for key in session_policy.predecessor_keys(gov, gov["predecessor_read"])],
         "policy_sha256": session_owner._terraform_document_digest(session_policy.predecessor_policy(gov, gov["predecessor_read"]))}
-    gov.update(application_fragment=fragment, application_delegations=fragment["delegations"],
+    gov.update(application_fragment=fragment,
         application_configuration={"role_name": fragment["application_role_name"], "workflow_sha": fragment["producer"]["workflow_sha"],
         "source_closure_sha256": fragment["producer"]["source_closure_sha256"], "enabled_until": fragment["enabled_until"],
         "delegations": fragment["delegations"], "predecessor_read": gov["predecessor_read"]})
