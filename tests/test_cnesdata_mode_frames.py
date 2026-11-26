@@ -21,8 +21,9 @@ BUILT = sorted(name for name, case in CASES.items() if "refusal" not in case)
 REFUSED = sorted(name for name, case in CASES.items() if "refusal" in case)
 FRAMES_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_frames.py"
 DISPATCH_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_dispatch.py"
+UNIT_OBSERVE_PATH = "packages/cnes_infra/src/cnes_infra/aws/mode_canary_unit_observe.py"
 PRODUCT_FRAMES_ORIGIN = {
-    "commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa",
+    "commit": "b5f6f9d643562dde69efe4aad4f6bb988ef245dd",
     "packages/cnes_infra/src/cnes_infra/control_plane/dynamodb_keys.py":
         ("cnes_infra.control_plane.dynamodb_keys", "product_dynamodb_keys.py",
          "5810031c6ed6fae18f7a70e578c5255b9297ce63f0745b237eca191688ca19eb"),
@@ -35,9 +36,12 @@ PRODUCT_FRAMES_ORIGIN = {
     DISPATCH_PATH:
         ("cnes_infra.aws.mode_canary_dispatch", "product_mode_canary_dispatch.py",
          "5952a2c4afd66872d82efcdf15efb3937e5227df9ad8d05734698dd64c63793c"),
+    UNIT_OBSERVE_PATH:
+        ("cnes_infra.aws.mode_canary_unit_observe", "product_mode_canary_unit_observe.py",
+         "a7673ee24defc40fd661e6e1ea162f662ee003ed111c587d00e138dc59e32382"),
     "tests/production/delivery/mode_canary_frames_vector.json":
         (None, "tests/fixtures/cnesdata_mode_canary_frames_vector.json",
-         "cdc60395fcd1e6ae52dac4ed354eb5bda03f779095b29a83a2bc8bdf02e9bd45")}
+         "07868eee1452f3fd81ba7cb9a33371fc3c15058b8b4ca1d98b0b46676aad5417")}
 VENDORED = [value for key, value in PRODUCT_FRAMES_ORIGIN.items() if key != "commit" and value[0] is not None]
 REUSABLE_LISTS = {"application-gate": 1, "infra-audit-gate": 1, "infra-deploy-gate": 1, "infra-plan-gate": 1, "observer": 2}
 Holder = collections.namedtuple("Holder", "dispatch_id run_id tenant_id")
@@ -81,12 +85,13 @@ def _build(case):
     return {"effect_id": plan.effect_id, "items": plan.items}
 
 
-def test_formatos_vendorizados_sao_os_quatro_arquivos_do_produto_no_commit_de_merge_do_p16c():
+def test_formatos_vendorizados_sao_os_cinco_arquivos_do_produto_no_commit_de_merge_do_p16d():
     assert _mb().PRODUCT_FRAMES == tuple(VENDORED)
     assert [name for name, _, _ in VENDORED] == ["cnes_infra.control_plane.dynamodb_keys",
                                                  "cnes_domain.orchestration.mode_canary",
                                                  "cnes_infra.aws.mode_canary_frames",
-                                                 "cnes_infra.aws.mode_canary_dispatch"]
+                                                 "cnes_infra.aws.mode_canary_dispatch",
+                                                 "cnes_infra.aws.mode_canary_unit_observe"]
 
 
 def test_conjunto_vendorizado_e_a_closure_que_o_vetor_do_produto_declara():
@@ -151,6 +156,8 @@ def test_carregador_executa_os_bytes_verificados_sem_deixar_modulos_do_produto_e
     assert frames.tenant_partition("prod-canary-x") == "TENANT#" + "prod-canary-x".encode().hex()
     assert frames.ModeCanaryRecord.__module__ == "cnes_domain.orchestration.mode_canary"
     assert dispatch.refuse is frames.refuse and dispatch.dispatch_key.__module__ == "cnes_infra.control_plane.dynamodb_keys"
+    unit_observe = modules["cnes_infra.aws.mode_canary_unit_observe"]
+    assert unit_observe.refuse is frames.refuse and unit_observe.unit_key.__module__ == "cnes_infra.control_plane.dynamodb_keys"
 
 
 def test_acessores_devolvem_os_formatos_e_o_dispatch_pelo_nome_do_modulo_e_nao_pela_posicao():
@@ -159,11 +166,14 @@ def test_acessores_devolvem_os_formatos_e_o_dispatch_pelo_nome_do_modulo_e_nao_p
     assert mb.product_dispatch().__name__ == "cnes_infra.aws.mode_canary_dispatch"
     assert mb.product_dispatch().refuse is mb.product_frames().refuse
     assert mb.product_dispatch().PRODUCTION_MAX_CONCURRENCY == 1
+    assert mb.product_unit_observe().__name__ == "cnes_infra.aws.mode_canary_unit_observe"
+    assert mb.product_unit_observe().refuse is mb.product_frames().refuse
 
 
 def test_formatos_do_produto_carregam_uma_vez_por_processo():
     mb = _mb()
     assert mb.product_frames() is mb.product_frames() and mb.product_dispatch() is mb.product_dispatch()
+    assert mb.product_unit_observe() is mb.product_unit_observe()
 
 
 @pytest.mark.parametrize("vendored", VENDORED, ids=[item[1] for item in VENDORED])

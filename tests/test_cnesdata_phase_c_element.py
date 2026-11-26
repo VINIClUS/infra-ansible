@@ -30,10 +30,10 @@ PLAN = "2" * 64
 RENDERED = {"unit": PREFIX + "unit:7", "recovery": PREFIX + "recovery:7", "audit": PREFIX + "audit:7"}
 
 
-PHASE_C_ORIGIN = {"commit": "06849119a24e33e2b847a9d3d1bab2d76a8cf2fa"}
+PHASE_C_ORIGIN = {"commit": "b5f6f9d643562dde69efe4aad4f6bb988ef245dd"}
 
 
-def test_pin_do_elemento_e_a_copia_do_produto_no_commit_de_merge_do_p16c():
+def test_pin_do_elemento_e_a_copia_do_produto_no_commit_de_merge_do_p16d():
     from test_cnesdata_mode_frames import PRODUCT_FRAMES_ORIGIN
     assert PHASE_C_ORIGIN["commit"] == PRODUCT_FRAMES_ORIGIN["commit"]
     assert lc.PHASE_C_PRODUCT_FILES == {"scripts/promotion/" + name: c.sha((FIXTURE / name).read_bytes())

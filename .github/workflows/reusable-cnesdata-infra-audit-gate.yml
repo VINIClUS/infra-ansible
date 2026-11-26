@@ -127,6 +127,7 @@ jobs:
                    "static_inputs.py", "terminal_gate.py", "mode_broker.py",
                    "product_dynamodb_keys.py", "product_mode_canary.py", "product_mode_canary_frames.py",
                    "product_mode_canary_dispatch.py",
+                   "product_mode_canary_unit_observe.py",
                    "runtime-requirements.txt"]
           root = Path("tools/cnesdata_delivery")
           root.mkdir(parents=True, exist_ok=True)
