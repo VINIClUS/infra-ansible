@@ -45,6 +45,9 @@ def effective_iam(identity, sessions, action, resource, context):
             found = [] if actual is None else [actual] if type(actual) is str else actual
             c.require(type(found) is list and all(type(item) is str for item in found), "finite IAM multivalue")
             return all(item in patterns for item in found)
+        if operator == "Bool":
+            c.require(len(patterns) == 1 and patterns[0] in {"true", "false"}, "finite IAM Bool")
+            return actual == patterns[0]
         if operator in {"DateLessThan", "DateGreaterThanEquals"}:
             if actual is None:
                 return False

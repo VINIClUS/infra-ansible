@@ -292,6 +292,7 @@ STATIC_SESSION_OPERATIONS = {
     "inventory": {"observer": "inventory"},
     "publish-static": {"normal": "publish", "observer": "inventory"},
     "retire-static": {"normal": "retire"},
+    "rollback-api-static": {"recovery": "rollback"},
 }
 
 
@@ -302,7 +303,7 @@ def static_session(binding, operation):
     c.canonical equals jsonencode on this closed ASCII binding. A name is not an STS admission.
     """
     c.closed(binding, STATIC_BINDING_FIELDS)
-    c.require(operation in {"inventory", "publish", "retire"}, "closed static session operation")
+    c.require(operation in {"inventory", "publish", "retire", "rollback"}, "closed static session operation")
     c.require(type(binding["release_id"]) is str and re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?", binding["release_id"]),
               "static session release id")
     for key in ("run_id", "run_attempt", "generation"):
@@ -367,6 +368,7 @@ STATIC_SDK_METHODS = {
     ("s3", "ListMultipartUploads"): "list_multipart_uploads", ("s3", "ListParts"): "list_parts",
     ("s3", "PutObject"): "put_object", ("s3", "GetObject"): "get_object",
     ("cloudfront", "CreateInvalidation"): "create_invalidation", ("s3", "DeleteObject"): "delete_object",
+    ("s3", "CopyObject"): "copy_object",
 }
 _STATIC_OBSERVER_CALLS = frozenset(("observer", "s3", name) for name in
                                    ("ListObjectVersions", "HeadObject", "ListMultipartUploads", "ListParts"))
@@ -375,6 +377,7 @@ STATIC_SDK_OPERATIONS = {
     "publish-static": _STATIC_OBSERVER_CALLS | {("normal", "s3", "PutObject"), ("normal", "s3", "GetObject"),
                                                 ("normal", "cloudfront", "CreateInvalidation")},
     "retire-static": frozenset({("normal", "s3", "DeleteObject")}),
+    "rollback-api-static": frozenset({("recovery", "s3", "CopyObject"), ("recovery", "cloudfront", "CreateInvalidation")}),
 }
 
 
@@ -482,10 +485,19 @@ def _static_delete(parameters, bucket, plan):
               "static call parameters")
 
 
+def _static_copy(parameters, bucket, plan):
+    c.closed(parameters, "Bucket Key CopySource ChecksumAlgorithm MetadataDirective")
+    source = c.closed(parameters["CopySource"], "Bucket Key VersionId")
+    c.require(parameters["Bucket"] == source["Bucket"] == bucket and parameters["Key"] == source["Key"]
+              and {"key": source["Key"], "version_id": source["VersionId"]} in plan["rollback_versions"]
+              and parameters["ChecksumAlgorithm"] == "SHA256" and parameters["MetadataDirective"] == "COPY",
+              "static call parameters")
+
+
 _STATIC_CALLS = {
     "ListObjectVersions": _static_list_versions, "HeadObject": _static_head, "ListMultipartUploads": _static_uploads,
     "ListParts": _static_parts, "PutObject": _static_put, "GetObject": _static_get,
-    "CreateInvalidation": _static_invalidation, "DeleteObject": _static_delete,
+    "CreateInvalidation": _static_invalidation, "DeleteObject": _static_delete, "CopyObject": _static_copy,
 }
 
 
@@ -1267,6 +1279,8 @@ FENCE_SDK_OPERATIONS = {
     "close-drain": frozenset({("dynamodb", "get_item"), ("dynamodb", "update_item"), ("dynamodb", "transact_write_items"),
                               ("stepfunctions", "describe_execution")}),
     **dict.fromkeys(MODE_OBSERVES, frozenset({("dynamodb", "get_item")})),
+    "reopen": frozenset({("dynamodb", "get_item"), ("dynamodb", "update_item")}),
+    "terminal-readback": frozenset({("dynamodb", "get_item"), ("stepfunctions", "describe_execution")}),
 }
 # Correction 6906038586 item 3: sha256 of each canonical template of the product call vector
 # (CnesData 2c66f62c tests/production/delivery/close_drain_call_vector.json, sha256 44d0cf91...).
@@ -1416,12 +1430,112 @@ def validate_mode_observe_call(*, request, role, service, operation, parameters,
     return parameters
 
 
+REOPEN_TEMPLATES = {
+    "get_item": frozenset({"d61d73ab325a8325b9f6116c7e587d18d6a8ff343c49237632a35b17928a8ac3",
+                           "6a14005ede4a28abbae4e8d0d38e6b8a4270d6570e263b59b6ef212162e5aacf"}),
+    "update_item": frozenset({"6efa362ee0c2d6852f7b19344dca822d4cdd49717deb1e37982d3f931c20731e"}),
+}
+_N = re.compile(r"[1-9][0-9]{0,17}")
+
+
+def _terminal_table(account, control_table_arn, machine_arn, label):
+    c.require(type(account) is str and re.fullmatch(r"[0-9]{12}", account) is not None and type(control_table_arn) is str,
+              label + " account")
+    table = re.fullmatch(r"arn:aws:dynamodb:us-east-2:" + account + r":table/(cnesdata-prod-[A-Za-z0-9_.-]+)", control_table_arn)
+    c.require(table is not None and machine_arn == "arn:aws:states:us-east-2:" + account + ":stateMachine:cnesdata-prod",
+              label + " protected resource scope")
+    return table[1]
+
+
+def _terminal_read(parameters, table, label):
+    allowed = [{"TableName": table, "Key": {"pk": {"S": pk}, "sk": {"S": sk}}, "ConsistentRead": True}
+               for pk, sk in (("ENV#prod#FENCE", "FENCE"), ("ENV#prod#SEMAPHORE", "UNIT"))]
+    c.require(type(parameters) is dict and any(c.canonical(parameters) == c.canonical(value) for value in allowed),
+              label + " strong fence read")
+    return parameters
+
+
+def _reopen_fence_read(history):
+    c.require(type(history) in (list, tuple) and len(history) <= 64, "reopen journal history")
+    fence = None
+    for entry in history:
+        c.closed(entry, "call response")
+        c.require(entry["call"]["operation"] == "get_item", "reopen update once after a strong FENCE read")
+        if entry["call"]["parameters"]["Key"]["pk"]["S"] == "ENV#prod#FENCE":
+            fence = entry["response"].get("Item")
+    c.require(type(fence) is dict, "reopen update once after a strong FENCE read")
+    return fence
+
+
+def _reopen_update(call, table, fence, owner_sha256):
+    parameters = call["parameters"]
+    c.require(type(parameters) is dict and parameters.get("ConditionExpression") == "#version = :expected", "reopen CAS condition")
+    values = parameters.get("ExpressionAttributeValues")
+    c.require(type(values) is dict and all(type(item) is dict and len(item) == 1 for item in values.values()),
+              "reopen typed expression values")
+    template = call | {"parameters": parameters | {"ExpressionAttributeValues": sorted(values)}}
+    c.require(c.sha(c.canonical(template, limit=128 * 1024)) in REOPEN_TEMPLATES["update_item"]
+              and parameters["TableName"] == table, "reopen pinned update_item template")
+    expected, version = values[":expected"].get("N"), values[":version"].get("N")
+    c.require(fence.get("state") == {"S": "CLOSED"} and fence.get("promotion_id") == {"S": owner_sha256}
+              and values[":state"] == {"S": "OPEN"} and values[":entity"] == {"S": "PROMOTIONFENCE"}
+              and values[":promotion"] == {"S": owner_sha256} and type(values[":changed"].get("S")) is str
+              and type(expected) is str and _N.fullmatch(expected) is not None and fence.get("version") == {"N": expected}
+              and version == str(int(expected) + 1), "reopen CAS of the owner from the strong FENCE read")
+
+
+def validate_reopen_call(*, request, role, service, operation, parameters, account, control_table_arn, machine_arn,
+                         history=()):
+    """P17b: reopen on the fence session, pinned to the P17c call vector (CnesData 182dc74c
+    tests/production/delivery/reopen_call_vector.json, sha256 0b399191...). Strong FENCE/SEMAPHORE reads in final and
+    recovery; in final only, one CAS UpdateItem of the owner fence after a strong FENCE read, at version + 1.
+    """
+    stage = request["stage"]["stage"]
+    c.require(request["operation"] == "reopen" and stage in ADAPTER_STAGES["reopen"] and role == "fence_operator"
+              and (service, operation) in FENCE_SDK_OPERATIONS["reopen"] and (operation == "get_item" or stage == "final"),
+              "reopen finite SDK operation")
+    table = _terminal_table(account, control_table_arn, machine_arn, "reopen")
+    call = {"role": role, "service": service, "operation": operation, "parameters": parameters}
+    if operation == "get_item":
+        _terminal_read(parameters, table, "reopen")
+        c.require(c.sha(c.canonical(call)) in REOPEN_TEMPLATES["get_item"], "reopen pinned get_item template")
+        return parameters
+    fence = _reopen_fence_read(history)
+    _reopen_update(call, table, fence, request["owner"]["owner_sha256"])
+    return parameters
+
+
+def validate_terminal_readback_call(*, request, role, service, operation, parameters, account, control_table_arn,
+                                    machine_arn, members):
+    """P17b: terminal-readback on the fence session, the product ReadOnlyShim set: strong FENCE/SEMAPHORE reads and a
+    METADATA_ONLY DescribeExecution of the execution_ref of a TERMINAL member of the frozen close-drain membership."""
+    c.require(request["operation"] == "terminal-readback"
+              and request["stage"]["stage"] in ADAPTER_STAGES["terminal-readback"] and role == "fence_operator"
+              and (service, operation) in FENCE_SDK_OPERATIONS["terminal-readback"], "terminal-readback finite SDK operation")
+    table = _terminal_table(account, control_table_arn, machine_arn, "terminal-readback")
+    if operation == "get_item":
+        return _terminal_read(parameters, table, "terminal-readback")
+    c.require(type(members) is list and len(members) <= 4096, "terminal-readback frozen membership bound")
+    executions = {member.get("execution_ref") for member in members
+                  if type(member) is dict and member.get("resolution") == "TERMINAL"}
+    prefix = machine_arn.replace(":stateMachine:", ":execution:") + ":"
+    c.require(type(parameters) is dict and set(parameters) == {"executionArn", "includedData"}
+              and parameters["includedData"] == "METADATA_ONLY" and type(parameters["executionArn"]) is str
+              and parameters["executionArn"].startswith(prefix) and parameters["executionArn"] in executions,
+              "terminal-readback exact terminal member probe")
+    return parameters
+
+
 def validate_fence_call(*, request, history=(), **arguments):
     """Per-operation fence SDK scope; closed-ready keeps its frozen-member validator."""
     if request["operation"] == "close-drain":
         return validate_close_drain_call(request=request, history=history, **arguments)
     if request["operation"] in MODE_OBSERVES:
         return validate_mode_observe_call(request=request, **arguments)
+    if request["operation"] == "reopen":
+        return validate_reopen_call(request=request, history=history, **arguments)
+    if request["operation"] == "terminal-readback":
+        return validate_terminal_readback_call(request=request, **arguments)
     return validate_closed_ready_call(request=request, **arguments)
 
 
