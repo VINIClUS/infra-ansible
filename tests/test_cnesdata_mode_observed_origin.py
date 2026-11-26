@@ -110,3 +110,42 @@ def test_observed_e_so_do_unit_observe(monkeypatch, operation):
     with pytest.raises(ValueError, match="^mode_inputs=source_unconnected$"):
         _source(operation, ["observed"], context=_context(prepared, arguments), owner=arguments["owner"],
                 keeper=SimpleNamespace(_contexts=[_start(_readbacks(cluster))]), prepared=arguments["window"])
+
+
+STEPPED = r'''
+class Binding:
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+def execute_shared_operation(operation, request, context):
+    observed = context.dispatch_unit(Binding(**FIELDS))
+    context.observe('unit-execution', canonical(observed['execution']))
+    for task in observed['tasks']:
+        context.observe('unit-task', canonical(task))
+    for output in observed['outputs']:
+        context.observe('unit-output', canonical(output))
+    return canonical({'tasks': len(observed['tasks'])})
+'''
+
+
+def test_cadeia_do_dispatch_unit_ao_observed_entrega_os_bytes_do_slot_com_a_forma_do_p13(tmp_path, monkeypatch):
+    """Ack 1 answer 5: the real dispatch_unit on the fake AWS, the child's steps bound to the slot by the real observe,
+    then the observed origin over that journal."""
+    from test_cnesdata_mode_child_context import _invoke, _product
+    from test_cnesdata_mode_unit_dispatch_broker import CLUSTER, RUN_ID, _binding, _world as _dispatch_world
+    prepared, arguments, cluster = _prepared(monkeypatch)
+    product, source, manifest = _product(tmp_path, STEPPED.replace("FIELDS", repr(_binding() | {"run_ids": (RUN_ID,)})))
+    broker, journal, _, _ = _dispatch_world(monkeypatch, source=source)
+    assert _invoke(monkeypatch, product, source, manifest, journal) == {"tasks": 2}
+    slot = broker.unit_observed
+    assert [entry["kind"] for entry in journal._observations] == ["unit-execution"] + ["unit-task"] * 2 + ["unit-output"] * 2
+    observed = _observed(prepared, arguments, journal)["observed"]
+    assert cluster == CLUSTER
+    assert observed == c.canonical({"execution": slot["execution"], "tasks": slot["tasks"], "outputs": slot["outputs"]})
+    value = c.loads(observed, canonical=True)
+    assert set(value) == {"execution", "tasks", "outputs"}
+    for case in SECTION["cases"]:
+        if case["execution"]["response"]["status"] == "SUCCEEDED":
+            assert set(value["execution"]) == set(case["execution"]["response"]) - {"startDate", "stopDate"}
+    assert len(value["tasks"]) == len(value["outputs"]) == 2
+    assert all(set(task) == set(TASKS[0]) for task in value["tasks"])
+    assert all(set(output) == set(OUTPUTS[0]) for output in value["outputs"])
