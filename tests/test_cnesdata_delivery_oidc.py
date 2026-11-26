@@ -376,7 +376,13 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
                document=json.loads(resources["aws_iam_policy.application_session[0]"]["policy"]))
     pin["document_sha256"] = c.sha(c.canonical(pin["document"]))
     gov["session_policy_pins"]["application"] = pin
-    measured = {"managed_session_policy": session_owner._facts(pin, c.report_key(gov)), "application_fragment_sha256": c.sha(c.canonical(fragment))}
+    ops = copy.deepcopy(pin)
+    ops.update(policy_arn=managed_arn(gov, "application_ops"),
+               document=json.loads(resources["aws_iam_policy.application_ops_session[0]"]["policy"]))
+    ops["document_sha256"] = c.sha(c.canonical(ops["document"]))
+    gov["session_policy_pins"]["application_ops"] = ops
+    measured = {"managed_session_policy": session_owner._facts(pin, c.report_key(gov)), "application_fragment_sha256": c.sha(c.canonical(fragment)),
+                "ops_session_policy": session_owner._facts(ops, c.report_key(gov))}
     name = "policy-evaluation.json"
     files[name] = c.canonical({"check_id": "policy-evaluation", "source_sha": descriptor["source_sha"], "measurement": measured})
     next(x for x in proof["reports"] if x["check_id"] == "policy-evaluation").update(size=len(files[name]), sha256=c.sha(files[name]))
@@ -386,6 +392,7 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     gov["session_owner_references"] = {"application": api.owner_reference}
     authority = session_owner.authenticate_lifecycle(gov, api, descriptor["source_sha"], "application", "application-prepare", now)
     assert authority.application_fragment == fragment
+    assert authority.ops_pin == ops
     assert authority.application_fragment is not fragment
     assert authority.proof_sha256 == c.sha(api.owner_files["proof.json"])
     # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.

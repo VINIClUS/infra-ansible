@@ -2388,21 +2388,20 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
     lease = f"arn:aws:s3:::{kwargs['governance']['state_bucket']}/{KEY}"
     coordination["Statement"] += [{"Effect": "Allow", "Action": ["s3:PutObject", "s3:DeleteObject"], "Resource": lease},
                                   {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": sorted(fragment["delegations"].values())}]
-    kwargs["authority"].pin["document"]["Statement"] += [{"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": lease},
-                                                         {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]
     if mutation == "identity-no-assume":
         coordination["Statement"] = [item for item in coordination["Statement"] if item["Action"] != "sts:AssumeRole"]
     fragment["policy_sha256"] = _terraform_document_digest(coordination)
     kwargs["governance"]["application_coordination_policy"] = c.canonical(coordination).decode().strip()
     owner, pin = kwargs["owner"], kwargs["authority"].pin
-    if mutation == "managed-no-assume": pin["document"] = {"Version": "2012-10-17", "Statement": []}
+    if mutation == "managed-assume-all":
+        pin["document"] = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"}]}
     if mutation == "managed-expired":
         pin["document"]["Statement"].append({"Effect": "Deny", "Action": "*", "Resource": "*",
                                              "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": c.utc(1300)}}})
     if mutation == "owner": owner = owner | {"generation": owner["generation"] + 1}
     preparation = c.loads(prepared["fence-prepared.json"], canonical=True)["preparation"]
     _, sts_args, sts_calls, _ = _fence_sdk_boundary_case(monkeypatch)
-    authority = Authority(pin, 5000.0, None, fragment, "3" * 64)
+    authority = Authority(pin, 5000.0, None, fragment, "3" * 64, pin)
     api = SimpleNamespace(expiries={(c.REPOSITORY, 81): 6000.0}, digests={(c.REPOSITORY, 81): "2" * 64})
     expirations = ag.close_expirations(authority, api)
     if mutation == "expirations": api.expiries[(c.REPOSITORY, 81)] = 5900.0
@@ -2443,7 +2442,7 @@ def _close_drain_capability_case(monkeypatch, mutation=None):
 
 
 _CLOSE_CAPABILITY_REFUSALS = {"activation": "activation_sha256", "identity-no-assume": _CLOSE_OPERATION_IAM,
-                              "managed-no-assume": _CLOSE_OPERATION_IAM, "managed-expired": _CLOSE_OPERATION_IAM, "preparation": "original preparation is the close stage",
+                              "managed-assume-all": _CLOSE_OPERATION_IAM, "managed-expired": _CLOSE_OPERATION_IAM, "preparation": "original preparation is the close stage",
                               "admitted": "original preparation is the close stage", "delegation": "fence_operator delegation",
                               "admitted-later": "original preparation is the close stage", "owner": "prepared current owner",
                               "evaluation-scope": "capability scope recomputed from prepared policy",
@@ -2484,12 +2483,14 @@ def _drift_operation_inline(request, drift):
     from tools.cnesdata_delivery.coordination_lease import KEY
     policy = c.loads(request["Policy"].encode())
     statements = policy["Statement"]
-    if drift == "no-lease-deny":
-        statements[:] = [item for item in statements if not (item["Effect"] == "Deny" and item.get("Resource", "").endswith(KEY))]
+    if drift == "lease-put-allowed":
+        statements.append({"Effect": "Allow", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::" + "synthetic-state/" + KEY})
     if drift == "no-name-condition":
-        statements[:] = [item for item in statements if "StringNotEquals" not in item.get("Condition", {})]
-    if drift == "no-delegation-deny":
-        statements[:] = [item for item in statements if "NotResource" not in item]
+        for item in statements:
+            if item["Action"] == "sts:AssumeRole":
+                item.pop("Condition")
+    if drift == "assume-widened":
+        statements.append({"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*"})
     if drift == "keeper-prefix":
         for item in statements:
             if item["Effect"] == "Allow" and item["Action"] == "s3:PutObject":
@@ -2499,7 +2500,7 @@ def _drift_operation_inline(request, drift):
     return request | {"Policy": c.canonical(policy).decode().strip()}
 
 
-@pytest.mark.parametrize("drift", ["no-lease-deny", "no-name-condition", "no-delegation-deny", "keeper-prefix", "no-close-drain-put"])
+@pytest.mark.parametrize("drift", ["lease-put-allowed", "no-name-condition", "assume-widened", "keeper-prefix", "no-close-drain-put"])
 def test_close_drain_capability_refuses_an_operation_inline_the_documents_do_not_bound(monkeypatch, drift):
     """Change 4: effective_iam is a local check over the recomputed documents, before the freeze reread and before any exchange.
 
@@ -4467,6 +4468,7 @@ def test_fence_session_policy_rejects_non_exact_scope(mutation):
 
 def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WINDOWS, activation_sha256="1" * 64):
     """Synthetic producer composition; GitHub and IAM are external fakes, nothing here is applied evidence."""
+    from tools.cnesdata_delivery.session_owner import Authority
     import base64
     import hashlib
     from email.utils import formatdate
@@ -4483,8 +4485,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
         {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
         {"Effect": "Allow", "Action": "s3:PutObject", "Resource": lifecycle + ("*" if mutation != "evaluation" else "keeper/*")},
         {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": mode_arns}]}
-    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": fence_arn},
-                                                      {"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": mode_arns}]}
+    managed = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:GetRole", "Resource": "*"}]}
     fragment["policy_sha256"] = _terraform_document_digest(coordination)
     pin = {"document": managed, "document_sha256": c.sha(c.canonical(managed)), "frozen_until": c.utc(5000)}
     governance = {"account_id": account, "evidence_bucket": "synthetic-evidence", "evidence_prefix": "cnesdata/prod/evidence/",
@@ -4548,7 +4549,7 @@ def _fence_prepare_package_case(monkeypatch, mutation=None, windows=MINIMUM_WIND
         window = {"admitted_at": 1000, "preparation_deadline": 1900, "windows": windows}
         def check(self, seconds=0): pass
     kwargs = dict(api=API(), aws=AWS(), governance=governance, request=request, run=run, owner=owner, guard=Guard(),
-        authority=SimpleNamespace(application_fragment=fragment, pin=pin), predecessor=carrier["origin"], carrier=carrier,
+        authority=Authority(pin, 5000.0, None, fragment, "3" * 64, pin), predecessor=carrier["origin"], carrier=carrier,
         plan_index=args["current_index"], plan_raw=args["plan_raw"], inputs_raw=args["inputs_raw"], terraform_raw=args["inputs_raw"],
         approval_raw=c.canonical(approval), previous_raw=previous_raw, checkpoint_raw=checkpoint_raw, state_raw=args["state_raw"],
         sources=args["sources"], activation_sha256=activation_sha256, clock=lambda: now[0],
@@ -6998,8 +6999,8 @@ def test_static_sessions_admit_the_observer_in_static_and_retire_only_as_normal(
         request = application_request(governance, "b" * 40, 44, 1, operation, application_purpose="promotion",
                                       delegations=sorted(chosen), sessions=chosen)
         statements = json.loads(request["Policy"])["Statement"]
-        assert {(statement["Resource"], statement["Condition"]["StringNotEquals"]["sts:RoleSessionName"]) for statement in statements
-                if "StringNotEquals" in statement.get("Condition", {})} == {(roles[alias], name) for alias, name in chosen.items()}
+        assert {(statement["Resource"], statement["Condition"]["StringEquals"]["sts:RoleSessionName"]) for statement in statements
+                if statement["Action"] == "sts:AssumeRole"} == {(roles[alias], name) for alias, name in chosen.items()}
     for operation in ("rollback-api-static", "closed-ready", "close-drain", "reopen", "terminal-readback", "publish"):
         with pytest.raises(ValueError, match="closed static session operation"):
             lc.static_sessions(_static_binding(), operation)

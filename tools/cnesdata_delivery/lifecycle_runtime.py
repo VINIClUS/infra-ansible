@@ -746,7 +746,8 @@ def fence_prepare_package(*, api, aws, governance, request, run, owner, guard, a
     terraform = c.loads(terraform_raw, canonical=True)
     scope, execution_prefix = fence_evaluation_scope(governance=governance, role=role,
         control_table_arn=terraform["shared_outputs"]["control_table_arn"], owner=owner, checkpoint_sha256=c.sha(checkpoint_raw))
-    documents = fence_evaluation_documents(governance=governance, pin=authority.pin, fragment=fragment, owner=owner, role=role,
+    from tools.cnesdata_delivery.session_owner import operation_authority
+    documents = fence_evaluation_documents(governance=governance, pin=operation_authority(authority).pin, fragment=fragment, owner=owner, role=role,
         control_table_arn=scope["control_table_arn"], execution_prefix=execution_prefix, observed_at=preparation["observed_at"],
         api_seconds=lc.governed_windows(window["windows"])["stages"]["api"])
     evaluation = fence_effective_evaluation(documents, scope, evaluator_source_sha=producer["workflow_sha"],
@@ -774,9 +775,10 @@ def mode_prepared_evaluation(*, governance, authority, owner, mode_input_raw, ad
     Returns: (scope, documents, evaluation). Raises: ValueError.
     """
     from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation, mode_evaluation_documents, mode_prepared_scope
+    from tools.cnesdata_delivery.session_owner import operation_authority
     scope = mode_prepared_scope(mode_input_raw, admitted, owner=owner, governance=governance, window=window)
     documents = mode_evaluation_documents(governance=governance, fragment=authority.application_fragment,
-        pin_document=authority.pin["document"], owner=owner, scope=scope,
+        pin_document=operation_authority(authority).pin["document"], owner=owner, scope=scope,
         policies={alias: roles[alias]["policy"]["PolicyDocument"] for alias in lc.MODE_ALIASES})
     evaluation = mode_effective_evaluation(documents, scope, evaluator_source_sha=evaluator[0], observed_at=c.utc(evaluator[1]))
     return scope, documents, evaluation

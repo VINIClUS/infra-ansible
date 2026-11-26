@@ -14,6 +14,9 @@ STATE_KEYS = (
 LIFECYCLE_DELETES = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup",
                      "events:DeleteRule", "cloudwatch:DeleteAlarms"]
 
+OPS_ROLE = "application_ops"
+DELETE_ARN_MAX = 104
+
 ACTIVATION_BUCKET_READS = ["s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketObjectLockConfiguration"]
 ACTIVATION_SLOTS = ("payload", "signature", "receipt")
 
@@ -384,8 +387,6 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
         # KMS has the same run boundary; S3 PutObject still limits writes to own step.
         {"Effect": "Allow", "Action": ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], "Resource": key,
          "Condition": {"StringLike": {"kms:EncryptionContext:aws:s3:arn": run + "*"}}},
-        {"Effect": "Deny", "Action": ["s3:PutObject", "s3:DeleteObject"],
-         "Resource": "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY},
     ]
     if predecessor is not None:
         c.require(role == "plan" and direction == "advance"
@@ -402,14 +403,19 @@ def lifecycle_request(governance, source, run_id, attempt, role, step, *, direct
         c.require(not delete_resources, "advance/read session cannot delete")
         statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "Resource": "*"})
     else:
-        c.require(type(delete_resources) in (list, tuple) and 0 < len(delete_resources) <= 8
+        c.require(type(delete_resources) in (list, tuple) and 0 < len(delete_resources) <= _delete_bound()
                   and len(set(delete_resources)) == len(delete_resources), "inverse exact resource inventory")
         for arn in delete_resources:
             c.require(re.fullmatch(r"arn:aws:(?:states|scheduler|events|cloudwatch):us-east-2:"
                                   + re.escape(governance["account_id"]) + r":[A-Za-z0-9_./:-]+", arn)
-                      and "cnesdata-prod" in arn, "inverse exact same-product ARN")
+                      and "cnesdata-prod" in arn and len(arn) <= DELETE_ARN_MAX, "inverse exact same-product ARN")
         statements.append({"Effect": "Deny", "Action": LIFECYCLE_DELETES, "NotResource": list(delete_resources)})
     return {"Policy": _encode(governance, role, statements + activation_ordinary_denies(governance, role)), "PolicyArns": [{"arn": managed_arn(governance, role)}]}
+
+
+def _delete_bound():
+    from tools.cnesdata_delivery import lifecycle_contract as lc
+    return max(len(lc.scheduler_closure(kind)) for kind in ("recovery", "audit"))
 
 
 def application_request(governance, source, run_id, attempt, step, *, application_purpose, delegations=(), sessions=None):
@@ -451,7 +457,6 @@ def application_request(governance, source, run_id, attempt, step, *, applicatio
                         "fence_operator": r"promotion-fence-[A-Za-z0-9][A-Za-z0-9_.-]{0,31}"}
             c.require(re.fullmatch(patterns[alias], name), "nominal exact original session")
     run = "arn:aws:s3:::" + governance["evidence_bucket"] + "/" + _prefix(governance) + f"lifecycle/{source}/{run_id}/{attempt}/"
-    lease = "arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY
     own = [run + name + "/*" for name in (("keeper", "terminal") if keeper else (step,))]
     statements = [
         {"Effect": "Allow", "Action": "s3:GetObject", "Resource": run + "*"},
@@ -462,22 +467,14 @@ def application_request(governance, source, run_id, attempt, step, *, applicatio
     ]
     if delegations:
         roles = governance["application_delegations"]
-        selected = [roles[name] for name in delegations]
         c.require(all(roles[name] == "arn:aws:iam::" + governance["account_id"] + ":role/cnesdata-prod-" + lc.APPLICATION_DELEGATIONS[name]
                       for name in delegations), "exact governed product roles")
-        statements.append({"Effect": "Deny", "Action": "sts:AssumeRole", "NotResource": selected})
-        for alias in delegations:
-            statements.append({"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": roles[alias],
-                               "Condition": {"StringNotEquals": {"sts:RoleSessionName": sessions[alias]}}})
-    else:
+        statements += [{"Effect": "Allow", "Action": "sts:AssumeRole", "Resource": roles[alias],
+                        "Condition": {"StringEquals": {"sts:RoleSessionName": sessions[alias]}}} for alias in delegations]
+    if keeper:
         statements.append({"Effect": "Deny", "Action": "sts:AssumeRole", "Resource": "*"})
-    if not keeper:
-        statements += [
-            {"Effect": "Deny", "Action": ["s3:PutObject", "s3:DeleteObject"], "Resource": lease},
-            {"Effect": "Deny", "Action": "s3:GetObject", "NotResource": [lease, run + "*"]},
-        ]
-    return {"Policy": _encode(governance, "application", statements),
-            "PolicyArns": [{"arn": managed_arn(governance, "application")}]}
+    managed = "application" if keeper else OPS_ROLE
+    return {"Policy": _encode(governance, managed, statements), "PolicyArns": [{"arn": managed_arn(governance, managed)}]}
 
 
 class PhaseInputScope(str):
@@ -485,19 +482,21 @@ class PhaseInputScope(str):
 
 
 def managed_arn(governance, role):
-    c.require(role in {"plan", "deploy", "application", "audit"}, "session role")
+    c.require(role in {"plan", "deploy", "application", "audit", OPS_ROLE}, "session role")
+    base = "application" if role == OPS_ROLE else role
     account = governance["account_id"]
     c.require(
         type(account) is str and re.fullmatch(r"[0-9]{12}", account), "session account"
     )
-    role_arn = governance["roles"][role]
+    role_arn = governance["roles"][base]
     c.require(
         re.fullmatch(
-            rf"arn:aws:iam::{account}:role/cnesdata-[a-z0-9-]+-{role}", role_arn
+            rf"arn:aws:iam::{account}:role/cnesdata-[a-z0-9-]+-{base}", role_arn
         ),
         "deterministic governed session role",
     )
-    return f"arn:aws:iam::{account}:policy/{role_arn.rsplit('/', 1)[1]}-session"
+    kind = "-ops-session" if role == OPS_ROLE else "-session"
+    return f"arn:aws:iam::{account}:policy/{role_arn.rsplit('/', 1)[1]}{kind}"
 
 
 def _prefix(governance):

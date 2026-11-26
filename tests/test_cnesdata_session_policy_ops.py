@@ -48,7 +48,7 @@ LIFECYCLE_MANAGED = {"Version": "2012-10-17", "Statement": [
 
 def allowed(request_or_policy, managed, action, resource, context=None):
     from tools.cnesdata_delivery.iam_boundary import effective_iam
-    policy = request_or_policy if type(request_or_policy) is dict else json.loads(request_or_policy["Policy"])
+    policy = json.loads(request_or_policy["Policy"])
     return effective_iam(IDENTITY, [managed, policy], action, resource, NOW | (context or {}))
 
 

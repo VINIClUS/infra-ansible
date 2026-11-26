@@ -162,12 +162,15 @@ def test_exact_inverse_session_fits_seven_native_resources_and_preserves_boundar
     denies = [s for s in session["Statement"] if "NotResource" in s]
     assert denies[0]["NotResource"] == resources
     allow = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}
-    # No new allow is inferred from a denied-resource exception; managed policy remains necessary.
-    assert effective(allow, allow, session, "scheduler:DeleteSchedule", resources[0])
-    assert not effective(allow, allow, session, "scheduler:DeleteSchedule", resources[0] + "-foreign")
     lease = "arn:aws:s3:::" + governance["state_bucket"] + "/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
-    assert not effective(allow, allow, session, "s3:PutObject", lease)
-    assert not effective(allow, allow, session, "s3:DeleteObject", lease)
+    managed = {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "NotAction": ["s3:*Object*", "s3:ListBucket*", "s3:*Multipart*", "kms:*"], "Resource": "*"},
+        {"Effect": "Allow", "Action": "s3:GetObject", "Resource": lease}]}
+    # No new allow is inferred from a denied-resource exception; managed policy remains necessary.
+    assert effective(allow, managed, session, "scheduler:DeleteSchedule", resources[0])
+    assert not effective(allow, managed, session, "scheduler:DeleteSchedule", resources[0] + "-foreign")
+    assert not effective(allow, managed, session, "s3:PutObject", lease)
+    assert not effective(allow, managed, session, "s3:DeleteObject", lease)
 
 
 class ReadbackAWS:

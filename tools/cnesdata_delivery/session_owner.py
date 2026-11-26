@@ -2,12 +2,12 @@
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import unquote
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.provenance import validate_proof
-from tools.cnesdata_delivery.session_policy import managed_arn
+from tools.cnesdata_delivery.session_policy import OPS_ROLE, managed_arn
 
 CONSUMER_WORKFLOWS = {
     ".github/workflows/infra-plan.yml",
@@ -28,6 +28,7 @@ class Authority:
     namespace: dict | None
     application_fragment: dict | None = field(default=None, repr=False)
     proof_sha256: str | None = None
+    ops_pin: dict | None = field(default=None, repr=False)
 
 
 def authenticate_lifecycle(governance, api, source, role, purpose, now):
@@ -59,7 +60,17 @@ def authenticate_lifecycle(governance, api, source, role, purpose, now):
         fragment = application_fragment(governance, now)
         c.require(measured.get("application_fragment_sha256") == c.sha(c.canonical(fragment)),
                   "original owner private fragment commitment")
-    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]))
+        ops = _pin(governance, OPS_ROLE)
+        c.require(measured.get("ops_session_policy") == _facts(ops, c.report_key(governance))
+                  and all(ops[key] == pin[key] for key in ("observed_at", "expires_at", "frozen_until")),
+                  "original owner ops session policy commitment")
+    return Authority(pin, expiry, None, fragment, c.sha(files["proof.json"]), ops if role == "application" else None)
+
+
+def operation_authority(authority):
+    """Args: application authority. Returns: the same authority pinned to the ops managed policy. Raises: ValueError."""
+    c.require(type(authority.ops_pin) is dict, "ops session pin absent")
+    return replace(authority, pin=authority.ops_pin)
 
 
 FREEZE_POLICY = "cnesdata-budget-freeze"
@@ -263,7 +274,7 @@ def _pin(governance, role):
     )
     c.require(
         pin["account_id"] == governance["account_id"]
-        and pin["role_arn"] == governance["roles"][role]
+        and pin["role_arn"] == governance["roles"]["application" if role == OPS_ROLE else role]
         and pin["policy_arn"] == managed_arn(governance, role),
         "own deterministic session policy",
     )

@@ -1976,7 +1976,7 @@ def _fence_operation_iam(governance, authority, journal, role, clock):
                  ("arn:aws:s3:::" + governance["state_bucket"] + "/" + KEY, "s3:PutObject", {}, False),
                  (evidence.replace(f"/{operation}/", "/keeper/"), "s3:PutObject", {}, False), (evidence, "s3:PutObject", {}, True))
     identity = session_owner.application_identity_document(governance, authority.application_fragment)
-    c.require(all(effective_iam(identity, [authority.pin["document"], inline], action, resource,
+    c.require(all(effective_iam(identity, [session_owner.operation_authority(authority).pin["document"], inline], action, resource,
                                 {"aws:CurrentTime": c.utc(clock())} | context) is expected
                   for resource, action, context, expected in decisions), f"{operation} operation session effective IAM")
 
@@ -3485,7 +3485,7 @@ def credentials(admitted, *, product=None):
     value = lr.oidc_credentials(governance, "application", restriction, run)
     expires = value["Expiration"].timestamp()
     client = lr.AWS(governance, credentials=value)
-    guard = _verify_session(client, governance, authority, run, expires)
+    guard = _verify_session(client, governance, session_owner.operation_authority(authority), run, expires)
     authenticate_adapter_closure(product, request["source_sha"], manifest, closure)
     guard.check()
     lr.export_credentials(value)
