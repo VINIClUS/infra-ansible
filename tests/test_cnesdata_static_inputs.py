@@ -419,6 +419,7 @@ def test_observer_bootstrap_roda_o_inventory_e_publica_o_resultado_para_os_input
     from tools.cnesdata_delivery import application_gate as ag
     world = _inventory_world(monkeypatch)
     monkeypatch.setattr(ag, "_publish_operational_plan_inputs", lambda *args: None)
+    monkeypatch.setattr(ag, "_await_operational_inputs", lambda *args: None)
     before = world.store.get()[0]["lifecycle"]
     world.handlers["observer-bootstrap"](world.keeper, dict(world.github.reference))
     from test_cnesdata_static_roles import role_files
