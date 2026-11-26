@@ -349,6 +349,8 @@ def derive_host(static_host, seen, port):
     upstream = live_upstream(seen["caddyfile"], host["public_hostname"])
     slot, live = SLOTS[port], live_slot(upstream)
     g.require(slot != live, "candidate slot live")
+    ports = {name: number for number, name in SLOTS.items()}
+    g.require(live is None or ports[live] in seen["listening"], "live slot port listening")
     g.render_caddy(
         seen["caddyfile"], host["public_hostname"], upstream, f"cnesdata-{slot}-api-1:8000"
     )
@@ -424,10 +426,14 @@ def probe_session(value, role_arn, now):
 def derive_probes(static_probes, sessions, seen, run, now):
     """runtime_probes: carrier fixo, chave ausente por execução e expiração das sessões.
 
+    Args:
+        run: (run_id, run_attempt, role_arn do renewer, que é a sessão da sonda API).
     Raises:
         ValueError: probe fora do conjunto fechado ou sessão sem vida suficiente.
     """
+    run_id, run_attempt, renewer_role = run
     g.runtime_probe_set(static_probes)
+    g.require(static_probes["API"]["role_arn"] == renewer_role, "API probe renewer role")
     g.require(set(sessions) == {"unit", "recovery"}, "probe sessions")
     api = seen["api_session_expiration"]
     g.require(api is not None and g.instant(api) >= now + PROBE_MARGIN, "API probe session")
@@ -443,7 +449,7 @@ def derive_probes(static_probes, sessions, seen, run, now):
             **probe,
             "credential_path": f"{PROBE_DIRECTORY}/{name}.credentials",
             "expires_at": expires_at,
-            "key": f"cnesdata/host-probe/{name.lower()}/absent-{run[0]}-{run[1]}",
+            "key": f"cnesdata/host-probe/{name.lower()}/absent-{run_id}-{run_attempt}",
         }
     return result
 
@@ -528,9 +534,8 @@ def build_governance(static, inputs, run_id, run_attempt, now):
     port = archive_port(inputs.archive, manifest, original["archive_sha256"])
     seen = read_readback(inputs.readback)
     doc["host"] = derive_host(static["host"], seen, port)
-    doc["runtime_probes"] = derive_probes(
-        static["runtime_probes"], inputs.sessions, seen, (run_id, run_attempt), now
-    )
+    run = (run_id, run_attempt, static["credentials"]["role_arn"])
+    doc["runtime_probes"] = derive_probes(static["runtime_probes"], inputs.sessions, seen, run, now)
     pem = signing_pem(inputs.signing)
     doc["signing_spki_pem_sha256"] = g.sha(pem)
     if inputs.activation is not None:
@@ -632,8 +637,10 @@ def run_governance(args):
     raw = build_governance(static, inputs, args.run_id, args.run_attempt, now)
     write_private(args.out, raw)
     write_handoffs(args, inputs, raw, now)
-    binding = digest_of(g.host_json(raw)["binding"])
-    print(f"sha256={g.sha(raw)}\nbinding_sha256={binding}")
+    value = g.host_json(raw)
+    binding = digest_of(value["binding"])
+    valid = min(p["expires_at"] for p in value["runtime_probes"].values())
+    print(f"sha256={g.sha(raw)}\nbinding_sha256={binding}\nprobes_valid_until={valid}")
 
 
 def run_platform_plan(args):
