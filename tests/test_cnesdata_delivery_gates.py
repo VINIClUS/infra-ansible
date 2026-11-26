@@ -915,7 +915,7 @@ def test_session_policy_keeps_state_and_denies_other_evidence_runs(shared_bucket
                    "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"):
         resource = f"arn:aws:s3:::{state}/{suffix}"
         assert permitted("s3:GetObject", resource)
-        assert permitted("s3:PutObject", resource) is (suffix != "cnesdata/prod/opentofu.tfstate")
+        assert permitted("s3:PutObject", resource) is suffix.endswith((".tflock", "lease.json"))
         assert permitted("s3:DeleteObject", resource) is suffix.endswith(".tflock")
         assert permitted("s3:ListBucket", f"arn:aws:s3:::{state}", {"s3:prefix": suffix})
         assert permitted("kms:Encrypt", governance["state_kms_key_arn"], context | {"kms:EncryptionContext:aws:s3:arn": resource})

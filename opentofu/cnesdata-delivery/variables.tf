@@ -123,7 +123,7 @@ variable "github_delivery" {
       can(regex("^arn:aws:kms:us-east-2:${var.account_id}:key/[0-9a-f-]{36}$", var.github_delivery.activation_read.cipher_kms_key_arn)) &&
       length(distinct(values(var.github_delivery.activation_read.keys))) == 3 &&
       alltrue([for key in values(var.github_delivery.activation_read.keys) :
-        length(key) > 0 && length(key) <= 1024 && !startswith(key, "/") && !strcontains(key, "..") &&
+        length(key) > 0 && length(key) <= 273 && !startswith(key, "/") && !strcontains(key, "..") &&
         length(regexall("[?*]", key)) == 0 && !contains(local.delivery_state_keys, key) &&
     !startswith(key, "${var.github_delivery.evidence_prefix}lifecycle/")]), false)
     error_message = "Activation read ceiling needs one exact bucket and cipher key and three distinct wildcard-free keys disjoint from state, lease and lifecycle evidence."

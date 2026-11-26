@@ -26,6 +26,8 @@ ROLE_IDS = {alias: "AROA" + alias.upper().replace("_", "") for alias in lc.MODE_
 IDENTITY = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole",
                                                     "Resource": sorted(ROLE_ARNS.values())}]}
 
+OPS_MANAGED = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:GetRole", "Resource": "*"}]}
+
 
 def _mb():
     from tools.cnesdata_delivery import mode_broker
@@ -43,11 +45,13 @@ def _governance():
 
 def _application(pin=None):
     from tools.cnesdata_delivery.session_owner import _terraform_document_digest
-    return SimpleNamespace(application_fragment={"policy_sha256": _terraform_document_digest(IDENTITY)},
-                           pin={"document": copy.deepcopy(IDENTITY) if pin is None else pin})
+    from tools.cnesdata_delivery.session_owner import Authority
+    return Authority(pin={"document": copy.deepcopy(IDENTITY)}, expires_at=0.0, namespace=None,
+                     application_fragment={"policy_sha256": _terraform_document_digest(IDENTITY)},
+                     ops_pin={"document": copy.deepcopy(OPS_MANAGED) if pin is None else pin})
 
 
-def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES, deadline=DEADLINE):
+def _documents(governance, owner, managed=OPS_MANAGED, resources=RESOURCES, deadline=DEADLINE):
     from tools.cnesdata_delivery import session_policy
     documents = {"application_identity": IDENTITY, "application_managed": managed}
     for code, (operation, alias) in CODES.items():
@@ -62,7 +66,7 @@ def _documents(governance, owner, managed=IDENTITY, resources=RESOURCES, deadlin
     return documents
 
 
-def _authority(governance, owner, managed=IDENTITY, resources=RESOURCES, deadline=DEADLINE):
+def _authority(governance, owner, managed=OPS_MANAGED, resources=RESOURCES, deadline=DEADLINE):
     from tools.cnesdata_delivery.iam_boundary import mode_effective_evaluation
     roles = copy.deepcopy(ROLES["roles"])
     for alias, entry in roles.items():
@@ -114,9 +118,9 @@ def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
         prefix = resources["scope"]["raw_object_keys"][0].rsplit("/", 1)[0]
         resources["scope"]["raw_object_keys"] = sorted(resources["scope"]["raw_object_keys"]
                                                        + [f"{prefix}/extra-{index}.parquet" for index in range(8)])
-    managed = IDENTITY
+    managed = OPS_MANAGED
     if mutation == "managed-expired":
-        managed = copy.deepcopy(IDENTITY)
+        managed = copy.deepcopy(OPS_MANAGED)
         managed["Statement"].append({"Effect": "Deny", "Action": "*", "Resource": "*",
                                      "Condition": {"DateGreaterThanEquals": {"aws:CurrentTime": c.utc(now)}}})
         application = _application(managed)
@@ -137,7 +141,7 @@ def _case(monkeypatch, operation="recovery-start", mutation=None, source=None):
     if mutation == "delegation":
         governance["application_delegations"][alias] = governance["application_delegations"][alias] + "-other"
     if mutation == "identity":
-        application.pin["document"] = {"Version": "2012-10-17", "Statement": []}
+        application.ops_pin["document"] = {"Version": "2012-10-17", "Statement": []}
     if mutation == "inline":
         governance["evidence_bucket"] = "synthetic-other"
     factory, calls, native = _native(monkeypatch, code, alias, now, mutation)

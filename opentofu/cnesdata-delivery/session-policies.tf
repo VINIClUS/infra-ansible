@@ -5,6 +5,7 @@ locals {
     "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
   ]
   delivery_evidence_prefix_denies = ["s3:*ObjectVersion*", "s3:*ObjectAcl", "s3:*ObjectTagging", "s3:*ObjectRetention", "s3:*ObjectLegalHold", "s3:RestoreObject", "s3:GetObjectAttributes", "s3:*Multipart*"]
+  delivery_lifecycle_deletes      = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup", "events:DeleteRule", "cloudwatch:DeleteAlarms"]
   delivery_activation_denies = concat(
     local.delivery_activation == null ? [] : [{ Effect = "Deny", Action = ["s3:*ObjectVersion*", "s3:*ObjectRetention"], NotResource = local.delivery_activation_objects }],
     local.delivery_activation == null ? [] : [{ Effect = "Deny", NotAction = ["s3:GetObjectVersion", "s3:GetObjectRetention"], Resource = local.delivery_activation_objects }],
@@ -32,6 +33,33 @@ resource "aws_iam_policy" "application_session" {
   })
 }
 
+resource "aws_iam_policy" "application_ops_session" {
+  count       = var.application_promotion == null ? 0 : 1
+  name        = "${var.application_promotion.role_name}-ops-session"
+  description = "Application operation session restriction only; never attach as identity or permissions boundary."
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:GetPolicy", "iam:GetPolicyVersion"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
+      { Effect    = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn,
+        Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = [var.github_delivery.state_bucket_arn, "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"] } }
+      },
+      { Effect = "Deny", Action = ["iam:CreatePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicyVersion", "iam:DeletePolicy", "iam:Attach*Policy", "iam:Put*PermissionsBoundary"], Resource = "*" }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "plan_activation_session" {
+  count       = local.delivery_activation == null ? 0 : 1
+  name        = "${var.github_delivery.plan_role_name}-activation-session"
+  description = "Activation read session restriction only; never attach as identity or permissions boundary."
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.delivery_activation_allows
+  })
+}
+
 resource "aws_iam_policy" "delivery_session" {
   for_each    = local.delivery_roles
   name        = "${each.value.name}-session"
@@ -42,7 +70,7 @@ resource "aws_iam_policy" "delivery_session" {
       { Effect = "Allow", NotAction = ["s3:*Object*", "s3:ListBucket*", "s3:*Multipart*", "kms:*"], Resource = "*" },
       { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate.tflock" },
-      { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
+      { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.state_bucket_arn, Condition = { StringEquals = { "s3:prefix" = local.delivery_state_keys } } },
       { Effect = "Allow", Action = ["s3:ListBucket"], NotResource = var.github_delivery.evidence_bucket_arn },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn,
@@ -57,7 +85,9 @@ resource "aws_iam_policy" "delivery_session" {
       { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
       ] : [], length(var.github_delivery.read_resource_arns) == 0 ? [] : [
       { Effect = "Allow", Action = ["s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration"], Resource = var.github_delivery.read_resource_arns }
-    ], [for statement in concat(local.delivery_activation_allows, local.delivery_activation_denies) : statement if each.key == "plan"])
+      ], [for statement in local.delivery_activation_denies : statement if each.key == "plan"], local.delivery_activation_policy_reads[each.key], each.key == "deploy" ? [] : [
+      { Effect = "Deny", Action = local.delivery_lifecycle_deletes, Resource = "*" }
+    ])
   })
   lifecycle {
     precondition {

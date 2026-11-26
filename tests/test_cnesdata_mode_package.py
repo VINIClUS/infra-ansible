@@ -16,6 +16,7 @@ PRINCIPAL = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-application"
 ROLE_ARNS = {alias: ROLES["roles"][alias]["role"]["Role"]["Arn"] for alias in lc.MODE_ALIASES}
 IDENTITY = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "sts:AssumeRole",
                                                     "Resource": sorted(ROLE_ARNS.values())}]}
+OPS_MANAGED = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "iam:GetRole", "Resource": "*"}]}
 GATE = {"product_source_closure_sha256": "1" * 64, "shared_source_sha": "2" * 40,
         "shared_source_closure_sha256": "3" * 64, "fixture_manifest_sha256": "6" * 64}
 TIMES = ("2026-11-23T12:00:00Z", "2026-11-23T12:20:00Z", ROLES["fields"]["enabled_until"])
@@ -107,7 +108,7 @@ def mode_scope(owner, mode):
 def mode_documents(owner, mode, gov):
     from tools.cnesdata_delivery import session_policy
     scope, names, roles = mode_scope(owner, mode), session_names(mode), world(owner)["roles"]
-    documents = {"application_identity": IDENTITY, "application_managed": IDENTITY}
+    documents = {"application_identity": IDENTITY, "application_managed": OPS_MANAGED}
     for operation, (code, alias, context, _) in lc.MODE_SESSION_OPERATIONS.items():
         if context != "promotion":
             continue
