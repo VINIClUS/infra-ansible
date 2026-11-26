@@ -359,13 +359,19 @@ def publish_stage_open(*, keeper, guard, api, run, owner, window, first_job, cre
                                         credential_limit=credential_limit, clock=clock)
 
 
+class _Producers(list):
+    role = None
+
+
 def _producers(api, run, governance, request):
     """Governed producers of the request payloads, from the authenticated catalog (GITHUB_TOKEN only)."""
     from tools.cnesdata_delivery.provenance import lifecycle_objects, product_source_manifest
     manifest = product_source_manifest(api, governance, time.time())
     step = lifecycle_objects(api, governance, manifest)["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict, "governed step")
-    return list(payload_names(request["payloads"], step["input_jobs"]).values()), step["role"]
+    found = _Producers(payload_names(request["payloads"], step["input_jobs"]).values())
+    found.role = step["role"]
+    return found
 
 
 def main():
@@ -393,9 +399,9 @@ def _wait_and_export(api, run, job, stage, windows, began):
     import json
     index = wait_for_stage(api, run, job=job, stage=stage, windows=windows)
     request = json.loads(os.environ["REQUEST_DESCRIPTOR"])
-    producers, role = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]), request)
+    producers = _producers(api, run, json.loads(os.environ["CNESDATA_DELIVERY_GOVERNANCE"]), request)
     from tools.cnesdata_delivery import plan_inputs
-    own = (plan_inputs.artifact_name(request["step"], run["id"], run["run_attempt"]), c.instant(job["started_at"])) if role == "plan" else None
+    own = (plan_inputs.artifact_name(request["step"], run["id"], run["run_attempt"]), c.instant(job["started_at"])) if getattr(producers, "role", None) == "plan" else None
     wait_for_payloads(api, run, producers=producers, plan_inputs=own,
                       ceiling=max(0, wait_ceiling(stage, windows) - int(time.time() - began)))
     with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as handle:
