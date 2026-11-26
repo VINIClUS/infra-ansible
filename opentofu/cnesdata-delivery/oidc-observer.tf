@@ -9,7 +9,11 @@ locals {
   ]
   observer_session_policy_arns = var.github_delivery == null ? [] : concat(
     values(local.delivery_session_policy_arns),
-    var.application_promotion == null ? [] : ["arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-session"]
+    var.application_promotion == null ? [] : [
+      "arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-session",
+      "arn:aws:iam::${var.account_id}:policy/${var.application_promotion.role_name}-ops-session"
+    ],
+    local.delivery_activation_policy_arn == null ? [] : [local.delivery_activation_policy_arn]
   )
 }
 

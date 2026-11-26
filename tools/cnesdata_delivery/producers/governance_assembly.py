@@ -11,6 +11,7 @@ CLI_CEILING = 43856
 SECRET_CEILING = 47952
 SESSION_ROLES = ("plan", "deploy", "audit", "application", "application_ops", "plan_activation")
 PLAN_CYCLE_ROLES = ("deploy", "audit")
+SESSION_COMPANIONS = {"application": "application_ops", "plan": "plan_activation"}
 GOVERNANCE_KEYS = frozenset("""
     account_id activation_enabled activation_read activation_receipts admission_reference application_configuration
     application_coordination_policy application_delegations application_fragment
@@ -79,6 +80,15 @@ def _pin_chain(role, pin, start):
     c.require(ok, f"expiry chain violated element=pin role={role}")
 
 
+def _one_run(document, pins):
+    runs = {(pin["observed_at"], c.canonical(pin.get("owner_producer"))) for pin in pins.values()}
+    c.require(len(runs) <= 1, "session pins from one observe run")
+    paired = ("application", "plan") if document.get("activation_read") is not None else ("application",)
+    for role in paired:
+        companion = SESSION_COMPANIONS[role]
+        c.require(role not in pins or companion in pins, f"session pin companion role={companion}")
+
+
 def _expiry_chain(document):
     pins = document.get("session_policy_pins") or {}
     c.require(type(pins) is dict, "session pins shape")
@@ -89,6 +99,7 @@ def _expiry_chain(document):
     for role, pin in pins.items():
         start = pins["plan"]["observed_at"] if role in PLAN_CYCLE_ROLES and "plan" in pins else pin["observed_at"]
         _pin_chain(role, pin, start)
+    _one_run(document, pins)
     cost = document.get("cost")
     if cost and cost.get("cloudfront"):
         ok = c.instant(cost["cloudfront"]["expires_at"]) >= c.instant(cost["expires_at"])

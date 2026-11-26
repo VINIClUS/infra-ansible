@@ -260,6 +260,13 @@ Implemented on `main`:
   governance producers (P19); the observer, phase-inputs writer and audit roles (P22); the
   in-job rehearsal plan with bucket-key state decryption (P21b); read-only calibration and
   the governance size measurement (P21); the recovery runbook, HMAC custody and drills (P32).
+- Lifecycle owner proofs (P42): the reusable observes for the `application` role with purpose
+  `lifecycle` and pins plan, deploy, audit, application and `application_ops` (plus
+  `plan_activation` with activation) at one `observed_at`; the observer config gains an
+  optional `roles.application`, required for that role. It publishes four plan-shaped
+  proofs (application plus `lifecycle-<plan|deploy|audit>`), with `ops_session_policy`,
+  `application_fragment_sha256` and `activation_session_policy` in `policy-evaluation`. The
+  owner CLI refuses pins from two observe runs and a pin without its companion.
 - Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
   trusts (F3), and stage windows with pre-approved jobs (F4).
 

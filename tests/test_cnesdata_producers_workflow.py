@@ -144,7 +144,7 @@ def test_producers_nao_e_importado_por_nenhum_modulo_do_gate():
 
 
 def test_artefatos_tem_retencao_de_30_dias_e_o_montador_espera_3s_depois_do_upload(text):
-    assert len(re.findall(r"retention-days: 30", text)) == 2
+    assert len(re.findall(r"retention-days: 30", text)) == 5
     assert "sleep 3" in text.partition("  assemble:")[2]
 
 

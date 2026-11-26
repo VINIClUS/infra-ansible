@@ -20,7 +20,8 @@ DRIFT_ID = 9001
 OWN = ("repository", "workflow_path", "workflow_sha")
 PRODUCERS = ROOT / "tools/cnesdata_delivery/producers"
 READERS = ("observer.py", "phase_inputs.py", "inputs.py", "measurements.py", "assembler.py")
-REQUEST_FIELDS = {"artifact_expires_at", "candidate_sha256", "cloudfront", "cost_expires_at", "creator_workflow_sha",
+REQUEST_FIELDS = {"activation", "application_fragment_sha256",
+                  "artifact_expires_at", "candidate_sha256", "cloudfront", "cost_expires_at", "creator_workflow_sha",
                   "dependencies", "observed_reference", "owner_producer", "payload_reference", "plan_expires_at",
                   "promotion_evidence_sha256", "promotion_producer", "public_objects", "references", "required_checks",
                   "root_source_sha"}
