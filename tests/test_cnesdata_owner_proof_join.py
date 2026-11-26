@@ -235,3 +235,9 @@ def test_assemble_do_application_baixa_a_propria_observacao_e_publica_os_proofs_
         assert step["with"]["name"] == ("delivery-admission-${{ inputs.role }}-lifecycle-" + role
                                         + "-${{ github.run_id }}-${{ github.run_attempt }}")
         assert step["with"]["retention-days"] == 30
+
+
+@pytest.mark.parametrize("key", ["application_coordination_policy", "application_delegations"])
+def test_escrita_recusa_objeto_do_fragmento_inline(key):
+    with pytest.raises(ValueError, match=f"governance key={key}"):
+        governance_assembly.crosscheck(document(**{key: {}}), COMMITMENTS)

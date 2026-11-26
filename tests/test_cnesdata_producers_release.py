@@ -350,7 +350,8 @@ def test_conjunto_fechado_cobre_as_chaves_de_topo_que_os_gates_de_entrega_leem()
             read |= {first or second for first, second in pattern.findall(path.read_text())}
     closed = governance_assembly.GOVERNANCE_KEYS | governance_assembly.HYDRATED_KEYS | {RUNTIME_MANIFEST}
     assert "account_id" in read and read <= closed, sorted(read - closed)
-    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure"}
+    assert governance_assembly.HYDRATED_KEYS == {"lifecycle_steps", "source_closure", "application_coordination_policy",
+                                                 "application_delegations"}
     assert governance_assembly.HYDRATED_KEYS.isdisjoint(governance_assembly.GOVERNANCE_KEYS)
 
 

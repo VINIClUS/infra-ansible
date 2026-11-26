@@ -14,7 +14,7 @@ PLAN_CYCLE_ROLES = ("deploy", "audit")
 SESSION_COMPANIONS = {"application": "application_ops", "plan": "plan_activation"}
 GOVERNANCE_KEYS = frozenset("""
     account_id activation_enabled activation_read activation_receipts admission_reference application_configuration
-    application_coordination_policy application_delegations application_fragment
+    application_fragment
     application_product_source_closure_sha256
     application_product_source_manifest_artifact application_purpose application_source_closure_sha256
     artifact_purposes artifact_references authenticated_application_caller authority authorization baseline
@@ -30,7 +30,8 @@ GOVERNANCE_KEYS = frozenset("""
 """.split())
 INITIAL_STAGE_WINDOWS = {"phase-b": 360, "api": 180, "static": 180, "unit": 180,
                           "phase-c-recovery": 330, "phase-c-audit": 330, "final": 90}
-HYDRATED_KEYS = frozenset(("lifecycle_steps", "source_closure"))
+HYDRATED_KEYS = frozenset(("lifecycle_steps", "source_closure", "application_coordination_policy",
+                           "application_delegations"))
 REFERENCES = ("lifecycle_steps_sha256", "source_closure_sha256")
 
 

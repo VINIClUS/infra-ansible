@@ -358,7 +358,6 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     gov.update(state_bucket="synthetic-state", evidence_bucket="synthetic-evidence", evidence_prefix=settings["evidence_prefix"],
                state_kms_key_arn=settings["state_kms_arn"], evidence_kms_key_arn=settings["evidence_kms_arn"],
                application_fragment=fragment, application_configuration=data["application_promotion"],
-               application_delegations=data["application_promotion"]["delegations"],
                application_source_closure_sha256=data["application_promotion"]["source_closure_sha256"],
                gate_shas={"application": "c" * 40})
     if with_history:
@@ -374,6 +373,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
             "artifact_id": 42, "artifact_digest": "sha256:" + "c" * 64, "producer_job_id": 91,
             "producer_name": "apply / execute", "objects": entries}
     gov["roles"]["application"] = fragment["application_role_arn"]
+    from tools.cnesdata_delivery.session_policy import coordination_object
+    gov |= coordination_object(gov)
     pin = gov["session_policy_pins"].pop("plan")
     pin.update(role_arn=fragment["application_role_arn"], policy_arn=managed_arn(gov, "application"),
                document=json.loads(resources["aws_iam_policy.application_session[0]"]["policy"]))
@@ -398,26 +399,38 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     assert authority.ops_pin == ops
     assert authority.application_fragment is not fragment
     assert authority.proof_sha256 == c.sha(api.owner_files["proof.json"])
-    # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.
+    # P42: admission hydrates the coordination policy and delegations from the protected fragment.
+    from tools.cnesdata_delivery.session_policy import coordination_policy
     coordination = outputs["application_coordination_policy"]
     assert coordination["sensitive"] is True
     assert coordination["value"] == resources["aws_iam_role_policy.application[0]"]["policy"]
-    gov["application_coordination_policy"] = coordination["value"]
-    identity = session_owner.application_identity_document(gov, fragment)
+    derived = session_owner._terraform_document_digest(coordination_policy(fragment))
+    assert derived == fragment["policy_sha256"] == c.sha(coordination["value"].encode())
+    assert gov["application_delegations"] == fragment["delegations"]
+    mismatched = copy.deepcopy(gov)
+    mismatched["application_configuration"]["delegations"]["observer"] = mismatched["application_configuration"]["delegations"]["normal"]
+    with pytest.raises(ValueError, match="private original ten delegations"):
+        session_owner.application_fragment(mismatched | coordination_object(mismatched), now)
+    hydrated = gov | coordination_object(gov)
+    identity = session_owner.application_identity_document(hydrated, fragment)
     expected = json.loads(coordination["value"])["Statement"]
     if with_history:
         from tools.cnesdata_delivery.session_policy import predecessor_policy
         expected = expected + predecessor_policy(gov, gov["predecessor_read"])["Statement"]
     assert identity == {"Version": "2012-10-17", "Statement": expected}
-    for broken in (None, json.dumps({"Version": "2012-10-17", "Statement": []}),
-                   coordination["value"].replace("s3:GetObject", "s3:GetObjectVersion", 1)):
-        bad = copy.deepcopy(gov)
-        if broken is None:
-            bad.pop("application_coordination_policy")
-        else:
-            bad["application_coordination_policy"] = broken
-        with pytest.raises((ValueError, KeyError)):
-            session_owner.application_identity_document(bad, fragment)
+    moved = copy.deepcopy(gov)
+    moved["application_fragment"]["lease"]["key"] = "other.json"
+    with pytest.raises(ValueError, match="application coordination policy commitment"):
+        session_owner.application_identity_document(gov | coordination_object(moved), fragment)
+    raw = {key: value for key, value in gov.items() if key not in ("application_coordination_policy", "application_delegations")}
+    for absent in ("delegations", "evidence", "application_role_arn"):
+        lacking = copy.deepcopy(raw)
+        lacking["application_fragment"].pop(absent)
+        assert coordination_object(lacking) == {}
+        with pytest.raises(ValueError, match="protected application coordination policy"):
+            session_owner.application_identity_document(raw | coordination_object(lacking), fragment)
+    with pytest.raises(ValueError, match="coordination policy source"):
+        coordination_object(gov | {"application_fragment": fragment | {"delegations": {"observer": "x"}}})
     # Infra lifecycle credentials must authenticate the application fragment too,
     # before reaching their own plan/deploy token exchange.
     from tools.cnesdata_delivery import lifecycle_runtime

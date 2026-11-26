@@ -266,7 +266,10 @@ Implemented on `main`:
   optional `roles.application`, required for that role. It publishes four plan-shaped
   proofs (application plus `lifecycle-<plan|deploy|audit>`), with `ops_session_policy`,
   `application_fragment_sha256` and `activation_session_policy` in `policy-evaluation`. The
-  owner CLI refuses pins from two observe runs and a pin without its companion.
+  owner CLI refuses pins from two observe runs and a pin without its companion. Admission
+  hydrates `application_coordination_policy` (derived from the protected fragment, checked
+  against `policy_sha256`) and `application_delegations` (from `fragment.delegations`) in
+  memory and refuses both inline, so write 3 no longer carries them.
 - Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
   trusts (F3), and stage windows with pre-approved jobs (F4).
 

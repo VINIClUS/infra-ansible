@@ -369,6 +369,65 @@ def predecessor_keys(governance, selector):
     return [prefix + name for name in names]
 
 
+Q40 = "?" * 40
+APPLICATION_SESSION_PATTERNS = {
+    "observer": ["sp-i-" + Q40], "normal": ["sp-publish-" + Q40, "sp-retire-" + Q40],
+    "recovery": ["sp-rollback-" + Q40, "sp-readback-" + Q40, "sp-abort-" + Q40],
+    "seeder": ["canary-seeder-*"], "verifier": ["canary-verifier-*"], "fence_operator": ["promotion-fence-*"],
+    "mode_seed": [f"mc-{code}-{Q40}" for code in ("us", "rs", "ds")],
+    "mode_dispatch": [f"mc-{code}-{Q40}" for code in ("ux", "rx", "dx", "dr", "h1", "h2")],
+    "mode_audit_launch": ["mc-ax-" + Q40], "mode_observe": [f"mc-{code}-{Q40}" for code in ("uo", "ro", "ao", "do")]}
+COORDINATION_SOURCE = ("account_id", "application_role_arn", "application_role_name", "lease", "evidence", "delegations")
+
+
+def coordination_policy(fragment):
+    """Original application coordination policy derived from the validated fragment (P42).
+
+    Mirrors aws_iam_role_policy.application in application-promotion.tf; the caller checks it against
+    fragment policy_sha256, so a divergence refuses. Raises: ValueError on an absent source field.
+    """
+    c.require(all(name in fragment for name in COORDINATION_SOURCE)
+              and type(fragment["delegations"]) is dict
+              and set(fragment["delegations"]) == set(APPLICATION_SESSION_PATTERNS), "coordination policy source")
+    account, name, delegations = fragment["account_id"], fragment["application_role_name"], fragment["delegations"]
+    targets = [delegations[role] for role in sorted(delegations)]
+    lease, evidence = fragment["lease"], fragment["evidence"]
+    lease_arn = lease["bucket_arn"] + "/" + lease["key"]
+    lifecycle = evidence["bucket_arn"] + "/" + evidence["prefix"] + "*"
+    kms, via = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], "s3.us-east-2.amazonaws.com"
+    reads = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies"]
+    sessions = [f"arn:aws:iam::{account}:policy/{name}-session", f"arn:aws:iam::{account}:policy/{name}-ops-session"]
+    statements = [
+        {"Effect": "Deny", "Action": ["sts:AssumeRole"], "NotResource": targets},
+        {"Effect": "Deny", "Action": ["sts:AssumeRoleWithWebIdentity", "sts:AssumeRoleWithSAML", "sts:TagSession",
+                                      "sts:SetSourceIdentity"], "Resource": "*"},
+        {"Effect": "Allow", "Action": reads, "Resource": [fragment["application_role_arn"]] + targets},
+        {"Effect": "Allow", "Action": ["iam:GetPolicy", "iam:GetPolicyVersion"], "Resource": sessions},
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": lease_arn},
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"], "Resource": lifecycle},
+        {"Effect": "Allow", "Action": kms, "Resource": lease["kms_key_arn"], "Condition": {"StringEquals": {
+            "kms:ViaService": via, "kms:EncryptionContext:aws:s3:arn": [lease["bucket_arn"], lease_arn]}}},
+        {"Effect": "Allow", "Action": kms, "Resource": evidence["kms_key_arn"], "Condition": {
+            "StringEquals": {"kms:ViaService": via}, "StringLike": {"kms:EncryptionContext:aws:s3:arn": lifecycle}}}]
+    statements += [{"Effect": "Allow", "Action": ["sts:AssumeRole"], "Resource": delegations[role],
+                    "Condition": {"StringLike": {"sts:RoleSessionName": APPLICATION_SESSION_PATTERNS[role]}}}
+                   for role in sorted(delegations)]
+    return {"Version": "2012-10-17", "Statement": statements}
+
+
+def coordination_object(governance):
+    """Returns: application_delegations and application_coordination_policy hydrated at admission from the fragment (P42).
+
+    Empty without the fragment source fields, so consumers refuse the absent policy; they still check it against
+    fragment policy_sha256. Raises: ValueError on a malformed source.
+    """
+    fragment = governance.get("application_fragment")
+    if type(fragment) is not dict or not all(name in fragment for name in COORDINATION_SOURCE):
+        return {}
+    return {"application_delegations": c.loads(c.canonical(fragment["delegations"]), canonical=True),
+            "application_coordination_policy": c.canonical(coordination_policy(fragment)).decode().strip()}
+
+
 def predecessor_policy(governance, selector):
     """Original H4 policy derived independently of the private output digest."""
     arns = ["arn:aws:s3:::" + governance["evidence_bucket"] + "/" + key
