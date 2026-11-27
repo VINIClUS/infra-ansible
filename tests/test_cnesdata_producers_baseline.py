@@ -77,6 +77,19 @@ def test_entradas_do_dispatch_trazem_so_hashes_e_o_hmac_do_bucket_com_a_chave_do
     baseline_commitments.build(dispatch)
 
 
+
+def test_kms_do_backend_sai_como_hmac_do_ciclo_e_passa_pela_recusa_de_valores_da_conta():
+    from tools.cnesdata_delivery.producers import measurements
+    values = private()
+    dispatch = baseline_commitments.dispatch_inputs(values, KEY_HEX)
+    arn = values["kms_key_id"].encode()
+    assert dispatch["kms_key_id_sha256"] != c.sha(arn)
+    assert dispatch["kms_key_id_sha256"] == c.report_hmac(bytes.fromhex(KEY_HEX), "backend_kms_key_id", arn)
+    backend = measurements.backend(c.loads(baseline_commitments.build(dispatch)["backend.json"], canonical=True))
+    governance = {"account_id": ACCOUNT, "report_hmac_key": KEY_HEX, "state_bucket": STATE_BUCKET,
+                  "state_kms_key_arn": values["kms_key_id"]}
+    c.refuse_account_derived(c.canonical(backend), governance)
+
 def test_cli_emite_o_dispatch_sem_a_chave_em_argv_stdout_ou_stderr(tmp_path, monkeypatch, capsys):
     path = tmp_path / "private.json"
     path.write_text(json.dumps(private()))
