@@ -30,12 +30,12 @@ jobs:
       contents: read
       id-token: write
     uses: "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml@\
-      797e7fb3b0fc3e521344609f633c81b07151eb18"
+      94706ea3e950227b59687a6f69e725b126721821"
     with:
       purpose: ${{ inputs.purpose }}
       role: ${{ inputs.role }}
       source_sha: ${{ inputs.source_sha }}
-      x_star: 797e7fb3b0fc3e521344609f633c81b07151eb18
+      x_star: 94706ea3e950227b59687a6f69e725b126721821
       request: ${{ inputs.request }}
     secrets:
       report_hmac_key: ${{ secrets.report_hmac_key }}

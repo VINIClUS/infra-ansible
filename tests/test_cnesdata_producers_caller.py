@@ -9,7 +9,7 @@ from test_cnesdata_producers_assembler import CALLER_K
 from tools.cnesdata_delivery.producers import release_guard
 
 ROOT = Path(__file__).resolve().parents[1]
-X_STAR = "797e7fb3b0fc3e521344609f633c81b07151eb18"
+X_STAR = "94706ea3e950227b59687a6f69e725b126721821"
 REUSABLE = ".github/workflows/reusable-cnesdata-observer.yml"
 
 
