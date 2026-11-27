@@ -1,4 +1,4 @@
-"""At the activation key limit every governed document fits at prod-length names; write 3 binds."""
+"""At the activation key limit every governed document fits at prod-length names; the plan inline policy binds."""
 import copy
 
 import pytest
@@ -74,4 +74,4 @@ def test_no_limite_de_chave_todo_documento_cabe_com_nomes_de_producao_e_a_escrit
         margins["activation " + scope] = LIMIT - size
     margins["write 3"] = ga.CLI_CEILING - write_three(entry, resources, values["github_delivery"]["activation_read"])
     assert {name: margin for name, margin in margins.items() if margin <= 0} == {}
-    assert min(margins, key=margins.__getitem__) == "write 3"
+    assert min(margins, key=margins.__getitem__) == 'aws_iam_role_policy.delivery["plan"]'
