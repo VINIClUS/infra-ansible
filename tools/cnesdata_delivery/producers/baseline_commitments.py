@@ -61,7 +61,8 @@ def dispatch_inputs(private, key_hex):
              "workspace": "default", "region": private["region"], "encrypt": private["encrypt"],
              "use_lockfile": private["use_lockfile"],
              "bucket_hmac": c.report_hmac(key, "backend_bucket", private["bucket"].encode()),
-             "kms_key_id_sha256": c.sha(private["kms_key_id"].encode()), "schema_sha256": private["schema_sha256"],
+             "kms_key_id_sha256": c.report_hmac(key, "backend_kms_key_id", private["kms_key_id"].encode()),
+             "schema_sha256": private["schema_sha256"],
              "shared_outputs_sha256": c.sha(c.canonical(private["shared_outputs"]))}
     build(value)
     return value

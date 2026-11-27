@@ -196,3 +196,43 @@ def test_200_com_data_fora_da_tolerancia_e_recusado(monkeypatch):
     api, _ = _api(monkeypatch, response)
     with pytest.raises(ValueError, match="GitHub time uncertainty"):
         api.read(PATH)
+
+
+COMPARE = "repos/VINIClUS/CnesData/compare/" + "a" * 40 + "...main"
+DOT_SEGMENTS = ["repos/a/../b", "repos/a/b/.."]
+OTHER_REFUSALS = ["VINIClUS/CnesData/compare/x...main", "repos/a\nb", "repos/a\rb", "repos/https://x"]
+
+
+def _host_api(monkeypatch, *steps):
+    from tools.cnesdata_delivery import host_gate
+    opener = Opener(*steps)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: opener)
+    return host_gate.GitHub(b"t", host_gate.Clock()), opener
+
+
+def test_leitor_da_proveniencia_aceita_compare_com_tres_pontos(monkeypatch):
+    api, opener = _api(monkeypatch, Response(b'{"status": "ahead"}'))
+    assert api.read(COMPARE) == {"status": "ahead"}
+    assert [request.full_url for request in opener.requests] == ["https://api.github.com/" + COMPARE]
+
+
+@pytest.mark.parametrize("path", DOT_SEGMENTS + OTHER_REFUSALS)
+def test_leitor_da_proveniencia_recusa_segmento_ponto_ponto_sem_abrir_conexao(monkeypatch, path):
+    api, opener = _api(monkeypatch)
+    with pytest.raises(ValueError, match="GitHub API path"):
+        api.read(path)
+    assert opener.requests == []
+
+
+def test_leitor_do_host_gate_aceita_compare_com_tres_pontos(monkeypatch):
+    api, opener = _host_api(monkeypatch, Response(b'{"status": "ahead"}'))
+    assert api.read(COMPARE) == {"status": "ahead"}
+    assert [request.full_url for request in opener.requests] == ["https://api.github.com/" + COMPARE]
+
+
+@pytest.mark.parametrize("path", DOT_SEGMENTS + OTHER_REFUSALS)
+def test_leitor_do_host_gate_recusa_segmento_ponto_ponto_sem_abrir_conexao(monkeypatch, path):
+    api, opener = _host_api(monkeypatch)
+    with pytest.raises(ValueError, match="GitHub fixed host path"):
+        api.read(path)
+    assert opener.requests == []

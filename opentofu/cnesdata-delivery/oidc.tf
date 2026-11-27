@@ -24,7 +24,7 @@ locals {
   delivery_product_reads = [
     "acm:DescribeCertificate", "acm:ListCertificates", "acm:ListTagsForCertificate",
     "athena:GetWorkGroup", "athena:ListTagsForResource", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig",
-    "cloudfront:GetCachePolicy", "cloudfront:GetOriginAccessControl", "cloudfront:GetResponseHeadersPolicy", "cloudfront:DescribeFunction",
+    "cloudfront:GetCachePolicy", "cloudfront:GetOriginAccessControl", "cloudfront:GetResponseHeadersPolicy", "cloudfront:DescribeFunction", "cloudfront:GetFunction",
     "cloudfront:ListTagsForResource", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory", "cloudwatch:ListTagsForResource",
     "cognito-idp:DescribeUserPool", "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeUserPoolDomain", "cognito-idp:DescribeResourceServer",
     "cognito-idp:DescribeManagedLoginBranding", "cognito-idp:ListTagsForResource", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTimeToLive", "dynamodb:ListTagsOfResource",
@@ -34,7 +34,7 @@ locals {
     "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole", "iam:GetPolicy", "iam:GetPolicyVersion",
     "lambda:GetFunction", "lambda:GetFunctionCodeSigningConfig", "lambda:GetPolicy", "lambda:ListVersionsByFunction",
     "logs:DescribeLogGroups", "logs:ListTagsForResource", "logs:DescribeMetricFilters", "scheduler:GetSchedule", "scheduler:GetScheduleGroup", "scheduler:ListTagsForResource",
-    "sns:GetTopicAttributes", "sns:GetSubscriptionAttributes", "sns:ListTagsForResource", "states:DescribeStateMachine", "states:ListTagsForResource",
+    "sns:GetTopicAttributes", "sns:GetSubscriptionAttributes", "sns:ListSubscriptionsByTopic", "sns:ListTagsForResource", "states:DescribeStateMachine", "states:ListTagsForResource",
     "wafv2:GetWebACL", "wafv2:ListTagsForResource"
   ]
   delivery_product_writes = [
@@ -60,7 +60,7 @@ locals {
     "ecs:DescribeTaskDefinition", "cognito-idp:DescribeUserPoolDomain",
     "ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeInternetGateways", "ec2:DescribeRouteTables", "ec2:DescribeVpcEndpoints", "ec2:DescribePrefixLists", "ec2:DescribeNetworkAcls"
   ]
-  delivery_bucket_reads = ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetLifecycleConfiguration", "s3:GetBucketCORS", "s3:GetBucketObjectLockConfiguration", "s3:GetBucketTagging", "s3:GetBucketLogging", "s3:GetBucketWebsite", "s3:GetAccelerateConfiguration"]
+  delivery_bucket_reads = ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetLifecycleConfiguration", "s3:GetBucketCORS", "s3:GetBucketObjectLockConfiguration", "s3:GetBucketTagging", "s3:GetBucketLogging", "s3:GetBucketWebsite", "s3:GetAccelerateConfiguration", "s3:GetBucketAcl", "s3:GetBucketRequestPayment", "s3:GetReplicationConfiguration", "s3:ListTagsForResource"]
 }
 
 data "aws_iam_openid_connect_provider" "github" {
@@ -110,7 +110,7 @@ resource "aws_iam_role_policy" "delivery" {
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate.tflock" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject"], Resource = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}*" },
-      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.state_bucket_arn, Condition = { StringEquals = { "s3:prefix" = ["cnesdata/prod/opentofu.tfstate", "cnesdata/prod/opentofu.tfstate.tflock", "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"] } } },
+      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.state_bucket_arn, Condition = { StringEquals = { "s3:prefix" = local.delivery_state_list_prefixes } } },
       { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.evidence_bucket_arn, Condition = { StringLike = { "s3:prefix" = "${var.github_delivery.evidence_prefix}*" } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = [var.github_delivery.state_bucket_arn, "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate*", "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"] } } },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.evidence_kms_arn, Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com" }, StringLike = { "kms:EncryptionContext:aws:s3:arn" = "${var.github_delivery.evidence_bucket_arn}/${var.github_delivery.evidence_prefix}*" } } }

@@ -93,6 +93,23 @@ def test_sessao_efetiva_do_audit_libera_so_o_caminho_do_codigo(native):
     assert [item for item in refused if effective(identity, managed, inline, *item)] == []
 
 
+
+def test_audit_lista_o_estado_so_em_env_para_o_init(native):
+    from tools.cnesdata_delivery.session_policy import STATE_KEYS
+    resources, _ = render(native, audit_values(), "audit-state-workspace-listing")
+    identity = json.loads(resources[AUDIT_POLICY]["policy"])
+    managed = json.loads(resources[AUDIT_SESSION]["policy"])
+    inline = json.loads(audit_request()["Policy"])
+    bucket = "arn:aws:s3:::synthetic-state"
+    for document in (identity, managed):
+        assert [s["Condition"]["StringEquals"]["s3:prefix"] for s in document["Statement"]
+                if s["Effect"] == "Allow" and s.get("Action") == ["s3:ListBucket"]
+                and s.get("Resource") == bucket and "Condition" in s] == [list(STATE_KEYS) + ["env:/"]]
+    assert effective(identity, managed, inline, "s3:ListBucket", bucket, {"s3:prefix": "env:/"})
+    for prefix in ("env:/x", "", "env:", "env:/*"):
+        assert not effective(identity, managed, inline, "s3:ListBucket", bucket, {"s3:prefix": prefix}), prefix
+
+
 def owner_governance(workflow_path=".github/workflows/owner-root-proof.yml"):
     governance = audit_governance()
     owner = {"repository": "VINIClUS/infra-ansible", "workflow_path": workflow_path, "workflow_sha": "e" * 40}
