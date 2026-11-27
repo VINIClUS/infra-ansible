@@ -1,0 +1,43 @@
+---
+name: CnesData producers
+
+"on":
+  workflow_dispatch:
+    inputs:
+      purpose:
+        description: Gate purpose, public
+        required: true
+        type: string
+      role:
+        description: Delivery role, plan, audit, deploy or application (lifecycle owner cycle)
+        required: true
+        type: string
+      source_sha:
+        description: Product source commit
+        required: true
+        type: string
+      request:
+        description: Public request JSON, references and digests only
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  produce:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    uses: "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml@\
+      2a61ad885b435c4e40ee3eab8bf43b5e3c58f828"
+    with:
+      purpose: ${{ inputs.purpose }}
+      role: ${{ inputs.role }}
+      source_sha: ${{ inputs.source_sha }}
+      x_star: 2a61ad885b435c4e40ee3eab8bf43b5e3c58f828
+      request: ${{ inputs.request }}
+    secrets:
+      report_hmac_key: ${{ secrets.report_hmac_key }}
+      observer_config: ${{ secrets.observer_config }}
+      observer_role_arn: ${{ secrets.observer_role_arn }}
