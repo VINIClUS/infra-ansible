@@ -1122,6 +1122,7 @@ def prod_values(key_length):
     """Prod-length names (state 48, evidence 45, cnesdata-prod roles), W2b scope and activation keys of key_length."""
     values = activation_input(application_values())
     values["audit"] = {"role_name": "cnesdata-prod-audit", "workflow_sha": "e" * 40}
+    values["delivery_register_task_definitions"] = True
     values["application_promotion"]["predecessor_read"] = {"protocol": "legacy-infra", "source_sha": "e" * 40,
         "run_id": 19876543210, "run_attempt": 1, "status": "applied", "purpose": "phase-a"}
     reads, permissions, pass_roles = product_scope()
