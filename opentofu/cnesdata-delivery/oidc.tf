@@ -27,14 +27,14 @@ locals {
     "cloudfront:GetCachePolicy", "cloudfront:GetOriginAccessControl", "cloudfront:GetResponseHeadersPolicy", "cloudfront:DescribeFunction", "cloudfront:GetFunction",
     "cloudfront:ListTagsForResource", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory", "cloudwatch:ListTagsForResource",
     "cognito-idp:DescribeUserPool", "cognito-idp:DescribeUserPoolClient", "cognito-idp:DescribeUserPoolDomain", "cognito-idp:DescribeResourceServer",
-    "cognito-idp:DescribeManagedLoginBranding", "cognito-idp:ListTagsForResource", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTimeToLive", "dynamodb:ListTagsOfResource",
+    "cognito-idp:DescribeManagedLoginBranding", "cognito-idp:DescribeManagedLoginBrandingByClient", "cognito-idp:GetUserPoolMfaConfig", "cognito-idp:ListUserPoolClients", "cognito-idp:ListTagsForResource", "dynamodb:DescribeTable", "dynamodb:DescribeContinuousBackups", "dynamodb:DescribeTimeToLive", "dynamodb:ListTagsOfResource",
     "ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeInternetGateways", "ec2:DescribeRouteTables", "ec2:DescribeVpcEndpoints", "ec2:DescribePrefixLists", "ec2:DescribeNetworkAcls",
     "ecr:DescribeRepositories", "ecr:DescribeImages", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:GetLifecyclePolicy", "ecr:ListTagsForResource",
     "ecs:DescribeClusters", "ecs:DescribeTaskDefinition", "ecs:ListTagsForResource", "events:DescribeRule", "events:ListTagsForResource",
     "iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies", "iam:ListInstanceProfilesForRole", "iam:GetPolicy", "iam:GetPolicyVersion",
     "lambda:GetFunction", "lambda:GetFunctionCodeSigningConfig", "lambda:GetPolicy", "lambda:ListVersionsByFunction",
     "logs:DescribeLogGroups", "logs:ListTagsForResource", "logs:DescribeMetricFilters", "scheduler:GetSchedule", "scheduler:GetScheduleGroup", "scheduler:ListTagsForResource",
-    "sns:GetTopicAttributes", "sns:GetSubscriptionAttributes", "sns:ListSubscriptionsByTopic", "sns:ListTagsForResource", "states:DescribeStateMachine", "states:ListTagsForResource",
+    "sns:GetTopicAttributes", "sns:GetSubscriptionAttributes", "sns:ListSubscriptionsByTopic", "sns:ListTagsForResource", "states:DescribeStateMachine", "states:ListStateMachineVersions", "states:ListTagsForResource",
     "wafv2:GetWebACL", "wafv2:ListTagsForResource"
   ]
   delivery_product_writes = [
