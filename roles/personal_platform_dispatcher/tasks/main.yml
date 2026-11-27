@@ -63,6 +63,21 @@
         shell: /bin/sh
         password_lock: true
         groups: ""
+    - name: Require the deploy public key for the forced-command account
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_authorized_key is string
+          - personal_platform_dispatcher_authorized_key is match('^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/]{48}$')
+        fail_msg: Provision the ed25519 deploy public key before installing the dispatcher.
+    - name: Install only the deploy public key for the forced-command account
+      ansible.posix.authorized_key:
+        user: "{{ personal_platform_dispatcher_user }}"
+        key: "{{ personal_platform_dispatcher_authorized_key }}"
+        key_options: >-
+          restrict,command="sudo -n /usr/bin/python3 -I
+          /usr/local/lib/personal-platform/host_gate.py --host"
+        exclusive: true
+        manage_dir: true
     - name: Install the exact sudo boundary
       ansible.builtin.copy:
         content: |
@@ -94,3 +109,71 @@
     - name: Validate the complete SSH configuration without reloading
       ansible.builtin.command: /usr/sbin/sshd -t
       changed_when: false
+    - name: Recreate the runtime probe directory on every boot
+      ansible.builtin.copy:
+        content: "d /run/personal-platform/probes 0700 root root -\n"
+        dest: /etc/tmpfiles.d/personal-platform-probes.conf
+        owner: root
+        group: root
+        mode: "0644"
+    - name: Require exact private handoff names and digests
+      tags: [personal_platform_private_handoffs]
+      when: personal_platform_dispatcher_handoffs | length > 0
+      ansible.builtin.assert:
+        that:
+          - personal_platform_dispatcher_handoffs is mapping
+          - >-
+            personal_platform_dispatcher_handoffs.keys()
+            | difference(personal_platform_dispatcher_handoff_paths.keys()) | length == 0
+          - >-
+            personal_platform_dispatcher_handoffs.values() | map(attribute='sha256')
+            | select('match', '^[0-9a-f]{64}$') | list | length
+            == personal_platform_dispatcher_handoffs | length
+    - name: Read back the installed runtime for the governed handoff
+      tags: [personal_platform_private_handoffs]
+      when: "'host-gate' in personal_platform_dispatcher_handoffs"
+      ansible.builtin.stat:
+        path: /usr/local/lib/personal-platform/host_gate.py
+        checksum_algorithm: sha256
+      register: personal_platform_dispatcher_handoff_runtime
+    - name: Require the runtime pinned by the governed handoff
+      tags: [personal_platform_private_handoffs]
+      when: "'host-gate' in personal_platform_dispatcher_handoffs"
+      ansible.builtin.assert:
+        that:
+          - >-
+            personal_platform_dispatcher_handoff_runtime.stat.checksum ==
+            (lookup('ansible.builtin.file', personal_platform_dispatcher_handoffs['host-gate'].src)
+            | from_json).runtime_sha256
+    - name: Install the exact private handoff bytes from the controller
+      tags: [personal_platform_private_handoffs]
+      ansible.builtin.copy:
+        src: "{{ item.value.src }}"
+        dest: "{{ personal_platform_dispatcher_handoff_paths[item.key] }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop: "{{ personal_platform_dispatcher_handoffs | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+    - name: Read back the installed private handoff digests
+      tags: [personal_platform_private_handoffs]
+      ansible.builtin.stat:
+        path: "{{ personal_platform_dispatcher_handoff_paths[item.key] }}"
+        checksum_algorithm: sha256
+      loop: "{{ personal_platform_dispatcher_handoffs | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: personal_platform_dispatcher_handoff_readback
+    - name: Require the exact private handoff bytes
+      tags: [personal_platform_private_handoffs]
+      ansible.builtin.assert:
+        that:
+          - item.stat.checksum == item.item.value.sha256
+          - item.stat.uid == 0
+          - item.stat.mode == '0600'
+          - item.stat.nlink == 1
+      loop: "{{ personal_platform_dispatcher_handoff_readback.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"

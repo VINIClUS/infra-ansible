@@ -1,0 +1,8 @@
+---
+personal_platform_dispatcher_handoff_paths:
+  host-gate: /etc/personal-platform/host-gate.json
+  original-platform: /var/lib/personal-platform/deployments/original-platform.json
+  original-baseline: /var/lib/personal-platform/deployments/original-baseline.json
+  activation: /var/lib/personal-platform/deployments/activation.json
+  activation-signature: /var/lib/personal-platform/deployments/activation-signature.der
+  activation-public-key: /var/lib/personal-platform/deployments/activation-public-key.pem

@@ -1,0 +1,28 @@
+---
+- name: Read the personal platform host preflight without changing the delivery boundary
+  hosts: personal_platform
+  become: true
+  gather_facts: false
+  tags: [personal_platform_preflight]
+  tasks:
+    - name: Require one exact inventory host and a controller destination
+      ansible.builtin.assert:
+        that:
+          - ansible_limit | default('') == inventory_hostname
+          - ansible_play_hosts_all | length == 1
+          - personal_platform_preflight_dest is defined
+          - personal_platform_preflight_dest is abs
+        fail_msg: The preflight readback requires one exact host and an absolute destination.
+    - name: Produce the canonical preflight readback on the host
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../tools/personal_platform/host_preflight.py
+          --output /run/personal-platform/host-preflight.json
+          --tunnel-unit {{ personal_platform_preflight_tunnel_unit | default('cloudflared') }}
+        executable: /usr/bin/python3
+      changed_when: false
+    - name: Fetch the exact preflight bytes to the controller
+      ansible.builtin.fetch:
+        src: /run/personal-platform/host-preflight.json
+        dest: "{{ personal_platform_preflight_dest }}"
+        flat: true
