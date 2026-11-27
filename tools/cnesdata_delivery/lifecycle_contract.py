@@ -176,6 +176,7 @@ MODE_ADDRESSES = frozenset(f"module.runtime_iam.{kind}.{alias}[0]" for alias in 
                            for kind in ("aws_iam_role", "aws_iam_role_policy"))
 MODE_INPUT_FIELDS = ("schema_version context_kind application_principal_arn owner context_manifest delegation_sessions "
                      "resources enabled_until")
+RAW_RELEASE_ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
 MODE_GATE_ORIGINALS = ("product_source_closure_sha256 shared_source_sha shared_source_closure_sha256 release_id "
                        "fixture_manifest_sha256")
 MODE_PRODUCT_COMMITTED = "scenario_plan_sha256 predecessor_terminal_sha256 admitted_at deadline"
@@ -888,8 +889,8 @@ def validate_fence_prepared_package(files, *, owner, fragment, activation_sha256
     c.digest(old["source_sha"], 40)
     for key in ("source_closure_sha256", "candidate_sha256", "plan_binary_sha256", "plan_json_sha256", "inputs_sha256"):
         c.digest(old[key])
-    for key in ("release_id", "canary_id"):
-        c.require(type(old[key]) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", old[key]), "fence original release identity")
+    c.require(type(old["release_id"]) is str and re.fullmatch(RAW_RELEASE_ID, old["release_id"]), "fence original release identity")
+    c.require(type(old["canary_id"]) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", old["canary_id"]), "fence original release identity")
     c.require(type(old["files"]) is dict and set(old["files"]) == FENCE_PHASE_A_FILES, "fence Phase A original inventory")
     for name, reference in old["files"].items():
         _fence_origin(reference)
@@ -1202,7 +1203,7 @@ def validate_mode_context(inputs_raw, *, owner, application_purpose, originals):
     for key in ("product_source_closure_sha256", "shared_source_closure_sha256", "activation_sha256", "resources_sha256",
                 "fixture_manifest_sha256", "scenario_plan_sha256"):
         c.digest(manifest[key])
-    c.require(type(manifest["release_id"]) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", manifest["release_id"]),
+    c.require(type(manifest["release_id"]) is str and re.fullmatch(RAW_RELEASE_ID, manifest["release_id"]),
               "mode context release id")
     predecessor = manifest["predecessor_terminal_sha256"]
     if predecessor is not None:
@@ -1578,7 +1579,7 @@ def mode_session(binding, application_purpose):
         c.digest(binding[key], 40)
     for key in ("product_source_closure_sha256", "shared_source_closure_sha256", "activation_sha256", "owner_sha256", "context_manifest_sha256"):
         c.digest(binding[key])
-    c.require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,31}", binding["release_id"]), "mode session release id")
+    c.require(re.fullmatch(RAW_RELEASE_ID, binding["release_id"]), "mode session release id")
     digest = c.sha(c.canonical(binding))
     return {"alias": alias, "session_name": "mc-" + code + "-" + digest[:40], "binding_sha256": digest}
 
