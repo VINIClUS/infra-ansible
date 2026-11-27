@@ -259,6 +259,28 @@ def test_observador_le_a_politica_de_sessao_do_application_quando_existe(native)
         assert allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/{name}-session"), name
 
 
+def test_observador_le_as_politicas_ops_e_de_activation_exatas_e_nenhuma_outra(native):
+    from test_cnesdata_delivery_oidc import activation_input
+    values = activation_input(observer_values())
+    values["application_promotion"] = application_values()["application_promotion"]
+    resources, _ = render(native, values, "observer-ops-activation")
+    policy = json.loads(resources[OBSERVER_POLICY]["policy"])
+    for name in ("cnesdata-prod-application-ops", "cnesdata-test-plan-activation"):
+        for action in ("iam:GetPolicy", "iam:GetPolicyVersion"):
+            assert allowed(policy, action, f"arn:aws:iam::{ACCOUNT}:policy/{name}-session"), (name, action)
+    for name in ("cnesdata-prod-plan-ops", "cnesdata-test-deploy-activation", "cnesdata-prod-application-x"):
+        assert not allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/{name}-session"), name
+    grants = [item for item in policy["Statement"] if item["Effect"] == "Allow" and "iam:GetPolicy" in item["Action"]]
+    assert all("*" not in arn for item in grants for arn in item["Resource"])
+
+
+def test_observador_sem_activation_nem_application_nao_ganha_ops_nem_activation(native):
+    resources, _ = render(native, observer_values(), "observer-plain")
+    policy = json.loads(resources[OBSERVER_POLICY]["policy"])
+    assert not allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-prod-application-ops-session")
+    assert not allowed(policy, "iam:GetPolicy", f"arn:aws:iam::{ACCOUNT}:policy/cnesdata-test-plan-activation-session")
+
+
 def test_leituras_do_observador_repetem_as_ja_aprovadas_para_os_gates(native):
     values = observer_values()
     values["github_delivery"]["read_resource_arns"] = [CLUSTER]

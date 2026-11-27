@@ -270,6 +270,39 @@ def test_admission_recusa_objeto_inline_antes_de_qualquer_leitura(monkeypatch, t
     assert reads == []
 
 
+@pytest.mark.parametrize("key,reason", [("application_coordination_policy", "inline application coordination policy"),
+                                        ("application_delegations", "inline application delegations")])
+def test_admission_recusa_objeto_do_fragmento_inline_antes_de_qualquer_leitura(monkeypatch, tmp_path, key, reason):
+    monkeypatch.chdir(tmp_path)
+    lr, _, _, reads = admission_case(monkeypatch, inline=key)
+    monkeypatch.setattr(lr, "GitHub", lambda: pytest.fail("inline governance must close before GitHub"))
+    with pytest.raises(ValueError, match=reason):
+        lr.admission("plan")
+    assert reads == []
+
+
+def test_admission_hidrata_a_politica_de_coordenacao_do_fragmento(monkeypatch, tmp_path):
+    from test_cnesdata_delivery_oidc import application_values
+    from tools.cnesdata_delivery.session_owner import _terraform_document_digest
+    from tools.cnesdata_delivery.session_policy import coordination_policy
+    monkeypatch.chdir(tmp_path)
+    lr, gov, _, _ = admission_case(monkeypatch)
+    account, role = "111122223333", "arn:aws:iam::111122223333:role/cnesdata-prod-application"
+    fragment = {"account_id": account, "application_role_arn": role, "application_role_name": role.rsplit("/", 1)[1],
+                "lease": {"bucket_arn": "arn:aws:s3:::synthetic-state", "key": "lease.json", "kms_key_arn": "k1"},
+                "evidence": {"bucket_arn": "arn:aws:s3:::synthetic-evidence", "prefix": "p/lifecycle/",
+                             "kms_key_arn": "k2"},
+                "delegations": application_values()["application_promotion"]["delegations"]}
+    fragment["policy_sha256"] = _terraform_document_digest(coordination_policy(fragment))
+    gov["application_fragment"] = fragment
+    monkeypatch.setenv("CNESDATA_DELIVERY_GOVERNANCE", c.canonical(gov, limit=262144).decode())
+    governance, _, _, _, _, _ = lr.admission("plan")
+    raw = governance["application_coordination_policy"]
+    assert _terraform_document_digest(raw) == fragment["policy_sha256"]
+    assert governance["application_delegations"] == fragment["delegations"]
+    assert governance["application_delegations"] is not fragment["delegations"]
+
+
 def test_admission_hidrata_antes_de_procurar_o_passo(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     lr, gov, served, reads = admission_case(monkeypatch)

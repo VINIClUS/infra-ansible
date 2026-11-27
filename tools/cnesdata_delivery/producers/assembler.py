@@ -15,13 +15,19 @@ DEPLOY_CHECKS = {"exact-saved-plan-package", "planned-source-input-binding"}
 PRODUCER = "repository workflow_path workflow_sha run_id run_attempt"
 REPORT_LIMIT = 262144
 Assembled = namedtuple("Assembled", "files proof")
+LIFECYCLE_PROOF_ROLES = ("plan", "deploy", "audit")
 __all__ = ["Assembled", "artifact_names", "assemble", "cost_baseline", "expiry_chain", "required_checks",
-           "validate_chain"]
+           "saved_plan", "validate_chain"]
+
+
+def saved_plan(purpose, role):
+    """Returns: whether the proof binds a saved plan; the lifecycle deploy proof is plan-shaped."""
+    return role == "deploy" and purpose != "lifecycle"
 
 
 def required_checks(purpose, role):
     return sorted(BASE_CHECKS | (PHASE_A_CHECKS if purpose == "phase-a" else set())
-                  | (DEPLOY_CHECKS if role == "deploy" else set()))
+                  | (DEPLOY_CHECKS if saved_plan(purpose, role) else set()))
 
 
 def artifact_names(source, role, run, attempt):
@@ -68,7 +74,7 @@ def _artifacts(entries, chain):
 
 def _binding(inputs):
     value = inputs["plan_binding_sha256"]
-    if inputs["role"] == "deploy":
+    if saved_plan(inputs["purpose"], inputs["role"]):
         c.digest(value)
     else:
         c.require(value is None, "plan admission has no saved-plan binding")
@@ -110,12 +116,19 @@ def main(argv=None):
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     observed = read_observed(args.observed)
-    values, extra = inputs.build(GitHub(), inputs.request_from(os.environ), observed)
-    built = assemble(values)
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    for name, raw in (built.files | extra).items():
-        (out / name).write_bytes(raw)
+    request = inputs.request_from(os.environ)
+    outputs = {args.out: request}
+    if request["role"] == "application":
+        outputs |= {f"{args.out}-{role}": request | {"role": role} for role in LIFECYCLE_PROOF_ROLES}
+    written = {}
+    for path, asked in outputs.items():
+        values, extra = inputs.build(GitHub(), asked, observed)
+        written[path] = assemble(values).files | extra
+    for path, files in written.items():
+        out = Path(path)
+        out.mkdir(parents=True, exist_ok=True)
+        for name, raw in files.items():
+            (out / name).write_bytes(raw)
     return 0
 
 

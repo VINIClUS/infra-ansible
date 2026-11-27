@@ -8,10 +8,11 @@ from urllib.parse import unquote
 
 from tools.cnesdata_delivery import contract as c, drift_catalog, session_owner
 from tools.cnesdata_delivery.producers import aws_reader, chain, drift_handoff, phase_inputs, rehearsal_plan
-from tools.cnesdata_delivery.session_policy import managed_arn
+from tools.cnesdata_delivery.session_policy import ACTIVATION_ROLE, OPS_ROLE, managed_arn
 
 STATE_KEY = rehearsal_plan.STATE_KEY
 ROLES = ("plan", "deploy", "audit")
+BASE_ROLES = {OPS_ROLE: "application", ACTIVATION_ROLE: "plan"}
 CONFIG_KEYS = "account_id roles state_bucket evidence_bucket evidence_prefix ecr_repository shared_outputs toolchain"
 Observed = namedtuple("Observed", "files pins")
 
@@ -56,13 +57,25 @@ def _pin(reader, config, role, asked):
     c.require(version["VersionId"] == default and version["IsDefaultVersion"] is True, "default version readback")
     document = _document(version["Document"])
     times = chain.expiry_chain(asked["observed_at"])
-    pin = {"account_id": config["account_id"], "role_arn": config["roles"][role], "policy_arn": arn,
+    pin = {"account_id": config["account_id"], "role_arn": config["roles"][BASE_ROLES.get(role, role)],
+           "policy_arn": arn,
            "root_source_sha": asked["root_source_sha"], "default_version_id": default, "document": document,
            "document_sha256": c.sha(c.canonical(document, limit=65536)), "observed_at": times["pin_observed_at"],
            "expires_at": times["pin_expires_at"], "frozen_until": times["frozen_until"],
            "owner_producer": asked["owner_producer"]}
     session_owner._metadata(policy, pin)
     return pin
+
+
+def run_roles(config, asked):
+    """Args: private config, public request. Returns: every session role this observe run pins at one instant."""
+    roles = list(ROLES)
+    if asked["role"] == "application":
+        c.require(type(config["roles"].get("application")) is str, "observer application role")
+        roles += ["application", OPS_ROLE]
+    if asked.get("activation") is True:
+        roles.append(ACTIVATION_ROLE)
+    return roles
 
 
 def _strings(value):
@@ -94,6 +107,7 @@ def observe(reader, config, asked, key_hex):
     Returns: Observed(files, pins); pins only in local mode. Raises: ValueError, never partial files.
     """
     c.require(asked["purpose"] in drift_catalog.ENVELOPES, "purpose without envelope")
+    roles = run_roles(config, asked)
     key = c.report_key({"report_hmac_key": key_hex})
     plan_raw = rehearsal_plan.plan(config, phase_inputs.release_inputs(reader, config, asked), reader.session)
     plan, rehearsal_sha = c.loads(plan_raw, state=True), c.sha(plan_raw)
@@ -101,7 +115,7 @@ def observe(reader, config, asked, key_hex):
     document = drift_handoff.generate(plan, c.loads(state_raw, state=True), asked["source_sha"], asked["purpose"])
     raw = drift_handoff.serialize(document)
     _live_before(reader, plan, document)
-    pins = {role: _pin(reader, config, role, asked) for role in ROLES}
+    pins = {role: _pin(reader, config, role, asked) for role in roles}
     observations = {"observed_at": asked["observed_at"], "drift-baseline": _drift_baseline(document, raw, rehearsal_sha, state_raw),
                     "session_facts": {role: session_owner._facts(pin, key) for role, pin in pins.items()}}
     observations |= phase_inputs.measure(reader, config, asked, key)
@@ -124,7 +138,7 @@ def _config():
         c.require(name in config, f"observer config missing key={name}")
     for name in sorted(set(config) - set(CONFIG_KEYS.split())):
         c.require(False, f"observer config extra key={name}")
-    c.closed(config["roles"], " ".join(ROLES))
+    c.closed(config["roles"], " ".join(ROLES + (("application",) if "application" in config["roles"] else ())))
     c.require(type(config["shared_outputs"]) is dict and bool(config["shared_outputs"]), "observer shared_outputs")
     _toolchain(config["toolchain"])
     return config

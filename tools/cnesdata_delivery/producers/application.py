@@ -14,7 +14,7 @@ IMAGE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ROLES = ("plan", "deploy", "audit", "application")
 PIECES = frozenset("""
     lifecycle_steps_sha256 source_closure_sha256 lifecycle_predecessor predecessor_read application_configuration
-    application_fragment application_delegations application_coordination_policy release
+    application_fragment release
 """.split())
 
 
@@ -67,17 +67,20 @@ def predecessor(api, governance, selector, *, lease, job, objects, publication=N
 def application_section(governance, *, configuration, fragment, coordination_policy, now):
     """Args: governance, keyword tofu input configuration, tofu outputs fragment and coordination policy, now.
 
-    Returns: the four application_* governance keys. Raises: ValueError when the session consumers refuse.
+    Returns: the two application_* governance keys; delegations and the coordination policy are hydrated at
+    admission (P42) and only cross-checked here. Raises: ValueError when the session consumers refuse.
     """
     from tools.cnesdata_delivery import session_owner
+    from tools.cnesdata_delivery.session_policy import coordination_object
     section = {"application_configuration": session_owner.application_configuration(configuration,
                                                                                     governance["account_id"]),
-               "application_fragment": c.loads(c.canonical(fragment, limit=65536), canonical=True, limit=65536),
-               "application_delegations": copy.deepcopy(fragment["delegations"]),
-               "application_coordination_policy": coordination_policy}
+               "application_fragment": c.loads(c.canonical(fragment, limit=65536), canonical=True, limit=65536)}
     merged = governance | section
+    merged |= coordination_object(merged)
     accepted = session_owner.application_fragment(merged, now)
     session_owner.application_identity_document(merged, accepted)
+    c.require(type(coordination_policy) is str and session_owner._terraform_document_digest(coordination_policy)
+              == accepted["policy_sha256"], "tofu coordination output differs from the derived policy")
     return section
 
 

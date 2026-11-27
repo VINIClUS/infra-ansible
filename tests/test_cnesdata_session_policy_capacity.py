@@ -134,22 +134,13 @@ def test_nenhum_nome_real_do_produto_passa_de_104_caracteres():
     assert len(longest) == 97 <= sp.DELETE_ARN_MAX == 104
 
 
-def test_limite_de_chave_de_ativacao_e_justo_no_ponto_p1(monkeypatch):
+def test_chave_de_ativacao_de_129_bytes_e_recusada_e_a_de_128_aceita():
     from tools.cnesdata_delivery import session_policy as sp
     gov = governance(63, 32)
-    limit = sp.ACTIVATION_KEY_LIMIT
-    assert limit == 273
-    assert max(activation_sizes(activated(gov, 63, limit)).values()) <= LIMIT
-    monkeypatch.setattr(sp, "ACTIVATION_KEY_LIMIT", limit + 1)
-    assert max(activation_sizes(activated(gov, 63, limit + 1)).values()) > LIMIT
-
-
-def test_chave_de_ativacao_acima_do_limite_e_recusada():
-    from tools.cnesdata_delivery import session_policy as sp
-    gov = governance(63, 32)
-    sp.activation_request(activated(gov, 63, sp.ACTIVATION_KEY_LIMIT), VERSIONS, deadline=DEADLINE)
+    assert sp.ACTIVATION_KEY_LIMIT == 128
+    sp.activation_request(activated(gov, 63, 128), VERSIONS, deadline=DEADLINE)
     with pytest.raises(ValueError, match="activation exact distinct keys"):
-        sp.activation_request(activated(gov, 63, sp.ACTIVATION_KEY_LIMIT + 1), VERSIONS, deadline=DEADLINE)
+        sp.activation_request(activated(gov, 63, 129), VERSIONS, deadline=DEADLINE)
 
 
 def test_versao_longa_demais_para_o_limite_total_e_recusada_antes_do_sts():

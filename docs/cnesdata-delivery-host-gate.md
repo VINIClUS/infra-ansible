@@ -178,11 +178,13 @@ irreversível com teto min(F, choice+420s), descontando tempo de parede real,
 inclusive auditoria/requests. Reboot, regressão monotônica e descontinuidade
 de relógio bloqueiam sucesso. Receipts não antecipam timestamps de eventos.
 
-O conjunto de probes operacionais no host permanece exatamente unit/recovery/API.
-São as sessões originais temporárias do owner, sem novo AssumeRole no host gate.
+O conjunto de probes operacionais no host é exatamente a identidade API: a sessão
+temporária original do Roles Anywhere do container da API, sem novo AssumeRole no
+host gate. Unit e recovery rodam no ECS e não são sondados no host.
 O helper confere o principal real e faz GET SigV4 da sonda fixa de objeto ausente:
-NoSuchKey 404 é distinto de AccessDenied 403. Não há quarta role, RunTask,
-PassRole de verifier, cross-assume ou escrita no semáforo.
+NoSuchKey 404 é distinto de AccessDenied 403, e o 404 exige ListBucket no bucket
+da sonda. Não há quarta role, RunTask, PassRole de verifier, cross-assume ou
+escrita no semáforo.
 
 ## Credencial do cnesdata: credential_process sem restart
 

@@ -358,7 +358,6 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     gov.update(state_bucket="synthetic-state", evidence_bucket="synthetic-evidence", evidence_prefix=settings["evidence_prefix"],
                state_kms_key_arn=settings["state_kms_arn"], evidence_kms_key_arn=settings["evidence_kms_arn"],
                application_fragment=fragment, application_configuration=data["application_promotion"],
-               application_delegations=data["application_promotion"]["delegations"],
                application_source_closure_sha256=data["application_promotion"]["source_closure_sha256"],
                gate_shas={"application": "c" * 40})
     if with_history:
@@ -374,6 +373,8 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
             "artifact_id": 42, "artifact_digest": "sha256:" + "c" * 64, "producer_job_id": 91,
             "producer_name": "apply / execute", "objects": entries}
     gov["roles"]["application"] = fragment["application_role_arn"]
+    from tools.cnesdata_delivery.session_policy import coordination_object
+    gov |= coordination_object(gov)
     pin = gov["session_policy_pins"].pop("plan")
     pin.update(role_arn=fragment["application_role_arn"], policy_arn=managed_arn(gov, "application"),
                document=json.loads(resources["aws_iam_policy.application_session[0]"]["policy"]))
@@ -398,26 +399,38 @@ def test_native_application_fragment_requires_original_owner_and_exact_iam_readb
     assert authority.ops_pin == ops
     assert authority.application_fragment is not fragment
     assert authority.proof_sha256 == c.sha(api.owner_files["proof.json"])
-    # Amendment 2026-11-13 item 3: protected coordination policy from its own sensitive output.
+    # P42: admission hydrates the coordination policy and delegations from the protected fragment.
+    from tools.cnesdata_delivery.session_policy import coordination_policy
     coordination = outputs["application_coordination_policy"]
     assert coordination["sensitive"] is True
     assert coordination["value"] == resources["aws_iam_role_policy.application[0]"]["policy"]
-    gov["application_coordination_policy"] = coordination["value"]
-    identity = session_owner.application_identity_document(gov, fragment)
+    derived = session_owner._terraform_document_digest(coordination_policy(fragment))
+    assert derived == fragment["policy_sha256"] == c.sha(coordination["value"].encode())
+    assert gov["application_delegations"] == fragment["delegations"]
+    mismatched = copy.deepcopy(gov)
+    mismatched["application_configuration"]["delegations"]["observer"] = mismatched["application_configuration"]["delegations"]["normal"]
+    with pytest.raises(ValueError, match="private original ten delegations"):
+        session_owner.application_fragment(mismatched | coordination_object(mismatched), now)
+    hydrated = gov | coordination_object(gov)
+    identity = session_owner.application_identity_document(hydrated, fragment)
     expected = json.loads(coordination["value"])["Statement"]
     if with_history:
         from tools.cnesdata_delivery.session_policy import predecessor_policy
         expected = expected + predecessor_policy(gov, gov["predecessor_read"])["Statement"]
     assert identity == {"Version": "2012-10-17", "Statement": expected}
-    for broken in (None, json.dumps({"Version": "2012-10-17", "Statement": []}),
-                   coordination["value"].replace("s3:GetObject", "s3:GetObjectVersion", 1)):
-        bad = copy.deepcopy(gov)
-        if broken is None:
-            bad.pop("application_coordination_policy")
-        else:
-            bad["application_coordination_policy"] = broken
-        with pytest.raises((ValueError, KeyError)):
-            session_owner.application_identity_document(bad, fragment)
+    moved = copy.deepcopy(gov)
+    moved["application_fragment"]["lease"]["key"] = "other.json"
+    with pytest.raises(ValueError, match="application coordination policy commitment"):
+        session_owner.application_identity_document(gov | coordination_object(moved), fragment)
+    raw = {key: value for key, value in gov.items() if key not in ("application_coordination_policy", "application_delegations")}
+    for absent in ("delegations", "evidence", "application_role_arn"):
+        lacking = copy.deepcopy(raw)
+        lacking["application_fragment"].pop(absent)
+        assert coordination_object(lacking) == {}
+        with pytest.raises(ValueError, match="protected application coordination policy"):
+            session_owner.application_identity_document(raw | coordination_object(lacking), fragment)
+    with pytest.raises(ValueError, match="coordination policy source"):
+        coordination_object(gov | {"application_fragment": fragment | {"delegations": {"observer": "x"}}})
     # Infra lifecycle credentials must authenticate the application fragment too,
     # before reaching their own plan/deploy token exchange.
     from tools.cnesdata_delivery import lifecycle_runtime
@@ -827,8 +840,8 @@ DEFAULT_DOCUMENT_SHA256 = {
     "plain": {
         'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
         'aws_iam_policy.delivery_session["plan"]': "5a5c63fe229d87e9f56e3e9f35c7d76843628515fa5c719c3adf9ab48da66860",
-        'aws_iam_role_policy.delivery["deploy"]': "286093d626a9c3051f03c62a98e446e15bab6075c67a2a5a7a86d9d8b8c87653",
-        'aws_iam_role_policy.delivery["plan"]': "175b7b6eacffbc7a2ed4e75191432cf5a3e5e7a77dc07f2f0ae27241257738eb",
+        'aws_iam_role_policy.delivery["deploy"]': "70dbb7946660db5f99b61e947f5b0bbf1f2f57f3a5fc87a0256bc1142aa02876",
+        'aws_iam_role_policy.delivery["plan"]': "08f5fe1cc1cc91e1cec2317d508ee865c7cdfe1df528d982f61845fd3ce7b84b",
     },
     "app": {
         "aws_iam_policy.application_ops_session[0]": "a0aa515ffebe8a51ef07b73456cd28a21fb39ecbb7d4507ec5cb19e68b2835e4",
@@ -836,8 +849,8 @@ DEFAULT_DOCUMENT_SHA256 = {
         'aws_iam_policy.delivery_session["deploy"]': "4261917d6d0f357f4bf7ca0a0b4187d77f0008ea1445fae5532291656b68a712",
         'aws_iam_policy.delivery_session["plan"]': "5a5c63fe229d87e9f56e3e9f35c7d76843628515fa5c719c3adf9ab48da66860",
         "aws_iam_role_policy.application[0]": "eb1f31a50053293805c86d1b30e04fb7ccd33dac03fba308ef17884d2a97e563",
-        'aws_iam_role_policy.delivery["deploy"]': "3262f5d742ca349bbe578b4d70361679567e646b7b020b9e309b459be9e7b403",
-        'aws_iam_role_policy.delivery["plan"]': "005f685acf956337d8dd9d7c7ba12209fbbbe4ccca101d93e227d990cddc0c6b",
+        'aws_iam_role_policy.delivery["deploy"]': "0c9c674085127f0394be0e4d69f84e4feda78459ac33a7dee09aed081b0e2884",
+        'aws_iam_role_policy.delivery["plan"]': "c215fc612b0cfc8570d1ec51c2e728e206e002e51e4a4a0ba35ef6934d3e013f",
     },
 }
 EVIDENCE_BUCKET = "arn:aws:s3:::synthetic-evidence"
@@ -1030,8 +1043,7 @@ def test_native_activation_read_rejects_unclosed_or_overlapping_ceiling(native, 
     elif mutation == "state":
         ceiling["keys"]["payload"] = "cnesdata/prod/opentofu.tfstate"
     elif mutation == "key-over-limit":
-        from tools.cnesdata_delivery.session_policy import ACTIVATION_KEY_LIMIT
-        ceiling["keys"]["payload"] = EXT2_PREFIX + "p" * (ACTIVATION_KEY_LIMIT + 1 - len(EXT2_PREFIX))
+        ceiling["keys"]["payload"] = EXT2_PREFIX + "p" * (129 - len(EXT2_PREFIX))
     elif mutation == "foreign-key-arn":
         ceiling["cipher_kms_key_arn"] = "arn:aws:kms:us-east-2:999988887777:key/00000000-0000-4000-8000-000000000009"
     else:
@@ -1045,9 +1057,10 @@ def test_native_activation_read_accepts_a_key_exactly_at_the_python_limit_and_to
     import re
     from fixtures.cnesdata_delivery_oidc_native import ROOT
     text = (ROOT / "variables.tf").read_text()
+    assert sp.ACTIVATION_KEY_LIMIT == 128
     assert re.search(rf"length\(key\) <= {sp.ACTIVATION_KEY_LIMIT}\b", text)
     data = activation_input(variables())
-    data["github_delivery"]["activation_read"]["keys"]["payload"] = EXT2_PREFIX + "p" * (sp.ACTIVATION_KEY_LIMIT - len(EXT2_PREFIX))
+    data["github_delivery"]["activation_read"]["keys"]["payload"] = EXT2_PREFIX + "p" * (128 - len(EXT2_PREFIX))
     code, _, diagnostics = native.plan(data, "activation-key-at-limit")
     assert code == 0, diagnostics
 
@@ -1070,6 +1083,96 @@ def test_native_plan_identity_reads_its_own_role_only_when_governed_read_arns_li
         assert decision(managed, action, own) == "Allow"
     for action in ("iam:PutRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:AttachRolePolicy", "iam:DeleteRolePolicy"):
         assert decision(identity, action, own) != "Allow", action
+
+
+PRODUCT_READ_SHAPE = (("acm", "us-east-1", "certificate/", 1), ("athena", "us-east-2", "workgroup/", 1),
+    ("cloudfront", "", "distribution/", 1), ("cloudfront", "", "function/", 2), ("cloudfront", "", "origin-access-control/", 1),
+    ("cognito-idp", "us-east-2", "userpool/", 1), ("dynamodb", "us-east-2", "table/", 2), ("ecr", "us-east-2", "repository/", 1),
+    ("ecs", "us-east-2", "cluster/", 1), ("ecs", "us-east-2", "task-definition/", 6), ("events", "us-east-2", "rule/", 2),
+    ("iam", "", "role/", 13), ("lambda", "us-east-2", "function:", 1), ("logs", "us-east-2", "log-group:", 1),
+    ("sns", "us-east-2", "", 3), ("wafv2", "us-east-1", "global/webacl/", 1))
+S3_READ_LENGTHS = (41, 37, 33, 32, 31)
+GLOBAL_ONLY_READS = (("ecs:DescribeTaskDefinition", "*"), ("cognito-idp:DescribeUserPoolDomain", "*"),
+    ("cloudwatch:ListTagsForResource", "arn:aws:cloudwatch:us-east-2:111122223333:alarm:cnesdata-prod-operator"))
+PROD_STATE_BUCKET = "arn:aws:s3:::" + "s" * 48
+PROD_EVIDENCE_BUCKET = "arn:aws:s3:::" + "e" * 45
+IAM_QUOTAS = {'aws_iam_role_policy.delivery["plan"]': 10240, 'aws_iam_role_policy.delivery["deploy"]': 10240,
+              'aws_iam_policy.delivery_session["plan"]': 6144, 'aws_iam_policy.delivery_session["deploy"]': 6144,
+              'aws_iam_policy.delivery_session["audit"]': 6144}
+
+
+def product_arn(service, region, kind, name, width):
+    head = f"arn:aws:{service}:{region}:111122223333:{kind}cnesdata-prod-{name}"
+    return head + "x" * (width - len(head))
+
+
+def product_scope():
+    """Synthetic W2b product scope, lengths at or above the real one: 43 read ARNs, 3 revisions, 4 pass roles."""
+    reads = [product_arn(service, region, kind, f"{index}-", 71)
+             for service, region, kind, count in PRODUCT_READ_SHAPE for index in range(count)]
+    reads += [f"arn:aws:s3:::cnesdata-prod-{index}-".ljust(length, "x") for index, length in enumerate(S3_READ_LENGTHS)]
+    revisions = [product_arn("ecs", "us-east-2", "task-definition/", f"r{index}-", 85) for index in range(3)]
+    roles = [product_arn("iam", "", "role/", f"p{index}-", 64) for index in range(4)]
+    permissions = [{"actions": ["ecs:RegisterTaskDefinition", "ecs:TagResource"], "resources": revisions},
+                   {"actions": ["iam:PutRolePolicy"], "resources": roles[:2]}]
+    return reads, permissions, [{"arn": arn, "service": "ecs-tasks.amazonaws.com"} for arn in roles]
+
+
+def prod_values(key_length):
+    """Prod-length names (state 48, evidence 45, cnesdata-prod roles), W2b scope and activation keys of key_length."""
+    values = activation_input(application_values())
+    values["audit"] = {"role_name": "cnesdata-prod-audit", "workflow_sha": "e" * 40}
+    values["application_promotion"]["predecessor_read"] = {"protocol": "legacy-infra", "source_sha": "e" * 40,
+        "run_id": 19876543210, "run_attempt": 1, "status": "applied", "purpose": "phase-a"}
+    reads, permissions, pass_roles = product_scope()
+    settings = values["github_delivery"]
+    settings.update(plan_role_name="cnesdata-prod-plan", deploy_role_name="cnesdata-prod-deploy",
+                    state_bucket_arn=PROD_STATE_BUCKET, evidence_bucket_arn=PROD_EVIDENCE_BUCKET,
+                    read_resource_arns=reads, product_permissions=permissions, pass_roles=pass_roles)
+    settings["activation_read"]["bucket_arn"] = PROD_EVIDENCE_BUCKET
+    for slot in settings["activation_read"]["keys"]:
+        settings["activation_read"]["keys"][slot] = EXT2_PREFIX + slot[0] * (key_length - len(EXT2_PREFIX))
+    return values
+
+
+def prod_documents(native, key_length):
+    resources, _ = render(native, prod_values(key_length), f"prod-documents-{key_length}")
+    return resources
+
+
+def quota_margins(resources):
+    return {address: limit - len("".join(resources[address]["policy"].split())) for address, limit in IAM_QUOTAS.items()}
+
+
+def test_native_reads_without_iam_resource_type_are_global_reads(native):
+    """W2b host path: the Phase A refresh reads task definitions, the pool domain and alarm tags with no ARN list."""
+    from fixtures.cnesdata_iam_evaluation import decision
+    resources, _ = render(native, variables(), "global-reads")
+    for role in ("plan", "deploy"):
+        identity, managed = rendered_policies(resources, role)
+        for action, resource in GLOBAL_ONLY_READS:
+            assert decision(identity, action, resource) == "Allow", (role, action)
+            assert decision(managed, action, resource) == "Allow", (role, action)
+
+
+@pytest.mark.parametrize("listed", ["mixed", "without-bucket"])
+def test_native_session_object_lock_statement_holds_only_s3_bucket_arns(native, listed):
+    data = variables()
+    reads, _, _ = product_scope()
+    buckets = [arn for arn in reads if arn.startswith("arn:aws:s3:::")]
+    data["github_delivery"]["read_resource_arns"] = reads if listed == "mixed" else [arn for arn in reads if arn not in buckets]
+    resources, _ = render(native, data, "object-lock-" + listed)
+    for role in ("plan", "deploy"):
+        _, managed = rendered_policies(resources, role)
+        locks = [statement["Resource"] for statement in managed["Statement"]
+                 if statement.get("Action") == ["s3:GetBucketObjectLockConfiguration", "s3:PutBucketObjectLockConfiguration"]]
+        assert locks == ([buckets] if listed == "mixed" else []), role
+
+
+def test_native_documents_keep_a_positive_quota_margin_at_prod_names_with_keys_at_the_limit(native):
+    from tools.cnesdata_delivery.session_policy import ACTIVATION_KEY_LIMIT
+    margins = quota_margins(prod_documents(native, ACTIVATION_KEY_LIMIT))
+    assert {address: margin for address, margin in margins.items() if margin <= 0} == {}
 
 
 @pytest.mark.parametrize("mutation", [None, "table-output", "two-tables", "prefix-exact", "prefix-two-wildcards", "coordination"])
