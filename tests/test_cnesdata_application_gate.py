@@ -15,6 +15,8 @@ from tools.cnesdata_delivery.lifecycle_runtime import first_checkpoint
 from tools.cnesdata_delivery.aws_boundary import S3LeaseStore
 from tools.cnesdata_delivery.provenance import GitHub
 
+REAL_RELEASE_ID = "candidate-" + "9" * 40 + "-19876543210-1"
+
 
 @pytest.mark.parametrize("mutation", [None, "omitted-helper", "manifest-digest", "edited-helper", "untracked-shadow", "ignored-shadow", "symlink"])
 def test_adapter_preflight_authenticates_complete_original_tree_without_import(tmp_path, mutation):
@@ -1573,7 +1575,7 @@ def test_durable_closed_ready_conditional_creation_reconciles_collision_not_io_r
         ledger.reserve()
 
 
-def _fence_contract_case(*, original_serial=1, probe=False):
+def _fence_contract_case(*, original_serial=1, probe=False, release_id=REAL_RELEASE_ID):
     from tools.cnesdata_delivery import lifecycle_contract as lc
     _, owner, _, _ = _adapter_case("closed-ready")
     account = "111122223333"
@@ -1592,7 +1594,7 @@ def _fence_contract_case(*, original_serial=1, probe=False):
         return {"repository": c.REPOSITORY, "source_sha": source, "run_id": run, "run_attempt": 1, "job_id": 42,
                 "artifact_id": 43, "artifact_digest": "sha256:" + "4" * 64, "producer_name": producer["job_name"],
                 "step": "applied", "name": name, "sha256": digest, "size": 100}
-    carrier, old_raw = _phase_a_carrier_case(serial=original_serial, probe=probe)
+    carrier, old_raw = _phase_a_carrier_case(serial=original_serial, probe=probe, release_id=release_id)
     old = {name: c.loads(raw, canonical=True) for name, raw in old_raw.items()}
     old_plan, old_apply = old["envelope.json"]["plan"], old["envelope.json"]["apply"]
     origin_reference = carrier["origin"]
@@ -2678,7 +2680,7 @@ def _mode_semantic_context(application_purpose):
     context = "promotion" if application_purpose == "promotion" else "readiness"
     owner.update(application_purpose=application_purpose, context_kind=context)
     originals = {"product_source_sha": owner["source_sha"], "product_source_closure_sha256": "1" * 64,
-                 "shared_source_sha": "2" * 40, "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release",
+                 "shared_source_sha": "2" * 40, "shared_source_closure_sha256": "3" * 64, "release_id": REAL_RELEASE_ID,
                  "activation_sha256": "4" * 64, "resources_sha256": "5" * 64, "fixture_manifest_sha256": "6" * 64,
                  "scenario_plan_sha256": "7" * 64, "predecessor_terminal_sha256": "8" * 64,
                  "admitted_at": c.utc(1000), "deadline": c.utc(1900 if context == "promotion" else 15400)}
@@ -2765,7 +2767,7 @@ def test_mode_context_preserves_original_predecessor_and_unextended_deadline(pur
 @pytest.mark.parametrize("field,value", [
     ("product_source_sha", "9" * 40), ("product_source_closure_sha256", "g" * 64),
     ("shared_source_sha", "a" * 39), ("shared_source_closure_sha256", "A" * 64),
-    ("release_id", "foreign/release"), ("release_id", "ação"), ("release_id", "r" * 33),
+    ("release_id", "foreign/release"), ("release_id", "ação"), ("release_id", "r" * 129),
     ("activation_sha256", None), ("resources_sha256", True), ("fixture_manifest_sha256", "0"),
     ("scenario_plan_sha256", []), ("predecessor_terminal_sha256", "bad"),
     ("admitted_at", True), ("admitted_at", 0), ("admitted_at", 1000), ("admitted_at", "1970-01-01T00:31:40Z"),
@@ -3480,7 +3482,7 @@ def test_live_iam_evaluation_refuses_unimplemented_policy_semantics():
     with pytest.raises(ValueError): effective_iam(policy, [policy], "dynamodb:GetItem", "synthetic", {})
 
 
-def _phase_a_carrier_case(*, serial=1, probe=False):
+def _phase_a_carrier_case(*, serial=1, probe=False, release_id=REAL_RELEASE_ID):
     """Complete synthetic historical documents; contains no applied AWS claim."""
     import base64
     from fixtures.cnesdata_plan import packet
@@ -3492,7 +3494,7 @@ def _phase_a_carrier_case(*, serial=1, probe=False):
     _, _, _, _, readbacks = fence_projection_case(probe=probe)
     source, account, now = plan["source_sha"], "111122223333", c.instant(plan["created_at"])
     role = readbacks[0]["observed"]["Role"]
-    release = {"release_id": "original-release", "source_sha": source, "candidate_sha256": "1" * 64,
+    release = {"release_id": release_id, "source_sha": source, "candidate_sha256": "1" * 64,
         "canary_id": "r1", "binding_sha256": "2" * 64, "image_digest": "sha256:" + "3" * 64}
     plan.update(purpose="phase-a", release=release, phase_a_inputs={"image_digest": release["image_digest"],
         "processor_active_unit_task_definition_arn": None, "processor_retained_unit_task_definition_arns": [],

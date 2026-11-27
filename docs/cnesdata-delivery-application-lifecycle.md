@@ -273,6 +273,11 @@ Implemented on `main`:
 - Host runtime probe (P42b): the host gate probes exactly the API identity, the original
   Roles Anywhere session of the API container, with no AssumeRole. Unit and recovery run on
   ECS and are not probed on the host; the 404 probe needs ListBucket on the probe bucket.
+- Raw candidate release id (P45): the fence package (`phase_a.release_id`), the mode context
+  and the mode session binding carry the raw candidate id `candidate-<source sha>-<run
+  id>-<attempt>`, up to 128 chars. The equality checks do not change; `canary_id` and the
+  static binding release id stay at 32. The mode session name is a digest, so its STS length
+  does not change.
 - Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
   trusts (F3), and stage windows with pre-approved jobs (F4).
 

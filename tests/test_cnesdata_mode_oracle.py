@@ -11,7 +11,7 @@ PRINCIPAL = f"arn:aws:iam::{ACCOUNT}:role/cnesdata-prod-application"
 ALIASES = ("mode_seed", "mode_dispatch", "mode_audit_launch", "mode_observe")
 FIXTURE_MANIFEST = "tests/production/fixtures/mode_canary/fixture-manifest.json"
 GATE = {"product_source_closure_sha256": "1" * 64, "shared_source_sha": "2" * 40,
-        "shared_source_closure_sha256": "3" * 64, "release_id": "fixture-release", "fixture_manifest_sha256": "6" * 64}
+        "shared_source_closure_sha256": "3" * 64, "release_id": "candidate-" + "9" * 40 + "-19876543210-1", "fixture_manifest_sha256": "6" * 64}
 ACTIVATION = "4" * 64
 RESOURCES = {"table_arn": f"arn:aws:dynamodb:us-east-2:{ACCOUNT}:table/cnesdata-prod-control-plane",
              "cluster_arn": f"arn:aws:ecs:us-east-2:{ACCOUNT}:cluster/cnesdata-prod"}
