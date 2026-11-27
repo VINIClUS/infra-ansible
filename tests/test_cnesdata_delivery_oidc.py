@@ -1292,3 +1292,25 @@ def test_native_identidade_le_o_que_o_refresh_do_provider_le_nos_recursos_listad
             assert decision(identity, action, resource) == "Allow", (role, action)
             assert decision(managed, action, resource) == "Allow", (role, action)
             assert decision(identity, action, resource + "-other") is None, (role, action)
+
+
+POOL_AND_MACHINE_REFRESH_READS = (
+    "cognito-idp:GetUserPoolMfaConfig", "cognito-idp:ListUserPoolClients",
+    "cognito-idp:DescribeManagedLoginBrandingByClient", "states:ListStateMachineVersions")
+
+
+def test_native_identidade_le_mfa_clientes_branding_e_versoes_no_refresh(native):
+    from fixtures.cnesdata_iam_evaluation import decision
+    reads, _, _ = product_scope()
+    machine = "arn:aws:states:us-east-2:111122223333:stateMachine:cnesdata-prod-processor"
+    data = variables()
+    data["github_delivery"]["read_resource_arns"] = reads + [machine]
+    resources, _ = render(native, data, "provider-refresh-pool-machine")
+    pool = next(arn for arn in reads if arn.startswith("arn:aws:cognito-idp:"))
+    targets = dict.fromkeys(POOL_AND_MACHINE_REFRESH_READS[:3], pool) | {POOL_AND_MACHINE_REFRESH_READS[3]: machine}
+    for role in ("plan", "deploy"):
+        identity, managed = rendered_policies(resources, role)
+        for action, resource in targets.items():
+            assert decision(identity, action, resource) == "Allow", (role, action)
+            assert decision(managed, action, resource) == "Allow", (role, action)
+            assert decision(identity, action, resource + "-other") is None, (role, action)
