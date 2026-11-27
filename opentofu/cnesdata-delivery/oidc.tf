@@ -121,7 +121,9 @@ resource "aws_iam_role_policy" "delivery" {
       ], [for statement in concat([
         { Effect = "Allow", Action = ["s3:PutObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" }
         ], [for statement in var.github_delivery.product_permissions : { Effect = "Allow", Action = statement.actions, Resource = statement.resources }],
-        [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }]
+        [for role in var.github_delivery.pass_roles : { Effect = "Allow", Action = ["iam:PassRole"], Resource = role.arn, Condition = { StringEquals = { "iam:PassedToService" = role.service } } }],
+        var.delivery_register_task_definitions ? [{ Effect = "Allow", Action = ["ecs:RegisterTaskDefinition"], Resource = "*" }] : [],
+        var.delivery_register_task_definitions ? [{ Effect = "Allow", Action = ["ecs:TagResource"], Resource = "*", Condition = { StringEquals = { "ecs:CreateAction" = "RegisterTaskDefinition" } } }] : []
     ) : statement if each.key == "deploy"], [for statement in local.delivery_activation_allows : statement if each.key == "plan"], local.delivery_activation_policy_reads[each.key])
   })
 }

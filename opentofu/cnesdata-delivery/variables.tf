@@ -247,6 +247,14 @@ variable "crl_handoff_sha256" {
   nullable    = true
 }
 
+variable "delivery_register_task_definitions" {
+  description = "Deploy-only ecs:RegisterTaskDefinition on * and ecs:TagResource at creation; plan and audit never get them."
+  # IAM may evaluate * for RegisterTaskDefinition, so these fixed statements bypass the wildcard-free product_permissions.
+  type     = bool
+  default  = false
+  nullable = false
+}
+
 variable "ext2_enabled" {
   description = "Explicit owner-reviewed delivery-only EXT2 creation. Never enables a product apply."
   type        = bool
