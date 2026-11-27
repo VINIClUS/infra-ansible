@@ -5,7 +5,8 @@ import time
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery.producers import baseline_commitments, chain, cost_context, cost_ledger, measurements, pins
-from tools.cnesdata_delivery.producers.assembler import cost_baseline
+from tools.cnesdata_delivery.producers.assembler import cost_baseline, saved_plan
+from tools.cnesdata_delivery.session_policy import ACTIVATION_ROLE, OPS_ROLE
 
 BASELINES = ("backend", "cost", "policy", "shared-outputs", "toolchain")
 SOURCE_MANIFEST = "cost-manifest-source.json"
@@ -57,7 +58,7 @@ def _phase_a(request, observations):
             "oci-promotion-byte-integrity": observations["oci-promotion-byte-integrity"]}
 
 
-OBSERVED_ROLES = ("plan", "audit")
+OBSERVED_ROLES = ("plan", "audit", "application")
 
 
 def _plan_index(members, request):
@@ -77,12 +78,22 @@ def _planned(request):
 
 
 def _deploy(members, request):
-    if request["role"] != "deploy":
+    if not saved_plan(request["purpose"], request["role"]):
         return {}, None
     c.require("planned" in members, "planned reference")
     index, package = _plan_index(members, request)
     return {"exact-saved-plan-package": package, "planned-source-input-binding": _planned(request)}, \
         index["plan_binding_sha256"]
+
+
+def _companions(request, facts):
+    if request["role"] == "application":
+        c.require(request["purpose"] == "lifecycle", "application owner proof purpose")
+        return {"ops_session_policy": facts[OPS_ROLE],
+                "application_fragment_sha256": c.digest(request["application_fragment_sha256"])}
+    if request["role"] == "plan" and request.get("activation") is True:
+        return {"activation_session_policy": facts[ACTIVATION_ROLE]}
+    return {}
 
 
 def _measured(api, request, observations, bundle):
@@ -99,7 +110,8 @@ def _measured(api, request, observations, bundle):
         "toolchain-lock-selections": measurements.toolchain(toolchain, toolchain["providers"]),
         "backend-identity-workspace": measurements.backend(c.loads(_member(members["backend"], BACKEND_MEMBER))),
         "policy-evaluation": measurements.policy_evaluation(
-            observations["session_facts"][role], observations.get("phase_input_namespace"), hashes),
+            observations["session_facts"][role], observations.get("phase_input_namespace"), hashes,
+            _companions(request, observations["session_facts"])),
         "cost-ledger-purpose-scope": measurements.cost_ledger(baseline["cost_evidence"]),
         "drift-baseline": measurements.drift_baseline(observations["drift-baseline"])}
     return value | (_phase_a(request, observations) if request["purpose"] == "phase-a" else {})
@@ -118,7 +130,7 @@ def _members_of(api, request, observed):
                for name, reference in references.items() if name != "drift"}
     c.require(set(BASELINES) <= set(members), "baseline references")
     baseline_commitments.shared_outputs(_member(members["shared-outputs"], SHARED_MEMBER))
-    if request["role"] == "deploy":
+    if saved_plan(request["purpose"], request["role"]):
         members["drift"] = api.artifact(references["drift"], now, r2=False)
     else:
         members["drift"] = {DRIFT_MEMBER: observed[DRIFT_MEMBER]}
@@ -126,7 +138,7 @@ def _members_of(api, request, observed):
 
 
 def _observations(api, request, observed):
-    if request["role"] != "deploy":
+    if not saved_plan(request["purpose"], request["role"]):
         return c.loads(observed[OBSERVATIONS], canonical=True)
     c.require("observed_reference" in request, "plan cycle observation reference")
     reference, drift = request["observed_reference"], request["references"].get("drift")

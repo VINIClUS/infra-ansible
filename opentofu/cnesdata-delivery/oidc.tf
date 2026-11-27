@@ -56,7 +56,8 @@ locals {
     "states:UpdateStateMachine", "states:TagResource", "states:UntagResource", "wafv2:UpdateWebACL", "wafv2:TagResource", "wafv2:UntagResource"
   ]
   delivery_global_reads = [
-    "acm:ListCertificates", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory", "logs:DescribeLogGroups",
+    "acm:ListCertificates", "cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory", "cloudwatch:ListTagsForResource", "logs:DescribeLogGroups",
+    "ecs:DescribeTaskDefinition", "cognito-idp:DescribeUserPoolDomain",
     "ec2:DescribeVpcs", "ec2:DescribeVpcAttribute", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeSecurityGroupRules", "ec2:DescribeInternetGateways", "ec2:DescribeRouteTables", "ec2:DescribeVpcEndpoints", "ec2:DescribePrefixLists", "ec2:DescribeNetworkAcls"
   ]
   delivery_bucket_reads = ["s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketPolicy", "s3:GetBucketVersioning", "s3:GetEncryptionConfiguration", "s3:GetBucketPublicAccessBlock", "s3:GetBucketOwnershipControls", "s3:GetLifecycleConfiguration", "s3:GetBucketCORS", "s3:GetBucketObjectLockConfiguration", "s3:GetBucketTagging", "s3:GetBucketLogging", "s3:GetBucketWebsite", "s3:GetAccelerateConfiguration"]

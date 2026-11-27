@@ -112,6 +112,8 @@ def admission(role, *, resolve_payloads=True):
         lc.stage_windows(governance)
     c.require("application_product_source_manifest" not in governance, "inline product source manifest")
     c.require("lifecycle_steps" not in governance and "source_closure" not in governance, "inline lifecycle objects")
+    c.require("application_coordination_policy" not in governance, "inline application coordination policy")
+    c.require("application_delegations" not in governance, "inline application delegations")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
     request_raw = os.environ["REQUEST_DESCRIPTOR"].encode()
@@ -124,7 +126,9 @@ def admission(role, *, resolve_payloads=True):
     run = source_admission(governance, api, role, request["source_sha"], int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]))
     from tools.cnesdata_delivery.provenance import application_caller, lifecycle_objects, product_source_manifest
     manifest = product_source_manifest(api, governance, time.time())
+    from tools.cnesdata_delivery.session_policy import coordination_object
     governance = governance | {"application_product_source_manifest": manifest} | lifecycle_objects(api, governance, manifest)
+    governance = governance | coordination_object(governance)
     step = governance["lifecycle_steps"].get(request["step"])
     c.require(type(step) is dict and step["role"] == role and step["purpose"] == os.environ["PURPOSE"], "governed step")
     c.require(step["purpose"] in lc.PURPOSES or role == "application", "closed purpose")

@@ -41,9 +41,9 @@ def backend(value):
     return copy.deepcopy(value)
 
 
-def policy_evaluation(facts, namespace, hashes):
+def policy_evaluation(facts, namespace, hashes, companions=None):
     value = {"managed_session_policy": facts, "policy_sha256": c.digest(hashes["policy_sha256"]),
-             "conftest_sha256": c.digest(hashes["conftest_sha256"])}
+             "conftest_sha256": c.digest(hashes["conftest_sha256"])} | (companions or {})
     return value | ({} if namespace is None else {"phase_input_namespace": namespace})
 
 
