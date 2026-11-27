@@ -44,7 +44,6 @@ from test_personal_platform_host_path import (
     probes,
     readback,
     runtime,
-    session,
     signed,
     signing_key,
     tasks,
@@ -372,14 +371,12 @@ def test_binding_exige_ativacao_so_fora_do_validate(tmp_path, monkeypatch):
         hp.derive_binding(static, deploy, 11, 1)
 
 
-def test_sessao_de_probe_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeypatch):
-    g, hp = runtime(), builder()
-    role = probes()["unit"]["role_arn"]
-    ini, expires = hp.probe_session(session("unit"), role, g.instant(NOW))
-    assert ini.decode() == INI and expires == EXPIRES
-    path = tmp_path / "unit.credentials"
-    path.write_bytes(ini)
-    path.chmod(0o600)
+def test_carrier_cunhado_da_api_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeypatch):
+    g = runtime()
+    root, out = mint_root(tmp_path), tmp_path / "api-probe.json"
+    assert run_mint(root, out).returncode == 0
+    path = root / PROBE_OUT.lstrip("/")
+    assert path.read_text() == INI
     sent = []
 
     class Opener:
@@ -389,7 +386,7 @@ def test_sessao_de_probe_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeyp
             raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, body)
 
     monkeypatch.setattr(g.urllib.request, "build_opener", lambda *a: Opener())
-    probe = derived_probes()["unit"]
+    probe = derived_probes()["API"]
     g.missing_object_probe(path, probe["bucket"], probe["key"], "us-east-2", lambda: None)
     [request] = sent
     assert request.full_url == (
@@ -402,9 +399,8 @@ def test_sessao_de_probe_vira_ini_que_o_consumidor_real_assina(tmp_path, monkeyp
 def test_runtime_probes_derivam_caminho_e_expiracao_com_destino_estatico():
     g, hp = runtime(), builder()
     minted = hp.read_api_probe(api_probe(expires="2030-01-01T00:10:00Z"))
-    sessions = {"unit": session("unit"), "recovery": session("recovery")}
     api = probes()["API"]["role_arn"]
-    value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+    value = hp.derive_probes(probes(), minted, api, g.instant(NOW))
     expected = derived_probes()
     expected["API"]["expires_at"] = "2030-01-01T00:10:00Z"
     assert value == expected
@@ -414,28 +410,26 @@ def test_runtime_probes_derivam_caminho_e_expiracao_com_destino_estatico():
 @pytest.mark.parametrize(
     "case",
     [
-        {"session": session("unit", access="AKIASYNTHETICEXAMPLE")},
-        {"session": session("unit", role="cnesdata-prod-api")},
-        {"session": session("unit", expiration="2029-12-31T23:08:00+00:00")},
-        {"session": {"Credentials": session("unit")["Credentials"]}},
         {"minted": api_probe(expires="2029-12-31T23:08:00Z")},
         {"minted": api_probe(role="arn:aws:iam::111122223333:role/cnesdata-prod-other")},
-        {"static": {**probes()["unit"], "extra": True}},
-        {"static": {**probes()["unit"], "key": "other/missing-probe"}},
-        {"static": {**probes()["unit"], "key": "cnesdata/../x"}},
-        {"drop": "recovery"},
+        {"static": {**probes()["API"], "extra": True}},
+        {"static": {**probes()["API"], "key": "other/missing-probe"}},
+        {"static": {**probes()["API"], "key": "cnesdata/../x"}},
+        {"static": {**probes()["API"], "bucket": "Not_A_Bucket"}},
+        {"more": "unit"},
+        {"more": "recovery"},
         {"api_role": "arn:aws:iam::111122223333:role/cnesdata-prod-other"},
     ],
 )
-def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
+def test_runtime_probes_recusam_sonda_fora_do_contrato_api_only(case):
     g, hp = runtime(), builder()
     minted = hp.read_api_probe(case.get("minted", api_probe()))
-    sessions = {"unit": case.get("session", session("unit")), "recovery": session("recovery")}
-    sessions.pop(case.get("drop", "none"), None)
-    static = {**probes(), "unit": case.get("static", probes()["unit"])}
+    static = {"API": case.get("static", probes()["API"])}
+    if "more" in case:
+        static[case["more"]] = {**probes()["API"], "key": "cnesdata/host-gate/other"}
     api = case.get("api_role", probes()["API"]["role_arn"])
     with pytest.raises((ValueError, KeyError)):
-        hp.derive_probes(static, sessions, minted, api, g.instant(NOW))
+        hp.derive_probes(static, minted, api, g.instant(NOW))
 
 
 @pytest.mark.parametrize(
@@ -445,14 +439,13 @@ def test_runtime_probes_recusam_sessao_fora_do_contrato(case):
 def test_sonda_da_api_exige_2400_s_de_vida_na_escrita(expires, accepted):
     g, hp = runtime(), builder()
     minted = hp.read_api_probe(api_probe(expires=expires))
-    sessions = {"unit": session("unit"), "recovery": session("recovery")}
     api = probes()["API"]["role_arn"]
     if accepted:
-        value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+        value = hp.derive_probes(probes(), minted, api, g.instant(NOW))
         assert value["API"]["expires_at"] == expires
     else:
         with pytest.raises(ValueError):
-            hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+            hp.derive_probes(probes(), minted, api, g.instant(NOW))
 
 
 @pytest.mark.parametrize(
@@ -624,10 +617,9 @@ def test_expiracao_da_governanca_e_a_da_sessao_gravada_no_carrier_da_api(tmp_pat
     assert run_mint(root, out).returncode == 0
     carrier = (root / PROBE_OUT.lstrip("/")).read_text()
     assert f"aws_access_key_id={access}\n" in carrier
-    sessions = {"unit": session("unit"), "recovery": session("recovery")}
     minted = hp.read_api_probe(out.read_bytes())
     api = probes()["API"]["role_arn"]
-    value = hp.derive_probes(probes(), sessions, minted, api, g.instant(NOW))
+    value = hp.derive_probes(probes(), minted, api, g.instant(NOW))
     assert value["API"]["expires_at"] == expiration
 
 
@@ -682,15 +674,13 @@ def test_playbook_de_leitura_busca_so_o_documento_do_host_sem_fatos():
     assert module["flat"] is True
 
 
-def test_handoffs_criam_o_diretorio_das_sondas_e_nao_derivam_mais_a_sonda_da_api():
+def test_handoffs_nao_instalam_carriers_de_sonda_nem_criam_o_diretorio():
     names = [t["name"] for t in tasks()]
-    directory = named("Create the private runtime probe directory")
-    module = directory["ansible.builtin.file"]
-    assert module["path"] == "/run/personal-platform/probes"
-    assert (module["state"], module["owner"], module["mode"]) == ("directory", "root", "0700")
-    assert "api_probe" not in directory["when"]
-    install = names.index("Install the exact private handoff bytes from the controller")
-    assert names.index(directory["name"]) < install and TAG in directory["tags"]
+    paths = yaml.safe_load((ROLE / "vars" / "main.yml").read_text())
+    handoffs = paths["personal_platform_dispatcher_handoff_paths"]
+    assert not [n for n in handoffs if n.startswith("probe-")]
+    assert not [p for p in handoffs.values() if p.startswith("/run/personal-platform/probes")]
+    assert "Create the private runtime probe directory" not in names
     assert not [n for n in names if "API runtime probe" in n]
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
     assert "personal_platform_dispatcher_api_probe" not in defaults
@@ -706,15 +696,10 @@ def test_tmpfiles_recria_o_diretorio_das_sondas_no_boot():
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-core absent")
-def test_tag_dos_handoffs_cria_o_diretorio_antes_da_copia(tmp_path):
+def test_tag_dos_handoffs_nao_toca_o_diretorio_das_sondas(tmp_path):
     text = listed(tmp_path, "--tags", TAG)
-    present = [
-        "Create the private runtime probe directory",
-        "Install the exact private handoff bytes",
-    ]
-    positions = [text.index(name) for name in present]
-    assert positions == sorted(positions)
-    assert "Recreate the runtime probe directory on every boot" not in text
+    assert "Install the exact private handoff bytes" in text
+    assert "runtime probe directory" not in text
 
 
 def test_governanca_de_deploy_verifica_a_ativacao_real_no_build(tmp_path, monkeypatch):
@@ -728,7 +713,7 @@ def test_governanca_de_deploy_verifica_a_ativacao_real_no_build(tmp_path, monkey
         hp.build_governance(static, tampered, 11, 1, g.instant(NOW))
 
 
-def test_cli_governance_de_deploy_entrega_ativacao_e_sondas_nos_handoffs(
+def test_cli_governance_de_deploy_entrega_so_ativacao_e_documento_nos_handoffs(
     tmp_path, monkeypatch
 ):
     from test_personal_platform_host_path import write_inputs
@@ -746,7 +731,6 @@ def test_cli_governance_de_deploy_entrega_ativacao_e_sondas_nos_handoffs(
     entries = values["personal_platform_dispatcher_handoffs"]
     assert set(entries) == {
         "host-gate", "activation", "activation-signature", "activation-public-key",
-        "probe-unit", "probe-recovery",
     }
     assert entries["activation"]["src"] == str(tmp_path / "activation")
     assert entries["activation-signature"]["src"] == str(tmp_path / "signature")

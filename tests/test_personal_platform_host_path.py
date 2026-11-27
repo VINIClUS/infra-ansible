@@ -48,8 +48,6 @@ PATHS = {
     "activation": "/var/lib/personal-platform/deployments/activation.json",
     "activation-signature": "/var/lib/personal-platform/deployments/activation-signature.der",
     "activation-public-key": "/var/lib/personal-platform/deployments/activation-public-key.pem",
-    "probe-unit": "/run/personal-platform/probes/unit.credentials",
-    "probe-recovery": "/run/personal-platform/probes/recovery.credentials",
 }
 ACCESS = "ASIASYNTHETICEXAMPLE"
 EXPIRES = "2030-01-01T00:00:00Z"
@@ -201,23 +199,6 @@ def api_probe(role="arn:aws:iam::111122223333:role/cnesdata-prod-api", expires=E
     return runtime().canonical({"version": 1, "role_arn": role, "expires_at": expires})
 
 
-def session(name, expiration="2030-01-01T00:00:00+00:00", access=ACCESS, role=None):
-    return {
-        "Credentials": {
-            "AccessKeyId": access,
-            "SecretAccessKey": "synthetic-secret",
-            "SessionToken": "synthetic-token",
-            "Expiration": expiration,
-        },
-        "AssumedRoleUser": {
-            "AssumedRoleId": "AROASYNTHETIC:probe",
-            "Arn": "arn:aws:sts::111122223333:assumed-role/"
-            + (role or "cnesdata-prod-" + name)
-            + "/probe",
-        },
-    }
-
-
 def compose_bytes(port=18082):
     service = {
         "image": "ghcr.io/viniclus/cnesdata@sha256:" + H,
@@ -318,12 +299,11 @@ def credentials():
 
 def probes():
     return {
-        name: {
-            "role_arn": f"arn:aws:iam::111122223333:role/cnesdata-prod-{name.lower()}",
+        "API": {
+            "role_arn": "arn:aws:iam::111122223333:role/cnesdata-prod-api",
             "bucket": "cnesdata-probe-synthetic",
             "key": "cnesdata/host-gate/missing-probe",
         }
-        for name in ("unit", "recovery", "API")
     }
 
 
@@ -344,7 +324,6 @@ def inputs(hp, raw, archive, *, signing, activation=None, **seen):
         archive=archive,
         readback=readback(**seen),
         api_probe=api_probe(),
-        sessions={"unit": session("unit"), "recovery": session("recovery")},
         signing=signing,
         activation=activation,
     )
@@ -816,8 +795,6 @@ def write_inputs(tmp_path, seen, static, activation=None):
         "readback": seen.readback,
         "api-probe": seen.api_probe,
         "signing": json.dumps(seen.signing).encode(),
-        "session-unit": json.dumps(seen.sessions["unit"]).encode(),
-        "session-recovery": json.dumps(seen.sessions["recovery"]).encode(),
     }
     if activation:
         files["activation"], files["signature"] = activation
@@ -853,7 +830,7 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
     values = json.loads((handoff / "handoffs.json").read_text())
     assert set(values) == {"personal_platform_dispatcher_handoffs"}
     entries = values["personal_platform_dispatcher_handoffs"]
-    assert set(entries) == {"host-gate", "activation-public-key", "probe-unit", "probe-recovery"}
+    assert set(entries) == {"host-gate", "activation-public-key"}
     assert entries["host-gate"]["src"] == str(out)
     for name, entry in entries.items():
         path = Path(entry["src"])
@@ -861,11 +838,6 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, name
     pem = Path(entries["activation-public-key"]["src"]).read_bytes()
     assert g.host_json(doc)["signing_spki_pem_sha256"] == g.sha(pem)
-    unit = Path(entries["probe-unit"]["src"]).read_text()
-    assert unit == (
-        f"[default]\naws_access_key_id={ACCESS}\naws_secret_access_key=synthetic-secret"
-        "\naws_session_token=synthetic-token\n"
-    )
 
 
 def test_cli_monta_objeto_de_plataforma_e_os_seis_campos(tmp_path):
