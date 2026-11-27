@@ -731,6 +731,7 @@ def test_cli_governance_de_deploy_entrega_so_ativacao_e_documento_nos_handoffs(
     entries = values["personal_platform_dispatcher_handoffs"]
     assert set(entries) == {
         "host-gate", "activation", "activation-signature", "activation-public-key",
+        "original-platform", "original-baseline",
     }
     assert entries["activation"]["src"] == str(tmp_path / "activation")
     assert entries["activation-signature"]["src"] == str(tmp_path / "signature")

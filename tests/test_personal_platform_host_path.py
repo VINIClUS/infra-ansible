@@ -396,6 +396,9 @@ def test_chave_de_deploy_exclusiva_vem_do_inventario_e_recusa_placeholder():
     assert module["user"] == "{{ personal_platform_dispatcher_user }}"
     assert module["key"] == "{{ personal_platform_dispatcher_authorized_key }}"
     assert module["exclusive"] is True
+    match = named("Install the restricted SSH match block")["ansible.builtin.copy"]["content"]
+    forced = re.search(r"ForceCommand (.+)", match).group(1)
+    assert module["key_options"] == f'restrict,command="{forced}"'
     defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
     assert defaults["personal_platform_dispatcher_authorized_key"] is None
     assert defaults["personal_platform_dispatcher_handoffs"] == {}
@@ -830,7 +833,9 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
     values = json.loads((handoff / "handoffs.json").read_text())
     assert set(values) == {"personal_platform_dispatcher_handoffs"}
     entries = values["personal_platform_dispatcher_handoffs"]
-    assert set(entries) == {"host-gate", "activation-public-key"}
+    assert set(entries) == {
+        "host-gate", "activation-public-key", "original-platform", "original-baseline"
+    }
     assert entries["host-gate"]["src"] == str(out)
     for name, entry in entries.items():
         path = Path(entry["src"])
@@ -838,6 +843,39 @@ def test_cli_escreve_documento_e_handoffs_privados_e_imprime_so_digests(
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, name
     pem = Path(entries["activation-public-key"]["src"]).read_bytes()
     assert g.host_json(doc)["signing_spki_pem_sha256"] == g.sha(pem)
+    assert Path(entries["original-platform"]["src"]).read_bytes() == seen.plan
+    baseline = Path(entries["original-baseline"]["src"]).read_bytes()
+    assert g.sha(baseline) == json.loads(seen.plan)["host_preflight_sha256"]
+
+
+def test_originais_gerados_passam_pelo_check_do_host_main_com_diretorio_relativo(
+    tmp_path, monkeypatch
+):
+    g, hp, seen, static, _, _ = governed(tmp_path, monkeypatch)
+    argv = write_inputs(tmp_path, seen, static)
+    subprocess.run(
+        [sys.executable, "-I", str(BUILDER), "governance", *argv, "--run-id", "11",
+         "--run-attempt", "1", "--out", "governance.json", "--handoff-dir", "private/h"],
+        capture_output=True, check=True, cwd=tmp_path,
+        env={k: v for k, v in os.environ.items() if k != "PYTHONPATH"},
+    )
+    doc = (tmp_path / "governance.json").read_bytes()
+    values = json.loads((tmp_path / "private" / "h" / "handoffs.json").read_text())
+    entries = values["personal_platform_dispatcher_handoffs"]
+    for name, entry in entries.items():
+        assert Path(entry["src"]).is_absolute() and Path(entry["src"]).is_file(), name
+    root = tmp_path / "deployments"
+    root.mkdir(mode=0o700)
+    for name in ("original-platform", "original-baseline"):
+        assert Path(PATHS[name]).parent == g.ROOT
+        target = root / Path(PATHS[name]).name
+        target.write_bytes(Path(entries[name]["src"]).read_bytes())
+        target.chmod(0o600)
+    monkeypatch.setattr(g, "ROOT", root)
+    original = g.host_json(doc)["binding"]["original_bytes"]
+    for name in ("platform", "baseline"):
+        data = g.read_private(g.ROOT / ("original-" + name + ".json"))
+        assert g.sha(data) == original[name + "_sha256"], name
 
 
 def test_cli_monta_objeto_de_plataforma_e_os_seis_campos(tmp_path):
