@@ -9,7 +9,7 @@ from test_cnesdata_producers_assembler import CALLER_K
 from tools.cnesdata_delivery.producers import release_guard
 
 ROOT = Path(__file__).resolve().parents[1]
-X_STAR = "249c9115557f142bfdd80b0cfe185b9cac6e1efb"
+X_STAR = "2a61ad885b435c4e40ee3eab8bf43b5e3c58f828"
 REUSABLE = ".github/workflows/reusable-cnesdata-observer.yml"
 
 
@@ -54,6 +54,13 @@ def test_inputs_do_dispatch_sao_os_publicos_do_reusable_sem_o_x_star():
     inputs = caller["on"]["workflow_dispatch"]["inputs"]
     assert set(inputs) == set(job["with"]) - {"x_star"}
     assert all(job["with"][name] == "${{ inputs." + name + " }}" for name in inputs)
+
+
+def test_descricao_do_role_no_dispatch_e_a_do_reusable_em_x_star():
+    dispatch = _caller()["on"]["workflow_dispatch"]["inputs"]["role"]
+    called = _reusable_at_x_star()["on"]["workflow_call"]["inputs"]["role"]
+    assert dispatch["description"] == called["description"]
+    assert dispatch["description"] == "Delivery role, plan, audit, deploy or application (lifecycle owner cycle)"
 
 
 def test_permissoes_sao_a_uniao_das_dos_jobs_do_reusable_e_nada_mais():

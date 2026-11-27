@@ -9,7 +9,7 @@ name: CnesData producers
         required: true
         type: string
       role:
-        description: Delivery role, plan, audit or deploy
+        description: Delivery role, plan, audit, deploy or application (lifecycle owner cycle)
         required: true
         type: string
       source_sha:
@@ -30,12 +30,12 @@ jobs:
       contents: read
       id-token: write
     uses: "VINIClUS/infra-ansible/.github/workflows/reusable-cnesdata-observer.yml@\
-      249c9115557f142bfdd80b0cfe185b9cac6e1efb"
+      2a61ad885b435c4e40ee3eab8bf43b5e3c58f828"
     with:
       purpose: ${{ inputs.purpose }}
       role: ${{ inputs.role }}
       source_sha: ${{ inputs.source_sha }}
-      x_star: 249c9115557f142bfdd80b0cfe185b9cac6e1efb
+      x_star: 2a61ad885b435c4e40ee3eab8bf43b5e3c58f828
       request: ${{ inputs.request }}
     secrets:
       report_hmac_key: ${{ secrets.report_hmac_key }}
