@@ -1238,3 +1238,57 @@ def test_native_prepared_scope_and_documents_come_from_protected_sources(native,
         fragment=fragment, owner=owner, role=role, control_table_arn=table, execution_prefix=prefix, observed_at=observed,
         api_seconds=180)["fence_session"]
     assert late["fence_session"]["Statement"][0]["Condition"]["DateLessThan"] == {"aws:CurrentTime": "2029-12-31T23:51:00Z"}
+
+
+STATE_LISTING_REFUSED = ("env:/x", "", "env:", "env:/*")
+REFRESH_READS = ("s3:GetBucketAcl", "s3:GetBucketRequestPayment", "s3:GetReplicationConfiguration",
+                 "s3:ListTagsForResource", "cloudfront:GetFunction", "sns:ListSubscriptionsByTopic")
+
+
+def state_listing_prefixes(document, bucket):
+    return [statement["Condition"]["StringEquals"]["s3:prefix"] for statement in document["Statement"]
+            if statement["Effect"] == "Allow" and statement.get("Action") == ["s3:ListBucket"]
+            and statement.get("Resource") == bucket and "Condition" in statement]
+
+
+def gate_session(role):
+    from tools.cnesdata_delivery.session_policy import request
+    settings = variables()["github_delivery"]
+    governance = {"account_id": variables()["account_id"], "state_bucket": "synthetic-state",
+        "evidence_bucket": "synthetic-evidence", "state_kms_key_arn": settings["state_kms_arn"],
+        "evidence_kms_key_arn": settings["evidence_kms_arn"], "evidence_prefix": settings["evidence_prefix"],
+        "roles": {kind: f"arn:aws:iam::111122223333:role/cnesdata-test-{kind}" for kind in ("plan", "deploy")}}
+    return json.loads(request(governance, "d" * 40, 10, 1, role, [])["Policy"])
+
+
+def test_native_plan_e_deploy_listam_o_estado_so_em_env_para_o_init(native):
+    from fixtures.cnesdata_iam_evaluation import effective
+    from tools.cnesdata_delivery.session_policy import STATE_KEYS
+    resources, _ = render(native, variables(), "state-workspace-listing")
+    bucket = variables()["github_delivery"]["state_bucket_arn"]
+    for role in ("plan", "deploy"):
+        identity, managed = rendered_policies(resources, role)
+        for document in (identity, managed):
+            assert state_listing_prefixes(document, bucket) == [list(STATE_KEYS) + ["env:/"]], role
+        session = gate_session(role)
+        assert effective(identity, managed, session, "s3:ListBucket", bucket, {"s3:prefix": "env:/"}), role
+        for prefix in STATE_LISTING_REFUSED:
+            assert not effective(identity, managed, session, "s3:ListBucket", bucket, {"s3:prefix": prefix}), prefix
+
+
+def test_native_identidade_le_o_que_o_refresh_do_provider_le_nos_recursos_listados(native):
+    from fixtures.cnesdata_iam_evaluation import decision
+    reads, _, _ = product_scope()
+    data = variables()
+    data["github_delivery"]["read_resource_arns"] = reads
+    resources, _ = render(native, data, "provider-refresh-reads")
+    bucket = next(arn for arn in reads if arn.startswith("arn:aws:s3:::"))
+    function = next(arn for arn in reads if arn.startswith("arn:aws:cloudfront::") and ":function/" in arn)
+    topic = next(arn for arn in reads if arn.startswith("arn:aws:sns:"))
+    targets = dict.fromkeys(REFRESH_READS[:4], bucket) | {REFRESH_READS[4]: function, REFRESH_READS[5]: topic}
+    for role in ("plan", "deploy"):
+        identity, managed = rendered_policies(resources, role)
+        for action, resource in targets.items():
+            assert decision(identity, action, resource) == "Allow", (role, action)
+            assert decision(managed, action, resource) == "Allow", (role, action)
+            assert decision(identity, action, resource + "-other") is None, (role, action)

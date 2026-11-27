@@ -4,6 +4,7 @@ locals {
     "cnesdata/prod/opentofu.tfstate.tflock",
     "shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json"
   ]
+  delivery_state_list_prefixes    = concat(local.delivery_state_keys, ["env:/"])
   delivery_evidence_prefix_denies = ["s3:*ObjectVersion*", "s3:*ObjectAcl", "s3:*ObjectTagging", "s3:*ObjectRetention", "s3:*ObjectLegalHold", "s3:RestoreObject", "s3:GetObjectAttributes", "s3:*Multipart*"]
   delivery_bucket_read_arns       = var.github_delivery == null ? [] : [for arn in var.github_delivery.read_resource_arns : arn if startswith(arn, "arn:aws:s3:::")]
   delivery_lifecycle_deletes      = ["states:DeleteStateMachine", "scheduler:DeleteSchedule", "scheduler:DeleteScheduleGroup", "events:DeleteRule", "cloudwatch:DeleteAlarms"]
@@ -72,7 +73,7 @@ resource "aws_iam_policy" "delivery_session" {
       { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], Resource = "${var.github_delivery.state_bucket_arn}/cnesdata/prod/opentofu.tfstate.tflock" },
       { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${var.github_delivery.state_bucket_arn}/shared/cnesdata-delivery/prod/coordination/cnesdata-prod.lease.json" },
-      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.state_bucket_arn, Condition = { StringEquals = { "s3:prefix" = local.delivery_state_keys } } },
+      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = var.github_delivery.state_bucket_arn, Condition = { StringEquals = { "s3:prefix" = local.delivery_state_list_prefixes } } },
       { Effect = "Allow", Action = ["s3:ListBucket"], NotResource = var.github_delivery.evidence_bucket_arn },
       { Effect = "Allow", Action = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"], Resource = var.github_delivery.state_kms_arn,
       Condition = { StringEquals = { "kms:ViaService" = "s3.us-east-2.amazonaws.com", "kms:EncryptionContext:aws:s3:arn" = concat([var.github_delivery.state_bucket_arn], [for key in local.delivery_state_keys : "${var.github_delivery.state_bucket_arn}/${key}"]) } } },

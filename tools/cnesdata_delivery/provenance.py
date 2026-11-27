@@ -310,7 +310,8 @@ class GitHub:
         self.sample = (start, end, server)
 
     def _read(self, path, *, raw, maximum, conditional=False):
-        require(path.startswith("repos/") and not any(x in path for x in ("..", "\n", "\r", "://")), "GitHub API path")
+        require(path.startswith("repos/") and ".." not in path.split("/")
+                and not any(x in path for x in ("\n", "\r", "://")), "GitHub API path")
         headers = {"Authorization": "Bearer " + self.token, "Accept": "application/vnd.github+json",
                    "X-GitHub-Api-Version": "2022-11-28"}
         cached = self.cache.get(path) if conditional else None

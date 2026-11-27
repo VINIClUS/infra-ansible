@@ -2142,7 +2142,8 @@ class GitHub:
     def read(self, path, *, raw=False, maximum=2 * 1024**2):
         require(
             path.startswith("repos/")
-            and not any(v in path for v in ("..", "://", "\n", "\r")),
+            and ".." not in path.split("/")
+            and not any(v in path for v in ("://", "\n", "\r")),
             "GitHub fixed host path",
         )
 
