@@ -142,17 +142,6 @@
             personal_platform_dispatcher_handoff_runtime.stat.checksum ==
             (lookup('ansible.builtin.file', personal_platform_dispatcher_handoffs['host-gate'].src)
             | from_json).runtime_sha256
-    - name: Create the private runtime probe directory
-      tags: [personal_platform_private_handoffs]
-      when: >-
-        personal_platform_dispatcher_handoffs.keys() | select('match', '^probe-')
-        | list | length > 0
-      ansible.builtin.file:
-        path: /run/personal-platform/probes
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
     - name: Install the exact private handoff bytes from the controller
       tags: [personal_platform_private_handoffs]
       ansible.builtin.copy:

@@ -20,11 +20,12 @@ refuses the installation.
 Per run, `--tags personal_platform_private_handoffs` installs only the private
 handoffs named in personal_platform_dispatcher_handoffs (host-gate,
 original-platform, original-baseline, activation, activation-signature,
-activation-public-key, probe-unit, probe-recovery), each as {src, sha256}. The
+activation-public-key), each as {src, sha256}. The
 bytes are copied from the controller file unchanged to their fixed root 0600 paths
 and read back by sha256; host-gate also requires the installed runtime to match its
-runtime_sha256. Probe carriers go to /run/personal-platform/probes (root 0700,
-recreated at boot by tmpfiles.d). The API probe carrier is not a handoff:
+runtime_sha256. The host gate probes only the API identity, and its carrier is
+not a handoff: it lives in /run/personal-platform/probes (root 0700, recreated at
+boot by tmpfiles.d), and
 playbooks/personal-platform-api-probe.yml mints a fresh Roles Anywhere session on
 the host into API.credentials and returns only its role and expiry, so the session
 never leaves the host; with personal_platform_api_probe_remove it deletes the

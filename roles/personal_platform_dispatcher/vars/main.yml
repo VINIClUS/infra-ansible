@@ -6,5 +6,3 @@ personal_platform_dispatcher_handoff_paths:
   activation: /var/lib/personal-platform/deployments/activation.json
   activation-signature: /var/lib/personal-platform/deployments/activation-signature.der
   activation-public-key: /var/lib/personal-platform/deployments/activation-public-key.pem
-  probe-unit: /run/personal-platform/probes/unit.credentials
-  probe-recovery: /run/personal-platform/probes/recovery.credentials

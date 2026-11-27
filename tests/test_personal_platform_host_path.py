@@ -473,7 +473,7 @@ def fake_tools(tmp_path, locked="L"):
         "aws": "aws-cli/2.22.0 Python/3.12.6",
     }
     for name, line in outputs.items():
-        script = f'#!/bin/sh\nif [ "$1" = compose ]; then echo "Docker Compose version v2"; '
+        script = '#!/bin/sh\nif [ "$1" = compose ]; then echo "Docker Compose version v2"; '
         script += f'exit 0; fi\necho "{line}"\n'
         (bin_dir / name).write_text(script)
     (bin_dir / "passwd").write_text(

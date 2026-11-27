@@ -8,7 +8,6 @@ import base64
 import binascii
 import copy
 import dataclasses
-import datetime as dt
 import hashlib
 import json
 import os
@@ -66,14 +65,12 @@ ACTIVATION_KEYS = (
     " binding_sha256 canary_id derivation revisions ecr_uri phase_a_evidence_digest inputs"
 )
 SIGNING_KEYS = "key_arn spki_sha256 key_policy_sha256 spki_der_b64"
-SESSION_KEYS = "AccessKeyId SecretAccessKey SessionToken Expiration"
 P256_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
 ECR_URI = r"\d{12}\.dkr\.ecr\.us-east-2\.amazonaws\.com/[a-z0-9_./-]+@sha256:[0-9a-f]{64}"
 REVISION = r"arn:aws:ecs:us-east-2:\d{12}:task-definition/[A-Za-z0-9_-]{1,255}:[1-9][0-9]{0,9}"
 ROLE = r"arn:aws:iam::\d{12}:role/[A-Za-z0-9+=,.@_-]{1,64}"
 SLOTS = {18081: "blue", 18082: "green"}
 PROBE_DIRECTORY = "/run/personal-platform/probes"
-PROBE_MARGIN = 600
 API_PROBE_FLOOR = 2400
 READINESS_BODY = b'{"status":"ready"}'
 
@@ -84,7 +81,6 @@ class Inputs:
     archive: bytes
     readback: bytes
     api_probe: bytes
-    sessions: dict
     signing: dict
     activation: tuple | None = None
 
@@ -387,48 +383,10 @@ def archive_port(archive, manifest, expected):
     return port
 
 
-def session_instant(value):
-    g.require(isinstance(value, str), "session expiration")
-    try:
-        moment = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        raise ValueError("session expiration") from None
-    g.require(moment.tzinfo is not None, "session expiration")
-    return g.utc(moment.timestamp())
-
-
 def assumed_prefix(role_arn):
     g.require(isinstance(role_arn, str) and re.fullmatch(ROLE, role_arn), "probe role")
     account, role = role_arn.split("::", 1)[1].split(":role/")
     return f"arn:aws:sts::{account}:assumed-role/{role}/"
-
-
-def probe_session(value, role_arn, now):
-    """INI do carrier da sonda e expires_at a partir da saída de sts assume-role.
-
-    Raises:
-        ValueError: sessão não temporária, de outra role ou com vida curta demais.
-    """
-    credentials = g.closed(value["Credentials"], SESSION_KEYS)
-    g.require(
-        all(isinstance(v, str) and v and not set(v) & {"\n", "\r"} for v in credentials.values())
-        and re.fullmatch(r"ASIA[0-9A-Z]{16}", credentials["AccessKeyId"])
-        and isinstance(value["AssumedRoleUser"]["Arn"], str)
-        and value["AssumedRoleUser"]["Arn"].startswith(assumed_prefix(role_arn)),
-        "temporary probe session",
-    )
-    expires_at = session_instant(credentials["Expiration"])
-    g.require(g.instant(expires_at) >= now + PROBE_MARGIN, "probe session lifetime")
-    ini = (
-        "[default]\naws_access_key_id="
-        + credentials["AccessKeyId"]
-        + "\naws_secret_access_key="
-        + credentials["SecretAccessKey"]
-        + "\naws_session_token="
-        + credentials["SessionToken"]
-        + "\n"
-    )
-    return ini.encode(), expires_at
 
 
 def read_api_probe(raw):
@@ -444,8 +402,8 @@ def read_api_probe(raw):
     return value
 
 
-def derive_probes(static_probes, sessions, minted, renewer_role, now):
-    """runtime_probes: carrier fixo, destino estático e expiração das sessões.
+def derive_probes(static_probes, minted, renewer_role, now):
+    """runtime_probes da API: carrier fixo, destino estático e expiração da sessão cunhada.
 
     Args:
         renewer_role: role_arn de credentials, a identidade da sessão da sonda API.
@@ -454,7 +412,6 @@ def derive_probes(static_probes, sessions, minted, renewer_role, now):
     """
     g.runtime_probe_set(static_probes)
     g.require(static_probes["API"]["role_arn"] == renewer_role, "API probe renewer role")
-    g.require(set(sessions) == {"unit", "recovery"}, "probe sessions")
     api = minted["expires_at"]
     g.require(minted["role_arn"] == renewer_role, "API probe minted role")
     g.require(g.instant(api) >= now + API_PROBE_FLOOR, "API probe session")
@@ -470,13 +427,10 @@ def derive_probes(static_probes, sessions, minted, renewer_role, now):
             "probe destination",
         )
         assumed_prefix(probe["role_arn"])
-        expires_at = api if name == "API" else probe_session(
-            sessions[name], probe["role_arn"], now
-        )[1]
         result[name] = {
             **probe,
             "credential_path": f"{PROBE_DIRECTORY}/{name}.credentials",
-            "expires_at": expires_at,
+            "expires_at": api,
         }
     return result
 
@@ -563,7 +517,7 @@ def build_governance(static, inputs, run_id, run_attempt, now):
     doc["host"] = derive_host(static["host"], seen, port)
     minted = read_api_probe(inputs.api_probe)
     doc["runtime_probes"] = derive_probes(
-        static["runtime_probes"], inputs.sessions, minted, static["credentials"]["role_arn"], now
+        static["runtime_probes"], minted, static["credentials"]["role_arn"], now
     )
     pem = signing_pem(inputs.signing)
     doc["signing_spki_pem_sha256"] = g.sha(pem)
@@ -584,8 +538,8 @@ def write_private(path, data):
 
 
 GOVERNANCE_INPUTS = (
-    "--static", "--plan", "--archive", "--readback", "--api-probe", "--signing", "--session-unit",
-    "--session-recovery", "--out", "--handoff-dir",
+    "--static", "--plan", "--archive", "--readback", "--api-probe", "--signing", "--out",
+    "--handoff-dir",
 )
 
 
@@ -623,30 +577,20 @@ def read_inputs(args):
         archive=Path(args.archive).read_bytes(),
         readback=Path(args.readback).read_bytes(),
         api_probe=Path(args.api_probe).read_bytes(),
-        sessions={
-            "unit": json.loads(Path(args.session_unit).read_bytes()),
-            "recovery": json.loads(Path(args.session_recovery).read_bytes()),
-        },
         signing=g.host_json(Path(args.signing).read_bytes()),
         activation=activation,
     )
 
 
-def write_handoffs(args, inputs, doc, now):
+def write_handoffs(args, inputs):
     directory = Path(args.handoff_dir)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
-    static = g.host_json(doc)["runtime_probes"]
     files = {
         "host-gate": Path(os.path.abspath(args.out)),
         "activation-public-key": directory / "activation-public-key.pem",
-        "probe-unit": directory / "unit.credentials",
-        "probe-recovery": directory / "recovery.credentials",
     }
     write_private(files["activation-public-key"], signing_pem(inputs.signing))
-    for name in ("unit", "recovery"):
-        ini, _ = probe_session(inputs.sessions[name], static[name]["role_arn"], now)
-        write_private(files["probe-" + name], ini)
     if inputs.activation is not None:
         files["activation"] = Path(os.path.abspath(args.activation))
         files["activation-signature"] = Path(os.path.abspath(args.signature))
@@ -663,7 +607,7 @@ def run_governance(args):
     static = g.host_json(Path(args.static).read_bytes())
     raw = build_governance(static, inputs, args.run_id, args.run_attempt, now)
     write_private(args.out, raw)
-    write_handoffs(args, inputs, raw, now)
+    write_handoffs(args, inputs)
     value = g.host_json(raw)
     binding = digest_of(value["binding"])
     valid = min(p["expires_at"] for p in value["runtime_probes"].values())
