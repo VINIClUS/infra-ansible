@@ -74,6 +74,8 @@ ROLE = r"arn:aws:iam::\d{12}:role/[A-Za-z0-9+=,.@_-]{1,64}"
 SLOTS = {18081: "blue", 18082: "green"}
 PROBE_DIRECTORY = "/run/personal-platform/probes"
 PROBE_MARGIN = 600
+API_PROBE_FLOOR = 2400
+READINESS_BODY = b'{"status":"ready"}'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,6 +119,7 @@ def build_platform_plan(source, preflight, known_hosts, expires_at):
     """
     g.closed(source, "inventory dependencies")
     inventory = g.closed(source["inventory"], INVENTORY_KEYS)
+    check_health_url(inventory)
     dependencies = g.closed(source["dependencies"], DEPENDENCY_KEYS)
     g.closed(dependencies["cloudflared"], "version sha256")
     host_preflight = g.closed(canonical_bytes(preflight), PREFLIGHT_KEYS)
@@ -335,6 +338,11 @@ def suggested_port(seen, hostname):
     return live or "legacy", free[0]
 
 
+def check_health_url(values):
+    expected = "https://" + values["public_hostname"] + "/health/ready"
+    g.require(values["tunnel_health_url"] == expected, "tunnel health url")
+
+
 def derive_host(static_host, seen, port):
     """Fragmento host do HostDriver: estático + slot, porta e checkpoint do Caddy lidos.
 
@@ -342,7 +350,8 @@ def derive_host(static_host, seen, port):
         ValueError: slot vivo, porta ocupada, Caddyfile ambíguo ou static fora do contrato.
     """
     host = copy.deepcopy(g.closed(static_host, HOST_STATIC_KEYS))
-    g.digest(host["readiness_sha256"])
+    g.require(host["readiness_sha256"] == g.sha(READINESS_BODY), "readiness digest")
+    check_health_url(host)
     g.require(host["proxy"] == "caddy", "caddy proxy")
     g.require(port in SLOTS and port not in seen["listening"], "candidate port")
     upstream = live_upstream(seen["caddyfile"], host["public_hostname"])
@@ -448,7 +457,7 @@ def derive_probes(static_probes, sessions, minted, renewer_role, now):
     g.require(set(sessions) == {"unit", "recovery"}, "probe sessions")
     api = minted["expires_at"]
     g.require(minted["role_arn"] == renewer_role, "API probe minted role")
-    g.require(g.instant(api) >= now + PROBE_MARGIN, "API probe session")
+    g.require(g.instant(api) >= now + API_PROBE_FLOOR, "API probe session")
     result = {}
     for name in g.RUNTIME_IDENTITIES:
         probe = g.closed(static_probes[name], "role_arn bucket key")

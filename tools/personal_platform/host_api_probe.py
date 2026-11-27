@@ -27,7 +27,7 @@ CREDENTIAL_KEYS = {
 SESSION_KEYS = {"Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
 INSTANT = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"
 SESSION_SECONDS = 3600
-MARGIN = 600
+MARGIN = 2400
 
 
 def identity(root):
