@@ -139,6 +139,27 @@ def test_b_established_cannot_update_iam_or_task_revision():
         m.validate_delta(plan, approval)
 
 
+def test_marcadores_booleanos_de_sensibilidade_do_acm_no_op_nao_sao_segredo_no_lifecycle():
+    m = api()
+    address = 'module.processing.aws_sfn_state_machine.processor[0]'
+    before = {"definition": '{"TaskDefinition":"unit:1"}', "role_arn": "role"}
+    row = change(address, before, before | {"definition": '{"TaskDefinition":"unit:2"}'}, ["update"])
+    marker = {"private_key": True}
+    acm = change("aws_acm_certificate.static_web", {"private_key": None}, {"private_key": None}, ["no-op"])
+    acm["change"].update(before_sensitive=dict(marker), after_sensitive=dict(marker))
+    resource = {"address": "aws_acm_certificate.static_web", "sensitive_values": dict(marker)}
+    plan = {"resource_changes": [row, acm],
+            "planned_values": {"root_module": {"resources": [dict(resource)]}},
+            "prior_state": {"values": {"root_module": {"resources": [dict(resource)]}}}}
+    approval = {"purpose": "phase-b", "direction": "advance", "mode": "established",
+                "before": {address: before}, "original": {address: before}, "created": {},
+                "expected_changes_sha256": c.sha(c.canonical([row]))}
+    m.validate_delta(plan, approval)
+    acm["change"]["after"]["private_key"] = "x"
+    with pytest.raises(ValueError, match="secret material"):
+        m.validate_delta(plan, approval)
+
+
 def test_exact_inverse_session_fits_seven_native_resources_and_preserves_boundaries():
     import json
     from tools.cnesdata_delivery.session_policy import lifecycle_request

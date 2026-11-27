@@ -651,7 +651,7 @@ def _secrets(value):
     if isinstance(value, dict):
         for key, child in value.items():
             require(key.lower() not in {"password", "private_key", "secret_access_key", "access_token"}
-                    or child in (None, ""), "secret material")
+                    or child in (None, "") or type(child) is bool, "secret material")
             _secrets(child)
     elif isinstance(value, list):
         for child in value:

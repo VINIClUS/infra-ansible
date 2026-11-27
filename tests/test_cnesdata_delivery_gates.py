@@ -73,6 +73,36 @@ def test_destructive_replacement_and_secret_plan_rejected(contract, change):
         contract.validate_delta({"resource_changes": [change]}, "acm-certificate")
 
 
+def _phase_a_com_acm_sensivel():
+    from fixtures.cnesdata_iam_sources import symbolic_phase_a
+    plan = copy.deepcopy(symbolic_phase_a()[0])
+    address, marker = "aws_acm_certificate.static_web", {"private_key": True}
+    plan["resource_changes"].append({
+        "address": address, "mode": "managed", "type": "aws_acm_certificate", "name": "static_web",
+        "change": {"actions": ["no-op"], "before": {"private_key": None}, "after": {"private_key": None},
+                   "after_unknown": {}, "before_sensitive": dict(marker), "after_sensitive": dict(marker)}})
+    resource = {"address": address, "mode": "managed", "type": "aws_acm_certificate", "name": "static_web",
+                "values": {"private_key": None}, "sensitive_values": dict(marker)}
+    plan["planned_values"] = {"root_module": {"resources": [copy.deepcopy(resource)]}}
+    plan["prior_state"] = {"values": {"root_module": {"resources": [copy.deepcopy(resource)]}}}
+    return plan
+
+
+def test_marcadores_booleanos_de_sensibilidade_do_acm_no_op_nao_sao_segredo_na_phase_a(contract):
+    contract.validate_delta(_phase_a_com_acm_sensivel(), "phase-a")
+
+
+@pytest.mark.parametrize("key,value", [
+    ("private_key", "x"), ("password", "x"), ("private_key", {"pem": "x"}), ("access_token", ["x"]),
+    ("private_key", 1),
+])
+def test_material_secreto_nao_booleano_continua_recusado_na_phase_a(contract, key, value):
+    plan = _phase_a_com_acm_sensivel()
+    plan["resource_changes"][-1]["change"]["after"][key] = value
+    with pytest.raises(ValueError, match="secret material"):
+        contract.validate_delta(plan, "phase-a")
+
+
 def test_phase_a_a2_recomputed_from_real_candidate(contract):
     candidate = {"repository": "VINIClUS/CnesData", "release_id": "candidate-immutable",
                  "source_sha": "a" * 40}
