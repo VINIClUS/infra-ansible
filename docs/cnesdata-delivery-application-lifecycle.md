@@ -270,6 +270,9 @@ Implemented on `main`:
   hydrates `application_coordination_policy` (derived from the protected fragment, checked
   against `policy_sha256`) and `application_delegations` (from `fragment.delegations`) in
   memory and refuses both inline, so write 3 no longer carries them.
+- Host runtime probe (P42b): the host gate probes exactly the API identity, the original
+  Roles Anywhere session of the API container, with no AssumeRole. Unit and recovery run on
+  ECS and are not probed on the host; the 404 probe needs ListBucket on the probe bucket.
 - Formal models checked in CI: lease and terminal (F1), keeper stages (F2), X*/K pins and
   trusts (F3), and stage windows with pre-approved jobs (F4).
 

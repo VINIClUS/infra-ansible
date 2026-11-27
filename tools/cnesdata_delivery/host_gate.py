@@ -1700,11 +1700,11 @@ def supervise(argv, guard, *, timeout=20, env=None, stdin=None):
             raise
 
 
-RUNTIME_IDENTITIES = ("unit", "recovery", "API")
+RUNTIME_IDENTITIES = ("API",)
 
 
 def runtime_probe_set(probes):
-    require(set(probes) == set(RUNTIME_IDENTITIES), "exactly three runtime identities")
+    require(set(probes) == set(RUNTIME_IDENTITIES), "exactly the API runtime identity")
     return probes
 
 
@@ -3356,7 +3356,7 @@ def verify_original_activation(governance, guard):
 
 
 def verify_runtime_probes(governance, guard):
-    """Use the three original temporary credential files; never perform AssumeRole."""
+    """Use the original temporary credential file of the API; never AssumeRole."""
     probes = runtime_probe_set(governance["runtime_probes"])
     for name in RUNTIME_IDENTITIES:
         probe = closed(probes[name], "role_arn credential_path expires_at bucket key")
@@ -3401,7 +3401,7 @@ def verify_runtime_probes(governance, guard):
 
 
 def missing_object_probe(path, bucket, key, region, guard):
-    """A real signed GET, no list grant and no false 403-as-absence result."""
+    """A real signed GET; 404 needs ListBucket on the bucket, 403 is never absence."""
     require(
         re.fullmatch(r"[a-z0-9-]{3,63}", bucket)
         and re.fullmatch(r"[a-z0-9-]+", region)
