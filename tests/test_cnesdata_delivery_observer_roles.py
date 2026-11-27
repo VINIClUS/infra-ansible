@@ -204,6 +204,25 @@ def test_observador_decifra_o_estado_com_bucket_key_pelo_contexto_do_arn_do_buck
     assert not allowed(policy, "s3:GetObject", STATE_BUCKET + "/" + producer.STATE_KEY + ".tflock")
 
 
+def _alvos(statement):
+    resource = statement["Resource"]
+    return [resource] if isinstance(resource, str) else resource
+
+
+def test_observador_lista_o_bucket_de_estado_so_no_prefixo_de_workspaces_do_backend(native):
+    resources, _ = render(native, observer_values(), "observer-policy")
+    policy = json.loads(resources[OBSERVER_POLICY]["policy"])
+    listagens = [s for s in policy["Statement"] if s["Effect"] == "Allow"
+                 and "s3:ListBucket" in s["Action"] and {STATE_BUCKET, "*"} & set(_alvos(s))]
+    assert listagens == [{"Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": STATE_BUCKET,
+                          "Condition": {"StringEquals": {"s3:prefix": "env:/"}}}]
+    assert allowed(policy, "s3:ListBucket", STATE_BUCKET, {"s3:prefix": "env:/"})
+    for prefix in ("", "env:", "env:/x", "env:/*", "cnesdata/prod/", producer.STATE_KEY):
+        assert not allowed(policy, "s3:ListBucket", STATE_BUCKET, {"s3:prefix": prefix}), prefix
+    assert not allowed(policy, "s3:ListBucket", STATE_BUCKET)
+    assert not allowed(policy, "s3:ListBucket", EVIDENCE_BUCKET, {"s3:prefix": "env:/"})
+
+
 def test_observador_le_o_que_o_produtor_le_e_nada_fora_dos_recursos_nomeados(native):
     resources, _ = render(native, observer_values(), "observer-policy")
     policy = json.loads(resources[OBSERVER_POLICY]["policy"])
