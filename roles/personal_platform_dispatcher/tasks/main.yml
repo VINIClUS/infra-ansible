@@ -73,6 +73,9 @@
       ansible.posix.authorized_key:
         user: "{{ personal_platform_dispatcher_user }}"
         key: "{{ personal_platform_dispatcher_authorized_key }}"
+        key_options: >-
+          restrict,command="sudo -n /usr/bin/python3 -I
+          /usr/local/lib/personal-platform/host_gate.py --host"
         exclusive: true
         manage_dir: true
     - name: Install the exact sudo boundary

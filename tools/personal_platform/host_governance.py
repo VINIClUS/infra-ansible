@@ -582,8 +582,13 @@ def read_inputs(args):
     )
 
 
+def originals(raw):
+    baseline = g.canonical(read_plan(raw)["host_preflight"])
+    return {"original-platform": raw, "original-baseline": baseline}
+
+
 def write_handoffs(args, inputs):
-    directory = Path(args.handoff_dir)
+    directory = Path(os.path.abspath(args.handoff_dir))
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     files = {
@@ -591,6 +596,9 @@ def write_handoffs(args, inputs):
         "activation-public-key": directory / "activation-public-key.pem",
     }
     write_private(files["activation-public-key"], signing_pem(inputs.signing))
+    for name, data in originals(inputs.plan).items():
+        files[name] = directory / (name + ".json")
+        write_private(files[name], data)
     if inputs.activation is not None:
         files["activation"] = Path(os.path.abspath(args.activation))
         files["activation-signature"] = Path(os.path.abspath(args.signature))
