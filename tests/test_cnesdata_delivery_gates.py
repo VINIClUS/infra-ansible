@@ -634,6 +634,49 @@ def test_applied_state_uses_lossless_count_and_foreach_indices(contract):
     contract.applied_state(plan, state)
 
 
+ECS_PLANNED_DEFINITIONS = '[{"name":"unit","image":"registry.example/unit:1","essential":true,"cpu":256}]'
+ECS_APPLIED_DEFINITIONS = '[{"cpu": 256.0, "essential": true, "image": "registry.example/unit:1", "name": "unit"}]'
+
+
+def replaced_resource(contract, kind, after, applied):
+    plan = {"resource_changes": [{"mode": "managed", "type": kind, "address": f"module.runtime.{kind}.unit",
+        "change": {"actions": ["delete", "create"], "after": after, "after_unknown": {"arn": True}}}]}
+    state = {"resources": [{"mode": "managed", "module": "module.runtime", "type": kind, "name": "unit",
+        "instances": [{"attributes": applied}]}]}
+    return lambda: contract.applied_state(plan, state)
+
+
+def test_applied_state_aceita_a_normalizacao_do_provider_na_task_definition_ecs_substituida(contract):
+    after = {"family": "unit", "ipc_mode": None, "pid_mode": None, "container_definitions": ECS_PLANNED_DEFINITIONS,
+             "network_mode": "awsvpc", "arn": None}
+    applied = dict(after, ipc_mode="", pid_mode="", container_definitions=ECS_APPLIED_DEFINITIONS, arn="resolved")
+    replaced_resource(contract, "aws_ecs_task_definition", after, applied)()
+    assert after["ipc_mode"] is None and after["container_definitions"] == ECS_PLANNED_DEFINITIONS
+
+
+@pytest.mark.parametrize("kind,attribute,planned,applied", [
+    ("aws_ecs_task_definition", "ipc_mode", None, "host"),
+    ("aws_ecs_task_definition", "pid_mode", None, "task"),
+    ("aws_ecs_task_definition", "container_definitions", ECS_PLANNED_DEFINITIONS, ECS_PLANNED_DEFINITIONS.replace("256", "512")),
+    ("aws_ecs_task_definition", "container_definitions", ECS_PLANNED_DEFINITIONS, ECS_PLANNED_DEFINITIONS.replace("true", "1")),
+    ("aws_ecs_task_definition", "container_definitions", ECS_PLANNED_DEFINITIONS, "not json"),
+    ("aws_ecs_task_definition", "network_mode", None, ""),
+    ("aws_iam_role", "description", None, ""),
+    ("aws_iam_role", "ipc_mode", None, ""),
+    ("aws_iam_role", "container_definitions", ECS_PLANNED_DEFINITIONS, ECS_APPLIED_DEFINITIONS),
+])
+def test_applied_state_continua_recusando_o_que_nao_e_normalizacao_do_provider_ecs(contract, kind, attribute, planned, applied):
+    after = {"family": "unit", "ipc_mode": None, "pid_mode": None, "container_definitions": ECS_PLANNED_DEFINITIONS,
+             "network_mode": "awsvpc", "description": "fixed", "arn": None}
+    after[attribute] = planned
+    observed = dict(after, arn="resolved")
+    if kind == "aws_ecs_task_definition":
+        observed.update(ipc_mode="", pid_mode="")
+    observed[attribute] = applied
+    with pytest.raises(ValueError):
+        replaced_resource(contract, kind, after, observed)()
+
+
 def test_bootstrap_accepts_only_issued_same_certificate_with_unchanged_pending_state(outputs, contract):
     from fixtures.cnesdata_outputs import ACCOUNT, CERT, fixture
     state, api, observed, _, _ = fixture()
@@ -994,6 +1037,51 @@ def test_session_policy_fits_realistic_ids_arns_and_authenticated_plan_scope():
     old = "cnesdata/prod/evidence/" + "b" * 40 + "/42448920421/1/planned/*"
     value = build(governance, "a" * 40, 42448571873, 1, "deploy", [old])
     assert len(value) + len(managed_arn(governance, "deploy")) <= 2048
+
+
+PROD_SESSION_PREFIX = "cnesdata/prod/pppp/"
+PROD_SESSION_SCOPES = {"plan-phase-inputs": ("plan", ("phase",)), "plan-phase-inputs-mais-1-historico": ("plan", ("phase", "history")),
+                       "plan-1-historico": ("plan", ("history",)), "deploy-planejado": ("deploy", ("planned",)),
+                       "deploy-planejado-mais-1-historico": ("deploy", ("planned", "history"))}
+
+
+def prod_length_session(role, names):
+    """Prod-length names: state bucket 48, evidence 45, evidence prefix 19, cnesdata-prod roles, 11-digit runs."""
+    from tools.cnesdata_delivery.session_policy import PhaseInputScope, request
+    account = "111122223333"
+    governance = {"account_id": account, "state_bucket": "s" * 48, "evidence_bucket": "e" * 45,
+        "state_kms_key_arn": f"arn:aws:kms:us-east-2:{account}:key/00000000-0000-4000-8000-000000000001",
+        "evidence_kms_key_arn": f"arn:aws:kms:us-east-2:{account}:key/00000000-0000-4000-8000-000000000002",
+        "evidence_prefix": PROD_SESSION_PREFIX,
+        "roles": {kind: f"arn:aws:iam::{account}:role/cnesdata-prod-{kind}" for kind in ("plan", "deploy")}}
+    scopes = {"phase": PhaseInputScope(PROD_SESSION_PREFIX + "phase-inputs/" + "c" * 40 + "/19876543210/1/*"),
+              "history": PROD_SESSION_PREFIX + "d" * 40 + "/19876543211/1/applied/*",
+              "planned": PROD_SESSION_PREFIX + "a" * 40 + "/19876543212/1/planned/*"}
+    return governance, scopes, request(governance, "b" * 40, 19876543299, 1, role, [scopes[name] for name in names])
+
+
+@pytest.mark.parametrize("case", sorted(PROD_SESSION_SCOPES))
+def test_sessao_do_gate_cabe_em_2048_com_nomes_de_tamanho_de_producao(case, capsys):
+    _, _, session = prod_length_session(*PROD_SESSION_SCOPES[case])
+    size = len(session["Policy"]) + sum(len(item["arn"]) for item in session["PolicyArns"])
+    with capsys.disabled():
+        print(f"session {case}: {size}")
+    assert size < 2048
+
+
+def test_sessao_do_plan_com_historico_le_mas_nao_escreve_nos_escopos_historicos():
+    from fixtures.cnesdata_iam_evaluation import effective
+    from fixtures.cnesdata_session_cases import expected_documents
+    governance, scopes, session = prod_length_session("plan", ("phase", "history"))
+    identity, managed = expected_documents(governance, "plan")
+    policy = json.loads(session["Policy"])
+    bucket = "arn:aws:s3:::" + governance["evidence_bucket"] + "/"
+    for scope in (scopes["phase"], scopes["history"]):
+        resource = bucket + scope[:-1] + "envelope.json"
+        assert effective(identity, managed, policy, "s3:GetObject", resource)
+        assert not effective(identity, managed, policy, "s3:PutObject", resource)
+    own = bucket + PROD_SESSION_PREFIX + "b" * 40 + "/19876543299/1/planned/plan.bin"
+    assert effective(identity, managed, policy, "s3:PutObject", own)
 
 
 def test_resolved_policy_widening_is_not_authorized_by_state_api_and_complete_matrix(contract):
