@@ -88,6 +88,27 @@ def scheduler_preflight(plan, state):
             "scheduler input differs from prior applied revision")
 
 
+def _same_json(left, right):
+    try:
+        return canonical(loads(left.encode(), state=True)) == canonical(loads(right.encode(), state=True))
+    except ValueError:
+        return False
+
+
+def _provider_normalized(kind, expected, actual):
+    """The AWS provider applies ECS task definitions with null modes as "" and re-serialized definitions."""
+    if kind != "aws_ecs_task_definition" or type(expected) is not dict or type(actual) is not dict:
+        return expected
+    resolved = dict(expected)
+    for key in ("ipc_mode", "pid_mode"):
+        if key in expected and expected[key] is None and actual.get(key) == "":
+            resolved[key] = ""
+    planned, applied = expected.get("container_definitions"), actual.get("container_definitions")
+    if type(planned) is str and type(applied) is str and _same_json(planned, applied):
+        resolved["container_definitions"] = applied
+    return resolved
+
+
 def applied_state(plan, state):
     """Resolve only saved-plan unknowns; no refreshed or replacement plan."""
     def match(expected, actual, unknown=False):
@@ -125,8 +146,8 @@ def applied_state(plan, state):
     require(len(changes) == len({item["address"] for item in changes})
             and set(observed) == {item["address"] for item in changes}, "saved-plan state resource set")
     for item in changes:
-        change = item["change"]
-        match(change["after"], observed[item["address"]], change.get("after_unknown", False))
+        change, actual = item["change"], observed[item["address"]]
+        match(_provider_normalized(item.get("type"), change["after"], actual), actual, change.get("after_unknown", False))
     for name, change in plan.get("output_changes", {}).items():
         if change["after"] is None and not change.get("after_unknown"):
             require(name not in state.get("outputs", {}), "saved-plan removed output")
