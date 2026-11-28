@@ -646,6 +646,7 @@ def public_handoff_fixture(tmp_path):
         op.transition(state)
     request = g.Request({}, b"{}", b"original", bytearray(b"not-public"), admission)
     request.channel_nonce = H
+    request.binding = b
     window = admission.window(clock)
     raw = op.seal(
         H,
@@ -961,6 +962,7 @@ def test_real_host_ssh_runner_failure_diagnostic_and_exact_rollback(
     request = g.Request(
         envelope, raw, b"original archive", bytearray(b"synthetic-token"), admission
     )
+    request.binding = gov["binding"]
     monkeypatch.setattr(g, "ROOT", root)
     monkeypatch.setattr(g, "Clock", lambda: clock)
     monkeypatch.setattr(g.time, "time", lambda: clock.t)

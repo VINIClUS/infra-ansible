@@ -462,6 +462,9 @@ def authenticated_fixture(tmp_path, monkeypatch):
     )
     for expiry in b["expires"]:
         expiry["expires_at"] = "2030-01-01T00:00:00Z"
+    next(e for e in b["expires"] if e["name"] == "envelope")["source_sha256"] = g.sha(
+        g.canonical(outer)
+    )
     source = b"original owner governance"
     b["approval"]["governance_sha256"] = g.sha(source)
     gov = {
@@ -589,6 +592,10 @@ def authenticated_fixture(tmp_path, monkeypatch):
     }
     responses = {
         "repos/VINIClUS/CnesData/actions/runs/11/attempts/1": caller,
+        "repos/VINIClUS/CnesData/actions/workflows/deploy.yml/runs?branch=main"
+        "&event=workflow_dispatch&status=in_progress&head_sha="
+        + SHA
+        + "&per_page=100": {"total_count": 1, "workflow_runs": [caller]},
         "repos/VINIClUS/CnesData/actions/runs/12/attempts/1": producer,
         "repos/VINIClUS/CnesData/compare/" + SHA + "...main": {
             "status": "ahead",

@@ -358,6 +358,15 @@ def governed(tmp_path, monkeypatch):
     promote = ".github/workflows/promote-production.yml"
     gov["binding"]["caller"]["workflow_path"] = promote
     responses["repos/VINIClUS/CnesData/actions/runs/11/attempts/1"]["path"] = promote
+    live = "/runs?branch=main&event=workflow_dispatch&status=in_progress&head_sha="
+    responses[
+        "repos/VINIClUS/CnesData/actions/workflows/promote-production.yml"
+        + live
+        + SHA
+        + "&per_page=100"
+    ] = responses[
+        "repos/VINIClUS/CnesData/actions/workflows/deploy.yml" + live + SHA + "&per_page=100"
+    ]
     static = {
         **copy.deepcopy(gov),
         "enabled": True,
