@@ -692,7 +692,7 @@ def build(governance, source, run_id, attempt, role, read_keys):
             "Effect": "Allow",
             "Action": "kms:Decrypt",
             "Resource": key_arn,
-            "Condition": {"StringLike": {"kms:EncryptionContext:aws:s3:arn": read}},
+            "Condition": {"StringLike": {"kms:EncryptionContext:aws:s3:arn": bucket_arn + "/" + prefix + "*"}},
         },
         {
             "Effect": "Allow",
@@ -701,6 +701,10 @@ def build(governance, source, run_id, attempt, role, read_keys):
             "Condition": {"StringLike": {"kms:EncryptionContext:aws:s3:arn": own}},
         },
     ]
+    if historical:
+        statements.append(
+            {"Effect": "Deny", "Action": "s3:PutObject", "Resource": historical}
+        )
     return _encode(governance, role, statements + activation_ordinary_denies(governance, role))
 
 

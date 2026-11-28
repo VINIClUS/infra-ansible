@@ -1082,6 +1082,10 @@ def test_sessao_do_plan_com_historico_le_mas_nao_escreve_nos_escopos_historicos(
         assert not effective(identity, managed, policy, "s3:PutObject", resource)
     own = bucket + PROD_SESSION_PREFIX + "b" * 40 + "/19876543299/1/planned/plan.bin"
     assert effective(identity, managed, policy, "s3:PutObject", own)
+    for scope in (scopes["phase"], scopes["history"]):
+        widened = copy.deepcopy(managed)
+        widened["Statement"].append({"Effect": "Allow", "Action": "s3:PutObject", "Resource": bucket + scope})
+        assert not effective(identity, widened, policy, "s3:PutObject", bucket + scope[:-1] + "envelope.json")
 
 
 def test_resolved_policy_widening_is_not_authorized_by_state_api_and_complete_matrix(contract):
