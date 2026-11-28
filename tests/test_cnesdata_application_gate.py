@@ -3053,7 +3053,7 @@ def _application_entry_case(monkeypatch, tmp_path, steps=None):
     chain, aws, history_api, store, _, _ = _legacy_history_fixture(monkeypatch, tmp_path)
     current, current_api, run, step, job, _ = _application_caller_fixture(monkeypatch)
     from test_cnesdata_application_closure import ROOT as CLOSURE_ROOT, WORKFLOW, expected_closure, workflow_contents
-    gov = chain.gov | current
+    gov = {key: value for key, value in (chain.gov | current).items() if key not in {"drift_matrix", "readbacks"}}
     from test_cnesdata_product_source_manifest import manifest_world
     inline = gov.pop("application_product_source_manifest")
     step.pop("caller_job")

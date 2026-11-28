@@ -18,6 +18,7 @@ from collections import namedtuple
 
 from tools.cnesdata_delivery import contract as c
 from tools.cnesdata_delivery import drift_catalog as dc
+from tools.cnesdata_delivery import drift_handoff
 from tools.cnesdata_delivery import lifecycle_contract as lc
 from tools.cnesdata_delivery.aws_boundary import AWS, S3LeaseStore
 from tools.cnesdata_delivery.coordination_lease import Watchdog
@@ -114,6 +115,7 @@ def admission(role, *, resolve_payloads=True):
     c.require("lifecycle_steps" not in governance and "source_closure" not in governance, "inline lifecycle objects")
     c.require("application_coordination_policy" not in governance, "inline application coordination policy")
     c.require("application_delegations" not in governance, "inline application delegations")
+    c.require("drift_matrix" not in governance and "readbacks" not in governance, "inline drift matrix refused")
     c.require(governance.get("activation_enabled") is True and governance.get("lifecycle_enabled") is True
               and governance.get("lifecycle_authority") == "infra-ansible#55/6755178450", "lifecycle disabled/authority")
     request_raw = os.environ["REQUEST_DESCRIPTOR"].encode()
@@ -1775,14 +1777,14 @@ def _approval_stage(plan, specs, matrix, stage):
 def build_approval(*, governance, step, owner, payload, before_raw):
     """Args: governance, step, owner, payload, before_raw. Returns: approval for the exact saved plan. Raises: ValueError."""
     c.require(step["direction"] == "advance", "audit converge custody unavailable")
-    plan = c.loads(payload["plan.json"], state=True)
+    plan, before = c.loads(payload["plan.json"], state=True), c.loads(before_raw, state=True)
     changes = [row for row in plan.get("resource_changes", []) if row.get("mode") == "managed"
                and row["change"]["actions"] not in (["no-op"], ["read"])]
     delta = {"purpose": step["purpose"], "direction": step["direction"], "mode": step["mode"],
-             "before": lc.state_resources(c.loads(before_raw, state=True)), "original": {}, "created": {},
+             "before": lc.state_resources(before), "original": {}, "created": {},
              "expected_changes_sha256": c.sha(c.canonical(changes))}
     lc.validate_delta(plan, delta)
-    readbacks_, matrix = governance["readbacks"], governance["drift_matrix"]
+    matrix, readbacks_ = drift_handoff.lifecycle(plan, before, governance["source_sha"], step["purpose"])
     c.closed(readbacks_, "before after")
     c.closed(matrix, "matrix_version source_sha purpose before after absent")
     c.require(type(matrix["matrix_version"]) is int and matrix["matrix_version"] == 2

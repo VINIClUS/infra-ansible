@@ -133,6 +133,8 @@ def references(document):
 def crosscheck(document, commitments):
     """Args: governance document, public commitments. Raises: ValueError on any hash or format mismatch."""
     _closed_keys(document)
+    c.require(document.get("lifecycle_enabled") is not True
+              or ("drift_matrix" not in document and "readbacks" not in document), "inline drift matrix refused")
     _stage_windows(document)
     _expiry_chain(document)
     c.report_key(document)
