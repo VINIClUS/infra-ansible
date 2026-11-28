@@ -1,4 +1,4 @@
-"""G3 drift handoff: matrix and readbacks carried by a member of the authenticated drift baseline."""
+"""G3 drift handoff: the catalogue projection of a plan, carried by the drift baseline or derived by the audit."""
 import re
 
 from tools.cnesdata_delivery import contract as c, drift_catalog
@@ -81,3 +81,89 @@ def load(files, governance, proof, proof_files, *, source, purpose):
     _shape(document, source, purpose)
     _addresses(document, purpose)
     return governance | {"drift_matrix": document["matrix"], "readbacks": document["readbacks"]}
+
+
+def _changes(plan):
+    return {item["address"]: item["change"] for item in plan["resource_changes"] if item.get("mode") == "managed"}
+
+
+def _state_addresses(state):
+    found = set()
+    for row in state.get("resources", []):
+        if row.get("mode") != "managed":
+            continue
+        base = (row.get("module", "") + ".").lstrip(".") + row["type"] + "." + row["name"]
+        for instance in row.get("instances", []):
+            key = instance.get("index_key")
+            found.add(base if key is None else base + "[" + c.canonical(key)[:-1].decode() + "]")
+    return found
+
+
+def _covered(envelope, changes, state):
+    planned = {a for a, ch in changes.items() if drift_catalog.resource_type(a) in envelope.covered
+               and ch["before"] is not None}
+    observed = {a for a in _state_addresses(state) if drift_catalog.resource_type(a) in envelope.covered}
+    c.require(planned == observed, "state covered instances differ from the plan")
+
+
+def _predicted(change):
+    unknown = change.get("after_unknown")
+    c.require(type(unknown) is dict, "after_unknown shape")
+    return {name: None for name in unknown} | change["after"]
+
+
+def _stage(envelope, plan, expected):
+    required = envelope.required(plan, expected)
+    specs, rows = [], []
+    for address in sorted({address for address, _ in required}):
+        tipo = drift_catalog.resource_type(address)
+        names = sorted(name for owner, name in required if owner == address)
+        service, operation = drift_catalog.CATALOG[tipo][names[0]][:2]
+        for name in names:
+            _, _, path, encoding = drift_catalog.CATALOG[tipo][name]
+            rows.append({"address": address, "attribute": name, "readback": len(specs), "path": list(path),
+                         "encoding": encoding})
+        specs.append({"service": service, "operation": operation, "address": address})
+    return specs, rows
+
+
+def _document(source_sha, purpose, stages):
+    (specs_before, rows_before), (specs_after, rows_after) = stages
+    matrix = {"matrix_version": 2, "source_sha": source_sha, "purpose": purpose, "before": rows_before,
+              "after": rows_after, "absent": []}
+    return {"handoff_version": 1, "source_sha": source_sha, "purpose": purpose,
+            "catalog_sha256": drift_catalog.CATALOG_SHA256, "matrix": matrix,
+            "readbacks": {"before": specs_before, "after": specs_after}}
+
+
+def envelope_for(purpose):
+    """Args: purpose. Returns: the Phase A envelope, or the lifecycle one for a step purpose. Raises: ValueError."""
+    from tools.cnesdata_delivery.lifecycle_contract import PURPOSES
+    if purpose == "phase-a":
+        return drift_catalog.PHASE_A_ENVELOPE
+    c.require(purpose in PURPOSES, "lifecycle step purpose")
+    return drift_catalog.LIFECYCLE_ENVELOPE
+
+
+def derive(plan, state, source_sha, purpose, *, envelope):
+    """Args: plan.json, observed state, source sha, purpose, envelope. Returns: the handoff document. Raises: ValueError."""
+    c.digest(source_sha, 40)
+    changes = _changes(plan)
+    c.require(all(change["actions"] != ["delete"] for change in changes.values()), "delete without create refused")
+    c.require(all(ADDRESS.fullmatch(address) for address in changes), "handoff address shape")
+    _covered(envelope, changes, state)
+    before = {a: ch["before"] for a, ch in changes.items() if ch["before"] is not None}
+    after = {a: _predicted(ch) for a, ch in changes.items() if ch["after"] is not None}
+    return _document(source_sha, purpose, [_stage(envelope, plan, before), _stage(envelope, plan, after)])
+
+
+def lifecycle(plan, state, source_sha, purpose):
+    """Args: saved plan.json, before state, source sha, lifecycle step purpose.
+
+    Returns: (matrix, readbacks) of exactly that purpose from the pinned catalog. Raises: ValueError.
+    """
+    envelope = envelope_for(purpose)
+    c.require(envelope is drift_catalog.LIFECYCLE_ENVELOPE, "lifecycle step purpose")
+    document = derive(plan, state, source_sha, purpose, envelope=envelope)
+    readbacks = {stage: [spec | {"absent": False} for spec in specs] for stage, specs in document["readbacks"].items()}
+    return document["matrix"], readbacks
