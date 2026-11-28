@@ -253,6 +253,7 @@ class Request:
     admission: ClosedReady | None = None
     diagnostic: bool = False
     channel_nonce: str | None = None
+    binding: dict | None = None
 
     def erase(self):
         self.token[:] = b"\0" * len(self.token)
@@ -2135,6 +2136,30 @@ def verify_run(run, reference, *, caller=False):
         )
 
 
+def live_caller(caller, api):
+    """The caller run exists only after dispatch and a rerun changes its attempt.
+
+    Owner governance is written before dispatch, so it cannot select the run: the
+    unique in-progress manual run of the caller workflow at the source does.
+    """
+    name = caller["workflow_path"].rsplit("/", 1)[-1]
+    listing = api.read(
+        f"repos/{REPOSITORY}/actions/workflows/{name}/runs?branch=main"
+        f"&event=workflow_dispatch&status=in_progress&head_sha={caller['source_sha']}"
+        "&per_page=100"
+    )
+    runs = listing["workflow_runs"]
+    require(
+        type(runs) is list and integer(listing["total_count"]) == len(runs) == 1,
+        "unique live caller run",
+    )
+    return dict(
+        caller,
+        run_id=integer(runs[0]["id"], 1),
+        run_attempt=integer(runs[0]["run_attempt"], 1),
+    )
+
+
 class GitHub:
     def __init__(self, token, clock=None):
         self.token, self.clock = token, clock or Clock()
@@ -2211,6 +2236,12 @@ def authenticate_request(request, governance, api, now):
         now=now,
     )
     require(instant(m["expires_at"]) <= now + 86400, "envelope maximum lifetime")
+    envelope = next(e for e in b["expires"] if e["name"] == "envelope")
+    require(
+        envelope["source_sha256"] == sha(request.envelope_bytes)
+        and envelope["expires_at"] == m["expires_at"],
+        "original envelope expiry",
+    )
     require(
         m["source_sha"] == b["caller"]["source_sha"]
         and m["requested_action"] == b["requested_action"]
@@ -2234,7 +2265,7 @@ def authenticate_request(request, governance, api, now):
         and m["config_sha256"] == original["config_sha256"],
         "original bytes mismatch",
     )
-    caller = b["caller"]
+    caller = b["caller"] = live_caller(b["caller"], api)
     run = api.read(
         f"repos/{REPOSITORY}/actions/runs/{caller['run_id']}/attempts/{caller['run_attempt']}"
     )
@@ -4519,8 +4550,9 @@ def runner_request(governance, token):
         with archive.open(members[0]) as file:
             payload = file.read(LIMIT + 1)
     request = Request(envelope, canonical(envelope), payload, token)
-    authenticate_request(request, governance, api, time.time())
-    request.admission = admit_physical_action(b, governance, api, api.clock)
+    live, _ = authenticate_request(request, governance, api, time.time())
+    request.binding = live
+    request.admission = admit_physical_action(live, governance, api, api.clock)
     inputs = {
         "PLAN_EVIDENCE_ID": b["platform"]["evidence_id"],
         "PLAN_EVIDENCE_DIGEST": b["platform"]["evidence_sha256"],
@@ -4532,7 +4564,7 @@ def runner_request(governance, token):
         all(os.environ.get(key) == value for key, value in inputs.items()),
         "five public selectors/original handoff",
     )
-    caller = b["caller"]
+    caller = live["caller"]
     require(
         os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
@@ -4867,26 +4899,17 @@ def validate_closed_ready(files: dict, binding: dict, now):
         keys.append((expiry["kind"], digest(expiry["object_sha256"])))
         instant(expiry["expires_at"])
     require(keys == sorted(set(keys)), "unique original expirations")
-    require(
-        all(
-            {
-                "kind": e["name"],
-                "object_sha256": e["source_sha256"],
-                "expires_at": e["expires_at"],
-            }
-            in expirations
-            for e in binding["expires"]
-        ),
-        "original expiry coverage",
-    )
     fixed = min(
         t0 + windows["fixed_deadline_seconds"],
         *(instant(e["expires_at"]) for e in expirations),
     )
     require(instant(close["fixed_deadline"]) == fixed, "original fixed deadline")
+    # The keeper emits only the objects it authenticated (owner proof, fragment,
+    # pin, downloads); the host's own inputs bound the host here instead.
+    bound = min(fixed, *(instant(e["expires_at"]) for e in binding["expires"]))
     stage = closed(ready["stage"], "name admitted_at deadline later_seconds")
     start, deadline = instant(stage["admitted_at"]), instant(stage["deadline"])
-    require(start == observed and start < deadline <= fixed, "original stage deadline")
+    require(start == observed and start < deadline <= bound, "original stage deadline")
     if binding["requested_action"] == "deploy":
         api, later = windows["stages"]["api"], later_seconds(windows, "api")
         require(
@@ -4894,7 +4917,7 @@ def validate_closed_ready(files: dict, binding: dict, now):
             and stage["name"] == "api"
             and stage["later_seconds"] == later
             and deadline <= start + api
-            and fixed - start >= api + later + FINAL_RESERVE,
+            and bound - start >= api + later + FINAL_RESERVE,
             "original API admission budget",
         )
     else:
@@ -5305,7 +5328,7 @@ def ssh_exchange(request, governance, secrets_value):
                 process.wait(timeout=max(0.1, end - time.monotonic()))
                 response = bytes(received)
                 require(process.returncode in {0, 2}, "host response/unknown outcome")
-                b = copy.deepcopy(governance["binding"])
+                b = copy.deepcopy(request.binding)
                 parsed = host_json(response, 65536)
                 if process.returncode == 2:
                     accept_recovery_diagnostic(
@@ -5399,9 +5422,7 @@ def runner_main(mode):
             immutable=True,
         )
         if request.admission is not None:
-            projected = public_handoff(
-                response, request, governance["binding"], time.time()
-            )
+            projected = public_handoff(response, request, request.binding, time.time())
             directory = private_directory(
                 Path(os.environ["RUNNER_TEMP"]) / "cnesdata-host-public"
             )

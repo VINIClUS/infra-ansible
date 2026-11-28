@@ -888,6 +888,7 @@ def real_host(tmp_path, monkeypatch, *, fault):
     request = g.Request(
         envelope, raw, b"original archive", bytearray(b"synthetic-token"), admission
     )
+    request.binding = gov["binding"]
     monkeypatch.setattr(g, "ROOT", root)
     monkeypatch.setattr(g, "Clock", lambda: clock)
     monkeypatch.setattr(g.time, "time", lambda: clock.t)
